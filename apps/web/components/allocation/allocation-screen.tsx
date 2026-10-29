@@ -26,7 +26,7 @@ import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { getAllocatorEngine, useEngineState, type AllocatorEngine } from '@/lib/allocation/engine';
 import { groupViews } from '@/lib/allocation/group-view';
-import { isReplaceableRow } from '@/lib/allocation/input';
+import { isFixedRow, isReplaceableRow } from '@/lib/allocation/input';
 import { issueTarget, type IssueTarget } from '@/lib/allocation/issue-target';
 import type { FailureLine } from '@/lib/allocation/failure-view';
 import { describeRule } from '@/lib/allocation/rule-text';
@@ -470,34 +470,36 @@ function AllocationLoaded({
   // 行の操作が要るのは主に検証の一覧の E002。
   const e002Actions = (issue: Issue) => {
     if (!editApi || issue.code !== 'E002') return null;
-    const ids = issue.refs.rowIds ?? [];
+    const roomId = issue.refs.roomId;
+    const inRoom = (issue.refs.rowIds ?? []).flatMap((id) => {
+      const r = rowById.get(id);
+      return r && r.sourceRoomId === roomId ? [r] : [];
+    });
+    if (inRoom.length === 0) return null;
+    const fixed = inRoom.filter(isFixedRow);
+    const autoCount = inRoom.length - fixed.length;
     return (
-      <div className="ml-6 mt-1 space-y-1" data-testid="e002-actions">
-        {ids.map((id) => {
-          const r = rowById.get(id);
-          if (!r || r.sourceRoomId !== issue.refs.roomId) {
-            return (
-              <p key={id} className="text-muted-foreground">
-                （未保存の変更で直しました。保存してから、もう一度実行してください）
-              </p>
-            );
-          }
-          return (
-            <div key={id} className="flex flex-wrap items-center gap-2">
-              <span>{rowLabel(vm, r)}</span>
-              <Button size="xs" variant="outline" onClick={() => setSourceRowId(id)}>
+      <div className="ml-2 mt-1 space-y-1 text-xs" data-testid="e002-actions">
+        {fixed.map((r) => (
+          <div key={r.id} className="flex flex-wrap items-center gap-x-2 gap-y-1" data-row-id-action={r.id}>
+            <span className="min-w-0">
+              {rowLabel(vm, r)}（{r.origin === 'manual' ? '手動' : '固定'}）
+            </span>
+            <span className="ml-auto flex gap-1">
+              <Button size="xs" variant="outline" onClick={() => setSourceRowId(r.id)}>
                 運び元を変える
               </Button>
-              <Button size="xs" variant="ghost" className="text-destructive" onClick={() => pend.edit({ op: 'delete', id })}>
+              <Button size="xs" variant="ghost" className="text-destructive" onClick={() => pend.edit({ op: 'delete', id: r.id })}>
                 行を削除
               </Button>
-            </div>
-          );
-        })}
-        {issue.refs.roomId && ids.length > 0 ? (
+            </span>
+          </div>
+        ))}
+        {autoCount > 0 ? <p className="text-muted-foreground">自動の行 {autoCount} 行は「最小変更で再実行」でほかの部屋に移ります。</p> : null}
+        {fixed.length > 0 && roomId ? (
           <p className="text-muted-foreground">
             固定を外して最小変更に任せたいときは、部屋を使用可に戻し、固定を外して保存してから使用不可にし直します（
-            <button type="button" className="underline underline-offset-2" onClick={() => goTo({ destination: { kind: 'room', roomId: issue.refs.roomId!, tab: null }, rule: null })}>
+            <button type="button" className="underline underline-offset-2" onClick={() => goTo({ destination: { kind: 'room', roomId, tab: null }, rule: null })}>
               部屋の見出しのメニューへ
             </button>
             ）。

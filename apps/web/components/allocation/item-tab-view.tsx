@@ -97,8 +97,7 @@ export function ItemTabView({
                     <>
                       <TableHead>備考</TableHead>
                       <TableHead>自動／手動</TableHead>
-                      <TableHead>固定</TableHead>
-                      {edit ? <TableHead>操作</TableHead> : null}
+                      <TableHead>{edit ? '固定・操作' : '固定'}</TableHead>
                     </>
                   ) : null}
                 </TableRow>
@@ -144,7 +143,7 @@ export function ItemTabView({
                 {vm.hasStock && !readOnlyList ? (
                   <TableRow className="bg-muted/20" data-surplus-row={b.room.id}>
                     <TableCell className="font-medium">余り</TableCell>
-                    <TableCell colSpan={(two ? 7 : 6) + (edit ? 1 : 0)}>
+                    <TableCell colSpan={two ? 7 : 6}>
                       <SurplusCell block={b} />
                     </TableCell>
                   </TableRow>
@@ -173,10 +172,10 @@ function EditCells({ api, row, label }: { api: RowEditApi; row: StoredAllocation
         ) : null}
       </TableCell>
       <TableCell>
-        <PinCell api={api} row={row} />
-      </TableCell>
-      <TableCell>
-        <ActionsCell api={api} row={row} label={label} />
+        <div className="flex items-center gap-1">
+          <PinCell api={api} row={row} />
+          <ActionsCell api={api} row={row} label={label} />
+        </div>
       </TableCell>
     </>
   );

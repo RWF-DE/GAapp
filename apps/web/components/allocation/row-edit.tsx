@@ -4,7 +4,7 @@
 // 数（CountStepper。min 1）・運び元の変更・備考（ポップオーバー。自動の行には「手動の行になります」）・固定（ピン）・削除（確認）・
 // 未保存の行の「元に戻す」。使用不可の部屋の行は運び元の変更と削除だけ（allowedRowOps。「固定を外す」は出さない）。
 import type { StoredAllocationRow } from '@gaapp/shared';
-import { Pin, PinOff, Trash2, Undo2 } from 'lucide-react';
+import { NotebookPen, Pin, PinOff, Trash2, Undo2 } from 'lucide-react';
 import { createContext, useContext, useId, useState } from 'react';
 import { CountStepper } from '@/components/common/count-stepper';
 import { Button } from '@/components/ui/button';
@@ -63,16 +63,16 @@ export function PinCell({ api, row }: { api: RowEditApi; row: StoredAllocationRo
       </span>
     ) : null;
   }
+  // 固定の行は塗りつぶしのピン（押すと外す）、固定していない行は薄いピン（押すと固定）
   return (
     <Button
-      size="xs"
+      size="icon-xs"
       variant={row.pinned ? 'secondary' : 'ghost'}
-      aria-pressed={row.pinned}
-      title={row.pinned ? '固定を外す' : '固定する'}
+      aria-label={row.pinned ? '固定を外す' : '固定する'}
+      title={row.pinned ? '固定中（押すと固定を外す）' : '固定していません（押すと固定する）'}
       onClick={() => api.edit({ op: 'update', id: row.id, patch: { pinned: !row.pinned } })}
     >
-      {row.pinned ? <Pin aria-hidden /> : <PinOff aria-hidden />}
-      {row.pinned ? '固定を外す' : '固定する'}
+      {row.pinned ? <Pin aria-hidden className="fill-current" /> : <PinOff aria-hidden className="opacity-50" />}
     </Button>
   );
 }
@@ -85,7 +85,7 @@ export function NoteCell({ api, row }: { api: RowEditApi; row: StoredAllocationR
   const [error, setError] = useState<string | null>(null);
   const can = opsOf(api, row).includes('note');
   const shown = (
-    <span className="block max-w-48 truncate" title={row.note ?? undefined}>
+    <span className="block max-w-32 truncate" title={row.note ?? undefined}>
       {row.note ?? ''}
     </span>
   );
@@ -104,8 +104,8 @@ export function NoteCell({ api, row }: { api: RowEditApi; row: StoredAllocationR
         }}
       >
         <PopoverTrigger asChild>
-          <Button size="xs" variant="ghost">
-            備考
+          <Button size="icon-xs" variant="ghost" aria-label="備考" title="備考を書く">
+            <NotebookPen aria-hidden />
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-80 space-y-2">
@@ -146,22 +146,20 @@ export function NoteCell({ api, row }: { api: RowEditApi; row: StoredAllocationR
 export function ActionsCell({ api, row, label }: { api: RowEditApi; row: StoredAllocationRow; label: string }) {
   const ops = opsOf(api, row);
   return (
-    <div className="flex flex-wrap items-center gap-1">
+    <div className="flex items-center gap-1">
       {ops.includes('change_source') ? (
-        <Button size="xs" variant="outline" aria-label={`${label}の運び元を変える`} onClick={() => api.openSource(row.id)}>
-          運び元を変える
+        <Button size="xs" variant="outline" aria-label={`${label}の運び元を変える`} title="運び元を変える" onClick={() => api.openSource(row.id)}>
+          運び元
         </Button>
       ) : null}
       {ops.includes('delete') ? (
-        <Button size="xs" variant="ghost" className="text-destructive" aria-label={`${label}を削除`} onClick={() => api.requestDelete(row.id)}>
+        <Button size="icon-xs" variant="ghost" className="text-destructive" aria-label={`${label}を削除`} title="削除" onClick={() => api.requestDelete(row.id)}>
           <Trash2 aria-hidden />
-          削除
         </Button>
       ) : null}
       {api.pendingIds.has(row.id) ? (
-        <Button size="xs" variant="ghost" aria-label={`${label}の変更を元に戻す`} onClick={() => api.revert(row.id)}>
+        <Button size="icon-xs" variant="ghost" aria-label={`${label}の変更を元に戻す`} title="この行の変更を元に戻す" onClick={() => api.revert(row.id)}>
           <Undo2 aria-hidden />
-          元に戻す
         </Button>
       ) : null}
     </div>

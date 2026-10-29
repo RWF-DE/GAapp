@@ -14,7 +14,8 @@ function target(vm: ViewModel, r: Pick<StoredAllocationRow, 'groupId' | 'itemId'
 
 function patchText(vm: ViewModel, row: StoredAllocationRow | undefined, p: RowPatch): string {
   const parts: string[] = [];
-  if (p.count !== undefined) parts.push(`数 ${row?.count ?? '?'} → ${p.count}`);
+  // 読み直した後（外した変更）は今の値が送ろうとした値と同じことがあるので、そのときは前の値を出さない
+  if (p.count !== undefined) parts.push(row && row.count !== p.count ? `数 ${row.count} → ${p.count}` : `数 → ${p.count}`);
   if (p.sourceRoomId !== undefined) parts.push(`運び元 → ${vm.roomById.get(p.sourceRoomId)?.name ?? UNKNOWN}`);
   if (p.itemId !== undefined) parts.push(`品目 → ${vm.itemById.get(p.itemId)?.name ?? UNKNOWN}`);
   if (p.requestedItemId !== undefined) parts.push(`申請品目 → ${vm.itemById.get(p.requestedItemId)?.name ?? UNKNOWN}`);
