@@ -50,7 +50,7 @@ export function ImportDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   tables: RequestsTables;
-  /** 1団体でも保存したら呼ぶ（申請一覧を読み直す） */
+  /** 1団体でも送ったら、成否によらず呼ぶ（申請一覧を読み直す） */
   onImported: () => void | Promise<void>;
   onError: ImportErrorHandler;
 }) {
@@ -143,7 +143,9 @@ function ImportForm({
       setOutcomes(out);
       setNotSent(chosen.length - results.length);
       const okCount = out.filter((o) => o.ok).length;
-      if (okCount > 0) await onImported();
+      // 送った団体があれば、成否によらず申請一覧を読み直す（5.1）。conflict の団体も読み直した updated_at・提出日時で
+      // プレビューを作り直せる。通信の失敗は保存されたか分からないので、これも読み直す（2.6）
+      if (results.length > 0) await onImported();
       if (okCount === out.length && results.length === chosen.length) toast.success(`${okCount} 団体の申請を取り込みました`);
       else toast.error(`${okCount} 団体を取り込みました。${chosen.length - okCount} 団体は取り込めませんでした`);
     } finally {

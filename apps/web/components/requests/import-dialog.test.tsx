@@ -77,7 +77,10 @@ async function upload(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByTestId('import-counts');
 }
 
-beforeEach(() => vi.mocked(callRpc).mockReset());
+// 戻り値を返さない（beforeEach が返す関数は後始末として呼ばれ、mockReset の戻り値＝callRpc そのものが呼ばれてしまう）
+beforeEach(() => {
+  vi.mocked(callRpc).mockReset();
+});
 
 describe('取り込みのダイアログ（stall.csv）', () => {
   it('対応しない行・古い回答・取り込まない行が出て、画面のどこにもメールアドレスの文字列が出ない', async () => {
@@ -173,6 +176,36 @@ describe('取り込みのダイアログ（stall.csv）', () => {
     const results = await screen.findByTestId('import-results');
     expect(results.textContent).toContain('模擬店甲：取り込みました');
     expect(results.textContent).toContain('模擬店乙：取り込みの前に、ほかの人がこの団体の申請を変えました');
+  });
+
+  it('送った団体がすべて conflict でも申請一覧を読み直す（古い updatedAt で同じ conflict を繰り返さない）', async () => {
+    const user = userEvent.setup();
+    const { appError } = await import('@/lib/errors');
+    const { onImported, onError } = renderDialog();
+    vi.mocked(callRpc).mockImplementation(async () => {
+      throw appError('conflict', 'P0001', { item_id: itemId('desk') });
+    });
+    await upload(user);
+    await user.click(screen.getByRole('button', { name: '取り込む（2 団体）' }));
+    const results = await screen.findByTestId('import-results');
+    expect(results.textContent).toContain('模擬店甲：取り込みの前に、ほかの人がこの団体の申請を変えました');
+    expect(results.textContent).toContain('模擬店乙：取り込みの前に、ほかの人がこの団体の申請を変えました');
+    expect(onImported).toHaveBeenCalledTimes(1);
+    // conflict の文言は取り込みのもの（onError の文言で置き換えない）
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('送った団体がすべて通信の失敗でも申請一覧を読み直す（保存されたか分からないため）', async () => {
+    const user = userEvent.setup();
+    const { appError } = await import('@/lib/errors');
+    const { onImported } = renderDialog();
+    vi.mocked(callRpc).mockImplementation(async () => {
+      throw appError('network', 'fetch_failed');
+    });
+    await upload(user);
+    await user.click(screen.getByRole('button', { name: '取り込む（2 団体）' }));
+    await screen.findByTestId('import-results');
+    expect(onImported).toHaveBeenCalledTimes(1);
   });
 
   it('見出しが合わない CSV はその旨だけを出す', async () => {
