@@ -128,6 +128,43 @@ test.describe('T11 申請一覧（管理者）', () => {
     }
   });
 
+  test('T11 申請一覧：締切前の代理入力は、開いた後にほかの人が変えていれば送らずに読み直し、確かめてから上書きする', async ({ page }) => {
+    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
+    try {
+      const rest = s.ids.groups['E2E休憩所']!;
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/?category=rest_area');
+      await page.locator('tr[data-group-name="E2E休憩所"]').getByRole('button', { name: '代理入力' }).click();
+      const sheet = page.getByRole('dialog');
+      await expect(sheet.getByRole('heading', { name: '代理入力：E2E休憩所' })).toBeVisible();
+      await sheet.getByRole('button', { name: '机(木)の数を1増やす' }).click();
+      // シートを開いた後に、ほかの人が椅子(木)を 5 にし、備考を書いた
+      await sql("insert into public.requests (group_id, item_id, count) select $1, id, 5 from public.items where code = 'chair'", [rest]);
+      await sql('insert into public.request_submissions (group_id, note) values ($1, $2)', [rest, 'ほかの人の備考']);
+      await sheet.getByRole('button', { name: '提出する' }).click();
+
+      const confirm = page.getByRole('alertdialog');
+      await expect(confirm).toContainText('ほかの人が変更しました');
+      await expect(confirm.getByTestId('proxy-conflicts')).toContainText('椅子(木)（0 → 5）');
+      // 送っていない。シートは読み直した値になり、入れた数は残る
+      expect(await countOf(rest, 'desk')).toBeNull();
+      await expect(page.locator(`[id="proxy-${rest}-chair"]`)).toHaveValue('5');
+      await expect(page.locator(`[id="proxy-${rest}-desk"]`)).toHaveValue('1');
+      await expect(page.locator(`[id="proxy-${rest}-note"]`)).toHaveValue('ほかの人の備考');
+
+      await confirm.getByRole('button', { name: '上書きして提出する' }).click();
+      await expect(page.getByText('E2E休憩所の申請を保存しました')).toBeVisible();
+      await expect(page.getByRole('heading', { name: '代理入力：E2E休憩所' })).toHaveCount(0);
+      expect(await countOf(rest, 'desk')).toBe(1);
+      expect(await countOf(rest, 'chair')).toBe(5);
+      const sub = await sql<{ submitted_at: Date | null; note: string | null }>('select submitted_at, note from public.request_submissions where group_id = $1', [rest]);
+      expect(sub[0]?.submitted_at).toBeTruthy();
+      expect(sub[0]?.note).toBe('ほかの人の備考');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T11 申請一覧：締切前に「提出済みにする」と提出日時が入る（未提出に戻す操作はない）', async ({ page }) => {
     const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
     try {

@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   role: 'admin' as 'admin' | 'staff',
   /** 申請の行（null なら REQUESTS。ほかの人の変更をまねるときに差し替える） */
   requests: null as null | { group_id: string; item_id: string; count: number; updated_at: string }[],
+  /** 提出の記録の備考（ほかの人の変更をまねるときに差し替える） */
+  note: '電源がほしい',
 }));
 
 vi.mock('@/lib/supabase/client', async () => {
@@ -107,10 +109,20 @@ function makeHandler(over: (call: FakeCall) => FakeResult | undefined = () => un
         if (call.ops.some((x) => x.op === 'update')) return { data: null };
         if (call.ops.some((x) => x.op === 'select') && opArgs(call, 'select')[0]?.[0] === 'updated_at') return { data: { updated_at: T0 } };
         return { data: (state.requests ?? REQUESTS).map((r) => ({ ...r, groups: { year_id: YEAR } })) };
-      case 'request_submissions':
-        return { data: [{ group_id: STALL, submitted_at: T0, note: '電源がほしい', updated_at: T0, groups: { year_id: YEAR } }] };
+      case 'request_submissions': {
+        const rows = [{ group_id: STALL, submitted_at: T0, note: state.note, updated_at: T0, groups: { year_id: YEAR } }];
+        if (call.ops.some((x) => x.op === 'maybeSingle')) {
+          const id = opArgs(call, 'eq').find((a) => a[0] === 'group_id')?.[1];
+          const { groups: _g, ...row } = rows.find((r) => r.group_id === id) ?? { groups: null };
+          void _g;
+          return { data: 'group_id' in row ? row : null };
+        }
+        return { data: rows };
+      }
       case 'rpc:update_requests_after_deadline':
         return { data: null };
+      case 'rpc:submit_requests':
+        return { data: { group_id: STALL, submitted_at: T1, note: null, updated_at: T1 } };
       default:
         throw new Error(`想定していない問い合わせ：${call.table}`);
     }
@@ -130,6 +142,7 @@ beforeEach(() => {
   state.calls = [];
   state.role = 'admin';
   state.requests = null;
+  state.note = '電源がほしい';
   try {
     localStorage.clear();
   } catch {
@@ -288,5 +301,58 @@ describe('申請一覧 /requests', () => {
     // 自分の保存で updated_at が進んだセルは、ほかの人の変更として扱わない
     expect(cellOf('模擬店A:desk').hasAttribute('data-mark')).toBe(false);
     expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5');
+  });
+
+  it('代理入力（締切前）：開いた後にほかの人が申請を変えていれば、送らずに読み直し、入れた数を残して上書きしてよいか確かめる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler();
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    expect(within(sheet).getByText('代理入力：模擬店A')).toBeTruthy();
+    const chair = within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' });
+    await user.click(chair);
+    await user.click(chair);
+
+    // シートを開いた後に、ほかの人が机(木)を 4 にし、備考を変えた
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    state.note = '電源が2つほしい';
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+
+    // 送らずに確かめる
+    const confirm = await screen.findByRole('alertdialog');
+    expect(confirm.textContent).toContain('ほかの人が変更しました');
+    expect(confirm.textContent).toContain('机(木)');
+    expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(0);
+    // シートは読み直した値（机(木) 4・備考）になり、入れた数（椅子(木) 2）は残る
+    await waitFor(() => expect(document.getElementById(`proxy-${STALL}-desk`)).toHaveProperty('value', '4'));
+    expect(document.getElementById(`proxy-${STALL}-chair`)).toHaveProperty('value', '2');
+    expect(document.getElementById(`proxy-${STALL}-note`)).toHaveProperty('value', '電源が2つほしい');
+    // 表も読み直す
+    await waitFor(() => expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '4'));
+
+    await user.click(within(confirm).getByRole('button', { name: '上書きして提出する' }));
+    await waitFor(() => expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(1));
+    const args = opArgs(state.calls.find((c) => c.table === 'rpc:submit_requests')!, 'rpc')[0]![0] as {
+      p_rows: { itemId: string; count: number }[];
+      p_note: string | null;
+    };
+    expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(4);
+    expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(2);
+    expect(args.p_note).toBe('電源が2つほしい');
+  });
+
+  it('代理入力（締切前）：ほかの人が変えていなければ、確かめずにそのまま提出する', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler();
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(1));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 });

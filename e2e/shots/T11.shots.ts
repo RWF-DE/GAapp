@@ -120,6 +120,25 @@ test.describe('T11 管理者', () => {
     }
   });
 
+  test('T11 申請一覧（PC）：締切前の代理入力で、ほかの人の変更が見つかったとき', async ({ page }) => {
+    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
+    try {
+      const rest = s.ids.groups['E2E休憩所']!;
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/?category=rest_area');
+      await page.locator('tr[data-group-name="E2E休憩所"]').getByRole('button', { name: '代理入力' }).click();
+      const sheet = page.getByRole('dialog');
+      await expect(sheet.getByRole('heading', { name: '代理入力：E2E休憩所' })).toBeVisible();
+      await sheet.getByRole('button', { name: '机(木)の数を1増やす' }).click();
+      await sql("insert into public.requests (group_id, item_id, count) select $1, id, 5 from public.items where code = 'chair'", [rest]);
+      await sheet.getByRole('button', { name: '提出する' }).click();
+      await expect(page.getByRole('alertdialog').getByTestId('proxy-conflicts')).toBeVisible();
+      await shoot(page, 'T11', 'requests-proxy-conflict-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T11 取り込み（PC）：ファイルを選ぶ前・プレビュー・手で選ぶ・読めない CSV・結果', async ({ page }) => {
     const s = await createScenario({
       roles: { admin: true },

@@ -593,6 +593,9 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         onSaved={async () => {
           await queryClient.invalidateQueries({ queryKey: queryKeys.yearPart(yearId, 'requests') });
         }}
+        onReload={async () => {
+          await reloadTables();
+        }}
         onError={(e, rpc, groupId) => handleWriteError(e, rpc, groupId)}
       />
     </div>

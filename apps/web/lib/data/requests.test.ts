@@ -10,8 +10,10 @@ import {
   cellKey,
   columnTotals,
   extraRowNote,
+  groupChangesSince,
   groupDeadlineRows,
   hasCountChanges,
+  hasGroupChanges,
   hasNoRequests,
   isOutsideFlagActive,
   isPastDeadline,
@@ -188,6 +190,32 @@ describe('受付期間（端末の時計）と DB が判断した印', () => {
     expect(submittedByOthers({ submitted_at: T0 }, { submitted_at: T0 })).toBe(false);
     expect(submittedByOthers({ submitted_at: T0 }, { submitted_at: T1 })).toBe(true);
     expect(submittedByOthers({ submitted_at: T1 }, { submitted_at: T0 })).toBe(false);
+  });
+});
+
+describe('groupChangesSince（代理入力の提出の直前の読み直し）', () => {
+  const a = group(10, '模擬店A', 'stall');
+  const row = buildRequestMatrix({ groups: [a], items: ITEMS, requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submissions: [sub(a, T0, '電源')] }).rows[0]!;
+
+  it('同じなら変更なし（時刻の書き方の違いは同じ時刻として扱う）', () => {
+    const c = groupChangesSince(row, { requests: [req(a, 'desk', 3, '2026-10-29T10:02:03.123456+09:00'), req(a, 'chair', 2)], submission: sub(a, T0, '電源') });
+    expect(c).toEqual({ items: [], submission: false });
+    expect(hasGroupChanges(c)).toBe(false);
+  });
+
+  it('updated_at が変わった・行が増えた・消えた品目と、提出日時・備考の変更を挙げる', () => {
+    const c = groupChangesSince(row, { requests: [req(a, 'desk', 4, T1), req(a, 'lectern', 1, T1)], submission: sub(a, T0, '電源を2つ') });
+    expect(c.items).toEqual(
+      expect.arrayContaining([
+        { itemId: item('desk').id, from: 3, to: 4 },
+        { itemId: item('chair').id, from: 2, to: 0 },
+        { itemId: item('lectern').id, from: 0, to: 1 },
+      ]),
+    );
+    expect(c.items).toHaveLength(3);
+    expect(c.submission).toBe(true);
+    expect(groupChangesSince(row, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: sub(a, T1, '電源') }).submission).toBe(true);
+    expect(hasGroupChanges(groupChangesSince(row, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: null }))).toBe(true);
   });
 });
 

@@ -582,6 +582,52 @@ export function submittedByOthers(loaded: Pick<SubmissionRow, 'submitted_at'> | 
   return b !== null && (a === null || b > a);
 }
 
+/** 1団体の申請と提出の記録（代理入力の提出の直前に読み直す） */
+export interface GroupRequestState {
+  requests: RequestDbRow[];
+  submission: SubmissionRow | null;
+}
+
+/** 1団体の申請と提出の記録を読み直す（代理入力の締切前の提出の直前。submit_requests は楽観ロックを取らないので、送る前に確かめる） */
+export async function fetchGroupRequestState(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<GroupRequestState> {
+  const [r, submission] = await Promise.all([
+    client.from('requests').select(COLUMNS.requests).eq('group_id', groupId).order('item_id'),
+    fetchSubmission(groupId, client),
+  ]);
+  if (r.error) throw toAppError(r.error, r.status);
+  const requests = ((r.data ?? []) as unknown as RequestDbRow[]).filter((x) => x.group_id === groupId);
+  return { requests, submission };
+}
+
+/** 読み込んだ表の行から、ほかの人が変えたもの（品目ごとの数・提出の記録） */
+export interface GroupChanges {
+  /** updated_at が変わった（行が増えた・消えたを含む）品目。from は読み込んだときの数、to は読み直した数 */
+  items: { itemId: string; from: number; to: number }[];
+  /** 提出日時か備考が変わった */
+  submission: boolean;
+}
+
+/** 表の行（読み込んだとき）と読み直した団体の申請・提出の記録を比べる（updated_at・submitted_at・備考） */
+export function groupChangesSince(row: Pick<MatrixRow, 'cells' | 'submission'>, fresh: GroupRequestState): GroupChanges {
+  const freshBy = new Map(fresh.requests.map((r) => [r.item_id, r]));
+  const ids = new Set<string>([...Object.values(row.cells).filter((c) => c.updatedAt !== null).map((c) => c.itemId), ...freshBy.keys()]);
+  const items: GroupChanges['items'] = [];
+  for (const itemId of ids) {
+    const cell = row.cells[itemId];
+    const now = freshBy.get(itemId);
+    if (ms(cell?.updatedAt ?? null) !== ms(now?.updated_at ?? null)) items.push({ itemId, from: cell?.count ?? 0, to: now?.count ?? 0 });
+  }
+  const a = row.submission;
+  const b = fresh.submission;
+  const submission = ms(a?.submitted_at ?? null) !== ms(b?.submitted_at ?? null) || (a?.note ?? null) !== (b?.note ?? null);
+  return { items, submission };
+}
+
+/** ほかの人の変更があるか */
+export function hasGroupChanges(c: GroupChanges): boolean {
+  return c.items.length > 0 || c.submission;
+}
+
 export function useRepRequest(yearId: string | null | undefined, groupId: string | null) {
   return useQuery({
     queryKey: queryKeys.yearPart(yearId ?? '', 'request', groupId ?? ''),
