@@ -63,4 +63,12 @@ describe('useRowFocus（?row= の行へ移る）', () => {
     rerender({ ...props, rowItem: new Map([[ROW, 'desk']]) });
     expect(scroll).toHaveBeenCalledTimes(1);
   });
+
+  it('未保存の追加の行（new- の仮の id）にも移る', () => {
+    const temp = 'new-9d3c1a2b-7e6f-4a5b-8c9d-0e1f2a3b4c5d';
+    document.body.innerHTML = `<div data-row-id="${temp}"></div>`;
+    const props: Props = { row: temp, view: 'item', rowItem: new Map([[temp, 'desk']]), tabByItem, currentTabKey: 'desk', setQuery: vi.fn() };
+    renderHook((p: Props) => useRowFocus(p), { initialProps: props });
+    expect(scroll).toHaveBeenCalledTimes(1);
+  });
 });

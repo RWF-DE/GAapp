@@ -4,7 +4,7 @@
 // スクロールは ?row= の行ごとに1回だけ：同じ ?row= のまま行を編集・読み直しても（rowItem が新しくなっても）、その行へ引き戻さない。
 // 行がまだ描かれていない（読み込み中・タブを直している途中）ときは、描かれたときにスクロールする。
 import { useEffect, useRef } from 'react';
-import type { AllocationQuery } from './allocation-screen';
+import type { AllocationQuery } from './allocation-query';
 
 export function useRowFocus(p: {
   row: string | undefined;

@@ -13,7 +13,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { z } from 'zod';
 import { AppLink } from '@/components/common/app-link';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { DraftNotice } from '@/components/common/draft-notice';
@@ -48,6 +47,7 @@ import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
 import { cn } from '@/lib/utils';
 import { AutoResult, seconds } from './auto-result';
+import { allocationHref, parseAllocationQuery, type AllocationQuery } from './allocation-query';
 import { autoBlockOf, AutoRunLock, MODE_LABELS, useAutoAllocation, type AutoRunDeps } from './auto-run';
 import { useRowFocus } from './use-row-focus';
 import { GroupViewList } from './group-view';
@@ -58,33 +58,7 @@ import { AddRowDialog, rowLabel, SourceDialog, UnusableDialog } from './row-dial
 import { RowEditProvider, type RowEditApi } from './row-edit';
 import { usePendingRows } from './use-pending';
 
-/** URL のクエリ（合わない値は無視して既定にする。画面の設計 1.1） */
-const querySchema = z.object({
-  view: z.enum(['item', 'group']).catch('item'),
-  tab: z.string().trim().min(1).max(50).optional().catch(undefined),
-  row: z.uuid().optional().catch(undefined),
-  group: z.uuid().optional().catch(undefined),
-});
-export type AllocationQuery = z.output<typeof querySchema>;
-
-export function parseAllocationQuery(params: URLSearchParams): AllocationQuery {
-  return querySchema.parse({
-    view: params.get('view') ?? undefined,
-    tab: params.get('tab') ?? undefined,
-    row: params.get('row') ?? undefined,
-    group: params.get('group') ?? undefined,
-  });
-}
-
-export function allocationHref(q: Partial<AllocationQuery>): string {
-  const p = new URLSearchParams();
-  if (q.view && q.view !== 'item') p.set('view', q.view);
-  if (q.tab) p.set('tab', q.tab);
-  if (q.row) p.set('row', q.row);
-  if (q.group) p.set('group', q.group);
-  const s = p.toString();
-  return s ? `/allocation?${s}` : '/allocation';
-}
+export { allocationHref, parseAllocationQuery, type AllocationQuery } from './allocation-query';
 
 export function AllocationScreen() {
   const { membership } = useAuth();
