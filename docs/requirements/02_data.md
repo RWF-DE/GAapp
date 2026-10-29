@@ -32,58 +32,66 @@ create type delivery_status as enum ('pending','done','problem');
 
 ## テーブル定義
 
-最初のマイグレーション（`supabase/migrations/0001_init.sql`）はこのDDLを元にする。created_at・updated_at は全テーブルに付ける（下では省略）。日時は timestamptz で保存し、画面では Asia/Tokyo で入力・表示する。
+マイグレーションは supabase/migrations に4桁の連番で置く。0001_init.sql（列挙型・表・ビュー）と 0002_triggers.sql（トリガー）は T02、0003〜0006（権限の関数・RLS・RPC）は T03、0007_auth.sql（auth.users のトリガーと Before User Created フック）は T04 で作る。本番に適用したファイルは書き換えず、次の番号のファイルを足す。created_at・updated_at は audit_logs を除く全テーブルに付け（下では省略）、トリガーで入れる（クライアントが送った値は使わない）。日時は timestamptz で保存し、画面では Asia/Tokyo で入力・表示する。
+
+外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
+
+文字列と数には上限を付ける。自由記述（note・memo・problem_note）は 2000 字、名前・表示名・ラベルは 100 字（年度名は 50 字）、コードと建物は 50 字、aliases は 20 個・合計 1000 字、rules.params は 20000 字、数（count）は 10000 まで。団体代表と部員も書ける列があるので、大きな値で無料プランの容量（500MB）を使い切らせず、解けない申請を入れさせないため。
 
 ```sql
 -- 年度
 create table years (
   id uuid primary key default gen_random_uuid(),
-  label text not null unique,                 -- 'R9'
+  label text not null unique check (btrim(label) <> '' and length(label) <= 50), -- 'R9'
   festival_start date not null,               -- 1日目
   request_open_at timestamptz,
-  request_close_at timestamptz,
-  status year_status not null default 'preparing'
+  request_close_at timestamptz,               -- 受付開始の前に入れる。requesting の間は null にできない
+  status year_status not null default 'preparing',
+  allocation_version int not null default 0,  -- 振り分けの入力と結果の版。allocating の間、関係する表が変わるたびにトリガーで増やす
+  auto_allocated_at timestamptz,              -- 最後に自動振り分けを保存した日時
+  prev_year_id uuid references years on delete set null, -- 複製元の年度（create_year_from が入れる）
+  check (request_open_at is null or request_close_at is null or request_open_at < request_close_at)
 );
 
 -- 場所（年度をまたぐ）
 create table rooms (
   id uuid primary key default gen_random_uuid(),
-  name text not null unique,                  -- '第一多目的室'
-  aliases text[] not null default '{}',
+  name text not null unique check (btrim(name) <> '' and length(name) <= 100), -- '第一多目的室'
+  aliases text[] not null default '{}' check (cardinality(aliases) <= 20 and length(array_to_string(aliases, '')) <= 1000),
   kind room_kind not null default 'room',     -- 体育館は gym、外N・正門周辺は outdoor
-  building text,                              -- '1号棟'。outdoor は null
+  building text check (length(building) <= 50), -- '1号棟'。outdoor は null
   floor smallint,                             -- outdoor は null
   is_storage boolean not null default false,  -- 在庫を数える保管場所か
-  extra_cost smallint not null default 0,     -- 運び出しにくい部屋の追加コスト（CI5 など）
+  extra_cost smallint not null default 0 check (extra_cost >= 0), -- 運び出しにくい部屋の追加コスト（CI5 など）
   sort_order int not null default 0
 );
 
 -- 年度ごとの場所の状態（行がなければ使用可）
 create table room_years (
   year_id uuid references years on delete cascade,
-  room_id uuid references rooms,
+  room_id uuid references rooms on delete restrict,
   usable boolean not null default true,
-  note text,
+  note text check (length(note) <= 2000),
   primary key (year_id, room_id)
 );
 
 -- 品目（年度をまたぐ）
 create table items (
   id uuid primary key default gen_random_uuid(),
-  code text not null unique,                  -- 'desk'
-  name text not null,                         -- '机(木)'
-  aliases text[] not null default '{}',       -- フォームでの表記 '{机(キャスター有)}'
-  requestable_categories group_category[] not null, -- 申請できる区分。不可机・不可椅子は '{}'
+  code text not null unique check (code ~ '^[a-z][a-z0-9_]*$' and length(code) <= 50), -- 'desk'。年度をまたぐキー
+  name text not null check (btrim(name) <> '' and length(name) <= 100), -- '机(木)'
+  aliases text[] not null default '{}' check (cardinality(aliases) <= 20 and length(array_to_string(aliases, '')) <= 1000), -- フォームでの表記 '{机(キャスター有)}'
+  requestable_categories group_category[] not null default '{}', -- 申請できる区分。不可机・不可椅子は '{}'
   sort_order int not null
 );
 
 -- 在庫
 create table stocks (
   year_id uuid references years on delete cascade,
-  room_id uuid references rooms,
-  item_id uuid references items,
-  count int not null check (count >= 0),
-  counted_by uuid references auth.users,
+  room_id uuid references rooms on delete restrict,
+  item_id uuid references items on delete restrict,
+  count int not null check (count between 0 and 10000),
+  counted_by uuid references auth.users on delete set null, -- 書き込みのたびに DB が auth.uid() を入れる（counted_at も）
   counted_at timestamptz,
   primary key (year_id, room_id, item_id)
 );
@@ -92,14 +100,15 @@ create table stocks (
 create table groups (
   id uuid primary key default gen_random_uuid(),
   year_id uuid not null references years on delete cascade,
-  name text not null,                         -- '2年2組'
-  display_name text,                          -- '2年2組（カジノ）'
-  aliases text[] not null default '{}',       -- '{展示部門(2-2)}'
+  name text not null check (btrim(name) <> '' and length(name) <= 100), -- '2年2組'
+  display_name text check (length(display_name) <= 100), -- '2年2組（カジノ）'
+  aliases text[] not null default '{}' check (cardinality(aliases) <= 20 and length(array_to_string(aliases, '')) <= 1000), -- '{展示部門(2-2)}'
   category group_category not null,
   is_food boolean not null default false,
-  location_room_id uuid references rooms,     -- 使用場所。屋内・屋外は rooms.kind で判断。校内分散（美化など）は null
+  location_room_id uuid references rooms on delete restrict, -- 使用場所。屋内・屋外は rooms.kind で判断。校内分散（美化など）は null
   sort_order int not null default 0,
-  unique (year_id, name)
+  unique (year_id, name),
+  unique (id, year_id)                        -- 年度の一致を複合外部キーで保証するための参照先
 );
 
 -- 年度ごとのロール（総務・閲覧のみ）
@@ -109,6 +118,7 @@ create table year_roles (
   role app_role not null,
   primary key (year_id, user_id)
 );
+create index on year_roles (user_id);
 
 -- 団体代表（1人で複数団体を持てる）
 create table group_members (
@@ -116,32 +126,38 @@ create table group_members (
   user_id uuid references auth.users on delete cascade,
   primary key (group_id, user_id)
 );
+create index on group_members (user_id);
 
--- 招待（1人に複数作れる）
+-- 招待（1人に複数作れる。1行に1つの権限）
 create table invitations (
   id uuid primary key default gen_random_uuid(),
   year_id uuid not null references years on delete cascade,
-  email text not null check (email = lower(email)),
+  email text not null check (email = lower(btrim(email)) and email ~ '^[^@[:space:]]+@[^@[:space:]]+$' and length(email) <= 254),
   role app_role,                              -- 総務・閲覧のみとして招待するとき
-  group_id uuid references groups on delete cascade, -- 団体代表として招待するとき
+  group_id uuid,                              -- 団体代表として招待するとき
   used_at timestamptz,
-  check (role is not null or group_id is not null)
+  check ((role is null) <> (group_id is null)), -- 1行に1つ。両方なら2行作る
+  foreign key (group_id, year_id) references groups (id, year_id) on delete cascade
 );
 create index on invitations (email);
+create index on invitations (group_id);
+-- 未使用の招待は（年度・メール）にロール1つ、（年度・メール・団体）に1つ
+create unique index on invitations (year_id, email) where role is not null and used_at is null;
+create unique index on invitations (year_id, email, group_id) where group_id is not null and used_at is null;
 
 -- 申請の提出（団体ごとに1つ）
 create table request_submissions (
   group_id uuid primary key references groups on delete cascade,
-  submitted_at timestamptz,                   -- 未提出は null
-  note text,                                  -- 備考（数には影響しない）
-  updated_by uuid references auth.users
+  submitted_at timestamptz,                   -- 未提出は null。提出のたびに DB が now() にする
+  note text check (length(note) <= 2000),     -- 備考（数には影響しない）
+  updated_by uuid references auth.users on delete set null -- DB が auth.uid() を入れる
 );
 
 -- 申請（品目ごとの数）
 create table requests (
   group_id uuid references groups on delete cascade,
-  item_id uuid references items,
-  count int not null check (count >= 0),
+  item_id uuid references items on delete restrict,
+  count int not null check (count between 0 and 10000),
   primary key (group_id, item_id)
 );
 
@@ -149,48 +165,51 @@ create table requests (
 create table rules (
   id uuid primary key default gen_random_uuid(),
   year_id uuid not null references years on delete cascade,
-  code text not null,                         -- 'S05'
+  code text not null check (btrim(code) <> '' and length(code) <= 50), -- 'S05'
   kind rule_kind not null,
-  params jsonb not null,                      -- 形は03_allocation.md
+  params jsonb not null check (jsonb_typeof(params) = 'object' and length(params::text) <= 20000), -- 形は03_allocation.md
   enabled boolean not null default true,
-  memo text,
+  memo text check (length(memo) <= 2000),
   unique (year_id, code)
 );
 
 -- 代替の了承（キャスター机交換など）
 create table substitution_consents (
   group_id uuid references groups on delete cascade,
-  from_item_id uuid references items,
-  to_item_id uuid references items,
-  count int,                                  -- 依頼したときの置き換え台数（団体に見せる）
+  from_item_id uuid references items on delete restrict,
+  to_item_id uuid references items on delete restrict,
+  count int check (count between 0 and 10000), -- 依頼したときの置き換え台数（団体に見せる）。set_consent で asked にしたとき RPC が入れる
   status consent_status not null default 'not_asked',
-  note text,
-  primary key (group_id, from_item_id, to_item_id)
+  note text check (length(note) <= 2000),
+  primary key (group_id, from_item_id, to_item_id),
+  check (from_item_id <> to_item_id)
 );
 
 -- 振り分け（振り分け表の1行）
 create table allocations (
   id uuid primary key default gen_random_uuid(),
   year_id uuid not null references years on delete cascade,
-  source_room_id uuid not null references rooms,
-  group_id uuid not null references groups on delete cascade,
-  item_id uuid not null references items,           -- 実際に運ぶ品目
-  requested_item_id uuid not null references items, -- 申請した品目（代替がなければ item_id と同じ）
-  count int not null check (count > 0),
-  is_keep boolean not null default false,     -- 残す（運び元＝団体の使用場所）
+  source_room_id uuid not null references rooms on delete restrict,
+  group_id uuid not null,
+  item_id uuid not null references items on delete restrict,           -- 実際に運ぶ品目
+  requested_item_id uuid not null references items on delete restrict, -- 申請した品目（代替がなければ item_id と同じ）
+  count int not null check (count between 1 and 10000),
+  is_keep boolean not null default false,     -- 残す（運び元＝団体の使用場所）。保存する RPC が決める
   pinned boolean not null default false,      -- 自動実行で変えない
   origin alloc_origin not null,
-  note text                                   -- 特記事項のみ
+  note text check (length(note) <= 2000),     -- 特記事項のみ
+  foreign key (group_id, year_id) references groups (id, year_id) on delete cascade -- 年度の一致
 );
 create index on allocations (year_id, item_id, source_room_id);
 create index on allocations (year_id, group_id);
 
 -- 建物間の距離コストの上書き（年度をまたぐ）
 create table distance_overrides (
-  building_a text not null,
-  building_b text not null,
+  building_a text not null check (length(building_a) <= 50),
+  building_b text not null check (length(building_b) <= 50),
   cost smallint not null check (cost >= 0),
-  primary key (building_a, building_b)
+  primary key (building_a, building_b),
+  check (building_a collate "C" < building_b collate "C") -- 建物の組は向きを持たない。トリガーが C の照合順序（コードポイント順）で小さい方を building_a に入れ替える
 );
 
 -- 時間枠と受け渡し（フェーズ2）
@@ -200,47 +219,56 @@ create table slots (
   day festival_day not null,
   starts_at time,
   ends_at time,
-  label text not null                         -- '前日 9:00〜9:15'、'仕分け時'
+  label text not null check (btrim(label) <> '' and length(label) <= 100), -- '前日 9:00〜9:15'、'仕分け時'
+  unique (id, year_id),
+  check (starts_at is null or ends_at is null or starts_at < ends_at)
 );
 
 create table deliveries (                     -- 団体×種類ごとの受け渡し。振り分けの行とは切り離す
   id uuid primary key default gen_random_uuid(),
   year_id uuid not null references years on delete cascade,
-  group_id uuid not null references groups on delete cascade,
+  group_id uuid not null,
   kind delivery_kind not null,
-  slot_id uuid references slots,
-  team smallint,
+  slot_id uuid,
+  team smallint check (team between 1 and 100),
   status delivery_status not null default 'pending',
-  problem_note text,
+  problem_note text check (length(problem_note) <= 2000),
   returned boolean not null default false,
-  checked_by uuid references auth.users,
+  checked_by uuid references auth.users on delete set null,
   checked_at timestamptz,
-  unique (group_id, kind)
+  unique (group_id, kind),
+  foreign key (group_id, year_id) references groups (id, year_id) on delete cascade,
+  foreign key (slot_id, year_id) references slots (id, year_id) on delete set null (slot_id) -- 時間枠を消しても受け渡しは残す
 );
 
 -- ユーザーと履歴
 create table profiles (
   user_id uuid primary key references auth.users on delete cascade,
-  display_name text not null
+  display_name text not null check (length(display_name) <= 100) -- Google の氏名。なければ「名前未設定」（メールからは作らない）
 );
 
 create table audit_logs (
   id bigint generated always as identity primary key,
   table_name text not null,
-  row_pk jsonb not null,
-  action text not null,                       -- insert / update / delete
+  row_pk jsonb not null,                      -- 主キーの列を JSON にしたもの
+  action text not null check (action in ('insert','update','delete')),
+  year_id uuid,                               -- 履歴の絞り込み用（外部キーなし。消えた行の記録も残す）
+  group_id uuid,
   before jsonb,
   after jsonb,
   reason text,
   user_id uuid,
   at timestamptz not null default now()
 );
+create index on audit_logs (year_id, at desc);
+create index on audit_logs (table_name, at desc);
+create index on audit_logs (group_id, at desc) where group_id is not null;
 
 -- 余り（RLS を素通りしないよう security_invoker。使用不可の部屋は含めない）
 create view v_remaining with (security_invoker = true) as
   select s.year_id, s.room_id, s.item_id, s.count as stock,
-         coalesce(sum(a.count), 0) as allocated,
-         s.count - coalesce(sum(a.count), 0) as remaining
+         coalesce(sum(a.count), 0)::int as allocated,
+         (s.count - coalesce(sum(a.count), 0))::int as remaining
   from stocks s
   left join room_years ry on ry.year_id = s.year_id and ry.room_id = s.room_id
   left join allocations a
@@ -252,12 +280,20 @@ create view v_remaining with (security_invoker = true) as
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
-- 残すは allocations の is_keep = true の行。「運び元＝団体の使用場所」は CHECK ではなくトリガーで確かめる（他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。検証 E005 でも確かめる
+- 残すは allocations の is_keep = true の行。is_keep は、保存する RPC が「運び元＝団体の使用場所」かどうかで決める（クライアントの値は使わない）。「is_keep の行の運び元＝団体の使用場所」は CHECK ではなくトリガーで確かめる（他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。検証 E005 でも確かめる。年度の一致（行の year_id と団体の year_id）は複合外部キーで保証する
 - 使用不可の部屋は allocations を作らず、Excel 出力で「残す／使用不可」の行として出す
-- 理由が要る書き込み（締切後の申請修正、手での振り分け変更、確定と確定解除）と、複数の表をまとめて変える書き込み（自動振り分けの保存、年度の複製、了承の記録）は、すべて DB 関数（RPC）で行う。関数の中で権限を確かめ、`set_config('app.reason', reason, true)` で理由を置いてから同じトランザクションで書き込む。PostgREST は1リクエストを1トランザクションで処理するので、別の呼び出しで置いた理由は届かない
-- audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles のトリガーで書く。トリガーは `current_setting('app.reason', true)` で理由を読む
-- 前年度の複製（フェーズ1、RPC `create_year_from`）は、groups・rules・room_years を新しい year_id で作り直す。rules.params の団体 id は、名前が同じ新しい団体に付け替える。付け替えられなかったルールは無効にして memo に理由を書く。stocks・requests・allocations・year_roles・invitations は複製しない（休憩所の申請は、前年の数を画面で初期値として出す）
-- 同じ行を複数の管理者が同時に変えないよう、allocations と requests の更新は updated_at を条件に入れた楽観ロックにする。合わなければ「他の人が変更しました」と出して読み直す
+- 理由が要る書き込み（締切後の申請修正、手での振り分け変更、確定と確定解除）と、複数の表をまとめて変える書き込み（自動振り分けの保存、年度の複製、了承の記録、申請の提出）は、すべて DB 関数（RPC）で行う。関数の中で権限を確かめ、`set_config('app.reason', reason, true)` で理由を置いてから同じトランザクションで書き込む。PostgREST は1リクエストを1トランザクションで処理するので、別の呼び出しで置いた理由は届かない
+- audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles と、room_years・groups・group_members・rooms・items・distance_overrides のトリガーで書く。invitations（メール）と profiles（氏名）は個人情報を写さないため記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''` にする（audit_logs には誰にも書き込みの権限を与えないので、部員の在庫入力などで失敗しないように）。トリガーは `current_setting('app.reason', true)` で理由を、`auth.uid()` で書いた人を読む。row_pk は主キーの列を JSON にしたもの、before・after は行全体。updated_at と版の列しか変わらない更新は記録しない。year_id・group_id は行から入れ（year_id を持たない表は団体から引く）、団体の連鎖削除で消えた行にも、消える前の団体の年度を入れる
+- 申請できる品目はトリガーで確かめる。数が1以上で、品目の「申請できる区分」に団体の区分がなければ E006 で拒否する。ただし企業以外の長机(3人掛)は通す（前処理で長机(2人掛)に読み替える。D-05）
+- stocks の counted_by・counted_at と、request_submissions の updated_by・submitted_at は、ログインしている人が書いたときにトリガーで入れる（クライアントが送った値は使わない）
+- distance_overrides の建物の組は向きを持たない。呼ぶ側が順序を気にしなくてよいよう、トリガーが C の照合順序（コードポイント順。DB の既定の照合順序や JavaScript の並べ替えに依存しない）で小さい方を building_a に入れ替える。同じ建物どうしは CHECK で拒否する
+- rules.year_id は作った後に変えられない（トリガーで拒否する。ルールを閉じた年度へ移す抜け道を、ポリシーに頼らず DB で止める）
+- 前年度の複製（フェーズ1、RPC `create_year_from`）は、groups・rules・room_years を新しい year_id で作り直し、呼んだ人を新しい年度の admin にする（year_roles に1行）。呼べるのは複製元の年度の admin だけで（複製元が closed でもよい）、複製元は最新の年度（それを複製元にした年度も、1日目が同じかそれより後の年度もない）に限る。新しい年度の1日目は複製元より後にする。古い年度の admin や、ほかの年度の admin が年度を作って権限を取り戻したり、ロールのない年度を複製して読んだりできないようにするため。新しい年度の prev_year_id に複製元を入れる。rules.params の団体 id（group・groups）は、名前が同じ新しい団体に付け替える。付け替えられなかったルールは無効にして memo に理由を書く。stocks・requests・allocations・substitution_consents・year_roles（呼んだ人以外）・invitations は複製しない（在庫入力の「前年の数」と休憩所の申請の初期値は、RPC `previous_year_stocks`・`previous_year_requests` で前年度の数を読んで出す）
+- 最初の年度と最初の admin は、オーナーが一度アプリにログインしてから、管理画面の SQL Editor で years と year_roles に1行ずつ入れて作る。最新の年度の admin が誰も残っていないときも同じ方法で admin を足す。手順は README に書く。卒業する admin は、年度を closed にする前後に set_role で外す（closed でも外せる）
+- 同じ行を複数の管理者が同時に変えないよう、allocations と requests の更新は updated_at を条件に入れた楽観ロックにする。クライアントは受け取った updated_at の文字列をそのまま返し、DB はミリ秒までで比べる。合わなければ「他の人が変更しました」と出して読み直す
+- 自動振り分けと確定は、years.allocation_version（振り分けの入力と結果の版）で、計算・検証している間に何かが変わっていないかを確かめる。年度が allocating の間に、allocate の入力になる表（stocks、room_years、groups、requests、request_submissions、rules、substitution_consents、allocations と、rooms・items・distance_overrides）が変わると、文ごとのトリガーで版が増える。状態を遷移したときも増える。画面は版をほかのデータより先に読み、入力を組み立てたときの版を save_auto_allocations と確定（set_year_status）に渡す。違えば conflict になって読み直す。書き込みの RPC は年度の行を `for no key update` でロックしてから書くので、同じ年度の保存は順に処理され、外部キーの確認（在庫の入力など）は待たされない
+- 確定中（confirmed）と終了（closed）の年度では、確定済みのデータに E001・E002・E005 を作る直接の書き込みをトリガーで止める：団体の削除と、使用場所・区分・年度の変更、振り分けのある部屋を使用不可にすること、振り分けの合計より少ない在庫にすること。allocations の変更も止める（団体の連鎖削除と postgres からの書き込みを含む）。表示名・並び順・メモの変更と、在庫を増やす数え直しはできる。直すときは確定を解除する。トリガーは年度の行をロックしてから状態を読むので、確定と同時に走っても順に処理される。ロックは、allocating の間は版の増分と同じ強さ（`for no key update`）を最初から取り、それ以外は `for share` にする（allocating の間の管理者どうしの直接の書き込みがデッドロックせず、受付中の部員の在庫入力どうしは並行に進む）
+- closed の年度は読み取り専用にする。例外はルールの memo と、運搬・返却のチェックだけで、「年間の業務の流れ」9 のとおりに運用できる（ルールの memo はトリガーで memo 以外の変更を止める）
 
 ## 権限とRLS
 

@@ -69,6 +69,62 @@
 - **チケット**：T06、T14。
 - **状態**：要件定義に未反映。
 
+## D-09 表の作りと入力の上限（2026-10-29、DB 設計）
+
+- **決定**：全表（audit_logs を除く）の created_at・updated_at はトリガーが入れ、クライアントの値は使わない。年度の一致は、allocations・deliveries・invitations の複合外部キー `(group_id, year_id) → groups (id, year_id)` で保証する（トリガーにしない）。場所・品目への外部キーは restrict、年度・団体は cascade、記録のためのユーザー参照は set null。自由記述は 2000 字、名前は 100 字、数は 10000 までを CHECK で止める。
+- **理由**：複合外部キーは、トリガーより確実でダンプからの復元でも壊れない。上限は、団体代表・部員が書ける列で無料プランの 500MB を使い切らせず、解けない申請や整数のあふれを防ぐため。
+- **反映先**：02_data.md「テーブル定義」の前書きと DDL。
+- **チケット**：T02。
+- **状態**：要件定義に反映済み（T02 の PR）。
+
+## D-10 DB が入れる値（2026-10-29、K-25）
+
+- **決定**：stocks.counted_by・counted_at、request_submissions.updated_by・submitted_at は、ログインしている人（auth.uid() がある）の書き込みでトリガーが上書きする。画面から送らない。seed や SQL Editor（auth.uid() が null）では入れた値のまま。
+- **理由**：他人の名前や過去の日時を書かせないため。
+- **反映先**：02_data.md「設計上の決めごと」、04_screens_api.md「在庫入力」。
+- **チケット**：T02、T10・T11。
+- **状態**：要件定義に反映済み（T02 の PR）。
+
+## D-11 監査ログのトリガー（2026-10-29、K-16）
+
+- **決定**：対象は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles に、room_years・groups・group_members・rooms・items・distance_overrides を足した14表。invitations（メール）と profiles（氏名）は個人情報を写さないので記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''`（audit_logs には誰にも書き込みの権限を与えないため）。updated_at と版の列しか変わらない更新は書かない。year_id・group_id を列に持ち、団体の連鎖削除で消えた行にも、削除前のトリガーが置いた年度（`app.deleted_group_years`）を入れる。
+- **理由**：部員の在庫入力で audit_logs への書き込みが失敗しないように。履歴を年度・団体で絞るため。年度の記録が null になると、別の年度の admin に見えてしまうため。
+- **反映先**：02_data.md「設計上の決めごと」。
+- **チケット**：T02、T03（audit_logs の読み取りのポリシー）。
+- **状態**：要件定義に反映済み（T02 の PR）。
+
+## D-12 振り分けの版 years.allocation_version（2026-10-29、P-01）
+
+- **決定**：版は「振り分けの入力と結果の版」。年度が allocating の間に、allocate の入力になる表（stocks・room_years・groups・requests・request_submissions・rules・substitution_consents・allocations と、年度をまたぐ rooms・items・distance_overrides）が変わるたびに、文ごと（遷移表）のトリガーで1増やす。状態の遷移でも増える（T03）。allocating 以外の年度は増やさない。画面は版をほかのデータより先に読み、save_auto_allocations と確定に渡す。
+- **理由**：計算・検証している間に入力が変わった結果を保存・確定しないため。受付中の大量の書き込みで年度の行を取り合わないため。
+- **反映先**：02_data.md「設計上の決めごと」。
+- **チケット**：T02、T03、T06・T13。
+- **状態**：要件定義に反映済み（T02 の PR）。
+
+## D-13 確定中・終了の守りとロック（2026-10-29）
+
+- **決定**：confirmed・closed の年度では、確定済みのデータに E001・E002・E005 を作る直接の書き込み（団体の削除と使用場所・区分・年度の変更、振り分けのある部屋の使用不可化、振り分けの合計より少ない在庫）と、allocations の変更をトリガーで止める（invalid_state）。closed ではルールの memo 以外も変えられない。守りのトリガーは `private.lock_year_guard` で年度の行をロックしてから状態を読む。allocating は最初から `for no key update`、それ以外は `for share nowait`（取れなければ `for no key update` で待つ）。
+- **理由**：確定後に RPC を通らない書き込みで error が生じるのを防ぐ。allocating で `for share` から引き上げると、管理者どうしの同時の書き込みがデッドロック（40P01）になる（設計時に再現済み）。
+- **反映先**：02_data.md「設計上の決めごと」。
+- **チケット**：T02、T03。
+- **状態**：要件定義に反映済み（T02 の PR）。
+
+## D-14 申請できない品目の止め方（2026-10-29、D-05 の DB 部分）
+
+- **決定**：requests のトリガーで止める。count が1以上で、品目の requestable_categories に団体の区分がなければ E006。ただし code = long_desk_3 は例外（allocate の前処理で長机(2人掛)に読み替える）。count = 0 は通す。団体・品目が見つからなければ外部キーのエラー（23503）に任せる。
+- **理由**：API を直接呼ぶ団体代表が不可机・不可椅子を申請できないようにするため。
+- **反映先**：02_data.md「設計上の決めごと」。
+- **チケット**：T02、T07。
+- **状態**：要件定義に反映済み（T02 の PR）。
+
+## D-15 呼ぶ側に順序を求めない正規化（2026-10-29）
+
+- **決定**：distance_overrides の建物の組は、BEFORE トリガーが C の照合順序（コードポイント順）で小さい方を building_a に入れ替える。CHECK も同じ照合順序で `building_a < building_b`（同じ建物どうしは拒否）。rules.year_id は更新で変えられない。
+- **理由**：DB の照合順序と JavaScript の並び順が違うと、画面が並べ替えて送っても CHECK で弾かれる。rules.year_id を移せると、ポリシーの with check に頼るだけでは、ルールを closed の年度へ移せてしまう。
+- **反映先**：02_data.md DDL と「設計上の決めごと」。
+- **チケット**：T02、T03・T09。
+- **状態**：要件定義に反映済み（T02 の PR）。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：RPC を足す（update_year、set_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。
