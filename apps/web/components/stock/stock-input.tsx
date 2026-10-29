@@ -318,16 +318,18 @@ export function StockInput({
             </div>
           </div>
         ) : null}
-        <p className="text-sm" data-testid="last-counted">
-          前回の入力：
-          {last ? (
-            <>
-              <TokyoTime value={last.countedAt} />（{countedName(last, namesQ.data)}）
-            </>
-          ) : (
-            'まだありません'
-          )}
-        </p>
+        {base ? (
+          <p className="text-sm" data-testid="last-counted">
+            前回の入力：
+            {last ? (
+              <>
+                <TokyoTime value={last.countedAt} />（{countedName(last, namesQ.data)}）
+              </>
+            ) : (
+              'まだありません'
+            )}
+          </p>
+        ) : null}
       </section>
 
       <div className="mb-4 space-y-2">
@@ -409,7 +411,9 @@ export function StockInput({
         <div role="status" data-testid="stock-saved" className="mt-4 space-y-3 rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm text-emerald-950">
           <p className="flex items-center gap-2 font-medium">
             <CheckCircle2 aria-hidden className="size-4" />
-            保存しました（<TokyoTime value={savedAt} format="time" />）
+            <span>
+              保存しました（<TokyoTime value={savedAt} format="time" />）
+            </span>
           </p>
           {next ? (
             <Button asChild size="lg" className="w-full">
@@ -440,7 +444,7 @@ export function StockInput({
         onOpenChange={(o) => {
           if (!o) shortfallAsk.answer(false);
         }}
-        title="振り分けの合計より少なくなります"
+        title="保存すると在庫超過になります"
         description={shortfallAsk.list ? shortfallMessage('confirm', shortfallAsk.list) : undefined}
         confirmLabel="保存する"
         destructive
