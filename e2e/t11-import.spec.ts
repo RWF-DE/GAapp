@@ -82,7 +82,7 @@ test.describe('T11 取り込み（管理者）', () => {
         "select distinct reason from public.audit_logs where table_name = 'requests' and group_id = $1 and year_id = $2",
         [hei, s.yearId],
       );
-      expect(logs.map((l) => l.reason)).toEqual(['Googleフォームの回答の取り込み（模擬店・stall.csv）']);
+      expect(logs.map((l) => l.reason)).toEqual(['Googleフォームの回答の取り込み（模擬店）']);
 
       // 閉じると申請一覧が読み直されている
       await dialog.getByRole('button', { name: '閉じる' }).first().click();

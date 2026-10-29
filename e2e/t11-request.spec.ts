@@ -22,10 +22,10 @@ async function submittedAt(groupId: string): Promise<Date | null> {
   return rows[0]?.submitted_at ?? null;
 }
 
-/** 提出する。シナリオの年度は最新の年度（seed の R8）ではないので、先に「最新でない年度に保存します」を確かめる（1.3.1） */
+/** 提出する。シナリオの年度は最新の年度（seed の R8）ではないので、先に「最新でない年度に提出します」を確かめる（1.3.1） */
 async function submit(page: Page, buttonName: RegExp | string) {
   await page.getByRole('button', { name: buttonName }).click();
-  await page.getByRole('alertdialog').getByRole('button', { name: 'この年度に保存する' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'この年度に提出する' }).click();
   const dialog = page.getByRole('alertdialog');
   await dialog.getByRole('button', { name: '提出する' }).click();
   await expect(dialog).toHaveCount(0);

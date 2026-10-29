@@ -29,6 +29,7 @@ import {
 } from '@/lib/data/import';
 import type { RequestsTables } from '@/lib/data/requests';
 import type { ParsedForm } from '@gaapp/importer';
+import { NOTE_MAX } from '@/lib/schemas/common';
 import { cn } from '@/lib/utils';
 
 /** 失敗の文言（呼ぶ側が読み直し・権限の扱いをして文言を返す） */
@@ -118,7 +119,7 @@ function ImportForm({
     try {
       const { text } = await readCsvFile(f);
       setFile({ fileName: f.name, text });
-      setReason(defaultImportReason(kind, f.name));
+      setReason(defaultImportReason(kind));
       setReasonTouched(false);
     } catch (e) {
       setReadError(e instanceof CsvEncodingError ? e.message : 'ファイルを読めませんでした');
@@ -135,7 +136,7 @@ function ImportForm({
       const out: Outcome[] = [];
       for (const r of results) {
         const plan = chosen.find((p) => p.group.id === r.groupId)!;
-        if (r.ok) out.push({ plan, ok: true, message: '取り込みました' });
+        if (r.ok) out.push({ plan, ok: true, message: plan.noteTruncated ? `取り込みました（備考は ${NOTE_MAX} 字に切りました）` : '取り込みました' });
         else if (r.error.info.kind === 'conflict') {
           out.push({ plan, ok: false, message: '取り込みの前に、ほかの人がこの団体の申請を変えました。読み直してからもう一度取り込んでください' });
         } else out.push({ plan, ok: false, message: await onError(r.error, r.groupId) });
@@ -205,7 +206,7 @@ function ImportForm({
               onClick={() => {
                 if (k === kind) return;
                 reset({ kind: k });
-                if (file) setReason(defaultImportReason(k, file.fileName));
+                if (file) setReason(defaultImportReason(k));
               }}
             >
               {KIND_LABELS[k]}
@@ -460,25 +461,35 @@ function PlansTable({
                 </td>
                 <td className="py-1 pr-3 tabular-nums">
                   {p.dbSubmittedAt ? formatDateTime(p.dbSubmittedAt) : '未提出'}
-                  {!p.defaultOverwrite ? <span className="block text-xs text-amber-700">アプリの提出の方が新しい</span> : null}
+                  {!p.defaultOverwrite ? (
+                    <span className="block text-xs text-amber-700">{p.sameTimestamp ? '同じ時刻（取り込み済み）' : 'アプリの提出の方が新しい'}</span>
+                  ) : null}
                 </td>
                 {columns.map(({ item, index }) => {
+                  // 取り込んだ後の数を出す（blocked の品目は送らないので今の DB の数のまま）
                   const c = p.cells[index]!;
-                  const diff = (c.requestable || c.db > 0) && c.csv !== c.db && !p.blocked.some((b) => b.item.id === item.id);
+                  const diff = c.after !== c.db;
                   return (
                     <td
                       key={item.id}
+                      data-testid={`plan-cell-${p.group.name}-${item.code}`}
                       className={cn('px-1 py-1 text-right tabular-nums', diff && 'bg-amber-100 font-medium dark:bg-amber-900/40')}
-                      title={diff ? `今の数 ${c.db} → ${c.csv}` : undefined}
+                      title={diff ? `今の数 ${c.db} → ${c.after}` : c.blocked ? '申請できない品目のため変えません' : undefined}
                     >
-                      {c.requestable ? c.csv : c.db > 0 ? 0 : '—'}
+                      {c.requestable || c.db > 0 ? c.after : '—'}
                       {diff ? <span className="block text-xs font-normal text-muted-foreground">今 {c.db}</span> : null}
+                      {c.blocked ? <span className="block text-xs font-normal text-muted-foreground">変えない</span> : null}
                     </td>
                   );
                 })}
                 <td className="py-1 pl-3 text-xs">
                   <ul className="space-y-0.5">
                     {p.note ? <li>備考あり{p.dbHasNote ? '（今の備考を置き換えます）' : ''}</li> : p.dbHasNote ? <li>今の備考を消します</li> : null}
+                    {p.noteTruncated ? (
+                      <li className="text-amber-700" data-testid={`note-too-long-${p.group.name}`}>
+                        備考が {NOTE_MAX} 字を超えています（{p.noteLength} 字）。{NOTE_MAX} 字に切って取り込みます
+                      </li>
+                    ) : null}
                     {p.rewritten ? <li>長机(3人掛)を長机(2人掛)に読み替えました</li> : null}
                     {p.blocked.map((b) => (
                       <li key={b.item.id} className="text-destructive">

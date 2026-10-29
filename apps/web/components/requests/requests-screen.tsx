@@ -23,6 +23,7 @@ import {
   columnTotals,
   groupDeadlineRows,
   isOutsideFlagActive,
+  isUnknownOutcome,
   judgeDirectFailure,
   judgeSubmitFailure,
   markSubmittedAfterDeadline,
@@ -36,6 +37,7 @@ import {
   samePending,
   saveCellsDirect,
   saveGroupsAfterDeadline,
+  savedAfterUnknown,
   setPendingCell,
   useRequestsTables,
   type AdminWriteMode,
@@ -47,6 +49,7 @@ import {
   type RequestsTables,
 } from '@/lib/data/requests';
 import { useYearRow, type YearRow } from '@/lib/data/year';
+import { formatDateTime } from '@/lib/datetime';
 import { createDraftWriter, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
 import { AppError, classifyError, effectOf, messageFor, type NameLookup } from '@/lib/errors';
 import { CATEGORY_LABELS } from '@/lib/labels';
@@ -72,6 +75,12 @@ export function RequestsScreen() {
 }
 
 const FILTER_LABELS: Record<RequestsFilter, string> = { unsubmitted: '未提出だけ', noted: '備考ありだけ' };
+
+/** 通信が途切れて保存されたか分からない変更（cell：締切前のセルごと、group：締切後の団体ごと〔全部か何もないか〕） */
+interface Unverified {
+  changes: CellChange[];
+  unit: 'cell' | 'group';
+}
 
 function queryString(category: GroupCategory | null, filter: RequestsFilter | null): string {
   const p = new URLSearchParams();
@@ -114,6 +123,10 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   const [reasonOpen, setReasonOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /** 保存の後の知らせ（通信が途切れたが保存されていた、など） */
+  const [saveInfo, setSaveInfo] = useState<string | null>(null);
+  /** 通信が途切れて保存されたか分からず、読み直しもできなかった変更（確かめるまで保存を押せない。2.6） */
+  const [unverified, setUnverified] = useState<Unverified | null>(null);
   const [proxyGroupId, setProxyGroupId] = useState<string | null>(null);
   const [markRow, setMarkRow] = useState<MatrixRow | null>(null);
   const [importOpen, setImportOpen] = useState(false);
@@ -134,6 +147,8 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   const savingRef = useRef(false);
   /** 未保存のセルを当て直した表（同じ表で2回当て直さない） */
   const rebasedRef = useRef<RequestsTables | null>(null);
+  /** unverified と同じもの（表が届いたときに最新を読む） */
+  const unverifiedRef = useRef<Unverified | null>(null);
 
   const tables = q.data;
   const matrix = useMemo(() => (tables ? buildRequestMatrix(tables, { category, filter }) : null), [tables, category, filter]);
@@ -188,10 +203,67 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     return conflicts.length;
   };
 
+  /**
+   * 保存の結果を未保存のセルに当てる（最新の未保存のセルに対して）。
+   * - saved：保存したセル。送った値のままなら外す。送った後に入れ直していれば、基準を保存した行に付け替えて残す。
+   * - revert：読み直した値に戻すセル。keep：値を残して基準を今の行に付け替えるセル（締切後の conflict。2.5）。
+   * その後で、読み直した表に残りを当て直す。戻したセルの数を返す。
+   */
+  const applySaveResults = (
+    data: RequestsTables | undefined,
+    sent: readonly CellChange[],
+    { saved, revert, keep }: { saved: ReadonlySet<string>; revert: ReadonlySet<string>; keep: ReadonlySet<string> },
+  ): number => {
+    const sentCount = new Map(sent.map((c) => [cellKey(c.groupId, c.itemId), c.count]));
+    const moved: string[] = [...keep];
+    const prepare = (p: PendingCells): PendingCells => {
+      const next: Record<string, PendingCell> = { ...p };
+      for (const k of saved) {
+        if (next[k]?.value === sentCount.get(k)) delete next[k];
+        else if (next[k]) moved.push(k);
+      }
+      for (const k of revert) delete next[k];
+      return data ? rebaseKeysTo(next, moved, data) : next;
+    };
+    if (data) return rebaseOnto(data, prepare);
+    applyPending(prepare);
+    return 0;
+  };
+
+  /** 保存されたか分からない変更を残す・外す（確かめるまで保存を押せない） */
+  const setUnverifiedBoth = (u: Unverified | null) => {
+    unverifiedRef.current = u;
+    setUnverified(u);
+  };
+
+  /**
+   * 保存されたか分からなかった変更を、届いた表で確かめる（2.6）。保存されていたセルは保存したものとして外し、
+   * されていなければ入力を残して送り直してもらう。当て直しも行う。戻したセルの数を返す。
+   */
+  const settleUnverified = (t: RequestsTables, u: Unverified): number => {
+    setUnverifiedBoth(null);
+    const confirmed = savedAfterUnknown(u.changes, t, u.unit);
+    applyMarks(Object.fromEntries([...confirmed].map((k) => [k, null])));
+    const n = applySaveResults(t, u.changes, { saved: confirmed, revert: new Set(), keep: new Set() });
+    const notSaved = u.changes.length - confirmed.size;
+    if (notSaved === 0) {
+      setSaveError(null);
+      setSaveInfo(`通信が途切れましたが、${confirmed.size} 件は保存されていました`);
+      toast.success('保存されていました');
+    } else {
+      setSaveInfo(null);
+      setSaveError(
+        `${notSaved} 件は保存されていませんでした（通信できませんでした）。もう一度保存してください${confirmed.size > 0 ? `（${confirmed.size} 件は保存されていました）` : ''}`,
+      );
+    }
+    return n;
+  };
+
   /** 表が届いたら当て直す（読み直す・代理入力や取り込みの後の invalidate・ほかの書き込みの後の読み直し）。保存中は保存が行う */
   const rebaseIfNew = (t: RequestsTables) => {
     if (savingRef.current || rebasedRef.current === t) return;
-    const n = rebaseOnto(t);
+    const u = unverifiedRef.current;
+    const n = u ? settleUnverified(t, u) : rebaseOnto(t);
     if (n > 0) toast.info(`${n} 件のセルは、ほかの人が先に変えたので読み直した値に戻しました`);
   };
   const onTablesLoaded = useEffectEvent((t: RequestsTables) => rebaseIfNew(t));
@@ -199,7 +271,8 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     if (q.data) onTablesLoaded(q.data);
   }, [q.data]);
 
-  if (yearQ.isError || q.isError) {
+  // 読み直しに失敗しても、表があれば表を出したままにする（未保存のセルと「確かめる」を出せるように）
+  if ((yearQ.isError && !yearQ.data) || (q.isError && !q.data)) {
     return (
       <>
         <PageHeader title="申請一覧" />
@@ -229,11 +302,23 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   const left = remainingText(year.request_close_at, now);
   const proxyRow = proxyGroupId ? (allRows.rows.find((r) => r.group.id === proxyGroupId) ?? null) : null;
 
-  /** 書き込みの後に読み直す（未保存のセルは当て直す。保存中は保存が当て直す） */
-  const reloadTables = async (): Promise<RequestsTables | undefined> => {
+  /** 表を読み直す。読めなければ undefined（前の表は返さない） */
+  const refetchFresh = async (): Promise<RequestsTables | undefined> => {
     const res = await q.refetch();
-    if (res.data) rebaseIfNew(res.data);
-    return res.data;
+    return res.isSuccess ? res.data : undefined;
+  };
+
+  /** 書き込みの後に読み直す（未保存のセルは当て直す。保存中は保存が当て直す）。読めなければ undefined */
+  const reloadTables = async (): Promise<RequestsTables | undefined> => {
+    const data = await refetchFresh();
+    if (data) rebaseIfNew(data);
+    return data;
+  };
+
+  /** 「確かめる」：読み直して、保存されたか分からなかった変更を確かめる */
+  const verifyNow = async () => {
+    const data = await reloadTables();
+    if (!data) toast.error('読み直せませんでした。通信が戻ったらもう一度「確かめる」を押してください');
   };
 
   /** 書き込みの失敗の共通の扱い。DB が締切後と判断した（端末の時計のずれ）なら印を立てる。文言を返す */
@@ -269,6 +354,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     savingRef.current = true;
     setSaving(true);
     setSaveError(null);
+    setSaveInfo(null);
   };
   const endSaving = () => {
     savingRef.current = false;
@@ -276,29 +362,34 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   };
 
   /**
-   * 保存の結果を未保存のセルに当てる（最新の未保存のセルに対して）。
-   * - saved：保存したセル。送った値のままなら外す。送った後に入れ直していれば、基準を保存した行に付け替えて残す。
-   * - revert：読み直した値に戻すセル。keep：値を残して基準を今の行に付け替えるセル（締切後の conflict。2.5）。
-   * その後で、読み直した表に残りを当て直す。
+   * 通信が途切れた変更（network・unknown）を、読み直した表で確かめる（2.6）。読み直せなければ unverified に残して、
+   * 確かめるまで保存を押せなくする。保存されていたセルの鍵と、知らせの文（失敗・知らせ）を返す。
    */
-  const applySaveResults = (
+  const checkUnknown = (
+    unknown: readonly CellChange[],
     data: RequestsTables | undefined,
-    sent: readonly CellChange[],
-    { saved, revert, keep }: { saved: ReadonlySet<string>; revert: ReadonlySet<string>; keep: ReadonlySet<string> },
-  ) => {
-    const sentCount = new Map(sent.map((c) => [cellKey(c.groupId, c.itemId), c.count]));
-    const moved: string[] = [...keep];
-    const prepare = (p: PendingCells): PendingCells => {
-      const next: Record<string, PendingCell> = { ...p };
-      for (const k of saved) {
-        if (next[k]?.value === sentCount.get(k)) delete next[k];
-        else if (next[k]) moved.push(k);
-      }
-      for (const k of revert) delete next[k];
-      return data ? rebaseKeysTo(next, moved, data) : next;
+    unit: Unverified['unit'],
+  ): { confirmed: Set<string>; error: string | null; info: string | null; uncertain: number; notSaved: number } => {
+    if (unknown.length === 0) return { confirmed: new Set(), error: null, info: null, uncertain: 0, notSaved: 0 };
+    if (!data) {
+      setUnverifiedBoth({ changes: [...unknown], unit });
+      return {
+        confirmed: new Set(),
+        error: '通信が途切れ、保存できたか確かめられません。通信が戻ったら「確かめる」を押してください',
+        info: null,
+        uncertain: unknown.length,
+        notSaved: 0,
+      };
+    }
+    const confirmed = savedAfterUnknown(unknown, data, unit);
+    const notSaved = unknown.length - confirmed.size;
+    return {
+      confirmed,
+      error: notSaved > 0 ? `${notSaved} 件は保存されていませんでした（通信できませんでした）。もう一度保存してください` : null,
+      info: confirmed.size > 0 ? `通信が途切れましたが、${confirmed.size} 件は保存されていました` : null,
+      uncertain: 0,
+      notSaved,
     };
-    if (data) rebaseOnto(data, prepare);
-    else applyPending(prepare);
   };
 
   const saveDirect = async () => {
@@ -309,12 +400,13 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       const markUpdates: Record<string, CellMark | null> = {};
       const saved = new Set<string>();
       const revert = new Set<string>();
-      let okCount = 0;
-      let firstError: AppError | null = null;
+      const unknown: CellChange[] = [];
+      let conflicts = 0;
+      let forbidden: AppError | null = null;
+      let other: AppError | null = null;
       for (const r of results) {
         const key = cellKey(r.change.groupId, r.change.itemId);
         if (r.ok) {
-          okCount++;
           saved.add(key);
           markUpdates[key] = null;
           continue;
@@ -324,22 +416,39 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           // ほかの人が先に変えた：読み直した値に戻して印をつける
           revert.add(key);
           markUpdates[key] = 'conflict';
-        } else {
-          markUpdates[key] = 'error';
+          conflicts++;
+          continue;
         }
-        firstError ??= r.error;
+        markUpdates[key] = 'error';
+        if (isUnknownOutcome(r.error)) unknown.push(r.change);
+        else if (kind === 'forbidden') forbidden ??= r.error;
+        else other ??= r.error;
+      }
+      const data = await refetchFresh();
+      const checked = checkUnknown(unknown, data, 'cell');
+      for (const k of checked.confirmed) {
+        saved.add(k);
+        markUpdates[k] = null;
       }
       applyMarks(markUpdates);
-      const data = (await q.refetch()).data;
       applySaveResults(data, sent, { saved, revert, keep: new Set() });
-      if (firstError) {
-        const msg = await handleWriteError(firstError, 'direct', undefined);
-        const notSent = sent.length - results.length;
-        const head = `${okCount} 件を保存しました。${results.length - okCount} 件は保存できませんでした${notSent > 0 ? `（${notSent} 件は送っていません）` : ''}`;
-        setSaveError(`${head}：${msg}`);
-        toast.error(msg);
+
+      // 失敗はまとめて見る：forbidden があれば時計のずれを判断する（最初の失敗が conflict でも）
+      const parts: string[] = [];
+      if (conflicts > 0) parts.push(`${conflicts} 件はほかの人が先に変えたので、読み直した値に戻しました`);
+      if (checked.error) parts.push(checked.error);
+      const primary = forbidden ?? other;
+      if (primary) parts.push(await handleWriteError(primary, 'direct', undefined));
+      const savedCount = saved.size;
+      const notSent = sent.length - results.length;
+      const failed = results.length - savedCount - checked.uncertain;
+      setSaveInfo(checked.info);
+      if (parts.length > 0) {
+        const head = `${savedCount} 件を保存しました。${failed > 0 ? `${failed} 件は保存できませんでした` : ''}${checked.uncertain > 0 ? `${checked.uncertain} 件は保存できたか分かりません` : ''}${notSent > 0 ? `（${notSent} 件は送っていません）` : ''}`;
+        setSaveError(`${head}：${parts.join('／')}`);
+        toast.error(parts[parts.length - 1]!);
       } else {
-        toast.success(`${okCount} 件を保存しました`);
+        toast.success(`${savedCount} 件を保存しました`);
       }
     } finally {
       endSaving();
@@ -355,10 +464,14 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       const markUpdates: Record<string, CellMark | null> = {};
       const saved = new Set<string>();
       const keep = new Set<string>();
+      const unknown: CellChange[] = [];
+      const unknownGroups = new Set<string>();
       const messages: string[] = [];
       let reasonError: unknown = null;
       for (const r of results) {
         const rows = byGroup.get(r.groupId) ?? [];
+        const isUnknown = !r.ok && isUnknownOutcome(r.error);
+        if (isUnknown) unknownGroups.add(r.groupId);
         for (const row of rows) {
           const key = cellKey(r.groupId, row.itemId);
           if (r.ok) {
@@ -372,19 +485,31 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
             markUpdates[key] = 'error';
           }
         }
-        if (!r.ok) {
+        if (isUnknown) {
+          unknown.push(...sent.filter((c) => c.groupId === r.groupId));
+        } else if (!r.ok) {
           if (r.error.info.kind === 'reason') reasonError = r.error;
           messages.push(await handleWriteError(r.error, 'update_requests_after_deadline', r.groupId));
         }
       }
+      const data = await refetchFresh();
+      const checked = checkUnknown(unknown, data, 'group');
+      for (const k of checked.confirmed) {
+        saved.add(k);
+        markUpdates[k] = null;
+      }
       applyMarks(markUpdates);
-      const data = (await q.refetch()).data;
       applySaveResults(data, sent, { saved, revert: new Set(), keep });
-      const okGroups = results.filter((r) => r.ok).length;
+      if (checked.error) messages.push(checked.error);
+      const confirmedGroups = new Set([...checked.confirmed].map((k) => k.split(':')[0]!));
+      const okGroups = results.filter((r) => r.ok).length + confirmedGroups.size;
+      const uncertainGroups = checked.uncertain > 0 ? unknownGroups.size : 0;
+      setSaveInfo(checked.info);
       if (messages.length > 0) {
         const notSent = byGroup.size - results.length;
+        const failed = results.length - okGroups - uncertainGroups;
         setSaveError(
-          `${okGroups} 団体を保存しました。${results.length - okGroups} 団体は保存できませんでした${notSent > 0 ? `（${notSent} 団体は送っていません）` : ''}：${messages.join('／')}`,
+          `${okGroups} 団体を保存しました。${failed > 0 ? `${failed} 団体は保存できませんでした` : ''}${uncertainGroups > 0 ? `${uncertainGroups} 団体は保存できたか分かりません` : ''}${notSent > 0 ? `（${notSent} 団体は送っていません）` : ''}：${messages.join('／')}`,
         );
         toast.error(messages[0]!);
       } else {
@@ -397,16 +522,25 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   };
 
   const onSave = () => {
-    if (changes.length === 0 || saving) return;
+    if (changes.length === 0 || saving || unverified) return;
     if (mode === 'deadline') setReasonOpen(true);
     else if (mode === 'direct') void saveDirect();
   };
 
   const onMarkSubmitted = async (row: MatrixRow, reason: string | null) => {
     try {
-      if (mode === 'deadline') await markSubmittedAfterDeadline(row.group.id, reason ?? '');
-      else await markSubmittedDirect(row.group.id);
-      toast.success(`${row.group.name}を提出済みにしました`);
+      if (mode === 'deadline') {
+        await markSubmittedAfterDeadline(row.group.id, reason ?? '');
+        toast.success(`${row.group.name}を提出済みにしました`);
+      } else {
+        // すでに提出済みなら書かない（提出日時を今に変えない）
+        const r = await markSubmittedDirect(row.group.id);
+        if (r.already) {
+          toast.info(`${row.group.name}はすでに提出済みでした（${r.row.submitted_at ? formatDateTime(r.row.submitted_at) : ''}）。読み直しました`);
+        } else {
+          toast.success(`${row.group.name}を提出済みにしました`);
+        }
+      }
       await reloadTables();
     } catch (e) {
       const msg = await handleWriteError(e, mode === 'deadline' ? 'update_requests_after_deadline' : 'direct', row.group.id);
@@ -496,6 +630,11 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
               {saveError}
             </p>
           ) : null}
+          {saveInfo ? (
+            <p role="status" data-testid="save-info" className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100">
+              {saveInfo}
+            </p>
+          ) : null}
           {matrix.rows.length === 0 ? (
             <EmptyState title="条件に合う団体がありません" />
           ) : (
@@ -523,9 +662,14 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           </p>
           {editable ? (
             <div className="sticky bottom-0 z-30 flex flex-wrap items-center gap-2 border-t bg-background py-3">
-              <Button disabled={changes.length === 0 || saving} aria-busy={saving || undefined} onClick={onSave}>
+              <Button disabled={changes.length === 0 || saving || !!unverified} aria-busy={saving || undefined} onClick={onSave}>
                 {saving ? '保存中…' : `保存（${changes.length}件）`}
               </Button>
+              {unverified ? (
+                <Button variant="secondary" disabled={saving || q.isFetching} onClick={() => void verifyNow()}>
+                  確かめる
+                </Button>
+              ) : null}
               <Button variant="outline" disabled={changes.length === 0 || saving} onClick={() => applyPending(() => ({}))}>
                 変更を取り消す
               </Button>

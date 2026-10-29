@@ -213,6 +213,62 @@ describe('toImportRows（送る p_rows）', () => {
   });
 });
 
+describe('レビューの指摘（プレビューを保存後の数に合わせる）', () => {
+  const noDeskItems = ITEMS.map((i) => (i.code === 'desk_ng' ? { ...i, aliases: ['不可机'] } : i));
+  const deptPlan = (csv: string, over: Partial<RequestsTables> = {}) => {
+    const r = readForm('department', csv, noDeskItems);
+    if (!r.ok) throw new Error(r.message);
+    return buildImportPreview(r.parsed, 'department', tables({ items: noDeskItems, ...over })).plans[0]!;
+  };
+
+  it('申請できない品目（blocked）に DB の 0 でない行があれば、保存後の数（今の DB の数のまま）を出し、変えたことにしない', () => {
+    const requests: RequestDbRow[] = [
+      { group_id: DEPT.id, item_id: itemId('desk'), count: 1, updated_at: T0 },
+      { group_id: DEPT.id, item_id: itemId('desk_ng'), count: 3, updated_at: T0 },
+    ];
+    const plan = deptPlan('タイムスタンプ,団体名,机(木),不可机\n2026/10/05 10:00:00,部門甲,1,4\n', { requests });
+    const ng = plan.cells.find((c) => c.item.code === 'desk_ng')!;
+    expect(ng.blocked).toBe(true);
+    expect(ng.after).toBe(3);
+    expect(toImportRows(plan).some((x) => x.itemId === itemId('desk_ng'))).toBe(false);
+    // 机(木) も今と同じなので「数は今と同じ」
+    expect(plan.changed).toBe(false);
+  });
+
+  it('申請できない品目で CSV にない（0 の）品目に DB の行があれば、保存後は 0（送る）', () => {
+    const requests: RequestDbRow[] = [{ group_id: DEPT.id, item_id: itemId('desk_ng'), count: 3, updated_at: T0 }];
+    const plan = deptPlan('タイムスタンプ,団体名,机(木)\n2026/10/05 10:00:00,部門甲,1\n', { requests });
+    const ng = plan.cells.find((c) => c.item.code === 'desk_ng')!;
+    expect(ng.blocked).toBe(false);
+    expect(ng.after).toBe(0);
+    expect(toImportRows(plan).find((x) => x.itemId === itemId('desk_ng'))).toEqual({ itemId: itemId('desk_ng'), count: 0, updatedAt: T0 });
+    expect(plan.changed).toBe(true);
+  });
+
+  it('Q2：CSV のタイムスタンプと DB の提出日時が同じ（取り込み済み）なら sameTimestamp。上書きしないのは同じ', () => {
+    const subs: SubmissionRow[] = [{ group_id: KOU.id, submitted_at: '2026-10-06T00:00:00+00:00', note: null, updated_at: T0 }];
+    const p = buildImportPreview(parsedStall(), 'stall', tables({ submissions: subs }));
+    const kou = p.plans.find((x) => x.group.id === KOU.id)!;
+    expect(kou.defaultOverwrite).toBe(false);
+    expect(kou.sameTimestamp).toBe(true);
+    const otsu = p.plans.find((x) => x.group.id === OTSU.id)!;
+    expect(otsu.sameTimestamp).toBe(false);
+  });
+
+  it('備考が 2000 字を超えたら印をつけ、送るときは 2000 字（文字の数）に切る', () => {
+    const long = '備'.repeat(1990) + '😀'.repeat(20);
+    const plan = deptPlan(`タイムスタンプ,団体名,机(木),備考\n2026/10/05 10:00:00,部門甲,1,${long}\n`);
+    expect(plan.noteLength).toBe(2010);
+    expect(plan.noteTruncated).toBe(true);
+    const sent = toImportArgs(plan, '理由').p_submission.note!;
+    expect(Array.from(sent)).toHaveLength(2000);
+    expect(sent.endsWith('😀')).toBe(true);
+    const short = deptPlan('タイムスタンプ,団体名,机(木),備考\n2026/10/05 10:00:00,部門甲,1,短い\n');
+    expect(short.noteTruncated).toBe(false);
+    expect(toImportArgs(short, '理由').p_submission.note).toBe('短い');
+  });
+});
+
 describe('企業のフォーム', () => {
   it('全部の行が対応しない行になり、手で選ぶと長机(3人掛)はそのまま', () => {
     const r = readForm('company', sample('company'), ITEMS);
@@ -233,9 +289,9 @@ describe('そのほか', () => {
     expect(countsSummary({ chair: 8, desk: 4 }, ITEMS)).toBe('机(木)4・椅子(木)8');
     expect(countsSummary({}, ITEMS)).toBe('すべて 0');
   });
-  it('defaultImportReason は 500 字に収める', () => {
-    expect(defaultImportReason('stall', 'stall.csv')).toBe('Googleフォームの回答の取り込み（模擬店・stall.csv）');
-    expect(defaultImportReason('company', 'x'.repeat(800)).length).toBeLessThanOrEqual(500);
+  it('defaultImportReason はファイル名を入れない（理由は audit_logs に残り続け、ファイル名には人の名前が入りうる）', () => {
+    expect(defaultImportReason('stall')).toBe('Googleフォームの回答の取り込み（模擬店）');
+    expect(defaultImportReason('company')).toBe('Googleフォームの回答の取り込み（企業）');
   });
 });
 

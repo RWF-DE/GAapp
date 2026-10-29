@@ -15,6 +15,12 @@ const state = vi.hoisted(() => ({
   requests: null as null | { group_id: string; item_id: string; count: number; updated_at: string }[],
   /** 提出の記録の備考（ほかの人の変更をまねるときに差し替える） */
   note: '電源がほしい',
+  /** 締切を過ぎた年度にする */
+  closed: false,
+  /** 申請一覧の表の読み込みを通信の失敗にする */
+  tableDown: false,
+  /** 部門A の提出の記録（1件を読むときだけ。表を読んだ後にほかの人が提出したことをまねる） */
+  deptSubmittedAt: null as string | null,
 }));
 
 vi.mock('@/lib/supabase/client', async () => {
@@ -89,7 +95,7 @@ const yearRow = (): YearRow => ({
   auto_allocated_at: null,
   festival_start: '2026-10-17',
   request_open_at: new Date(Date.now() - 86_400_000).toISOString(),
-  request_close_at: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+  request_close_at: new Date(Date.now() + (state.closed ? -1 : 30) * 86_400_000).toISOString(),
   prev_year_id: null,
   updated_at: T0,
 });
@@ -108,11 +114,13 @@ function makeHandler(over: (call: FakeCall) => FakeResult | undefined = () => un
       case 'requests':
         if (call.ops.some((x) => x.op === 'update')) return { data: null };
         if (call.ops.some((x) => x.op === 'select') && opArgs(call, 'select')[0]?.[0] === 'updated_at') return { data: { updated_at: T0 } };
+        if (state.tableDown && opArgs(call, 'eq').some((a) => a[0] === 'groups.year_id')) return NETWORK;
         return { data: (state.requests ?? REQUESTS).map((r) => ({ ...r, groups: { year_id: YEAR } })) };
       case 'request_submissions': {
         const rows = [{ group_id: STALL, submitted_at: T0, note: state.note, updated_at: T0, groups: { year_id: YEAR } }];
         if (call.ops.some((x) => x.op === 'maybeSingle')) {
           const id = opArgs(call, 'eq').find((a) => a[0] === 'group_id')?.[1];
+          if (id === DEPT && state.deptSubmittedAt) return { data: { group_id: DEPT, submitted_at: state.deptSubmittedAt, note: null, updated_at: T1 } };
           const { groups: _g, ...row } = rows.find((r) => r.group_id === id) ?? { groups: null };
           void _g;
           return { data: 'group_id' in row ? row : null };
@@ -129,6 +137,9 @@ function makeHandler(over: (call: FakeCall) => FakeResult | undefined = () => un
   };
 }
 
+/** 通信の失敗（supabase-js は code が空で message が TypeError…、status 0 で返す） */
+const NETWORK: FakeResult = { error: { code: '', message: 'TypeError: Failed to fetch' }, status: 0 };
+
 function renderScreen() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
@@ -143,6 +154,9 @@ beforeEach(() => {
   state.role = 'admin';
   state.requests = null;
   state.note = '電源がほしい';
+  state.closed = false;
+  state.tableDown = false;
+  state.deptSubmittedAt = null;
   try {
     localStorage.clear();
   } catch {
@@ -354,5 +368,225 @@ describe('申請一覧 /requests', () => {
     await user.click(within(sheet).getByRole('button', { name: '提出する' }));
     await waitFor(() => expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(1));
     expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('締切前の直接の保存：通信が途切れたら読み直して確かめ、送った数になっていれば「保存されていました」', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'requests' && call.ops.some((o) => o.op === 'update')) {
+        // 届いたが応答が返らなかった
+        state.requests = [{ ...REQUESTS[0]!, count: 5, updated_at: T1 }, REQUESTS[1]!];
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await user.click(screen.getByRole('button', { name: '保存（1件）' }));
+    await waitFor(() => expect(screen.getByTestId('save-info').textContent).toContain('保存されていました'));
+    expect(screen.getByRole('button', { name: '保存（0件）' })).toBeTruthy();
+    expect(cellOf('模擬店A:desk').hasAttribute('data-mark')).toBe(false);
+    expect(screen.queryByTestId('save-error')).toBeNull();
+  });
+
+  it('締切前の直接の保存：通信が途切れて読み直しもできなければ、確かめるまで保存を押せない。確かめて保存されていなければ送り直せる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'requests' && call.ops.some((o) => o.op === 'update')) {
+        state.tableDown = true;
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await user.click(screen.getByRole('button', { name: '保存（1件）' }));
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toContain('保存できたか確かめられません'));
+    // 表はそのまま（画面全体をエラーにしない）。入力は残り、保存は押せない
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5');
+    expect((screen.getByRole('button', { name: '保存（1件）' }) as HTMLButtonElement).disabled).toBe(true);
+
+    // 通信が戻った。保存されていなかった
+    state.tableDown = false;
+    await user.click(screen.getByRole('button', { name: '確かめる' }));
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toContain('保存されていませんでした'));
+    expect(screen.queryByRole('button', { name: '確かめる' })).toBeNull();
+    expect((screen.getByRole('button', { name: '保存（1件）' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5');
+  });
+
+  it('締切後の保存：通信が途切れたら読み直して、団体の変更が届いていれば「保存されていました」', async () => {
+    const user = userEvent.setup();
+    state.closed = true;
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:update_requests_after_deadline') {
+        state.requests = [{ ...REQUESTS[0]!, count: 5, updated_at: T1 }, REQUESTS[1]!];
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await user.click(screen.getByRole('button', { name: '保存（1件）' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('理由（必須）'), '団体の希望');
+    await user.click(within(dialog).getByRole('button', { name: '保存する' }));
+    await waitFor(() => expect(screen.getByTestId('save-info').textContent).toContain('保存されていました'));
+    expect(screen.getByRole('button', { name: '保存（0件）' })).toBeTruthy();
+    expect(state.calls.filter((c) => c.table === 'rpc:update_requests_after_deadline')).toHaveLength(1);
+  });
+
+  it('締切前の直接の保存：最初の失敗が conflict でも、後の forbidden で時計のずれを判断し、conflict の数も出す', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table !== 'requests') return undefined;
+      if (call.ops.some((o) => o.op === 'insert')) {
+        return { error: { code: '42501', message: 'new row violates row-level security policy for table "requests"' }, status: 403 };
+      }
+      if (opArgs(call, 'select')[0]?.[0] === 'updated_at') return { data: { updated_at: T1 } }; // 机(木)はほかの人が先に変えた
+      return undefined;
+    });
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await typeCell(user, '部門Aの椅子(木)', '2');
+    await user.click(screen.getByRole('button', { name: '保存（2件）' }));
+    await screen.findByText(/DB が締切後と判断しました（端末の時計がずれている可能性があります）。変更は理由をつけて保存します/);
+    const err = screen.getByTestId('save-error').textContent!;
+    expect(err).toContain('1 件はほかの人が先に変えたので、読み直した値に戻しました');
+    expect(err).toContain('DB が締切後と判断しました');
+  });
+
+  it('締切前の「提出済みにする」：表を読んだ後にほかの人が提出していれば書かない（提出日時を今に変えない）', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'request_submissions' && call.ops.some((o) => ['insert', 'update', 'upsert'].includes(o.op))) {
+        return { data: { group_id: DEPT, submitted_at: T1, note: null, updated_at: T1 } };
+      }
+      return undefined;
+    });
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    state.deptSubmittedAt = T0;
+    await user.click(screen.getByRole('button', { name: '提出済みにする' }));
+    const confirm = await screen.findByRole('alertdialog');
+    await user.click(within(confirm).getByRole('button', { name: '提出済みにする' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(state.calls.filter((c) => c.table === 'request_submissions' && c.ops.some((o) => ['insert', 'update', 'upsert'].includes(o.op)))).toHaveLength(0);
+  });
+
+  it('代理入力（締切前）：上書きの確かめの後に、もう一度ほかの人が変えていれば、送らずに最新の値でもう一度確かめる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler();
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    const confirm = await screen.findByRole('alertdialog');
+    expect(within(confirm).getByTestId('proxy-conflicts').textContent).toContain('机(木)（3 → 4）');
+
+    // 確かめている間に、ほかの人が机(木)を 6 にした
+    const T2 = '2026-10-29T03:00:00.111111+00:00';
+    state.requests = [{ ...REQUESTS[0]!, count: 6, updated_at: T2 }, REQUESTS[1]!];
+    await user.click(within(confirm).getByRole('button', { name: '上書きして提出する' }));
+    await waitFor(() => expect(screen.getByTestId('proxy-conflicts').textContent).toContain('机(木)（4 → 6）'));
+    expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(0);
+    await waitFor(() => expect(document.getElementById(`proxy-${STALL}-desk`)).toHaveProperty('value', '6'));
+
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '上書きして提出する' }));
+    await waitFor(() => expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(1));
+    const args = opArgs(state.calls.find((c) => c.table === 'rpc:submit_requests')!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+    expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(6);
+    expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(1);
+  });
+
+  it('代理入力（締切後）：備考を変えていなければ p_submission に備考を送らない（ほかの人が変えた備考を上書きしない）', async () => {
+    const user = userEvent.setup();
+    state.closed = true;
+    state.handler = makeHandler();
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    await user.click(within(sheet).getByRole('button', { name: '理由をつけて保存・提出済みにする' }));
+    const reason = await screen.findByRole('dialog', { name: /締切後に変更する/ });
+    await user.type(within(reason).getByLabelText('理由（必須）'), '代理入力');
+    await user.click(within(reason).getByRole('button', { name: '保存する' }));
+    await waitFor(() => expect(state.calls.filter((c) => c.table === 'rpc:update_requests_after_deadline')).toHaveLength(1));
+    const args = opArgs(state.calls.find((c) => c.table === 'rpc:update_requests_after_deadline')!, 'rpc')[0]![0] as { p_submission: unknown };
+    expect(args.p_submission).toEqual({ submitted: true });
+  });
+
+  it('代理入力（締切後）：備考を変えたときだけ備考を送る', async () => {
+    const user = userEvent.setup();
+    state.closed = true;
+    state.handler = makeHandler();
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    const note = document.getElementById(`proxy-${STALL}-note`)!;
+    await user.clear(note);
+    await user.type(note, '電源が2つ');
+    await user.click(within(sheet).getByRole('button', { name: '理由をつけて保存・提出済みにする' }));
+    const reason = await screen.findByRole('dialog', { name: /締切後に変更する/ });
+    await user.type(within(reason).getByLabelText('理由（必須）'), '代理入力');
+    await user.click(within(reason).getByRole('button', { name: '保存する' }));
+    await waitFor(() => expect(state.calls.filter((c) => c.table === 'rpc:update_requests_after_deadline')).toHaveLength(1));
+    const args = opArgs(state.calls.find((c) => c.table === 'rpc:update_requests_after_deadline')!, 'rpc')[0]![0] as { p_submission: unknown };
+    expect(args.p_submission).toEqual({ submitted: true, note: '電源が2つ' });
+  });
+
+  it('代理入力：未保存の入力があれば、Esc で閉じる前に確かめる。送信中は閉じない', async () => {
+    const user = userEvent.setup();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    state.handler = makeHandler();
+    const base = state.handler;
+    state.handler = (call) => (call.table === 'rpc:submit_requests' ? gate.then(() => base(call)) : base(call));
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+
+    await user.keyboard('{Escape}');
+    const ask = await screen.findByRole('alertdialog');
+    expect(ask.textContent).toContain('入力を捨てて閉じますか');
+    await user.click(within(ask).getByRole('button', { name: '入力に戻る' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(document.getElementById(`proxy-${STALL}-chair`)).toHaveProperty('value', '1');
+
+    // 送信中は Esc でも閉じない
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: '提出する' }));
+    await screen.findByRole('button', { name: '保存中…' });
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeTruthy();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    release();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  it('代理入力：入力がなければ確かめずに閉じる。「やめる」も入力があれば確かめる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler();
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    await screen.findByRole('dialog');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    await user.click(within(sheet).getByRole('button', { name: 'やめる' }));
+    const ask = await screen.findByRole('alertdialog');
+    await user.click(within(ask).getByRole('button', { name: '捨てて閉じる' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 });

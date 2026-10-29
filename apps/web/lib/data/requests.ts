@@ -488,6 +488,36 @@ export function columnTotals(matrix: RequestMatrix, pending: PendingCells): Reco
   return totals;
 }
 
+/**
+ * 通信の失敗（network・unknown）で応答が届かなかったセルが、保存されていたかを読み直した表で確かめる（2.6）。
+ * 行が送った数になっていて、updated_at が基準（送った updatedAt。行がなかったら null）から変わっていれば保存されていた。
+ * unit が 'group' なら団体ごと（update_requests_after_deadline は団体の全部か何もないか）：団体の送ったセルがすべて
+ * 保存されていたときだけ、その団体のセルを返す。返すのはセルの鍵。
+ */
+export function savedAfterUnknown(changes: readonly CellChange[], t: Pick<RequestsTables, 'requests'>, unit: 'cell' | 'group' = 'cell'): Set<string> {
+  const reqs = requestIndex(t);
+  const isSaved = (c: CellChange) => {
+    const row = reqs.get(cellKey(c.groupId, c.itemId));
+    return (row?.count ?? 0) === c.count && (row?.updated_at ?? null) !== c.updatedAt;
+  };
+  const out = new Set<string>();
+  if (unit === 'cell') {
+    for (const c of changes) if (isSaved(c)) out.add(cellKey(c.groupId, c.itemId));
+    return out;
+  }
+  const byGroup = new Map<string, CellChange[]>();
+  for (const c of changes) byGroup.set(c.groupId, [...(byGroup.get(c.groupId) ?? []), c]);
+  for (const list of byGroup.values()) {
+    if (list.every(isSaved)) for (const c of list) out.add(cellKey(c.groupId, c.itemId));
+  }
+  return out;
+}
+
+/** 応答が届かず、保存されたか分からない失敗か（network・unknown。2.6） */
+export function isUnknownOutcome(error: AppError): boolean {
+  return error.info.kind === 'network' || error.info.kind === 'unknown';
+}
+
 /** 締切後の保存：団体ごとの p_rows（行がある品目は updatedAt を付ける） */
 export function groupDeadlineRows(changes: readonly CellChange[]): Map<string, { itemId: string; count: number; updatedAt?: string }[]> {
   const out = new Map<string, { itemId: string; count: number; updatedAt?: string }[]>();
@@ -609,18 +639,40 @@ export interface GroupChanges {
 
 /** 表の行（読み込んだとき）と読み直した団体の申請・提出の記録を比べる（updated_at・submitted_at・備考） */
 export function groupChangesSince(row: Pick<MatrixRow, 'cells' | 'submission'>, fresh: GroupRequestState): GroupChanges {
+  const base: GroupRequestState = {
+    requests: Object.values(row.cells)
+      .filter((c) => c.updatedAt !== null)
+      .map((c) => ({ group_id: '', item_id: c.itemId, count: c.count, updated_at: c.updatedAt! })),
+    submission: row.submission,
+  };
+  return stateChangesSince(base, fresh);
+}
+
+/** 二つの団体の申請・提出の記録を比べる（base は前に読んだもの、fresh は読み直したもの） */
+export function stateChangesSince(base: GroupRequestState, fresh: GroupRequestState): GroupChanges {
+  const baseBy = new Map(base.requests.map((r) => [r.item_id, r]));
   const freshBy = new Map(fresh.requests.map((r) => [r.item_id, r]));
-  const ids = new Set<string>([...Object.values(row.cells).filter((c) => c.updatedAt !== null).map((c) => c.itemId), ...freshBy.keys()]);
+  const ids = new Set<string>([...baseBy.keys(), ...freshBy.keys()]);
   const items: GroupChanges['items'] = [];
   for (const itemId of ids) {
-    const cell = row.cells[itemId];
+    const was = baseBy.get(itemId);
     const now = freshBy.get(itemId);
-    if (ms(cell?.updatedAt ?? null) !== ms(now?.updated_at ?? null)) items.push({ itemId, from: cell?.count ?? 0, to: now?.count ?? 0 });
+    if (ms(was?.updated_at ?? null) !== ms(now?.updated_at ?? null)) items.push({ itemId, from: was?.count ?? 0, to: now?.count ?? 0 });
   }
-  const a = row.submission;
+  const a = base.submission;
   const b = fresh.submission;
   const submission = ms(a?.submitted_at ?? null) !== ms(b?.submitted_at ?? null) || (a?.note ?? null) !== (b?.note ?? null);
   return { items, submission };
+}
+
+/** 表の行を、読み直した団体の申請・提出の記録と同じ形にする（代理入力が比べる基準） */
+export function groupStateOf(row: Pick<MatrixRow, 'group' | 'cells' | 'submission'>): GroupRequestState {
+  return {
+    requests: Object.values(row.cells)
+      .filter((c) => c.updatedAt !== null)
+      .map((c) => ({ group_id: row.group.id, item_id: c.itemId, count: c.count, updated_at: c.updatedAt! })),
+    submission: row.submission,
+  };
 }
 
 /** ほかの人の変更があるか */
@@ -755,35 +807,72 @@ export async function submitRequests(groupId: string, rows: { itemId: string; co
   return res as unknown as SubmissionRow;
 }
 
-/** 締切後の代理入力：変えた品目と、提出済みにする・備考（理由は必須） */
+/**
+ * 締切後の代理入力：変えた品目と、提出済みにする（理由は必須）。備考は変えたときだけ送る（note が undefined なら送らない。
+ * p_submission に note がなければ DB は今の備考を残すので、シートを開いた後にほかの人が変えた備考を上書きしない）。
+ */
 export async function submitAfterDeadline(
   groupId: string,
   rows: { itemId: string; count: number; updatedAt?: string }[],
-  note: string | null,
+  note: string | null | undefined,
   reason: string,
 ): Promise<void> {
   await callRpc('update_requests_after_deadline', {
     p_group_id: groupId,
     p_rows: rows,
     p_reason: reason,
-    p_submission: { submitted: true, note },
+    p_submission: note === undefined ? { submitted: true } : { submitted: true, note },
   });
 }
 
+/** 「提出済みにする」の結果。already は、すでに提出済みだった（書いていない） */
+export interface MarkSubmittedResult {
+  row: SubmissionRow;
+  already: boolean;
+}
+
 /**
- * 締切前に「提出済みにする」（3.6・2.3 の例外）：request_submissions を直接 upsert する。submitted_at に今の時刻を送る
- * （トリガーは送られた値が null でないときだけ now() に置き換えるので、値を送らないと提出済みにならない。送った値は使われない）。
- * note は送らず、今の備考を消さない。RLS で拒否されたら forbidden。
+ * 締切前に「提出済みにする」（3.6・2.3 の例外）：request_submissions を直接書く。すでに提出済みの団体には書かない
+ * （トリガーは submitted_at が変わると now() に置き換えるので、上書きすると最初の提出日時が今に変わってしまう）。
+ * 先に提出の記録を読み、提出済みなら already で返す。記録がなければ insert、未提出の記録があれば submitted_at が空の行だけを
+ * update する（submitted_at には今の時刻を送る。トリガーが now() に置き換える）。書く直前にほかの人が提出していれば
+ * （0 行・一意の違反）読み直して already で返す。note は送らず、今の備考を消さない。RLS で拒否されたら forbidden。
  */
-export async function markSubmittedDirect(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<SubmissionRow> {
-  const res = await client
-    .from('request_submissions')
-    .upsert({ group_id: groupId, submitted_at: new Date().toISOString() }, { onConflict: 'group_id' })
-    .select(COLUMNS.request_submissions)
-    .maybeSingle();
-  if (res.error) throw toAppError(res.error, res.status);
-  if (!res.data) throw appError('forbidden', 'upsert_hidden');
-  return res.data as unknown as SubmissionRow;
+export async function markSubmittedDirect(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<MarkSubmittedResult> {
+  const current = await fetchSubmission(groupId, client);
+  if (current?.submitted_at) return { row: current, already: true };
+  const submittedAt = new Date().toISOString();
+  const res = current
+    ? await client
+        .from('request_submissions')
+        .update({ submitted_at: submittedAt })
+        .eq('group_id', groupId)
+        .is('submitted_at', null)
+        .select(COLUMNS.request_submissions)
+        .maybeSingle()
+    : await client
+        .from('request_submissions')
+        .insert({ group_id: groupId, submitted_at: submittedAt })
+        .select(COLUMNS.request_submissions)
+        .maybeSingle();
+  const raced = async (): Promise<MarkSubmittedResult | null> => {
+    const fresh = await fetchSubmission(groupId, client);
+    return fresh?.submitted_at ? { row: fresh, already: true } : null;
+  };
+  if (res.error) {
+    const error = toAppError(res.error, res.status);
+    if (error.info.code === '23505') {
+      const r = await raced();
+      if (r) return r;
+    }
+    throw error;
+  }
+  if (!res.data) {
+    const r = await raced();
+    if (r) return r;
+    throw appError('forbidden', current ? 'update_hidden' : 'insert_hidden');
+  }
+  return { row: res.data as unknown as SubmissionRow, already: false };
 }
 
 /** 締切後に「提出済みにする」：update_requests_after_deadline の p_submission（rows は空。理由は必須） */

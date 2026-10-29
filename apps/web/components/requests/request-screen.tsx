@@ -95,7 +95,7 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
   const { reloadMembership } = useAuth();
   const onAuthError = useAuthErrorHandler();
   const router = useGuardedRouter();
-  const notLatest = useNotLatestYearConfirm();
+  const notLatest = useNotLatestYearConfirm({ verb: '提出' });
   const yearQ = useYearRow(yearId);
   const q = useRepRequest(yearId, group.id);
   const now = useNow();

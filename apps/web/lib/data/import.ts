@@ -17,7 +17,7 @@ import { rewriteRequestedItem, type GroupCategory, type Item } from '@gaapp/shar
 import type { GroupRow, ItemRow } from '@/lib/db/types';
 import { AppError, toAppError } from '@/lib/errors';
 import { callRpc } from '@/lib/rpc';
-import { REASON_MAX } from '@/lib/schemas/common';
+import { NOTE_MAX } from '@/lib/schemas/common';
 import { isRequestable, sortGroups, sortItems, type RequestsTables } from './requests';
 
 export type { FormKind, RejectReason };
@@ -144,8 +144,15 @@ export interface SupersededGroup {
 /** プレビューの1セル（品目ごとの CSV の数と今の DB の数） */
 export interface PlanCell {
   item: ItemRow;
-  /** 取り込む数（読み替えの後。申請できない品目は 0 として出し、送らない） */
+  /** CSV の数（読み替えの後。申請できない品目は 0） */
   csv: number;
+  /**
+   * 取り込んだ後の DB の数（プレビューに出す数）。申請できる品目は CSV の数、申請できない品目は 0（DB に行があれば 0 を送る）。
+   * ただし blocked の品目は送らないので、今の DB の数のまま。
+   */
+  after: number;
+  /** 申請できない品目（読み替え先なし）に CSV の 0 でない数がある（送らない。DB の数は変えない） */
+  blocked: boolean;
   /** 今の DB の数（行がなければ 0） */
   db: number;
   /** DB の行の updated_at（行がなければ null） */
@@ -159,8 +166,12 @@ export interface ImportPlan {
   group: GroupRow;
   /** フォームのタイムスタンプ（+09:00 の ISO。提出日時として保存する） */
   submittedAt: string;
-  /** フォームの備考（メールは importer が除いた後） */
+  /** フォームの備考（メールは importer が除いた後。2000 字を超えていても切る前の値。送るときは toImportArgs が切る） */
   note: string | null;
+  /** 備考の文字の数（コードポイントで数える。DB の length と同じ）。備考がなければ 0 */
+  noteLength: number;
+  /** 備考が 2000 字（NOTE_MAX）を超えている（送るときは 2000 字に切る。超えたまま送ると DB がその団体全体を invalid_input で拒否する） */
+  noteTruncated: boolean;
   /** 使う行（CSV の行番号） */
   rowNumber: number;
   cells: PlanCell[];
@@ -176,6 +187,8 @@ export interface ImportPlan {
   dbHasNote: boolean;
   /** 上書きの既定（Q2：CSV のタイムスタンプが DB の提出日時より新しい、または未提出なら上書き） */
   defaultOverwrite: boolean;
+  /** CSV のタイムスタンプと DB の提出日時が同じ時刻（同じ CSV を取り込み直した。既定では上書きしない） */
+  sameTimestamp: boolean;
 }
 
 export interface ImportPreview {
@@ -207,6 +220,20 @@ function hasRewrite(response: ParsedFormResponse, category: GroupCategory, items
 export function defaultOverwriteOf(csvSubmittedAt: string, dbSubmittedAt: string | null): boolean {
   if (!dbSubmittedAt) return true;
   return Date.parse(csvSubmittedAt) > Date.parse(dbSubmittedAt);
+}
+
+/** CSV のタイムスタンプと DB の提出日時が同じ時刻か（取り込み済み。書き方の違いは同じ時刻として扱う） */
+export function sameTimestampOf(csvSubmittedAt: string, dbSubmittedAt: string | null): boolean {
+  return dbSubmittedAt !== null && Date.parse(csvSubmittedAt) === Date.parse(dbSubmittedAt);
+}
+
+/** 文字の数（コードポイント。DB の length と同じ数え方。サロゲートペアを2字と数えない） */
+const charLength = (s: string): number => Array.from(s).length;
+
+/** 備考を 2000 字（NOTE_MAX）に切る（コードポイントで切る。サロゲートペアを割らない） */
+export function truncateNote(note: string | null): string | null {
+  if (note === null || charLength(note) <= NOTE_MAX) return note;
+  return Array.from(note).slice(0, NOTE_MAX).join('');
 }
 
 /**
@@ -247,23 +274,38 @@ export function buildImportPreview(
       const key = `${group.id}:${item.id}`;
       const csv = csvReq.get(key) ?? 0;
       const db = dbReq.get(key);
-      if (!requestable && csv > 0) blocked.push({ item, count: csv });
-      cells.push({ item, csv: requestable ? csv : 0, db: db?.count ?? 0, updatedAt: db?.updated_at ?? null, requestable });
+      const isBlocked = !requestable && csv > 0;
+      if (isBlocked) blocked.push({ item, count: csv });
+      const dbCount = db?.count ?? 0;
+      cells.push({
+        item,
+        csv: requestable ? csv : 0,
+        // blocked は送らないので DB の数のまま。申請できない品目は 0 を送る（行がなければ 0 のまま）
+        after: requestable ? csv : isBlocked ? dbCount : 0,
+        blocked: isBlocked,
+        db: dbCount,
+        updatedAt: db?.updated_at ?? null,
+        requestable,
+      });
     }
     const sub = subs.get(group.id) ?? null;
     const dbSubmittedAt = sub?.submitted_at ?? null;
+    const noteLength = s.note ? charLength(s.note) : 0;
     plans.push({
       group,
       submittedAt: s.submittedAt,
       note: s.note,
+      noteLength,
+      noteTruncated: noteLength > NOTE_MAX,
       rowNumber,
       cells,
-      changed: cells.some((c) => !blocked.some((b) => b.item.id === c.item.id) && (c.requestable || c.db > 0) && c.csv !== c.db),
+      changed: cells.some((c) => c.after !== c.db),
       rewritten: kept ? hasRewrite(kept, category, importItems) : false,
       blocked,
       dbSubmittedAt,
       dbHasNote: !!sub?.note?.trim(),
       defaultOverwrite: defaultOverwriteOf(s.submittedAt, dbSubmittedAt),
+      sameTimestamp: sameTimestampOf(s.submittedAt, dbSubmittedAt),
     });
   }
 
@@ -292,29 +334,28 @@ export function buildImportPreview(
 // ---------------------------------------------------------------- 保存
 
 /** 保存に送る p_rows（その団体の区分で申請できる品目と、DB に行がある品目のすべて。CSV になければ 0。申請できない品目の CSV の数は送らない） */
-export function toImportRows(plan: Pick<ImportPlan, 'cells' | 'blocked'>): { itemId: string; count: number; updatedAt?: string }[] {
-  const blocked = new Set(plan.blocked.map((b) => b.item.id));
+export function toImportRows(plan: Pick<ImportPlan, 'cells'>): { itemId: string; count: number; updatedAt?: string }[] {
   return plan.cells
-    .filter((c) => !blocked.has(c.item.id) && (c.requestable || c.updatedAt !== null))
-    .map((c) => ({ itemId: c.item.id, count: c.requestable ? c.csv : 0, ...(c.updatedAt ? { updatedAt: c.updatedAt } : {}) }));
+    .filter((c) => !c.blocked && (c.requestable || c.updatedAt !== null))
+    .map((c) => ({ itemId: c.item.id, count: c.after, ...(c.updatedAt ? { updatedAt: c.updatedAt } : {}) }));
 }
 
-/** update_requests_after_deadline の引数（p_submission にフォームのタイムスタンプと備考） */
+/** update_requests_after_deadline の引数（p_submission にフォームのタイムスタンプと備考。備考は 2000 字に切る） */
 export function toImportArgs(plan: ImportPlan, reason: string) {
   return {
     p_group_id: plan.group.id,
     p_rows: toImportRows(plan),
     p_reason: reason,
-    p_submission: { submittedAt: plan.submittedAt, note: plan.note },
+    p_submission: { submittedAt: plan.submittedAt, note: truncateNote(plan.note) },
   };
 }
 
-/** 理由の既定（「Googleフォームの回答の取り込み（模擬店・{ファイル名}）」。500 字に収める） */
-export function defaultImportReason(kind: FormKind, fileName: string): string {
-  const head = `Googleフォームの回答の取り込み（${KIND_LABELS[kind]}・`;
-  const room = REASON_MAX - head.length - 1;
-  const name = fileName.length > room ? `${fileName.slice(0, Math.max(0, room - 1))}…` : fileName;
-  return `${head}${name}）`;
+/**
+ * 理由の既定（「Googleフォームの回答の取り込み（模擬店）」）。理由は audit_logs に残り続けるので、ファイル名（人の名前が入りうる）は
+ * 入れない。
+ */
+export function defaultImportReason(kind: FormKind): string {
+  return `Googleフォームの回答の取り込み（${KIND_LABELS[kind]}）`;
 }
 
 export type ImportResult = { groupId: string; ok: true } | { groupId: string; ok: false; error: AppError };

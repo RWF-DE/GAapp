@@ -126,7 +126,9 @@ describe('取り込みのダイアログ（stall.csv）', () => {
       p_submission: { submittedAt: string; note: string | null };
     });
     expect(args.map((a) => a.p_group_id)).toEqual([KOU.id, OTSU.id, HEI.id]);
-    expect(args[0]!.p_reason).toBe('Googleフォームの回答の取り込み（模擬店・stall.csv）');
+    // 理由の既定にファイル名を入れない（audit_logs に残り続けるため）
+    expect(args[0]!.p_reason).toBe('Googleフォームの回答の取り込み（模擬店）');
+    expect(args[0]!.p_reason).not.toContain('stall.csv');
     expect(args.map((a) => a.p_submission.submittedAt)).toEqual([
       '2026-10-06T09:00:00+09:00',
       '2026-10-05T19:30:00+09:00',
@@ -214,5 +216,34 @@ describe('取り込みのダイアログ（stall.csv）', () => {
     await user.upload(screen.getByLabelText('CSV ファイル'), new File(['a,b\nx@example.test,1\n'], 'x.csv', { type: 'text/csv' }));
     expect((await screen.findByRole('alert')).textContent).toContain('タイムスタンプの列が見つかりません');
     expect(document.body.innerHTML).not.toMatch(EMAIL);
+  });
+
+  it('プレビューは取り込んだ後の数を出す：申請できない品目（blocked）は今の DB の数のまま。同じ時刻は「取り込み済み」。長い備考は印をつけ、2000 字に切って送る', async () => {
+    const user = userEvent.setup();
+    const items = ITEMS.map((i) => (i.code === 'desk_ng' ? { ...i, aliases: ['不可机'] } : i));
+    const dept: GroupRow = { ...group(21, '部門甲'), category: 'department' };
+    const requests: RequestDbRow[] = [{ group_id: dept.id, item_id: itemId('desk_ng'), count: 3, updated_at: T0 }];
+    const submissions: SubmissionRow[] = [{ group_id: dept.id, submitted_at: '2026-10-05T01:00:00+00:00', note: null, updated_at: T0 }];
+    renderDialog({ groups: [dept], items, requests, submissions });
+    vi.mocked(callRpc).mockResolvedValue(undefined as never);
+    await user.click(screen.getByRole('radio', { name: '部門' }));
+    const csv = `タイムスタンプ,団体名,机(木),不可机,備考\n2026/10/05 10:00:00,部門甲,1,4,${'あ'.repeat(2001)}\n`;
+    await user.upload(screen.getByLabelText('CSV ファイル'), new File([csv], '部門.csv', { type: 'text/csv' }));
+    const plan = await screen.findByTestId('plan-部門甲');
+    expect(plan.textContent).toContain('同じ時刻（取り込み済み）');
+    expect(plan.textContent).not.toContain('アプリの提出の方が新しい');
+    const ng = screen.getByTestId('plan-cell-部門甲-desk_ng');
+    expect(ng.textContent).toContain('3');
+    expect(ng.textContent).toContain('変えない');
+    expect(ng.textContent).not.toContain('今');
+    expect(screen.getByTestId('note-too-long-部門甲').textContent).toContain('2001 字');
+
+    await user.click(screen.getByRole('checkbox', { name: '部門甲を上書きする' }));
+    await user.click(screen.getByRole('button', { name: '取り込む（1 団体）' }));
+    const results = await screen.findByTestId('import-results');
+    expect(results.textContent).toContain('部門甲：取り込みました（備考は 2000 字に切りました）');
+    const sent = vi.mocked(callRpc).mock.calls[0]![1] as unknown as { p_submission: { note: string }; p_reason: string };
+    expect(sent.p_submission.note).toHaveLength(2000);
+    expect(sent.p_reason).toBe('Googleフォームの回答の取り込み（部門）');
   });
 });

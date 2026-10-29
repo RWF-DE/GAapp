@@ -17,6 +17,7 @@ import {
   hasNoRequests,
   isOutsideFlagActive,
   isPastDeadline,
+  markSubmittedDirect,
   judgeDirectFailure,
   judgeSubmitFailure,
   nonZeroSummary,
@@ -30,6 +31,7 @@ import {
   remainingText,
   requestWindowOf,
   saveCellsDirect,
+  savedAfterUnknown,
   saveGroupsAfterDeadline,
   setPendingCell,
   sortGroups,
@@ -427,5 +429,73 @@ describe('saveGroupsAfterDeadline（締切後の団体ごとの保存）', () =>
       'update_requests_after_deadline',
       { p_group_id: uuid(10), p_rows: [{ itemId: uuid(100), count: 1, updatedAt: T0 }], p_reason: '団体の希望' },
     ]);
+  });
+});
+
+describe('savedAfterUnknown（通信の失敗の後に、読み直した表で保存されていたかを確かめる。2.6）', () => {
+  const g = group(10, '模擬店A', 'stall');
+  const t = (requests: RequestDbRow[]): RequestsTables => ({ groups: [g], items: ITEMS, requests, submissions: [] });
+  const upd = { groupId: g.id, itemId: item('desk').id, count: 5, updatedAt: T0 };
+  const ins = { groupId: g.id, itemId: item('chair').id, count: 2, updatedAt: null };
+
+  it('行が送った数になり、updated_at が基準から進んでいれば保存されていた', () => {
+    const saved = savedAfterUnknown([upd, ins], t([req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)]));
+    expect([...saved].sort()).toEqual([cellKey(g.id, item('desk').id), cellKey(g.id, item('chair').id)].sort());
+  });
+
+  it('行が基準のまま・行がない・ほかの数なら保存されていない', () => {
+    expect(savedAfterUnknown([upd, ins], t([req(g, 'desk', 3, T0)])).size).toBe(0);
+    expect(savedAfterUnknown([upd], t([req(g, 'desk', 4, T1)])).size).toBe(0);
+  });
+
+  it('団体ごと（締切後の RPC は団体の全部か何もないか）：団体のセルがすべて保存されていたときだけ', () => {
+    const both = savedAfterUnknown([upd, ins], t([req(g, 'desk', 5, T1)]), 'group');
+    expect(both.size).toBe(0);
+    const all = savedAfterUnknown([upd, ins], t([req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)]), 'group');
+    expect(all.size).toBe(2);
+  });
+});
+
+describe('markSubmittedDirect（締切前の「提出済みにする」）', () => {
+  const g = group(10, '模擬店A', 'stall');
+
+  it('すでに提出済みなら書かずに、その記録を返す（提出日時を今に変えない）', async () => {
+    const { client, issued } = createFakeSupabase((call: FakeCall) => {
+      if (call.ops.some((o) => ['insert', 'update', 'upsert'].includes(o.op))) throw new Error('書かないはず');
+      return { data: sub(g, T0, '電源') };
+    });
+    const res = await markSubmittedDirect(g.id, client);
+    expect(res).toEqual({ row: sub(g, T0, '電源'), already: true });
+    expect(issued).toHaveLength(1);
+  });
+
+  it('記録がなければ insert、未提出の記録があれば submitted_at が空の行だけを update する', async () => {
+    const calls: FakeCall[] = [];
+    const none = createFakeSupabase((call: FakeCall) => {
+      calls.push(call);
+      if (call.ops.some((o) => o.op === 'insert')) return { data: sub(g, T1) };
+      return { data: null };
+    });
+    expect(await markSubmittedDirect(g.id, none.client)).toEqual({ row: sub(g, T1), already: false });
+    expect(calls.some((c) => c.ops.some((o) => o.op === 'upsert'))).toBe(false);
+
+    const unsubmitted = createFakeSupabase((call: FakeCall) => {
+      if (call.ops.some((o) => o.op === 'update')) {
+        expect(opArgs(call, 'is')).toEqual([['submitted_at', null]]);
+        return { data: sub(g, T1, 'メモ') };
+      }
+      return { data: sub(g, null, 'メモ') };
+    });
+    expect(await markSubmittedDirect(g.id, unsubmitted.client)).toEqual({ row: sub(g, T1, 'メモ'), already: false });
+  });
+
+  it('書く直前にほかの人が提出していれば（0 行・一意の違反）、読み直して already を返す', async () => {
+    let reads = 0;
+    const { client } = createFakeSupabase((call: FakeCall) => {
+      if (call.ops.some((o) => o.op === 'insert')) return { error: { code: '23505', message: 'duplicate key' }, status: 409 };
+      reads++;
+      return { data: reads === 1 ? null : sub(g, T1) };
+    });
+    expect(await markSubmittedDirect(g.id, client)).toEqual({ row: sub(g, T1), already: true });
   });
 });
