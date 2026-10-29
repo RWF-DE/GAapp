@@ -9,13 +9,15 @@
   "scripts": {
     "dev": "pnpm --filter @gaapp/web dev",
     "build": "pnpm --filter @gaapp/web build",
+    "build:e2e": "node scripts/build-e2e.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json && pnpm -r --if-present typecheck",
     "test": "vitest run",
     "e2e": "playwright test",
     "check:emails": "node scripts/check-emails.mjs",
     "gen:types": "node scripts/gen-types.mjs",
-    "check:types": "node scripts/gen-types.mjs --check"
+    "check:types": "node scripts/gen-types.mjs --check",
+    "check:no-test-login": "node scripts/check-no-test-login.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

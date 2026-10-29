@@ -181,21 +181,21 @@ select ok((select bool_and(i.provider = 'email' and u.encrypted_password like '$
 
 -- ================================================================ Before User Created フック
 -- 許可（{}）
-select is(tests.hook('google', 'taro@example.ac.jp'), '{}'::jsonb, 'Google・学校のドメイン・hd なし（userinfo の経路）は許可');
-select is(tests.hook('google', 'taro@example.ac.jp', 'example.ac.jp'), '{}'::jsonb, 'Google・学校のドメイン・hd も学校は許可');
-select is(tests.hook('google', 'Taro@Example.AC.jp', 'EXAMPLE.ac.jp'), '{}'::jsonb, '大文字が混じっても小文字で比べる');
+select is(tests.hook('google', 'taro@school.example'), '{}'::jsonb, 'Google・学校のドメイン・hd なし（userinfo の経路）は許可');
+select is(tests.hook('google', 'taro@school.example', 'school.example'), '{}'::jsonb, 'Google・学校のドメイン・hd も学校は許可');
+select is(tests.hook('google', 'Taro@School.EXAMPLE', 'SCHOOL.example'), '{}'::jsonb, '大文字が混じっても小文字で比べる');
 -- 拒否（403）
 select is(tests.hook('google', 'taro@gmail.example') -> 'error' ->> 'http_code', '403', '学校以外のドメインは 403');
 select is(tests.hook('google', 'taro@gmail.example') -> 'error' ->> 'message', '学校の Google アカウントでログインしてください', '拒否の文言');
-select ok(tests.hook('google', 'taro@example.ac.jp', 'other.example') ? 'error', 'hd が学校でなければ、メールが学校のドメインでも拒否');
-select ok(tests.hook('google', 'taro@other.example', 'example.ac.jp') ? 'error', 'hd が学校でも、メールが学校のドメインでなければ拒否');
-select ok(tests.hook('google', 'taro@sub.example.ac.jp') ? 'error', 'サブドメインは拒否（完全一致）');
-select ok(tests.hook('google', 'taro@example.ac.jp.evil.example') ? 'error', '学校のドメインで始まるだけのドメインは拒否');
-select ok(tests.hook('google', 'a@b@example.ac.jp') ? 'error', '@ が2つあるメールは拒否');
+select ok(tests.hook('google', 'taro@school.example', 'other.example') ? 'error', 'hd が学校でなければ、メールが学校のドメインでも拒否');
+select ok(tests.hook('google', 'taro@other.example', 'school.example') ? 'error', 'hd が学校でも、メールが学校のドメインでなければ拒否');
+select ok(tests.hook('google', 'taro@sub.school.example') ? 'error', 'サブドメインは拒否（完全一致）');
+select ok(tests.hook('google', 'taro@school.example.evil.example') ? 'error', '学校のドメインで始まるだけのドメインは拒否');
+select ok(tests.hook('google', 'a@b@school.example') ? 'error', '@ が2つあるメールは拒否');
 select ok(tests.hook('google', null) ? 'error', 'メールがなければ拒否');
-select ok(tests.hook('email', 'taro@example.ac.jp') ? 'error', 'メールのサインアップは学校のドメインでも拒否（本番でメールログインを無効にし忘れたときの守り）');
-select ok(tests.hook(null, 'taro@example.ac.jp') ? 'error', 'プロバイダーがなければ拒否');
-select ok(tests.hook('github', 'taro@example.ac.jp') ? 'error', 'Google 以外のプロバイダーは拒否');
+select ok(tests.hook('email', 'taro@school.example') ? 'error', 'メールのサインアップは学校のドメインでも拒否（本番でメールログインを無効にし忘れたときの守り）');
+select ok(tests.hook(null, 'taro@school.example') ? 'error', 'プロバイダーがなければ拒否');
+select ok(tests.hook('github', 'taro@school.example') ? 'error', 'Google 以外のプロバイダーは拒否');
 -- テスト用のドメイン（@example.test・@pgtap.test）は、GoTrue を通しては作れない（seed・pgTAP の直接の insert だけ）
 select ok(tests.hook('email', 'admin@example.test') ? 'error', 'テスト用のドメイン（example.test）のメールのサインアップは拒否');
 select ok(tests.hook('google', 'admin@example.test') ? 'error', 'テスト用のドメインは Google でも拒否');

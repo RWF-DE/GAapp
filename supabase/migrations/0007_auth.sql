@@ -66,7 +66,7 @@ create trigger on_auth_user_confirmed after update of email_confirmed_at on auth
 create function private.hook_before_user_created(event jsonb)
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare
-  c_domain constant text := 'example.ac.jp';          -- D-04：学校の Google ドメイン（仮。決まったらこの1行を直す）
+  c_domain constant text := 'school.example';          -- D-04：学校の Google ドメイン（仮。決まったらこの1行を直す）
   v_provider text := event -> 'user' -> 'app_metadata' ->> 'provider';
   v_hd text := lower(event -> 'user' -> 'user_metadata' -> 'custom_claims' ->> 'hd');
   v_email text := lower(btrim(event -> 'user' ->> 'email'));
