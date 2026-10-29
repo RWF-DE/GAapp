@@ -18,9 +18,11 @@
 //   「保存されていませんでした」と知らせて送り直せる状態に戻す（「保存」「もう一度」で読み直したときは、押したのが送り直しなので送る）。
 //   (4) ほかの人の保存があって決められなければ、言い切らずにほかの人の保存のダイアログ（裏の読み直しなら知らせ）に回す。
 //   (5) 読み直しも通信できなければ「保存できたか確かめられません」を出し、「確かめる」で読み直せるまで送り直しを押せない。
-//   送った値と送る直前に読んだ行は下書きにも置く（sent）。画面を離れて開き直しても未確定のまま戻し、開いて最初に読んだ行で
-//   同じく決める（下書きをまだ戻していなければ、下書きの数を入力として決める）。送る直前・送信の失敗の時点でまだ届いていない
-//   部屋の行の読み込みは捨てる（送る前か送っている間に読んだ行なので、決めに使わない）。
+//   送った値と送る直前に読んだ行は下書きにも置く（sent）。画面を離れて開き直しても未確定のまま戻し（下書きの数をそのまま
+//   入力にする。「戻す」を待たない）、開いて最初に読んだ行で同じく決める。送っている間に離れて開き直したら、その送信が終わる
+//   まで送信中として待ち、終わった後に読んだ行で決める（離れた画面は知らせも下書きの片づけもしない）。送る直前・送信の失敗の
+//   時点でまだ届いていない部屋の行の読み込みは捨てる（送る前か送っている間に読んだ行なので、決めに使わない）。保存・確かめるの
+//   流れの途中（最新でない年度の確かめを開いている間を含む）は、裏の読み直しでは決めない（流れの中で読み直して決める）。
 import { hashKey, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
@@ -74,7 +76,7 @@ import {
   type Shortfall,
   type StorageRoom,
 } from '@/lib/data/stocks';
-import { createDraftWriter, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
+import { createDraftWriter, draftKey as draftStorageKey, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
 import { appError, classifyError, effectOf, messageFor, type NameLookup } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
 import {
@@ -117,6 +119,15 @@ interface Conflict {
 
 /** 応答の届かなかった送信：送った数と、送る直前に読んだ部屋の行の updated_at（設計 2.6） */
 type Sent = StockSent;
+
+/** 送っている書き込み（下書きのキー → 送信が終わると解決する Promise）。画面を離れても送信は続くので、開き直した画面は
+ *  これが終わるまで待ってから、送った値が入ったかを決める（送信の結果より前に読んだ行で決めない。決めたことの 21） */
+const sendsInFlight = new Map<string, Promise<void>>();
+
+function sameRecord(a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
+}
 
 /** 入力に下書きの数を重ねる（今の品目にあるものだけ） */
 function withDraft(items: readonly ItemRow[], counts: StockCounts, draftCounts: StockCounts): StockCounts {
@@ -190,6 +201,7 @@ export function StockInput({
   // 下書き（部屋ごと。カメラで次の QR を読んだ・別のアプリへ行った・タブが捨てられた後に戻せる）
   const draftKey = useMemo<DraftKey>(() => ({ userId: open.userId, yearId, screen: 'stock', target: roomId }), [open.userId, yearId, roomId]);
   const writer = useMemo(() => createDraftWriter<StockDraft>(draftKey), [draftKey]);
+  const storageKey = draftStorageKey(draftKey);
   // 開いたときの下書き。未確定の送信（sent）があれば、未確定のまま開き直したことにする（決めたことの 21）
   const [stored] = useState(() => {
     const d = loadDraft<unknown>(draftKey);
@@ -210,6 +222,14 @@ export function StockInput({
     lastSent.current = sent;
     setPendingState(sent);
   };
+  // 開いたときに、前の画面（離れた画面）の送信がまだ終わっていない（終わるまで送信中として待つ）
+  const [sendOnOpen] = useState(() => (stored?.sent ? sendsInFlight.get(storageKey) : undefined));
+  /** 入力がまだないときの入力：読み込んだ行。未確定の送信のある下書きで開いたなら、下書きの数（送った値・その後に変えた値）を
+   *  そのまま入力にする（離れる前の入力に戻す。「戻す」を待つと、知らせの「保存」で読み込んだ行の数を送ってしまう） */
+  const openingCounts = (rows: readonly StockDbRow[]): StockCounts => {
+    const fromRows = countsFromRows(items, rows);
+    return stored?.sent ? withDraft(items, fromRows, stored.counts) : fromRows;
+  };
   // 読み直し（設計 2.6）：部屋の行が新しくなったら（ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、
   // 自分の保存の後の invalidate など）、未保存の入力がなければその行で作り直す。入力があれば入力も元の行も残し、
   // ほかの人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
@@ -217,10 +237,10 @@ export function StockInput({
   const [remote, setRemote] = useState<OtherSave | null>(null);
   const data = stocksQ.data;
   if (data && counts === null) {
-    // 初めて読めた（未確定の送信を下書きから戻して開いたときも、入力はまだないのでこの行で作る）
+    // 初めて読めた（未確定の送信を下書きから戻して開いたときは、下書きの数を入力にする）
     setSeen(data);
     setBase(data);
-    setCounts(countsFromRows(items, data));
+    setCounts(openingCounts(data));
   } else if (!pending && data && (data !== seen || (remote !== null && !dirty))) {
     // 未確定の間は、ここでは入力も元の行も変えない（裏の読み直しは下の onRoomRows で settleSent に回す）
     setSeen(data);
@@ -252,8 +272,11 @@ export function StockInput({
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [writer]);
-  // まだ戻していない（捨ててもいない）下書き。入力に触れる・戻す・捨てる・送ると null（null でない間は、入力は読み込んだ行のまま）
-  const [draft, setDraft] = useState(() => (stored ? { savedAt: stored.savedAt, counts: stored.counts, base: stored.base } : null));
+  // まだ戻していない（捨ててもいない）下書き。入力に触れる・戻す・捨てる・送ると null（null でない間は、入力は読み込んだ行のまま）。
+  // 未確定の送信のある下書きは開いたときに入力にするので、ここには置かない（未確定の間に、戻していない下書きは残らない）
+  const [draft, setDraft] = useState(() =>
+    stored && !stored.sent ? { savedAt: stored.savedAt, counts: stored.counts, base: stored.base } : null,
+  );
   const showDraft = access.writable && !!draft && !!counts && !sameCounts(items, { ...counts, ...draft.counts }, counts);
   /** 下書きに書く。未確定の送信があれば一緒に置く（開き直しても、まず送った値が入ったかを決めるため） */
   const writeDraft = (values: StockCounts, baseStamps: StockBaseStamps) => {
@@ -261,7 +284,8 @@ export function StockInput({
     writer.write(sent ? { counts: values, base: baseStamps, sent } : { counts: values, base: baseStamps });
   };
 
-  const [phase, setPhase] = useState<Phase>('idle');
+  // 前の画面の送信がまだ終わっていなければ、送信中から始める（入力も保存も押せない。終わったら読み直して決める）
+  const [phase, setPhase] = useState<Phase>(sendOnOpen ? 'saving' : 'idle');
   const [error, setError] = useState<unknown>(null);
   const [blocked, setBlocked] = useState<Shortfall[] | null>(null);
   const [conflict, setConflict] = useState<Conflict | null>(null);
@@ -276,6 +300,18 @@ export function StockInput({
   const roomUpdates = () => queryClient.getQueryState(roomKey)?.dataUpdateCount ?? 0;
   // 開いたときにキャッシュにある行も、送信の結果より前に読んだものかもしれないので使わない（開いた後に届いた行で決める）
   const judgedUpdates = useRef(queryClient.getQueryState(roomKey)?.dataUpdateCount ?? 0);
+  // 保存・確かめる・上書きの流れの途中（最新でない年度・在庫超過の確かめを開いている間を含む）と、前の画面の送信を待っている間。
+  // この間に届いた裏の読み直しでは決めない（流れの中・待った後に読み直して決める。流れの古い入力・元の行で続けて、自分の保存を
+  // ダイアログに出したり二重に送ったりしない）。phase は描画の後にしか変わらないので、すぐ変わる ref で見る
+  const flow = useRef(!!sendOnOpen);
+  // 画面を離れた後も送信は続く。離れた後は、送信の結果で知らせたり下書き・キャッシュを変えたりしない（開き直した画面が決める）
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // 「前回の入力」は今の DB の行（入力を残して元の行を変えないときも、読み直した行で出す）
   const last = data ? latestCounted(data) : base ? latestCounted(base) : null;
@@ -343,6 +379,15 @@ export function StockInput({
   };
 
   /** values を送る。sentStamps は送る直前に読んだ部屋の行（応答が届かなかったときに、この後の変化が自分の保存かを見る元） */
+  /** 画面を離れた後に、送信が届いた。下書きがまだこの送信のもの（sent が同じ）なら消す（開き直した画面が書いた下書きは消さない） */
+  const finishSavedAfterLeaving = (values: StockCounts, sentStamps: StockBaseStamps) => {
+    const d = loadDraft<unknown>(draftKey);
+    const parsed = d ? stockDraftSchema.safeParse(d.value) : null;
+    const sent = parsed?.success ? parsed.data.sent : undefined;
+    if (sent && sameRecord(sent.counts, values) && sameRecord(sent.stamps, sentStamps)) removeDraft(draftKey);
+    for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
+  };
+
   const write = async (values: StockCounts, sentStamps: StockBaseStamps, retried = false): Promise<void> => {
     setPhase('saving');
     setPending({ counts: values, stamps: sentStamps });
@@ -351,12 +396,31 @@ export function StockInput({
     setDraft(null);
     writeDraft(values, sentStamps);
     writer.flush();
+    // 送っている間に画面を離れて開き直したら、開き直した画面はこれが終わるまで待つ
+    let finished: () => void = () => undefined;
+    const flight = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
+    sendsInFlight.set(storageKey, flight);
+    try {
+      await sendNow(values, sentStamps, retried);
+    } finally {
+      if (sendsInFlight.get(storageKey) === flight) sendsInFlight.delete(storageKey);
+      finished();
+      setPhase('idle');
+    }
+  };
+
+  const sendNow = async (values: StockCounts, sentStamps: StockBaseStamps, retried: boolean): Promise<void> => {
     // 送る前に始まった部屋の行の読み込みは捨てる（届く行は送る前に読んだものなので、送った値が入ったかの決めに使えない）
     await queryClient.cancelQueries({ queryKey: roomKey });
     try {
       const rows = await saveRoomStocks(yearId, roomId, items, values);
-      finishSaved(rows, 'saved');
+      if (mounted.current) finishSaved(rows, 'saved');
+      else finishSavedAfterLeaving(values, sentStamps);
     } catch (e) {
+      // 画面を離れた後の失敗は、開き直した画面（開き直さなければ次に開いたとき）が下書きの sent から読み直して決める
+      if (!mounted.current) return;
       if (!isUncertain(e)) {
         // 応答が届いた失敗なら何も保存されていない（応答の届かなかった失敗だけ、送った数を残して後で確かめる）
         setPending(null);
@@ -373,8 +437,6 @@ export function StockInput({
         return;
       }
       await handleError(e);
-    } finally {
-      setPhase('idle');
     }
   };
 
@@ -391,7 +453,8 @@ export function StockInput({
 
   /**
    * 未確定の送信（lastSent）が、読み直した部屋の行（latest）に入ったかを決めて片づける（設計 2.6。決めたことの 21）。
-   * 送る直前に読んだ行と比べる（入力の元〔base・下書きの base〕とは比べない）。values は今の入力。
+   * 送る直前に読んだ行と比べる（入力の元〔base・下書きの base〕とは比べない）。values は今の入力（入力がまだなければ
+   * openingCounts。どの呼び出しでも同じ入力で決める）。
    * - recovered：自分の保存が入っていて、その後に入力を変えていない →「保存されていました」で終える
    * - rebased：自分の保存が入っていて、その後に入力を変えた → 読み直した行を元にして知らせる（送らない。保存は押せる）
    * - notSaved：入っておらず、ほかの人の保存もない → 送った数を消す（知らせるか送るかは呼ぶ側）
@@ -417,16 +480,10 @@ export function StockInput({
     setSeen(latest);
     setRestoredStamps(null);
     setRemote(null);
+    // 下書きは今の入力で書き直す（sent を外し、元を読み直した行にする）。未確定の間に戻していない下書きはない（開いたときに入力にした）
     const latestStamps = stampsOf(latest);
-    const latestCounts = countsFromRows(items, latest);
-    if (draft) {
-      // 開き直した後で、下書きをまだ戻していない（入力は読み込んだ行のまま）。入力を読み直した行にし、下書きの元も移す
-      setCounts(latestCounts);
-      setDraft((d) => d && { ...d, base: latestStamps });
-    }
-    if (sameCounts(items, values, latestCounts)) {
+    if (sameCounts(items, values, countsFromRows(items, latest))) {
       writer.clear();
-      setDraft(null);
     } else {
       writer.write({ counts: values, base: latestStamps });
     }
@@ -437,17 +494,17 @@ export function StockInput({
   };
 
   // 裏の読み直し（通信が戻ったときの読み直し・ErrorBanner の「読み直す」・invalidate の後など）で部屋の行が届いたら、
-  // 未確定の送信を決める（入力は置き換えない）。保存・確かめるの流れの途中ならその流れが、ほかの人の保存のダイアログを
-  // 開いている間はその選択が決めるので見送る（閉じた後の読み直しで決める）
+  // 未確定の送信を決める（入力は置き換えない）。保存・確かめるの流れの途中（確かめのダイアログを含む）・前の画面の送信を
+  // 待っている間ならその流れが、ほかの人の保存のダイアログを開いている間はその選択が決めるので見送る（流れの後・閉じた後の
+  // 読み直しで決める）
   const onRoomRows = useEffectEvent(() => {
     const rows = queryClient.getQueryData<StockDbRow[]>(roomKey);
-    if (!lastSent.current || phase !== 'idle' || conflict !== null || !rows) return;
+    if (!lastSent.current || flow.current || conflict !== null || !rows) return;
     const n = roomUpdates();
     if (n <= judgedUpdates.current) return;
     judgedUpdates.current = n;
-    // 今の入力（開いて初めて読めたときは、入力はまだないので読んだ行）。開き直して下書きをまだ戻していなければ、下書きの数
-    const current = counts ?? countsFromRows(items, rows);
-    const settled = settleSent(rows, draft ? withDraft(items, current, draft.counts) : current);
+    // 今の入力（開いて初めて読めたときは、入力はまだないので、描画で作るのと同じ openingCounts）
+    const settled = settleSent(rows, counts ?? openingCounts(rows));
     if (settled?.kind === 'notSaved') {
       setSeen(rows);
       toast.info(NOT_SAVED_MESSAGE);
@@ -463,16 +520,48 @@ export function StockInput({
       }),
     [queryClient, roomHash],
   );
-  // 未確定の送信を下書きから戻して開いたとき、キャッシュの行しかなければ読み直す（届いた行で決める）
+  // 未確定の送信を下書きから戻して開いたとき、キャッシュの行しかなければ読み直す（届いた行で決める）。
+  // 前の画面の送信がまだ終わっていなければ、終わってから読み直す（下）
   const refetchOnOpen = useEffectEvent(() => {
-    if (stored?.sent && queryClient.getQueryData(roomKey) !== undefined) void queryClient.invalidateQueries({ queryKey: roomKey });
+    if (stored?.sent && !sendOnOpen && queryClient.getQueryData(roomKey) !== undefined) void queryClient.invalidateQueries({ queryKey: roomKey });
   });
   useEffect(() => {
     refetchOnOpen();
   }, []);
+  // 前の画面の送信が終わった（届いた・失敗した）。それまでに読んだ行・読んでいる行は送信の結果より前のものかもしれないので
+  // 使わず、この後に始める読み直しで決める
+  const afterSendOnOpen = useEffectEvent(async () => {
+    await queryClient.cancelQueries({ queryKey: roomKey });
+    judgedUpdates.current = roomUpdates();
+    flow.current = false;
+    setPhase('idle');
+    void queryClient.invalidateQueries({ queryKey: roomKey });
+  });
+  useEffect(() => {
+    if (!sendOnOpen) return;
+    let live = true;
+    void sendOnOpen.then(() => {
+      if (live) void afterSendOnOpen();
+    });
+    return () => {
+      live = false;
+    };
+  }, [sendOnOpen]);
+
+  /** 保存・確かめる・上書きの流れ。流れの間に届いて見送った裏の読み直しがあれば、流れの後に読み直して決める */
+  const inFlow = async (run: () => Promise<void>) => {
+    flow.current = true;
+    try {
+      await run();
+    } finally {
+      flow.current = false;
+      if (mounted.current && lastSent.current && roomUpdates() > judgedUpdates.current) void queryClient.invalidateQueries({ queryKey: roomKey });
+    }
+  };
 
   /** 「確かめる」：応答の届かなかった送信が保存されたかを、部屋の行を読み直して確かめる */
-  const confirmLastSave = async () => {
+  const confirmLastSave = () => inFlow(confirmLastSaveNow);
+  const confirmLastSaveNow = async () => {
     if (!unconfirmed || !counts || phase !== 'idle') return;
     setError(null);
     setPhase('checking');
@@ -499,7 +588,9 @@ export function StockInput({
     }
   };
 
-  const save = async () => {
+  // 最新でない年度の確かめを待つ間も流れの途中（裏の読み直しで決めない。続けたら、この流れの読み直しで決める）
+  const save = () => inFlow(saveNow);
+  const saveNow = async () => {
     if (!counts || !base || !stamps || phase !== 'idle' || !access.writable || unconfirmed) return;
     setError(null);
     setBlocked(null);
@@ -555,14 +646,15 @@ export function StockInput({
     if (sentStamps) await write(parsed.data, sentStamps);
   };
 
-  const overwrite = async () => {
-    if (!conflict || !counts) return;
-    setBase(conflict.latest);
-    setRestoredStamps(null);
-    setRemote(null);
-    setConflict(null);
-    await write(counts, stampsOf(conflict.latest));
-  };
+  const overwrite = () =>
+    inFlow(async () => {
+      if (!conflict || !counts) return;
+      setBase(conflict.latest);
+      setRestoredStamps(null);
+      setRemote(null);
+      setConflict(null);
+      await write(counts, stampsOf(conflict.latest));
+    });
 
   /** ほかの人の数を入力にする（入力と下書きは捨てる。未確定の送信も、選んで読み直したので片づける） */
   const adopt = (rows: StockDbRow[]) => {
