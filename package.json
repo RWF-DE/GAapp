@@ -13,16 +13,22 @@
     "typecheck": "tsc -p tsconfig.json && pnpm -r --if-present typecheck",
     "test": "vitest run",
     "e2e": "playwright test",
-    "check:emails": "node scripts/check-emails.mjs"
+    "check:emails": "node scripts/check-emails.mjs",
+    "gen:synthetic": "tsx scripts/gen-synthetic-fixtures.ts",
+    "gen:synthetic-reference": "tsx scripts/gen-synthetic-reference.ts"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@gaapp/allocator": "workspace:*",
+    "@gaapp/shared": "workspace:*",
     "@playwright/test": "1.63.0",
     "@types/node": "22.20.5",
     "eslint": "10.13.0",
     "eslint-config-next": "16.4.2",
     "globals": "17.13.0",
+    "highs": "1.15.4",
     "serve": "14.2.6",
+    "tsx": "4.23.15",
     "typescript": "5.9.3",
     "typescript-eslint": "8.72.0",
     "vitest": "5.0.5"
