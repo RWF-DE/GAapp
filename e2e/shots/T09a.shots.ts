@@ -51,6 +51,7 @@ test.describe('T09a 部員', () => {
     await expect(page.getByText('この画面は準備中です（T10）')).toBeVisible();
     await shoot(page, 'T09a', 'placeholder-mobile');
     await page.getByRole('button', { name: 'メニューを開く' }).click();
+    await expect(page.locator('#app-mobile-nav')).toBeVisible();
     await shoot(page, 'T09a', 'nav-staff-mobile');
   });
 
@@ -59,13 +60,20 @@ test.describe('T09a 部員', () => {
     try {
       await page.setViewportSize(PC);
       await page.goto('/');
+      // 読み込みが終わってから撮る（年度の選択・今の年度の印・ホームの年度が出るまで待つ）
+      await expect(page.getByTestId('year-select')).toBeVisible();
+      await expect(page.getByTestId('current-year')).toBeVisible();
+      await expect(page.getByTestId('home-year')).toBeVisible();
       await shoot(page, 'T09a', 'year-select-pc');
       await page.getByTestId('year-select').selectOption(s.yearId);
       await expect(page.getByTestId('not-latest-year-banner')).toBeVisible();
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
+      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
       await shoot(page, 'T09a', 'year-switched-pc');
       await page.setViewportSize(MOBILE);
       await page.reload();
       await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
+      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
       // 年度が2つあってもヘッダーがはみ出さない（ページが横にスクロールしない）
       expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(MOBILE.width);
       await shoot(page, 'T09a', 'year-switched-mobile');
