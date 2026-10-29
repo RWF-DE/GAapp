@@ -1,6 +1,6 @@
 // T12 ルールのスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T12` で notes/T12/ に撮る（CI では流さない）。
 // 一覧（PC・スマホ）、?code=S05 で開いた編集のシート、欄の下のエラー、ひな形のメニュー、無効にする確認、有効にできない理由、
-// 読み直しの失敗（前の一覧を残す帯）、保存できたか分からないときのシート、使用不可の場所を指す「残す」の印と知らせ、使用場所のない団体を選んだ「残す」の知らせ、空・読み込み中・権限なし・確定中（メモだけ）。
+// 読み直しの失敗（前の一覧を残す帯）、保存できたか分からないときのシート、無効にするダイアログで読み直せなかったとき、使用不可の場所を指す「残す」の印と知らせ、使用場所のない団体を選んだ「残す」の知らせ、空・読み込み中・権限なし・確定中（メモだけ）。
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
@@ -145,6 +145,31 @@ test.describe('T12 管理者', () => {
       await expect(sheet.getByTestId('unknown-outcome')).toBeVisible({ timeout: 60_000 });
       await expect(sheet.getByTestId('unknown-outcome')).toBeInViewport();
       await shoot(page, 'T12', 'form-unknown-outcome-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T12 無効にするダイアログで止められた後に読み直せなかった（ダイアログの中に知らせと「読み直す」）', async ({ page }) => {
+    // supabase-js の GET の再試行で、読み直しの失敗が出るまで数秒かかる
+    test.setTimeout(120_000);
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/');
+      await waitList(page);
+      await page.locator(`[data-row-id="${s.ids.rules['S04']}"]`).getByRole('switch', { name: 'S04 を有効にする' }).click();
+      const dlg = page.getByRole('alertdialog');
+      await dlg.getByLabel('メモ').fill('E2E：今年は使わない');
+      await sql(`update public.rules set memo = 'E2E：ほかの人のメモ' where year_id = $1 and code = 'S04'`, [s.yearId]);
+      await page.route('**/rest/v1/rules*', (route: Route) => {
+        const url = new URL(route.request().url());
+        const isRowReread = route.request().method() === 'GET' && url.searchParams.has('id') && url.searchParams.get('select') !== 'updated_at';
+        return isRowReread ? route.abort('internetdisconnected') : route.continue();
+      });
+      await dlg.getByRole('button', { name: '無効にする' }).click();
+      await expect(dlg.getByTestId('disable-failure')).toBeVisible({ timeout: 60_000 });
+      await shoot(page, 'T12', 'disable-reread-failed-pc');
     } finally {
       await s.cleanup();
     }

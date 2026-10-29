@@ -5,10 +5,12 @@ import type { RuleDbRow } from '@/lib/db/types';
 import { appError, classifyError, messageFor, unknownOutcomeMessage } from '@/lib/errors';
 import { fixtureToTables } from '@/lib/testing/fixture-rows';
 import {
+  DISABLE_NOTICES,
   DUPLICATE_CODE_MESSAGE,
   REREAD_FAILED_MESSAGE,
   SAVED_BEFORE_MESSAGE,
   runRuleWrite,
+  TOGGLE_NOTICES,
   toggleFailureMessage,
   type RuleWriteRequest,
   type SaveOutcome,
@@ -253,5 +255,47 @@ describe('runRuleWrite：ほかの失敗', () => {
     expect(d.onReload).toHaveBeenCalledTimes(1);
     expect(d.reloadMembership).toHaveBeenCalledTimes(1);
     expect(classifyError(out.error).kind).toBe('forbidden');
+  });
+});
+
+describe('runRuleWrite：一覧の切り替えと「無効にする」のダイアログの文言（「保存」のボタンはない）', () => {
+  const lockConflict = () => appError('conflict', 'lock_conflict', { table: 'rules' });
+  const toggle = (send: () => Promise<unknown>, reread: () => Promise<RuleDbRow | null>, notices = TOGGLE_NOTICES): RuleWriteRequest => ({
+    mode: 'update',
+    send,
+    reread,
+    // 切り替えは有効にする（Switch）。無効にする（ダイアログ）は enabled: false とメモ
+    input: notices === DISABLE_NOTICES ? { enabled: false, memo: '使わなくなった' } : { enabled: true },
+    baseVersion: T0,
+    okMessage: 'ルール S05 を有効にしました',
+    notices,
+  });
+
+  it('切り替え：保存できたか分からない（not-saved・unread）→「切り替えられたか分かりません…」（「保存」と言わない）', async () => {
+    for (const reread of [async () => row({ enabled: false }), () => Promise.reject(network())]) {
+      const out = failed(await runRuleWrite(toggle(() => Promise.reject(network()), reread), deps()));
+      expect(out.notice).toBe('切り替えられたか分かりません。もう一度切り替えると、確かめてから送ります');
+      expect(toggleFailureMessage(out, () => '使わない')).toBe(out.notice);
+      expect(out.notice).not.toContain('保存');
+    }
+  });
+
+  it('切り替え：止められた後に読み直せなかった → 「もう一度切り替えてください」と読み直す', async () => {
+    const out = failed(await runRuleWrite(toggle(() => Promise.reject(lockConflict()), () => Promise.reject(network())), deps()));
+    expect(out.notice).toBe(TOGGLE_NOTICES.rereadFailed);
+    expect(out.notice).not.toContain('保存');
+    expect(out.showReload).toBe(true);
+  });
+
+  it('無効にする：保存できたか分からない →「無効にできたか分かりません。もう一度「無効にする」を押すと…」。読み直せなかった →「無効にする」を押して', async () => {
+    const unknown = failed(await runRuleWrite(toggle(() => Promise.reject(network()), async () => row({}), DISABLE_NOTICES), deps()));
+    expect(unknown.notice).toBe('無効にできたか分かりません。もう一度「無効にする」を押すと、確かめてから送ります');
+    const unread = failed(
+      await runRuleWrite(toggle(() => Promise.reject(lockConflict()), () => Promise.reject(network()), DISABLE_NOTICES), deps()),
+    );
+    expect(unread.notice).toBe(DISABLE_NOTICES.rereadFailed);
+    expect(unread.notice).toContain('「無効にする」');
+    expect(unread.notice).not.toContain('保存');
+    expect(unread.showReload).toBe(true);
   });
 });

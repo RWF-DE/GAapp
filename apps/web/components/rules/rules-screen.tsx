@@ -57,7 +57,15 @@ import { queryKeys } from '@/lib/query';
 import { NOTE_MAX, optionalText } from '@/lib/schemas/common';
 import { cn } from '@/lib/utils';
 import { RuleFormSheet, type RuleSheetTarget } from './rule-form-sheet';
-import { runRuleWrite, toggleFailureMessage, type RuleWriteDeps, type SaveOutcome } from './rule-write';
+import {
+  DISABLE_NOTICES,
+  runRuleWrite,
+  TOGGLE_NOTICES,
+  toggleFailureMessage,
+  type RuleWriteDeps,
+  type RuleWriteNotices,
+  type SaveOutcome,
+} from './rule-write';
 
 const memoSchema = optionalText(NOTE_MAX);
 
@@ -180,12 +188,15 @@ function RulesView({
       writeDeps,
     );
 
-  /** 有効・無効の切り替え。失敗は toast で知らせ、結果を返す（無効にするダイアログが閉じるかを決める） */
-  const setEnabled = async (rule: RuleDbRow, enabled: boolean, memo?: string | null): Promise<SaveOutcome> => {
+  /**
+   * 有効・無効の切り替え（2.6 の (B1)）。結果を返す（知らせ方は呼ぶ側：Switch は toast、無効にするダイアログはダイアログの中）。
+   * notices は保存できたか分からない・読み直せなかったときの文言（「保存」のボタンはないので、操作に合わせる）
+   */
+  const setEnabled = async (rule: RuleDbRow, enabled: boolean, notices: RuleWriteNotices, memo?: string | null): Promise<SaveOutcome> => {
     const patch: Partial<RuleWrite> = memo === undefined ? { enabled } : { enabled, memo };
     setToggling(rule.id);
     try {
-      const out = await runRuleWrite(
+      return await runRuleWrite(
         {
           mode: 'update',
           send: () => updateRule(rule, patch),
@@ -193,19 +204,15 @@ function RulesView({
           input: patch,
           baseVersion: rule.updated_at,
           okMessage: enabled ? `ルール ${rule.code} を有効にしました` : `ルール ${rule.code} を無効にしました`,
+          notices,
         },
         writeDeps,
       );
-      if (!out.ok) {
-        const message = toggleFailureMessage(out, (e) => messageFor(classifyError(e)));
-        if (out.showReload) toast.error(message, { action: { label: '読み直す', onClick: onReload } });
-        else toast.error(message);
-      }
-      return out;
     } finally {
       setToggling(null);
     }
   };
+  const failureMessage = (out: Extract<SaveOutcome, { ok: false }>) => toggleFailureMessage(out, (e) => messageFor(classifyError(e)));
 
   const onToggle = (rule: RuleDbRow, next: boolean) => {
     if (editMode !== 'full') return;
@@ -218,7 +225,13 @@ function RulesView({
       setEnableBlocked({ rule, messages });
       return;
     }
-    void setEnabled(rule, true);
+    void setEnabled(rule, true, TOGGLE_NOTICES).then((out) => {
+      if (out.ok) return;
+      // 一覧の Switch はモーダルの外なので、toast の「読み直す」を押せる
+      const message = failureMessage(out);
+      if (out.showReload) toast.error(message, { action: { label: '読み直す', onClick: onReload } });
+      else toast.error(message);
+    });
   };
 
   const openEdit = (r: RuleDbRow) => {
@@ -402,16 +415,23 @@ function RulesView({
         <DisableDialog
           rule={disableTarget}
           onClose={() => setDisableTarget(null)}
+          onReload={onReload}
           onConfirm={async (memo) => {
             // 開いたときの行（updated_at）で送る。開いた後に一覧が読み直されても版を進めない
             // （メモの欄は開いたときのメモから作ったので、進めるとほかの人のメモを黙って上書きする）
-            const out = await setEnabled(disableTarget, false, memo);
-            if (out.ok) return;
-            // ほかの人が先に変えた・消した（読み直した）：一覧は読み直したので閉じる（古い行・古いメモで送り続けない。開き直すと今のメモが入る）。
-            // 保存できたか分からない・止められた後に読み直せなかったときは、メモの入力を残して開いたままにする（もう一度押すとふつうに送る）
+            const out = await setEnabled(disableTarget, false, DISABLE_NOTICES, memo);
+            if (out.ok) return null;
+            // ほかの人が先に変えた・消した（判定の結果が changed。一覧は読み直した）：閉じて toast で知らせる
+            // （古い行・古いメモで送り続けない。開き直すと今のメモが入る）。
+            // 保存できたか分からない・止められた後に読み直せなかったときなどは、メモの入力を残して開いたまま、ダイアログの中に知らせる
+            // （モーダルの間は toast の「読み直す」を押せないので、読み直すボタンもダイアログの中に出す。もう一度押すとふつうに送る）
+            const message = failureMessage(out);
             const kind = classifyError(out.error).kind;
-            if (!out.notice && (kind === 'conflict' || kind === 'not_found')) setDisableTarget(null);
-            throw out.error;
+            if (!out.notice && (kind === 'conflict' || kind === 'not_found')) {
+              toast.error(message);
+              return null;
+            }
+            return { message, showReload: out.showReload };
           }}
         />
       ) : null}
@@ -504,17 +524,31 @@ function EnabledSwitch({ rule, disabled, onChange }: { rule: RuleDbRow; disabled
   );
 }
 
-/** 無効にする前の確認（理由をメモに残す。削除はしない） */
-function DisableDialog({
+/** 無効にするダイアログを開いたままにするときの知らせ（showReload なら「読み直す」も出す） */
+export interface DisableFailure {
+  message: string;
+  showReload?: boolean;
+}
+
+/**
+ * 無効にする前の確認（理由をメモに残す。削除はしない）。
+ * onConfirm が null を返せば閉じ、DisableFailure を返せばメモの入力を残して開いたまま、ダイアログの中に知らせる
+ * （モーダルの間は toast の action を押せないので、「読み直す」もダイアログの中に出す）。
+ */
+export function DisableDialog({
   rule,
   onClose,
   onConfirm,
+  onReload,
 }: {
   rule: RuleDbRow;
   onClose: () => void;
-  onConfirm: (memo: string | null) => Promise<void>;
+  onConfirm: (memo: string | null) => Promise<DisableFailure | null>;
+  /** 一覧を読み直す */
+  onReload: () => void;
 }) {
   const [memo, setMemo] = useState(rule.memo ?? '');
+  const [failure, setFailure] = useState<DisableFailure | null>(null);
   const id = useId();
   const parsed = memoSchema.safeParse(memo);
   return (
@@ -528,8 +562,25 @@ function DisableDialog({
       confirmLabel="無効にする"
       destructive
       confirmDisabled={!parsed.success}
-      onConfirm={() => onConfirm(parsed.success ? parsed.data : null)}
+      onConfirm={async () => {
+        setFailure(null);
+        const f = await onConfirm(parsed.success ? parsed.data : null);
+        if (!f) return;
+        setFailure(f);
+        // ConfirmDialog は投げると開いたままにする
+        throw new Error(f.message);
+      }}
     >
+      {failure ? (
+        <div role="alert" data-testid="disable-failure" className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+          <p className="font-medium text-destructive">{failure.message}</p>
+          {failure.showReload ? (
+            <Button size="sm" variant="outline" onClick={onReload}>
+              読み直す
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="space-y-1.5">
         <Label htmlFor={id}>メモ</Label>
         <Textarea id={id} value={memo} onChange={(e) => setMemo(e.target.value)} rows={3} />

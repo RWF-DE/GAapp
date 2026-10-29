@@ -442,6 +442,50 @@ test.describe('T12 管理者', () => {
     }
   });
 
+  test('T12 無効にするダイアログで止められた後に読み直せなかったら、ダイアログの中に知らせと「読み直す」を出す。読み直しても版は進めず、もう一度押すと conflict で閉じる', async ({ page }) => {
+    // supabase-js の GET の再試行で、読み直しの失敗が出るまで数秒かかる
+    test.setTimeout(120_000);
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/');
+      const s04 = page.locator(`[data-row-id="${s.ids.rules['S04']}"]`);
+      const toggle = s04.getByRole('switch', { name: 'S04 を有効にする' });
+      await toggle.click();
+      const dlg = page.getByRole('alertdialog');
+      await expect(dlg.getByRole('heading', { name: 'ルール S04 を無効にしますか' })).toBeVisible();
+      await dlg.getByLabel('メモ').fill('E2E：わたしのメモ');
+
+      // ほかの人がメモを直す（updated_at が変わる）。止められた後の行の読み直し（id で全部の列）だけが通信の失敗になる
+      // （updateWithLock の 0 行の理由の読み直し〔select=updated_at〕と、一覧の読み直し〔year_id〕は通す）
+      await sql(`update public.rules set memo = 'E2E：ほかの人のメモ' where year_id = $1 and code = 'S04'`, [s.yearId]);
+      const rereadPattern = '**/rest/v1/rules*';
+      await page.route(rereadPattern, (route) => {
+        const url = new URL(route.request().url());
+        const isRowReread = route.request().method() === 'GET' && url.searchParams.has('id') && url.searchParams.get('select') !== 'updated_at';
+        return isRowReread ? route.abort('internetdisconnected') : route.continue();
+      });
+      await dlg.getByRole('button', { name: '無効にする' }).click();
+      const failure = dlg.getByTestId('disable-failure');
+      await expect(failure).toContainText('読み直せませんでした。「読み直す」を押してから、もう一度「無効にする」を押してください', { timeout: 60_000 });
+      await expect(failure).not.toContainText('保存');
+      await expect(dlg.getByLabel('メモ')).toHaveValue('E2E：わたしのメモ');
+      // モーダルの間でも押せる「読み直す」がダイアログの中にある。押すと一覧が読み直される
+      await dlg.getByRole('button', { name: '読み直す' }).click();
+      await expect(s04).toContainText('E2E：ほかの人のメモ');
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
+
+      // 一覧を読み直しても版は進めない：もう一度押すと開いたときの版で送り、DB が conflict で止め、読み直して（changed）閉じる。ほかの人のメモは残る
+      await page.unroute(rereadPattern);
+      await dlg.getByRole('button', { name: '無効にする' }).click();
+      await expect(dlg).toBeHidden();
+      await expect(toggle).toBeChecked();
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T12 シートを開いた後に一覧が読み直されても、開いたときの版で保存する（ほかの人の変更を黙って上書きせず conflict。もう一度保存すると上書き）', async ({ page }) => {
     const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
     try {
