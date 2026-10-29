@@ -15,6 +15,7 @@ import {
   syntheticReference,
   type DatasetName,
 } from './datasets';
+import { likePrefix } from './like';
 import { buildScenarioRows, type DbItem, type DbRoom, type ExtraGroup, type ScenarioRows } from './scenario-rows';
 import { SEED_USER_IDS, TEST_PASSWORD } from './users';
 
@@ -390,13 +391,13 @@ export const SERIAL_NAMES = {
  * 場所・品目・距離の上書き、createUser のユーザー（e2e- で始まる @example.test）。手での確かめの MANUAL-・manual- は残す。
  */
 export async function cleanupLeftovers(): Promise<{ years: number; rooms: number; items: number; users: number }> {
-  const years = (await sql<{ id: string }>(`select id from public.years where label like 'E2E-%'`)).map((r) => r.id);
+  const years = (await sql<{ id: string }>(`select id from public.years where label like $1 escape '\\'`, [likePrefix('E2E-')])).map((r) => r.id);
   await deleteYears(years);
   return withTx(async (c) => {
-    const roomLike = `${SERIAL_NAMES.roomPrefix}%`;
-    const itemLike = `${SERIAL_NAMES.itemCodePrefix}%`;
-    const roomIds = (await c.query<{ id: string }>('select id from public.rooms where name like $1', [roomLike])).rows.map((r) => r.id);
-    const itemIds = (await c.query<{ id: string }>('select id from public.items where code like $1', [itemLike])).rows.map((r) => r.id);
+    const roomLike = likePrefix(SERIAL_NAMES.roomPrefix);
+    const itemLike = likePrefix(SERIAL_NAMES.itemCodePrefix);
+    const roomIds = (await c.query<{ id: string }>(`select id from public.rooms where name like $1 escape '\\'`, [roomLike])).rows.map((r) => r.id);
+    const itemIds = (await c.query<{ id: string }>(`select id from public.items where code like $1 escape '\\'`, [itemLike])).rows.map((r) => r.id);
     if (roomIds.length > 0) {
       await c.query('delete from public.allocations where source_room_id = any($1::uuid[])', [roomIds]);
       await c.query('delete from public.stocks where room_id = any($1::uuid[])', [roomIds]);
@@ -411,12 +412,13 @@ export async function cleanupLeftovers(): Promise<{ years: number; rooms: number
       await c.query('delete from public.stocks where item_id = any($1::uuid[])', [itemIds]);
       await c.query('delete from public.items where id = any($1::uuid[])', [itemIds]);
     }
-    const buildingLike = `${SERIAL_NAMES.buildingPrefix}%`;
-    await c.query('delete from public.distance_overrides where building_a like $1 or building_b like $1 or building_a like $2 or building_b like $2', [
-      buildingLike,
-      roomLike,
-    ]);
-    const users = await c.query(`delete from auth.users where email like 'e2e-%@example.test'`);
+    const buildingLike = likePrefix(SERIAL_NAMES.buildingPrefix);
+    await c.query(
+      `delete from public.distance_overrides
+        where building_a like $1 escape '\\' or building_b like $1 escape '\\' or building_a like $2 escape '\\' or building_b like $2 escape '\\'`,
+      [buildingLike, roomLike],
+    );
+    const users = await c.query(`delete from auth.users where email like $1 escape '\\'`, [likePrefix('e2e-', '@example.test')]);
     return { years: years.length, rooms: roomIds.length, items: itemIds.length, users: users.rowCount ?? 0 };
   });
 }
