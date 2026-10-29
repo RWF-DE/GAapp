@@ -299,12 +299,28 @@ function AddRowForm({
 
 // ---- 使用不可にする前の一覧 ----
 
+/**
+ * 部屋の使用を変えた後に読み直せず、保存できたか（conflict の後は今の値が）分からない間の知らせと「確かめる」（2.6）。
+ * これが出ている間は、使用不可にする・使用可に戻すのボタンを押せない。
+ */
+export function RoomCheckNotice({ message, onCheck, busy }: { message: string; onCheck: () => void; busy: boolean }) {
+  return (
+    <div role="alert" data-testid="room-usable-check" className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+      <p className="min-w-0 flex-1">{message}</p>
+      <Button size="sm" variant="outline" disabled={busy} onClick={onCheck}>
+        確かめる
+      </Button>
+    </div>
+  );
+}
+
 export function UnusableDialog({
   roomId,
   vm,
   checklist,
   pendingCount,
   busy,
+  check,
   onOpenChange,
   onOp,
   onConfirm,
@@ -314,6 +330,8 @@ export function UnusableDialog({
   checklist: readonly UnusableCheckItem[];
   pendingCount: number;
   busy: boolean;
+  /** 読み直せず確かめる必要があるとき（RoomCheckNotice）。この間は「使用不可にする」を押せない */
+  check?: { message: string; onCheck: () => void } | null;
   onOpenChange: (open: boolean) => void;
   onOp: (op: FixedRowOp, rowId: string) => void;
   onConfirm: (note: string | null) => Promise<void>;
@@ -329,6 +347,7 @@ export function UnusableDialog({
             checklist={checklist}
             pendingCount={pendingCount}
             busy={busy}
+            check={check ?? null}
             onCancel={() => onOpenChange(false)}
             onOp={onOp}
             onConfirm={onConfirm}
@@ -345,6 +364,7 @@ function UnusableForm({
   checklist,
   pendingCount,
   busy,
+  check,
   onCancel,
   onOp,
   onConfirm,
@@ -354,6 +374,7 @@ function UnusableForm({
   checklist: readonly UnusableCheckItem[];
   pendingCount: number;
   busy: boolean;
+  check: { message: string; onCheck: () => void } | null;
   onCancel: () => void;
   onOp: (op: FixedRowOp, rowId: string) => void;
   onConfirm: (note: string | null) => Promise<void>;
@@ -425,13 +446,14 @@ function UnusableForm({
           {blocker}
         </p>
       ) : null}
+      {check ? <RoomCheckNotice message={check.message} onCheck={check.onCheck} busy={busy} /> : null}
       <DialogFooter>
         <Button variant="outline" disabled={busy} onClick={onCancel}>
           閉じる
         </Button>
         <Button
           variant="destructive"
-          disabled={busy || blocker !== null}
+          disabled={busy || blocker !== null || check !== null}
           onClick={async () => {
             const r = parseNote(text);
             if (!r.ok) {

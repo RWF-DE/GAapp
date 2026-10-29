@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 import { accessToken, rpc, storageStateFor } from './support/auth';
 import { createScenario, sql } from './support/db';
 import { SEED_USER_IDS } from './support/users';
@@ -181,6 +181,20 @@ test('T13 使用不可の部屋の固定の行：画面に「固定を外す」�
     await expect(actions.getByRole('button', { name: '運び元を変える' })).toHaveCount(2);
     await expect(actions.getByRole('button', { name: '行を削除' })).toHaveCount(2);
     await expect(e002.getByRole('button', { name: '固定を外す' })).toHaveCount(0);
+    // 「部屋の見出しのメニューへ」：MER の行も在庫もないタブ（教卓）・団体別から押しても、固定の行の品目のタブ（机(木)）を開き、
+    // MER の見出しのメニュー（使用可に戻す）が出る
+    const merMenu = page.locator(`[data-room-block="${roomId}"]`).getByRole('button', { name: 'MERのメニュー' });
+    for (const from of ['tab', 'group'] as const) {
+      if (from === 'tab') await page.getByRole('tab', { name: '教卓' }).click();
+      else await page.getByRole('button', { name: '団体別' }).click();
+      await expect(merMenu).toHaveCount(0);
+      await actions.getByRole('button', { name: '部屋の見出しのメニューへ' }).click();
+      await expect(page.getByRole('tab', { name: '机(木)' })).toHaveAttribute('aria-selected', 'true');
+      await expect(merMenu).toBeVisible();
+      await merMenu.click();
+      await expect(page.getByRole('menuitem', { name: '使用可に戻す' })).toBeVisible();
+      await page.keyboard.press('Escape');
+    }
     // 再実行で自動の行は MER から動き、固定・手動の2行だけが残る
     expect((await rowsOf(s.yearId, "r.name = 'MER'")).map((r) => r.id).sort()).toEqual([p1!.id, p2!.id].sort());
     const [p1now] = await rowsOf(s.yearId, 'a.id = $2', [p1!.id]);
@@ -328,6 +342,93 @@ test('T13 部屋の見出しの「使用不可にする」：2つの画面で部
     await expect(page.getByRole('menuitem', { name: '使用可に戻す' })).toBeVisible();
     await page.keyboard.press('Escape');
     await page2.close();
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('T13 部屋の見出しの「使用不可にする」：応答だけを落とすと、送り直す前に読み直して「保存されていました」と出し、最小変更で再実行を目立たせる', async ({ page }) => {
+  const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+  try {
+    const roomId = s.ids.rooms['MER']!;
+    const [x] = await rowsOf(s.yearId, "r.name = 'MER' and i.code = 'desk' and not a.is_keep");
+    if (!x) throw new Error('MER の机(木)の行が要ります');
+    await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+    await openRow(page, x.id);
+    const menu = page.locator(`[data-room-block="${roomId}"]`).getByRole('button', { name: 'MERのメニュー' });
+
+    // room_years の書き込み（行のない部屋なので insert）を DB には届けてから、ブラウザには通信の失敗を返す
+    let writes = 0;
+    await page.route('**/rest/v1/room_years*', async (route) => {
+      if (route.request().method() === 'GET') return route.continue();
+      writes += 1;
+      await route.fetch();
+      await route.abort();
+    });
+    await menu.click();
+    await page.getByRole('menuitem', { name: '今年は使用不可にする' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByTestId('unusable-checklist-empty')).toBeVisible();
+    await dialog.getByLabel('理由のメモ（任意）').fill('E2E：応答を落とす');
+    await dialog.getByRole('button', { name: '使用不可にする' }).click();
+    await expect(page.getByText(/^保存されていました（MERを今年は使用不可にしました/)).toBeVisible({ timeout: 15_000 });
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText('ほかの人がこの部屋の使用を変えました', { exact: false })).toHaveCount(0);
+    await expect(page.getByTestId('suggest-minimal')).toBeVisible();
+    await expect(page.getByRole('button', { name: '最小変更で再実行', exact: true })).toHaveAttribute('data-emphasized', 'true');
+    await page.unroute('**/rest/v1/room_years*');
+    expect(writes).toBe(1);
+    const ry = await sql<{ usable: boolean; note: string | null }>(`select usable, note from public.room_years where year_id = $1 and room_id = $2`, [s.yearId, roomId]);
+    expect(ry).toEqual([{ usable: false, note: 'E2E：応答を落とす' }]);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('T13 部屋の見出しの「使用不可にする」：conflict の後の読み直しが失敗しても、画面・ダイアログ・メモは残り、「読み直しました」と言わず、確かめるまで押せない', async ({ page }) => {
+  // 読み直しの GET は、supabase-js（postgrest-js）が通信の失敗を間をあけて数回送り直し、react-query も1回送り直すので、失敗が分かるまで十数秒かかる
+  test.setTimeout(120_000);
+  const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+  try {
+    const roomId = s.ids.rooms['MER']!;
+    const [x] = await rowsOf(s.yearId, "r.name = 'MER' and i.code = 'desk' and not a.is_keep");
+    if (!x) throw new Error('MER の机(木)の行が要ります');
+    await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+    await openRow(page, x.id);
+    const block = page.locator(`[data-room-block="${roomId}"]`);
+    await block.getByRole('button', { name: 'MERのメニュー' }).click();
+    await page.getByRole('menuitem', { name: '今年は使用不可にする' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByTestId('unusable-checklist-empty')).toBeVisible();
+    await dialog.getByLabel('理由のメモ（任意）').fill('E2E：読み直せない');
+
+    // ほかの人（マスタ設定）が、画面の知らない間に行を足した（使用可のまま、メモだけ）
+    await sql(`insert into public.room_years (year_id, room_id, usable, note) values ($1, $2, true, 'E2E：ほかの人')`, [s.yearId, roomId]);
+    // 書き込みは通し、読み直し（GET）はすべて落とす
+    const failReads = async (route: Route) => (route.request().method() === 'GET' ? route.abort() : route.continue());
+    await page.route('**/rest/v1/**', failReads);
+    await dialog.getByRole('button', { name: '使用不可にする' }).click();
+    const check = dialog.getByTestId('room-usable-check');
+    await expect(check).toContainText('ほかの人がこの部屋の使用を変えました。読み直せませんでした', { timeout: 60_000 });
+    await expect(page.getByText('ほかの人がこの部屋の使用を変えました。読み直しました')).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByLabel('理由のメモ（任意）')).toHaveValue('E2E：読み直せない');
+    await expect(dialog.getByRole('button', { name: '使用不可にする' })).toBeDisabled();
+    // 画面は ErrorState に替わらず、上の帯で知らせる（編集中の表は残る）
+    await expect(page.getByTestId('error-banner')).toBeVisible();
+    await expect(block).toBeVisible();
+
+    // 通信が戻って「確かめる」：読み直せたので、いつもの conflict（読み直しました）。まだ使用可なので押し直せる
+    await page.unroute('**/rest/v1/**', failReads);
+    await check.getByRole('button', { name: '確かめる' }).click();
+    await expect(page.getByText('ほかの人がこの部屋の使用を変えました。読み直しました')).toBeVisible();
+    await expect(check).toHaveCount(0);
+    await expect(dialog.getByLabel('理由のメモ（任意）')).toHaveValue('E2E：読み直せない');
+    await dialog.getByRole('button', { name: '使用不可にする' }).click();
+    await expect(page.getByTestId('suggest-minimal')).toBeVisible();
+    await expect(dialog).toHaveCount(0);
+    const ry = await sql<{ usable: boolean; note: string | null }>(`select usable, note from public.room_years where year_id = $1 and room_id = $2`, [s.yearId, roomId]);
+    expect(ry).toEqual([{ usable: false, note: 'E2E：読み直せない' }]);
   } finally {
     await s.cleanup();
   }

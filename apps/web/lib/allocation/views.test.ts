@@ -6,7 +6,7 @@ import { toStoredRows, toYearData } from '@/lib/data/year-data';
 import { FIXTURE_UPDATED_AT, fixtureSnapshot } from '@/lib/testing/fixture-rows';
 import { groupViews } from './group-view';
 import { buildAllocateInput } from './input';
-import { itemTabBlocks, KEEP_DEST } from './item-view';
+import { itemTabBlocks, KEEP_DEST, roomHasBlock, roomTabFor } from './item-view';
 import { itemTabs } from './tabs';
 import { buildViewModel } from './view-model';
 
@@ -105,6 +105,43 @@ describe('itemTabBlocks', () => {
     expect(blocks.map((b) => b.room.id).sort()).toEqual([storage[0]!.id, storage[1]!.id].sort());
     expect(blocks[0]!.cells[0]!.stock).toBeNull();
     expect(blocks[0]!.cells[0]!.surplus).toBeNull();
+  });
+});
+
+describe('roomTabFor（部屋の見出しへ移るときのタブ）', () => {
+  const mer = base.rooms.find((r) => r.name === 'MER')!;
+  const vm = buildViewModel(snap);
+  const stored = toStoredRows(snap).rows;
+  const tabs = itemTabs(toYearData(snap).data.items);
+
+  it('roomHasBlock は itemTabBlocks がその部屋のまとまりを出すかと同じ', () => {
+    for (const t of tabs) {
+      for (const r of base.rooms) {
+        expect(roomHasBlock(vm, stored, t, r.id), `${t.key} ${r.name}`).toBe(itemTabBlocks(vm, stored, t).some((b) => b.room.id === r.id));
+      }
+    }
+  });
+
+  it('望んだタブにその部屋のまとまりがあればそのタブ。なければ（行も在庫もない）まとまりのある最初のタブ', () => {
+    // MER は教卓の在庫も行もない（合成データ）。机(木)・椅子(木)には在庫がある
+    expect(roomHasBlock(vm, stored, tabs.find((t) => t.key === 'lectern')!, mer.id)).toBe(false);
+    expect(roomTabFor(vm, stored, tabs, mer.id, 'lectern')).toBe('desk');
+    expect(roomTabFor(vm, stored, tabs, mer.id, 'chair')).toBe('chair');
+    expect(roomTabFor(vm, stored, tabs, mer.id, null)).toBe('desk');
+    expect(roomTabFor(vm, stored, tabs, mer.id, 'unknown_tab')).toBe('desk');
+  });
+
+  it('在庫がなくても、その部屋からの行があるタブにはまとまりがある', () => {
+    const s = fixtureSnapshot(fx, {
+      tables: { allocations: [row({ source_room_id: mer.id, item_id: item('lectern').id, requested_item_id: item('lectern').id, count: 1 })] },
+    });
+    expect(roomTabFor(buildViewModel(s), toStoredRows(s).rows, tabs, mer.id, 'lectern')).toBe('lectern');
+  });
+
+  it('どのタブにもまとまりがなければ、望んだタブ（なければ null）', () => {
+    const pvm = buildViewModel({ ...snap, part: 'public' as const, stocks: [] });
+    expect(roomTabFor(pvm, [], tabs, mer.id, 'chair')).toBe('chair');
+    expect(roomTabFor(pvm, [], tabs, mer.id, null)).toBeNull();
   });
 });
 

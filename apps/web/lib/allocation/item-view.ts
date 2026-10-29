@@ -102,3 +102,32 @@ export function itemTabBlocks(vm: ViewModel, rows: readonly StoredAllocationRow[
   }
   return blocks;
 }
+
+/**
+ * そのタブに、その部屋のまとまり（見出しとメニュー）が出るか。itemTabBlocks と同じ条件：その部屋からのタブの品目の行があるか、
+ * タブの品目のどれかの在庫が 0 でない。
+ */
+export function roomHasBlock(vm: ViewModel, rows: readonly StoredAllocationRow[], tab: ItemTab, roomId: string): boolean {
+  const ids = new Set(tab.items.map((i) => i.id));
+  if (rows.some((r) => r.sourceRoomId === roomId && ids.has(r.itemId))) return true;
+  return vm.hasStock && tab.items.some((it) => !!vm.stock.get(roomItemKey(roomId, it.id)));
+}
+
+/**
+ * 部屋のまとまりへ移るときに開くタブ。望んだタブ（preferred）にその部屋のまとまりがあればそれ、なければまとまりのある最初のタブ。
+ * どのタブにもなければ望んだタブ（タブの key として知らなければ null）。
+ *
+ * @example
+ * roomTabFor(vm, rows, tabs, merId, 'lectern') // 'desk'（MER は教卓の在庫も行もない）
+ */
+export function roomTabFor(
+  vm: ViewModel,
+  rows: readonly StoredAllocationRow[],
+  tabs: readonly ItemTab[],
+  roomId: string,
+  preferred: string | null | undefined,
+): string | null {
+  const pref = tabs.find((t) => t.key === preferred);
+  if (pref && roomHasBlock(vm, rows, pref, roomId)) return pref.key;
+  return tabs.find((t) => roomHasBlock(vm, rows, t, roomId))?.key ?? pref?.key ?? null;
+}

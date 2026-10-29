@@ -197,4 +197,24 @@ describe('使用不可にする前の一覧のダイアログ', () => {
     fireEvent.click(go);
     expect(props.onConfirm).toHaveBeenCalledWith(null);
   });
+  it('保存できたか確かめられない間は、知らせと「確かめる」を出し、理由のメモを残したまま「使用不可にする」を押せない', () => {
+    const onCheck = vi.fn();
+    const props = { roomId: usableRoom.id, vm, busy: false, onOpenChange: () => {}, onOp: vi.fn(), onConfirm: vi.fn(async () => {}), checklist: [], pendingCount: 0 };
+    const { rerender } = render(<UnusableDialog {...props} />);
+    const note = screen.getByLabelText('理由のメモ（任意）');
+    fireEvent.change(note, { target: { value: '工事' } });
+    const message = '保存できたか確かめられません。通信が戻ったら『確かめる』を押してください';
+    rerender(<UnusableDialog {...props} check={{ message, onCheck }} />);
+    const notice = screen.getByTestId('room-usable-check');
+    expect(notice.textContent).toContain(message);
+    expect((screen.getByRole('button', { name: '使用不可にする' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByLabelText('理由のメモ（任意）') as HTMLTextAreaElement).value).toBe('工事');
+    fireEvent.click(within(notice).getByRole('button', { name: '確かめる' }));
+    expect(onCheck).toHaveBeenCalled();
+    // 確かめ終われば押せる（メモはそのまま）
+    rerender(<UnusableDialog {...props} check={null} />);
+    expect(screen.queryByTestId('room-usable-check')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '使用不可にする' }));
+    expect(props.onConfirm).toHaveBeenCalledWith('工事');
+  });
 });

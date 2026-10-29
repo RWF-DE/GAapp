@@ -6,7 +6,7 @@
 // 下書きを戻す表示、ほかの人の変更とぶつかって外した変更、検証の一覧の E002 の操作。
 // 段 3：キャスター机交換（読み込み中・一覧・操作のダイアログ・エラーの帯・確定中の読み取り・置き換えなし・部員の権限なし）、
 // 自団体の振り分け（スマホ。読み込み中・確定前の依頼・回答の後・待ってください・確定後・団体の切り替え・申請なし・管理者の権限なし）。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { accessToken, rpc, storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
 import { MOBILE, PC, shoot } from '../support/shots';
@@ -201,6 +201,8 @@ test.describe('T13 管理者（段 2：手での編集と使用不可の部屋�
   });
 
   test('T13 振り分けの編集：使用不可にした後（最小変更で再実行を目立たせる）', async ({ page }) => {
+    // 読み直しの失敗が分かるまで（supabase-js と react-query の送り直し）十数秒かかる
+    test.setTimeout(120_000);
     const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
     try {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
@@ -211,7 +213,20 @@ test.describe('T13 管理者（段 2：手での編集と使用不可の部屋�
       await block.getByRole('button', { name: 'MERのメニュー' }).click();
       await page.getByRole('menuitem', { name: '今年は使用不可にする' }).click();
       await expect(page.getByTestId('unusable-checklist-empty')).toBeVisible();
-      await page.getByRole('dialog').getByRole('button', { name: '使用不可にする' }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('理由のメモ（任意）').fill('工事のため');
+      // 通信が切れた：書き込みも読み直しも届かない → 「保存できたか確かめられません」と「確かめる」（押せない・メモは残る・上に帯）
+      const offline = (route: Route) => route.abort();
+      await page.route('**/rest/v1/**', offline);
+      await dialog.getByRole('button', { name: '使用不可にする' }).click();
+      await expect(dialog.getByTestId('room-usable-check')).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByTestId('error-banner')).toBeVisible();
+      await shoot(page, 'T13', 'allocation-unusable-unverified-pc');
+      // 通信が戻って「確かめる」→ 保存されていなかったので押し直す
+      await page.unroute('**/rest/v1/**', offline);
+      await dialog.getByTestId('room-usable-check').getByRole('button', { name: '確かめる' }).click();
+      await expect(dialog.getByTestId('room-usable-check')).toHaveCount(0);
+      await dialog.getByRole('button', { name: '使用不可にする' }).click();
       await expect(page.getByTestId('suggest-minimal')).toBeVisible();
       await shoot(page, 'T13', 'allocation-unusable-done-pc');
     } finally {
