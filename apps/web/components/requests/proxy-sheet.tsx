@@ -60,7 +60,7 @@ export function ProxySheet({
       <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
         {row ? (
           <ProxyForm
-            key={`${row.group.id}:${mode}`}
+            key={row.group.id}
             row={row}
             items={items}
             year={year}
