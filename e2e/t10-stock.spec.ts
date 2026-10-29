@@ -456,10 +456,11 @@ test.describe('T10 部員', () => {
       await expect(dialog).toContainText('テスト管理者さんが');
       await expect(dialog.getByTestId('conflict-row').filter({ hasText: '机(木)' })).toContainText('711');
       expect(upserts).toBe(1);
-      // やめても入力はほかの人の数に置き換わらない
+      // やめても入力はほかの人の数に置き換わらず、知らせが残る
       await dialog.getByRole('button', { name: 'やめる' }).click();
       await expect(dialog).toBeHidden();
       await expect(input(page, '机(木)')).toHaveValue('11');
+      await expect(page.getByTestId('stock-remote-change')).toContainText('テスト管理者さんが');
       // 「保存」でもう一度選ばせる → 上書きする
       await save.click();
       await confirmNotLatest(page);

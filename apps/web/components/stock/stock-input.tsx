@@ -14,8 +14,12 @@
 //   下書きは 500 ms まとめて書くほか、画面を外れる・pagehide・裏に回った（visibilitychange で hidden）ときにすぐ書き出す。
 // - 読み直し（設計 2.6）：部屋の行を読み直したら、未保存の入力がなければその数で作り直し、入力があれば入力を残して
 //   「ほかの人が保存しました」と知らせる（入力の元の行は変えないので、保存の前のほかの人の保存の確かめが効く）。
-//   「保存できたか分かりません」を出している間・保存の途中・ほかの人の保存のダイアログを開いている間は、入力の元と同じ数でも
-//   入力があるものとして扱う（押した数をそのまま残す。読み直した行で黙って置き換えない）。
+//   「保存できたか分かりません」を出している間・保存の途中・ほかの人の保存のダイアログを開いている間・「ほかの人が保存しました」を
+//   出している間は、入力の元と同じ数でも入力があるものとして扱う（押した数をそのまま残す。読み直した行で黙って置き換えない。
+//   ほかの人の数にするのは「ほかの人の数を読み直す」かダイアログの「読み直す」だけ）。
+// - 「保存できたか分かりません」は、保存の結果が決まったとき（送る・保存されていた・ほかの人の数にした）にだけ消す。確かめを
+//   やめた・止まった・ほかの人の保存のダイアログをやめたときは残す。出している間は、入力の元と同じ数でも離れるときに確かめ、
+//   下書きにも残す（応答が届かなかった保存の後に元の数へ戻した入力も守る）。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -164,7 +168,6 @@ export function StockInput({
   const [counts, setCounts] = useState<StockCounts | null>(null);
   const baseCounts = useMemo(() => (base ? countsFromRows(items, base) : null), [base, items]);
   const dirty = access.writable && !!counts && !!baseCounts && !sameCounts(items, counts, baseCounts);
-  useUnsavedChanges(dirty);
   // 下書きを戻したときは、入力の元が「下書きを作ったときの行」になる（null なら base が元）。
   // 保存の直前に読み直した行とこれを比べるので、下書きを作った後のほかの人の保存も確かめられる
   const [restoredStamps, setRestoredStamps] = useState<StockBaseStamps | null>(null);
@@ -174,32 +177,15 @@ export function StockInput({
   const [error, setError] = useState<unknown>(null);
   const [blocked, setBlocked] = useState<Shortfall[] | null>(null);
   const [conflict, setConflict] = useState<Conflict | null>(null);
-  // 入力の元と同じ数でも読み直した行で置き換えないとき：保存できたか分からない（押した数を残す。2.6 の (A) の 1）・
-  // 保存の途中・ほかの人の保存のダイアログを開いている（押した数で上書きするか選んでいる）
-  const unknownOutcome = !!error && isUnknownOutcome(error);
-  const keepInput = dirty || unknownOutcome || phase !== 'idle' || conflict !== null;
-
-  // 読み直し（設計 2.6）：部屋の行が新しくなったら（初めて読めた、ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、
-  // 自分の保存の後の invalidate など）、未保存の入力がなければその行で作り直す。入力があれば（keepInput）入力も元の行も残し、
-  // 自分以外の人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
-  const [seen, setSeen] = useState<StockDbRow[] | null>(null);
   const [remote, setRemote] = useState<OtherSave | null>(null);
-  const data = stocksQ.data;
-  if (data && (data !== seen || (remote !== null && !keepInput))) {
-    setSeen(data);
-    if (base === null || !keepInput) {
-      setBase(data);
-      setCounts(countsFromRows(items, data));
-      setRestoredStamps(null);
-      setRemote(null);
-    } else if (stamps) {
-      const other = detectOtherSave(items, stamps, data, open.userId);
-      if (other) setRemote(other);
-    }
-  }
-  // ほかの人の保存のダイアログを閉じたら「保存」へフォーカスを戻す（送信中で押せなければ、終わってから戻す）
-  const saveButtonRef = useRef<HTMLButtonElement>(null);
-  const refocusSave = useRef(false);
+  // 保存できたか分からない（押した数を残す。2.6 の (A) の 1）。入力の元と同じ数でも、保存していない入力として守る
+  // （離れるときに確かめ、下書きに残し、「保存していない変更があります」を出す）
+  const unknownOutcome = !!error && isUnknownOutcome(error);
+  const unsaved = dirty || (access.writable && unknownOutcome);
+  useUnsavedChanges(unsaved);
+  // 入力の元と同じ数でも読み直した行で置き換えないとき：上の unsaved・保存の途中・ほかの人の保存のダイアログを開いている
+  // （押した数で上書きするか選んでいる）・ほかの人の保存を知らせている（ほかの人の数にするのは、知らせかダイアログの「読み直す」だけ）
+  const keepInput = unsaved || phase !== 'idle' || conflict !== null || remote !== null;
 
   // 下書き（部屋ごと。カメラで次の QR を読んだ・別のアプリへ行った・タブが捨てられた後に戻せる）
   const draftKey = useMemo<DraftKey>(() => ({ userId: open.userId, yearId, screen: 'stock', target: roomId }), [open.userId, yearId, roomId]);
@@ -230,6 +216,39 @@ export function StockInput({
     }
     return { savedAt: d.savedAt, ...parsed.data };
   });
+  /** 下書きを今の DB の行（rows）に重ねても、rows と同じ数か */
+  const sameDraft = (rows: readonly StockDbRow[]) => {
+    const fromRows = countsFromRows(items, rows);
+    return !!draft && sameCounts(items, withDraft(items, fromRows, draft.counts), fromRows);
+  };
+
+  // 読み直し（設計 2.6）：部屋の行が新しくなったら（初めて読めた、ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、
+  // 自分の保存の後の invalidate など）、未保存の入力がなければその行で作り直す。入力があれば（keepInput）入力も元の行も残し、
+  // 自分以外の人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
+  const [seen, setSeen] = useState<StockDbRow[] | null>(null);
+  const data = stocksQ.data;
+  if (data && data !== seen) {
+    setSeen(data);
+    if (base === null && draft && sameDraft(data)) {
+      // 戻していない下書きが、初めて読めた DB の行と同じ数しか持っていない（応答が届かなかった保存が入っていた、など）なら、
+      // 守る入力はもうないので消す（後でほかの人が保存しても、保存済みの数を「保存していない入力」として出さない）
+      removeDraft(draftKey);
+      setDraft(null);
+    }
+    if (base === null || !keepInput) {
+      setBase(data);
+      setCounts(countsFromRows(items, data));
+      setRestoredStamps(null);
+      setRemote(null);
+    } else if (stamps) {
+      const other = detectOtherSave(items, stamps, data, open.userId);
+      if (other) setRemote(other);
+    }
+  }
+  // ほかの人の保存のダイアログを閉じたら「保存」へフォーカスを戻す（送信中で押せなければ、終わってから戻す）
+  const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const refocusSave = useRef(false);
+
   const showDraft = access.writable && !!draft && !!counts && !sameCounts(items, { ...counts, ...draft.counts }, counts);
   const writeDraft = (values: StockCounts, baseStamps: StockBaseStamps) => writer.write({ counts: values, base: baseStamps });
 
@@ -263,7 +282,8 @@ export function StockInput({
     setDraft(null);
     setSavedAt(null);
     setBlocked(null);
-    if (baseCounts && sameCounts(items, next, baseCounts)) writer.clear();
+    // 保存できたか分からない間は、入力の元と同じ数に戻しても下書きに残す（送った数が入っていれば、戻した数を送り直す入力になる）
+    if (baseCounts && !unknownOutcome && sameCounts(items, next, baseCounts)) writer.clear();
     else if (stamps) writeDraft(next, stamps);
   };
 
@@ -312,6 +332,8 @@ export function StockInput({
 
   /** values を送る。latest は送る前に読み直した部屋の行（入力の元にする。設計 2.6 の (A) の 4） */
   const write = async (values: StockCounts, latest: StockDbRow[], retried = false): Promise<void> => {
+    // 送ると決まったので、前の「保存できたか分かりません」は消す（この送信の結果で決まる）
+    setError(null);
     setPhase('saving');
     rebase(latest);
     // 戻していない下書きは、今の入力を送ると決めたので使わない。送っている間に離れても入力を戻せるよう、元を latest にして書き切る
@@ -369,9 +391,10 @@ export function StockInput({
     }
     writer.flush();
     if (!(await notLatest.confirmBeforeWrite())) return;
-    // 前の失敗（保存できたか分からない、など）は、確かめ始めるときに消す。同じときに 'checking' にするので、
-    // その間に裏の読み直しが届いても入力は置き換わらない（keepInput）
-    setError(null);
+    // 前の失敗は確かめ始めるときに消す。ただし「保存できたか分かりません」は、結果が決まる（送る・保存されていた・ほかの人の
+    // 数にする）まで残す（確かめをやめた・止まった・ダイアログをやめたときも入力を守る）。'checking' の間に裏の読み直しが
+    // 届いても入力は置き換わらない（keepInput）
+    setError((e: unknown) => (e && isUnknownOutcome(e) ? e : null));
     setPhase('checking');
     // 送ると決まったら、送る前に読み直した部屋の行が入る
     let latest: StockDbRow[] | null = null;
@@ -398,6 +421,10 @@ export function StockInput({
         finishSaved(rows, 'recovered');
       } else if (decision.kind === 'conflict') {
         setConflict({ latest: rows, other: decision.other, values: parsed.data });
+        // やめた後も「ほかの人が保存しました」を出し、入力を残す（ほかの人の数にするのは「読み直す」だけ）。
+        // 知らせの「ほかの人の数を読み直す」と「前回の入力」が今読み直した行を使うよう、キャッシュにも入れる
+        setRemote(decision.other);
+        queryClient.setQueryData(roomKey, rows);
       } else {
         latest = rows;
       }
@@ -548,7 +575,7 @@ export function StockInput({
             onRetry={classifyError(error).kind === 'deadlock' ? () => void save() : undefined}
           />
         ) : null}
-        {remote && keepInput ? (
+        {remote ? (
           <div role="status" data-testid="stock-remote-change" className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
             <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
             <div className="min-w-0 flex-1 space-y-2">
@@ -653,7 +680,7 @@ export function StockInput({
 
       {access.writable && counts ? (
         <div className="sticky bottom-0 z-10 -mx-4 mt-4 border-t bg-background/95 px-4 py-3 backdrop-blur md:-mx-6 md:px-6 print:hidden">
-          {dirty ? <p className="mb-2 text-xs text-amber-700">保存していない変更があります</p> : null}
+          {unsaved ? <p className="mb-2 text-xs text-amber-700">保存していない変更があります</p> : null}
           <Button
             ref={saveButtonRef}
             size="lg"
