@@ -1,7 +1,7 @@
 // T11 のスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T11` で notes/T11/ に撮る（CI では流さない）。
 // 申請（スマホ）と申請一覧（PC）、取り込みのダイアログ（PC）。読み込み中は page.route で応答を止めてから撮る。
 import { fileURLToPath } from 'node:url';
-import { expect, test, type Route } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
 import { SMALL } from '../support/datasets';
@@ -10,6 +10,15 @@ import { SEED_USER_IDS } from '../support/users';
 import { pinYear } from '../support/year';
 
 const STALL_CSV = fileURLToPath(new URL('../../fixtures/importer-samples/stall.csv', import.meta.url));
+
+/**
+ * 裏の読み直しをまねる：データが古くなるまで時計を進め（page.clock.install の後）、通信が戻ったことにする
+ * （TanStack Query の refetchOnReconnect が古いクエリを読み直す）
+ */
+async function refetchInBackground(page: Page) {
+  await page.clock.fastForward('00:31');
+  await page.evaluate("window.dispatchEvent(new Event('offline')); window.dispatchEvent(new Event('online'));");
+}
 
 test.describe('T11 団体代表', () => {
   test.use({ storageState: storageStateFor('rep') });
@@ -90,6 +99,27 @@ test.describe('T11 団体代表', () => {
       await page.getByRole('alertdialog').getByRole('button', { name: '提出する' }).click();
       await expect(page.getByTestId('submit-error')).toContainText('提出できたか分かりません');
       await shoot(page, 'T11', 'request-unknown-mobile');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 申請（スマホ）：編集した後にほかの人が変えたとき（入力は残して知らせる）', async ({ page }) => {
+    const s = await createScenario({ repGroup: SMALL.groups.stall });
+    try {
+      const gid = s.ids.groups[SMALL.groups.stall]!;
+      await page.clock.install();
+      await pinYear(page, SEED_USER_IDS.rep, s.yearId);
+      await page.setViewportSize(MOBILE);
+      await page.goto('/request/');
+      await page.getByRole('button', { name: '机(木)の数を1増やす' }).click();
+      await sql(
+        "insert into public.requests (group_id, item_id, count) select $1, id, 9 from public.items where code = 'chair' on conflict (group_id, item_id) do update set count = 9",
+        [gid],
+      );
+      await refetchInBackground(page);
+      await expect(page.getByTestId('request-remote-change')).toBeVisible();
+      await shoot(page, 'T11', 'request-remote-change-mobile');
     } finally {
       await s.cleanup();
     }
@@ -218,6 +248,36 @@ test.describe('T11 管理者', () => {
       await page.getByRole('button', { name: '保存（1件）' }).click();
       await expect(page.getByRole('alertdialog').getByTestId('cell-conflicts')).toBeVisible();
       await shoot(page, 'T11', 'requests-cell-conflict-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 申請一覧（PC）：編集した後に表の行が変わったとき（入力は残して知らせる。表と代理入力）', async ({ page }) => {
+    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
+    try {
+      const stall = s.ids.groups[SMALL.groups.stall]!;
+      const rest = s.ids.groups['E2E休憩所']!;
+      await page.clock.install();
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/');
+      const c = page.getByRole('textbox', { name: `${SMALL.groups.stall}の机(木)`, exact: true });
+      await c.fill('5');
+      await c.press('Enter');
+      await sql("update public.requests set count = 4 where group_id = $1 and item_id = (select id from public.items where code = 'desk')", [stall]);
+      await page.getByRole('button', { name: '読み直す' }).click();
+      await expect(page.getByTestId('requests-remote-change')).toBeVisible();
+      await shoot(page, 'T11', 'requests-remote-change-pc');
+
+      await page.getByRole('button', { name: '変更を取り消す' }).click();
+      await page.locator('tr[data-group-name="E2E休憩所"]').getByRole('button', { name: '代理入力' }).click();
+      const sheet = page.getByRole('dialog');
+      await expect(sheet.getByRole('heading', { name: '代理入力：E2E休憩所' })).toBeVisible();
+      await sheet.getByRole('button', { name: '机(木)の数を1増やす' }).click();
+      await sql("insert into public.requests (group_id, item_id, count) select $1, id, 5 from public.items where code = 'chair'", [rest]);
+      await refetchInBackground(page);
+      await expect(sheet.getByTestId('proxy-remote-change')).toBeVisible();
+      await shoot(page, 'T11', 'requests-proxy-remote-change-pc');
     } finally {
       await s.cleanup();
     }

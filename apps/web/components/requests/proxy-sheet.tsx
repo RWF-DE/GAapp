@@ -10,17 +10,21 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { CATEGORY_LABELS } from '@/lib/labels';
 import {
+  adoptGroupChanges,
   buildRequestForm,
   decideGroupSave,
   fetchGroupRequestState,
   fetchPreviousYearRequests,
   groupStateOf,
   hasCountChanges,
+  hasGroupChanges,
   hasNoRequests,
   hasPreviousFor,
+  newerChangesSince,
   previousCountsFor,
   rebaseRequestInput,
   stateChangesSince,
+  submissionChangeLabels,
   submitAfterDeadline,
   submitRequests,
   toDeadlineRows,
@@ -32,7 +36,7 @@ import {
 import type { ItemRow, YearRow } from '@/lib/db/types';
 import { classifyError, isUnknownOutcome, messageFor, unknownOutcomeMessage } from '@/lib/errors';
 import { NOTE_MAX } from '@/lib/schemas/common';
-import { RequestFields } from './request-fields';
+import { RemoteChangeNotice, RequestFields } from './request-fields';
 
 /** 代理入力の書き方：direct（締切前。submit_requests）・deadline（締切後。理由と update_requests_after_deadline） */
 export type ProxyMode = 'direct' | 'deadline';
@@ -41,7 +45,9 @@ export type ProxyMode = 'direct' | 'deadline';
  * 代理入力のシート（企業・休憩所など。admin。画面の設計 3.6。T11）。/request と同じ入力欄（RequestFields）を使う。
  * 休憩所で今年の申請がまだないときは「前年の数を入れる」（previous_year_requests を団体名で引く）。
  * 締切前の「提出」は submit_requests（申請と提出を1回で）、締切後は update_requests_after_deadline に提出を付ける（理由は必須）。
- * 入力の元（base）は開いたときの表の行。裏の表の読み直しでは変えない（入力を黙って置き換えない）。
+ * 入力の元（base）は最初に触ったとき（数・備考を変えた・前年の数を入れた・送った）の表の行。触る前は裏で届いた表の行をそのまま出し、
+ * 触った後は裏の表の読み直しでは変えず、入力の元より新しいほかの人の変更があれば知らせだけを出す（R1。置き換えるのは、保存が
+ * 決まったとき・知らせの「ほかの人の値を読み込む」・送る前の読み直しのとき）。
  * 保存は毎回、送る前に団体の申請と提出の記録を読み直して決める（設計 2.6 の (A)。decideGroupSave）：
  * - 読み直した値が入力と同じ（前に送って応答が届かなかった保存が通っていた）なら、送らずに「保存されていました」で閉じる。
  * - 入力の元からほかの人の変更があれば、送らずに読み直した記録を入力の元にし（入れた数と書き換えた備考は残す）、
@@ -150,7 +156,8 @@ interface FormState {
 /** 上書きするかのダイアログに出すもの。reason は締切後に入れた理由（上書きするときにもう一度入れさせない） */
 interface OverwriteAsk {
   items: string[];
-  submission: boolean;
+  /** 提出の記録の変わったもの（提出日時・備考を分けて。submissionChangeLabels） */
+  submission: string[];
   reason: string | null;
 }
 
@@ -182,10 +189,24 @@ function ProxyForm({
   onError: (e: unknown, rpc: 'submit_requests' | 'update_requests_after_deadline', groupId: string) => Promise<string>;
 }) {
   const group = row.group;
-  /** 入力の元（比べる団体の申請と提出の記録）。開いたときの表の行で始め、送る前の読み直しのときだけ変える */
-  const [base, setBase] = useState<GroupRequestState>(() => groupStateOf(row));
-  const model = useMemo(() => buildRequestForm(items, group.category, base.requests), [items, group.category, base.requests]);
-  const savedNote = base.submission?.note ?? '';
+  /** 今の表の行（裏で届いたもの） */
+  const latest = useMemo(() => groupStateOf(row), [row]);
+  /** 入力の元（比べる団体の申請と提出の記録）。触る前は null で今の表の行を出す。触ったときに固め、送る前の読み直しのときだけ変える */
+  const [base, setBase] = useState<GroupRequestState | null>(null);
+  const shown = base ?? latest;
+  const model = useMemo(() => buildRequestForm(items, group.category, shown.requests), [items, group.category, shown.requests]);
+  const savedNote = shown.submission?.note ?? '';
+  /** 触った後に裏で届いた行にある、ほかの人の変更（入力は置き換えず、知らせだけを出す。R1） */
+  const remote = useMemo(() => {
+    if (!base) return null;
+    const c = newerChangesSince(base, latest, userId);
+    return hasGroupChanges(c) ? c : null;
+  }, [base, latest, userId]);
+  /** 触り始める：入力の元を今出している行で固める。固めた入力の元を返す */
+  const startEditing = (): GroupRequestState => {
+    if (!base) setBase(shown);
+    return shown;
+  };
   const [edits, setEdits] = useState<Record<string, number>>({});
   /** 書き換えた備考（null なら入力の元の備考のまま） */
   const [noteEdit, setNoteEdit] = useState<string | null>(null);
@@ -201,7 +222,7 @@ function ProxyForm({
   const [overwrite, setOverwrite] = useState<OverwriteAsk | null>(null);
   const dirty = hasCountChanges(model.fields, edits) || (noteEdit !== null && noteEdit !== savedNote);
   const noteTooLong = note.length > NOTE_MAX;
-  const showPrev = group.category === 'rest_area' && !!year.prev_year_id && hasNoRequests(base.requests);
+  const showPrev = group.category === 'rest_area' && !!year.prev_year_id && hasNoRequests(shown.requests);
   const noteValue = () => (note.trim() === '' ? null : note.trim());
   /** 備考を書き換えたか（締切後は書き換えたときだけ備考を送る） */
   const noteChanged = noteEdit !== null && (noteEdit.trim() === '' ? null : noteEdit.trim()) !== (savedNote.trim() === '' ? null : savedNote.trim());
@@ -230,6 +251,7 @@ function ProxyForm({
         toast.info(`前年度に「${group.name}」の申請がありません`);
         return;
       }
+      startEditing();
       setEdits(previousCountsFor(rows, group.name, model.fields));
       toast.success('前年の数を入れました。確かめてから提出してください');
     } catch (e) {
@@ -249,8 +271,17 @@ function ProxyForm({
    * 入力の元を読み直した記録にする（送る前の読み直しのとき）。読み直した値と同じ入力だけを外し、ほかの入れた数と書き換えた備考は
    * 残す（rebaseRequestInput。/request と同じ。前の入力の元と同じ値に戻した入力も捨てない）。
    */
-  const rebaseTo = (latest: GroupRequestState) => {
-    const next = rebaseRequestInput(items, group.category, latest, { edits, note: noteEdit });
+  const rebaseTo = (fresh: GroupRequestState) => {
+    const next = rebaseRequestInput(items, group.category, fresh, { edits, note: noteEdit });
+    setEdits(next.edits);
+    setNoteEdit(next.note);
+    setBase(fresh);
+  };
+
+  /** 知らせの「ほかの人の値を読み込む」：入力の元を今の表の行にし、ほかの人が変えた品目と備考をその値にする（ほかの入れた数は残す） */
+  const adoptRemote = () => {
+    if (!remote) return;
+    const next = adoptGroupChanges(items, group.category, latest, remote, { edits, note: noteEdit });
     setEdits(next.edits);
     setNoteEdit(next.note);
     setBase(latest);
@@ -260,11 +291,11 @@ function ProxyForm({
    * 読み直した記録でほかの人の変更が見つかったとき：読み直した記録を入力の元にし（表の読み直しを待たずに、確かめる値をシートに
    * 出す）、上書きしてよいか確かめる。表も読み直す。
    */
-  const askOverwrite = (latest: GroupRequestState, reason: string | null) => {
-    const changed: GroupChanges = stateChangesSince(base, latest, userId);
+  const askOverwrite = (from: GroupRequestState, fresh: GroupRequestState, reason: string | null) => {
+    const changed: GroupChanges = stateChangesSince(from, fresh, userId);
     const name = (id: string) => items.find((i) => i.id === id)?.name ?? '（不明な品目）';
-    rebaseTo(latest);
-    setOverwrite({ items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), submission: changed.submission, reason });
+    rebaseTo(fresh);
+    setOverwrite({ items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), submission: submissionChangeLabels(changed), reason });
     void onReload().catch(() => undefined);
   };
 
@@ -274,10 +305,12 @@ function ProxyForm({
    */
   const save = async (reason: string | null): Promise<'done' | 'changed' | 'error'> => {
     setError(null);
+    // 入力の元を押したときの値で固める（読み直しの間に裏で届いた行でシートを変えない。確かめる値・送る値と画面の値を同じ時点にする）
+    const from = startEditing();
     setChecking(true);
-    let latest: GroupRequestState;
+    let fresh: GroupRequestState;
     try {
-      latest = await fetchGroupRequestState(group.id);
+      fresh = await fetchGroupRequestState(group.id);
     } catch (e) {
       setChecking(false);
       setError(isUnknownOutcome(e) ? unknownOutcomeMessage(verb) : messageFor(classifyError(e)));
@@ -288,20 +321,20 @@ function ProxyForm({
     const counts = Object.fromEntries(toSubmitRows(model.fields, edits).map((r) => [r.itemId, r.count]));
     // 締切後に備考を書き換えていなければ備考は送らない（入力の元の備考のまま）
     const sentNote = mode === 'deadline' && !noteChanged ? undefined : noteValue();
-    const decision = decideGroupSave(base, latest, { counts, note: sentNote === undefined ? savedNote : sentNote }, userId);
+    const decision = decideGroupSave(from, fresh, { counts, note: sentNote === undefined ? savedNote : sentNote }, userId);
     if (decision === 'saved') {
       await close(`${group.name}の申請は保存されていました`);
       return 'done';
     }
     if (decision === 'conflict') {
-      askOverwrite(latest, reason);
+      askOverwrite(from, fresh, reason);
       return 'changed';
     }
     // 入力の元を読み直した記録にして送る（入れていない欄は読み直した値と同じ。違えばほかの人の変更で、上で止まる）
-    rebaseTo(latest);
+    rebaseTo(fresh);
     try {
       if (mode === 'deadline') {
-        const fields = buildRequestForm(items, group.category, latest.requests).fields;
+        const fields = buildRequestForm(items, group.category, fresh.requests).fields;
         await deadline.mutateAsync({ rows: toDeadlineRows(fields, counts), note: sentNote, reason: reason ?? '' });
       } else {
         await direct.mutateAsync({ rows: toSubmitRows(model.fields, edits), note: noteValue() });
@@ -324,6 +357,8 @@ function ProxyForm({
   const onSubmit = async () => {
     if (noteTooLong || busy) return;
     setError(null);
+    // 押したときの値で入力の元を固める（締切後の理由を入れている間に、裏で届いた行でシートを変えない）
+    startEditing();
     if (mode === 'deadline') {
       setReasonOpen(true);
       return;
@@ -347,6 +382,11 @@ function ProxyForm({
             {prevLoading ? '読み込み中…' : '前年の数を入れる'}
           </Button>
         ) : null}
+        {remote ? (
+          <RemoteChangeNotice changes={remote} items={items} disabled={busy} onAdopt={adoptRemote} testId="proxy-remote-change" verb={verb}>
+            シートを開いた後に、ほかの人がこの団体の申請を変えました
+          </RemoteChangeNotice>
+        ) : null}
         {error ? (
           <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             {error}
@@ -357,9 +397,15 @@ function ProxyForm({
           fields={model.fields}
           extras={model.extras}
           edits={edits}
-          onCountChange={(itemId, v) => setEdits((e) => ({ ...e, [itemId]: v }))}
+          onCountChange={(itemId, v) => {
+            startEditing();
+            setEdits((e) => ({ ...e, [itemId]: v }));
+          }}
           note={note}
-          onNoteChange={setNoteEdit}
+          onNoteChange={(v) => {
+            startEditing();
+            setNoteEdit(v);
+          }}
           disabled={busy}
           audience="admin"
         />
@@ -392,7 +438,9 @@ function ProxyForm({
           {overwrite?.items.map((t) => (
             <li key={t}>{t}</li>
           ))}
-          {overwrite?.submission ? <li>提出日時・備考</li> : null}
+          {overwrite?.submission.map((t) => (
+            <li key={t}>{t}</li>
+          ))}
         </ul>
       </ConfirmDialog>
       <ReasonDialog

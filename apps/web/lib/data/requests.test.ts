@@ -40,6 +40,10 @@ import {
   setPendingCell,
   sortGroups,
   stateChangesSince,
+  newerChangesSince,
+  adoptGroupChanges,
+  hasGroupChanges,
+  submissionChangeLabels,
   toDeadlineRows,
   toSubmitRows,
   type RequestsTables,
@@ -214,7 +218,7 @@ describe('stateChangesSince（ほかの人の保存のダイアログに出す�
 
   it('同じなら変更なし（時刻の書き方の違いは同じ時刻として扱う）', () => {
     const c = stateChangesSince(base, { requests: [req(a, 'desk', 3, '2026-10-29T10:02:03.123456+09:00'), req(a, 'chair', 2)], submission: sub(a, T0, '電源') }, ME);
-    expect(c).toEqual({ items: [], submission: false });
+    expect(c).toEqual({ items: [], submission: false, submittedAt: false, note: false });
   });
 
   it('updated_at が変わった・行が増えた・消えた品目と、提出の記録の変更（提出日時・備考・updated_at）を挙げる', () => {
@@ -239,12 +243,84 @@ describe('stateChangesSince（ほかの人の保存のダイアログに出す�
     const mine = { ...sub(a, T1, '電源'), updated_at: T1, updated_by: ME };
     const T2 = '2026-10-29T01:02:05.111111+00:00';
     const c = stateChangesSince(base, { requests: [req(a, 'desk', 5, T1), req(a, 'chair', 4, T2)], submission: mine }, ME);
-    expect(c).toEqual({ items: [{ itemId: item('chair').id, from: 2, to: 4 }], submission: false });
+    expect(c).toEqual({ items: [{ itemId: item('chair').id, from: 2, to: 4 }], submission: false, submittedAt: false, note: false });
     // ほかの人の提出なら、提出の記録もその提出で書かれた行も挙げる
     const theirs = { ...mine, updated_by: OTHER };
     const d = stateChangesSince(base, { requests: [req(a, 'desk', 5, T1), req(a, 'chair', 4, T2)], submission: theirs }, ME);
     expect(d.submission).toBe(true);
     expect(d.items).toHaveLength(2);
+  });
+});
+
+describe('newerChangesSince・adoptGroupChanges（裏で届いた行の知らせと「ほかの人の値を読み込む」。R1）', () => {
+  const a = group(10, '模擬店A', 'stall');
+  const ME = uuid(900);
+  const OTHER = uuid(901);
+  const T2 = '2026-10-29T01:02:05.111111+00:00';
+  const base = { requests: [req(a, 'desk', 3, T1), req(a, 'chair', 2, T1)], submission: { ...sub(a, T1, '電源'), updated_at: T1, updated_by: OTHER } };
+
+  it('入力の元より新しいほかの人の変更だけを挙げる（古い行・自分の提出で書かれた行は挙げない）', () => {
+    // ほかの人が椅子を 4 にし、長机を足し、出し直した
+    const later = { requests: [req(a, 'desk', 3, T1), req(a, 'chair', 4, T2), req(a, 'lectern', 1, T2)], submission: { ...sub(a, T2, '電源'), updated_at: T2, updated_by: OTHER } };
+    const c = newerChangesSince(base, later, ME);
+    expect(c.items).toEqual(expect.arrayContaining([{ itemId: item('chair').id, from: 2, to: 4 }, { itemId: item('lectern').id, from: 0, to: 1 }]));
+    expect(c.items).toHaveLength(2);
+    expect(c.submission).toBe(true);
+    expect(hasGroupChanges(c)).toBe(true);
+    // 届いた行が入力の元より古い（送る前に読み直した行を入力の元にした後、表がまだ古い）なら挙げない
+    const older = { requests: [req(a, 'desk', 1, T0), req(a, 'chair', 2, T0)], submission: { ...sub(a, T0, null), updated_at: T0, updated_by: OTHER } };
+    expect(hasGroupChanges(newerChangesSince(base, older, ME))).toBe(false);
+    // 自分の提出（応答が届かなかったものが通っていた）で書かれた行と提出の記録は挙げない
+    const mine = { requests: [req(a, 'desk', 5, T2), req(a, 'chair', 2, T2)], submission: { ...sub(a, T2, null), updated_at: T2, updated_by: ME } };
+    expect(hasGroupChanges(newerChangesSince(base, mine, ME))).toBe(false);
+  });
+
+  it('「ほかの人の値を読み込む」：変わった品目と（提出の記録が変わっていれば）備考は届いた値にし、ほかの入れた数は残す', () => {
+    const later = { requests: [req(a, 'desk', 3, T1), req(a, 'chair', 4, T2)], submission: base.submission };
+    const changes = newerChangesSince(base, later, ME);
+    // 椅子を 6・机を 5 に、備考を書き換えていた
+    const next = adoptGroupChanges(ITEMS, 'stall', later, changes, { edits: { [item('chair').id]: 6, [item('desk').id]: 5 }, note: '電源2' });
+    expect(next).toEqual({ edits: { [item('desk').id]: 5 }, note: '電源2' });
+    const resub = { ...later, submission: { ...sub(a, T2, '電源なし'), updated_at: T2, updated_by: OTHER } };
+    expect(adoptGroupChanges(ITEMS, 'stall', resub, newerChangesSince(base, resub, ME), { edits: {}, note: '電源2' }).note).toBeNull();
+  });
+
+  it('数が変わっていない品目は挙げない（ほかの人の初めての提出で count 0 の行が入っても、入れた数を残す）', () => {
+    const none = { requests: [], submission: null };
+    // ほかの人が椅子 3 だけで初めて提出した（全品目の行が updated_at T2 で入る）
+    const first = {
+      requests: [req(a, 'desk', 0, T2), req(a, 'chair', 3, T2), req(a, 'lectern', 0, T2)],
+      submission: { ...sub(a, T2, null), updated_at: T2, updated_by: OTHER },
+    };
+    const c = newerChangesSince(none, first, ME);
+    expect(c.items).toEqual([{ itemId: item('chair').id, from: 0, to: 3 }]);
+    const next = adoptGroupChanges(ITEMS, 'stall', first, c, { edits: { [item('desk').id]: 2 }, note: null });
+    expect(next.edits).toEqual({ [item('desk').id]: 2 });
+  });
+
+  it('備考が同じ出し直しでは、書き換えた備考を残す。知らせは提出日時と備考を分ける', () => {
+    // ほかの人が椅子だけを変えて出し直した（備考「電源」は同じ。提出日時と updated_at は進む）
+    const resub = { requests: [req(a, 'desk', 3, T1), req(a, 'chair', 4, T2)], submission: { ...sub(a, T2, '電源'), updated_at: T2, updated_by: OTHER } };
+    const c = newerChangesSince(base, resub, ME);
+    expect(c).toMatchObject({ submission: true, submittedAt: true, note: false });
+    expect(submissionChangeLabels(c)).toEqual(['提出日時']);
+    expect(adoptGroupChanges(ITEMS, 'stall', resub, c, { edits: {}, note: '電源と水道' }).note).toBe('電源と水道');
+    // 備考だけが変わった・同じ内容での出し直し（updated_at だけ）
+    const noteOnly = { ...resub, submission: { ...sub(a, T1, '電源なし'), updated_at: T2, updated_by: OTHER } };
+    expect(submissionChangeLabels(newerChangesSince(base, noteOnly, ME))).toEqual(['備考']);
+    const same = { ...resub, submission: { ...sub(a, T1, '電源'), updated_at: T2, updated_by: OTHER } };
+    expect(submissionChangeLabels(newerChangesSince(base, same, ME))).toEqual(['提出の記録']);
+    const both = { ...resub, submission: { ...sub(a, T2, '電源なし'), updated_at: T2, updated_by: OTHER } };
+    expect(submissionChangeLabels(newerChangesSince(base, both, ME))).toEqual(['提出日時', '備考']);
+  });
+
+  it('届いた提出の記録に書いた人（updated_by）がなければ、ほかの人の変更と言い切らない（その記録と同じ時刻の行も挙げない）', () => {
+    const none = { requests: [], submission: null };
+    const T3 = '2026-10-29T01:02:06.111111+00:00';
+    const unknownBy = { requests: [req(a, 'desk', 1, T2), req(a, 'chair', 4, T3)], submission: { ...sub(a, T2, null), updated_at: T2 } };
+    const c = newerChangesSince(none, unknownBy, ME);
+    expect(c.submission).toBe(false);
+    expect(c.items).toEqual([{ itemId: item('chair').id, from: 0, to: 4 }]);
   });
 });
 
