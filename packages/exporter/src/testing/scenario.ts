@@ -37,4 +37,3 @@ export function scenario() {
   ];
   return { b, ix, rows, data: b.yearData() };
 }
-

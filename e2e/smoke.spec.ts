@@ -1,11 +1,12 @@
 import { expect, test } from '@playwright/test';
 
-test('トップページが開く', async ({ page }) => {
+test('ログインしていなければ /login/ に送られる', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '電波祭 総務 机椅子管理' })).toBeVisible();
+  await expect(page).toHaveURL(/\/login\/$/);
+  await expect(page.getByRole('heading', { name: 'ログイン' })).toBeVisible();
 });
 
-test('/login/ が開く', async ({ page }) => {
+test('/login/ に Google のログインボタンがある', async ({ page }) => {
   await page.goto('/login/');
-  await expect(page.getByRole('heading', { name: 'ログイン' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '学校の Google アカウントでログイン' })).toBeVisible();
 });
