@@ -80,7 +80,7 @@ pnpm e2e:perf                   # 4G での表示の速さ（/stock・/request�
 pnpm e2e:manual                 # 手での確かめ（画面の受け入れ）の年度とユーザーを作り、ログインの情報を出す。片付けは MANUAL_CLEANUP=1
 ```
 
-`pnpm build:e2e` の引数（`pnpm build:e2e -- --base-path /GAapp` のように渡す）：`--base-path /GAapp` は basePath つきで書き出して apps/web/out-basepath/GAapp/ に置く（下の「basePath」）。`--supabase-url http://<PC の LAN の IP>:54321` はアプリが呼ぶ Supabase の URL を変える（総務の PC から同じ Wi-Fi のスマホに配って試すとき。手順は notes/T14.md の「LAN で配る手順」）。
+`pnpm build:e2e` の引数（`pnpm build:e2e -- --base-path /GAapp` のように渡す）：`--base-path /GAapp` は basePath つきで書き出して apps/web/out-basepath/GAapp/ に置く（下の「basePath」）。`--supabase-url http://<PC の LAN の IP>:54321` はアプリが呼ぶ Supabase の URL を変える（総務の PC から同じ Wi-Fi のスマホに配って試すとき。手順は notes/T14.md の「LAN で配る手順」）。ただし、今はテスト用ログインのフォームが Supabase の URL が 127.0.0.1・localhost のときだけ出るので、LAN の IP で書き出すとスマホにフォームが出ない（扱いは未決。notes/T14.md）。
 
 Claude Code のクラウドのセッションなど、Docker のデーモンが止まっている環境では、先に `dockerd` を起動してから `supabase start` する（`docker info` が失敗したら `nohup dockerd > /tmp/dockerd.log 2>&1 &`）。手元の PC では Docker Desktop などを起動しておく。ローカルの Supabase は同時に1つしか動かせない。
 
