@@ -340,7 +340,7 @@ admin・staff・viewer は、その行の年度でのロールを指す（R9 の
   - ローカルの supabase/config.toml も `enable_confirmations = true`・`double_confirm_changes = true`・`enable_manual_linking = false`・`enable_anonymous_sign_ins = false` にする（Email プロバイダーはテストユーザーのパスワードログインのためだけに有効）。本番は全員が Google の identity を持つので、Confirm email か Secure email change だけが崩れても「Google の identity のメールだけを見る」で止まる。Google の identity のない email だけのアカウント（ローカルのテストユーザー）は、Confirm email と Secure email change に頼る（既知の依存。D-17a）
 - E2E・CI のテストユーザー（管理者・部員・団体代表・閲覧のみ・未招待）は supabase/seed.sql で auth.users と auth.identities に直接入れる（フックは通らないが、上のトリガーは動く）。年度・団体・招待を先に入れておき、email_confirmed_at を入れたユーザーと、同じメールで email_verified が true の email の identity を足して、identity の追加のトリガーでロールを付ける。メールは予約済みのドメイン（`@example.test`）、パスワードはローカル専用の固定値にする。seed は本番に流さず、本番ではメールログインを無効にする（D-02）。画面のメール＋パスワードのログインは、ビルド時のフラグがあり、Supabase がローカルのときだけ出る
 - 学校の Google Workspace では、18歳未満に指定された利用者は、管理者が許可していない外部アプリにログインできない。1〜3年生が使えるかは情報担当への確認待ち（[概要](00_overview.md) の未決事項）
-- RLS と RPC の権限は pgTAP（`supabase test db`）でロールごとにテストする。権限表の全セルは、期待値の表（表・操作・年度の状態・ペルソナごとの可否）から生成して確かめる。確定中の守りも、confirmed のセルとして確かめる。関数の execute と表の権限の棚卸し（anon が何も実行・参照できないこと、authenticated が実行できるのは RPC とポリシーの判定関数だけであること、supabase_auth_admin が実行できるのはフックだけであること）もテストする
+- RLS と RPC の権限は pgTAP（`supabase test db`）でロールごとにテストする。権限表の全セルは、期待値の表（表・操作・年度の状態・ペルソナごとの可否）から生成して確かめる。確定中の守りも、confirmed のセルとして確かめる。関数の execute と表の権限の棚卸し（anon が何も実行・参照できないこと、authenticated が実行できるのは RPC とポリシーの判定関数だけであること、supabase_auth_admin が実行できるのはフックと、フックが呼ぶ private.school_domain() だけであること）もテストする
 
 ## 年度ステータスの状態遷移
 
