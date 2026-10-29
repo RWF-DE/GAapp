@@ -1,7 +1,7 @@
 import { INITIAL_ITEMS } from '@gaapp/shared';
 import { describe, expect, it, vi } from 'vitest';
 import type { GroupRow, ItemRow, RequestDbRow, SubmissionRow, YearRow } from '@/lib/db/types';
-import { AppError, appError } from '@/lib/errors';
+import { AppError, appError, toAppError } from '@/lib/errors';
 import { createFakeSupabase, opArgs, type FakeCall } from '@/lib/testing/fake-supabase';
 import {
   adminWriteMode,
@@ -13,6 +13,9 @@ import {
   groupChangesSince,
   groupDeadlineRows,
   hasCountChanges,
+  isUnknownOutcome,
+  proxySavedAfterUnknown,
+  saveSummary,
   hasGroupChanges,
   hasNoRequests,
   isOutsideFlagActive,
@@ -453,6 +456,115 @@ describe('savedAfterUnknown（通信の失敗の後に、読み直した表で�
     expect(both.size).toBe(0);
     const all = savedAfterUnknown([upd, ins], t([req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)]), 'group');
     expect(all.size).toBe(2);
+  });
+});
+
+describe('isUnknownOutcome（応答が届かず、保存されたか分からない失敗か。2.6）', () => {
+  it('通信の失敗（fetch の TypeError・status 0・AbortError）は分からない', () => {
+    expect(isUnknownOutcome(new TypeError('Failed to fetch'))).toBe(true);
+    expect(isUnknownOutcome(toAppError({ code: '', message: 'TypeError: Failed to fetch' }, 0))).toBe(true);
+    expect(isUnknownOutcome(Object.assign(new Error('aborted'), { name: 'AbortError' }))).toBe(true);
+  });
+
+  it('ゲートウェイのタイムアウトなど、コードのない応答（502・503・504・408）は分からない', () => {
+    expect(isUnknownOutcome(toAppError({ message: 'Gateway Timeout' }, 504))).toBe(true);
+    expect(isUnknownOutcome(toAppError({ message: 'Bad Gateway' }, 502))).toBe(true);
+    expect(isUnknownOutcome(toAppError({ message: 'Request Timeout' }, 408))).toBe(true);
+  });
+
+  it('DB・PostgREST からコードつきで返ったエラーは、classifyError が知らないコードでも届いた失敗', () => {
+    // 文のタイムアウト（57014）はトランザクションごと戻るので、保存されていない
+    const timeout = toAppError({ code: '57014', message: 'canceling statement due to statement timeout' }, 500);
+    expect(timeout.info.kind).toBe('unknown');
+    expect(isUnknownOutcome(timeout)).toBe(false);
+    expect(isUnknownOutcome(toAppError({ code: 'XX000', message: 'internal' }, 500))).toBe(false);
+    expect(isUnknownOutcome(toAppError({ code: 'PGRST000', message: 'could not connect' }, 503))).toBe(false);
+    expect(isUnknownOutcome(toAppError({ code: 'P0001', message: 'something_new' }, 400))).toBe(false);
+  });
+
+  it('コードのない 4xx（408 を除く。PostgREST の前で断られた）は届いた失敗。ほかの種類（conflict など）も届いた失敗', () => {
+    expect(isUnknownOutcome(toAppError({ message: 'Too Many Requests' }, 429))).toBe(false);
+    expect(isUnknownOutcome(toAppError({ message: 'Payload Too Large' }, 413))).toBe(false);
+    expect(isUnknownOutcome(toAppError({ code: 'P0001', message: 'conflict', details: '{"item_id":"x"}' }, 400))).toBe(false);
+    expect(isUnknownOutcome(toAppError({ code: '42501', message: 'denied' }, 403))).toBe(false);
+  });
+});
+
+describe('proxySavedAfterUnknown（代理入力の送信が途切れた後に、読み直した記録で保存されていたかを確かめる。2.6）', () => {
+  const g = group(10, '模擬店A', 'stall');
+  const subAt = (updated_at: string, note: string | null = null, submitted_at: string | null = T1): SubmissionRow => ({
+    group_id: g.id,
+    submitted_at,
+    note,
+    updated_at,
+  });
+
+  describe('締切前（submit_requests：送った品目の数・備考に置き換え、提出の記録を必ず書き直す）', () => {
+    const sent = {
+      rows: [
+        { itemId: item('desk').id, count: 3 },
+        { itemId: item('chair').id, count: 2 },
+      ],
+      note: '電源',
+      submissionUpdatedAt: T0,
+      checkRowVersions: false,
+    };
+    it('数・備考が送ったもので、提出の記録が送る前から書き直されていれば保存されていた（数の変わらない行の updated_at は問わない）', () => {
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: subAt(T1, '電源') })).toBe(true);
+    });
+    it('提出の記録が送る前のまま（届いていない）なら保存されていない', () => {
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: subAt(T0, '電源') })).toBe(false);
+    });
+    it('数か備考が違う・提出の記録がない・未提出なら保存されていない', () => {
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0)], submission: subAt(T1, '電源') })).toBe(false);
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: subAt(T1, null) })).toBe(false);
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: null })).toBe(false);
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: subAt(T1, '電源', null) })).toBe(false);
+    });
+    it('送る前に提出の記録がなかった団体：記録ができていれば保存されていた', () => {
+      expect(
+        proxySavedAfterUnknown({ ...sent, submissionUpdatedAt: null }, { requests: [req(g, 'desk', 3, T1), req(g, 'chair', 2, T1)], submission: subAt(T1, '電源') }),
+      ).toBe(true);
+    });
+  });
+
+  describe('締切後（update_requests_after_deadline：変えた品目だけ。備考は変えたときだけ）', () => {
+    const sent = {
+      rows: [
+        { itemId: item('desk').id, count: 5, updatedAt: T0 },
+        { itemId: item('chair').id, count: 2 },
+      ],
+      submissionUpdatedAt: T0,
+      checkRowVersions: true,
+    };
+    it('行が送った数で updated_at が送った値から進み、提出の記録も書き直されていれば保存されていた（備考は送っていないので問わない）', () => {
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)], submission: subAt(T1, 'ほかの人の備考') })).toBe(true);
+    });
+    it('行の updated_at が送った値のまま・数が違うなら保存されていない', () => {
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 5, T0), req(g, 'chair', 2, T1)], submission: subAt(T1) })).toBe(false);
+      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 4, T1), req(g, 'chair', 2, T1)], submission: subAt(T1) })).toBe(false);
+    });
+    it('品目を変えず提出済みにしただけ：提出の記録が書き直され、送った備考になっていれば保存されていた', () => {
+      const only = { rows: [], note: '紙で提出', submissionUpdatedAt: T0, checkRowVersions: true };
+      expect(proxySavedAfterUnknown(only, { requests: [], submission: subAt(T1, '紙で提出') })).toBe(true);
+      expect(proxySavedAfterUnknown(only, { requests: [], submission: subAt(T0, '紙で提出') })).toBe(false);
+    });
+  });
+});
+
+describe('saveSummary（申請一覧の保存の結果の文）', () => {
+  it('「保存できなかった」と「保存できたか分からない」の両方があれば、句点で区切る', () => {
+    expect(saveSummary('件', { saved: 2, failed: 1, uncertain: 2, notSent: 0 })).toBe(
+      '2 件を保存しました。1 件は保存できませんでした。2 件は保存できたか分かりません',
+    );
+    expect(saveSummary('団体', { saved: 0, failed: 1, uncertain: 1, notSent: 2 })).toBe(
+      '0 団体を保存しました。1 団体は保存できませんでした。1 団体は保存できたか分かりません（2 団体は送っていません）',
+    );
+  });
+  it('片方だけ・どちらもないとき', () => {
+    expect(saveSummary('件', { saved: 2, failed: 1, uncertain: 0, notSent: 0 })).toBe('2 件を保存しました。1 件は保存できませんでした');
+    expect(saveSummary('件', { saved: 1, failed: 0, uncertain: 1, notSent: 0 })).toBe('1 件を保存しました。1 件は保存できたか分かりません');
+    expect(saveSummary('件', { saved: 1, failed: 0, uncertain: 0, notSent: 3 })).toBe('1 件を保存しました（3 件は送っていません）');
   });
 });
 

@@ -21,6 +21,10 @@ const state = vi.hoisted(() => ({
   tableDown: false,
   /** 部門A の提出の記録（1件を読むときだけ。表を読んだ後にほかの人が提出したことをまねる） */
   deptSubmittedAt: null as string | null,
+  /** 模擬店A の提出の記録の updated_at（自分の提出が届いたことをまねるときに進める） */
+  stallSubUpdatedAt: '2026-10-29T01:02:03.123456+00:00',
+  /** 1団体の申請の読み直し（代理入力の確かめ）を通信の失敗にする */
+  groupDown: false,
 }));
 
 vi.mock('@/lib/supabase/client', async () => {
@@ -115,9 +119,10 @@ function makeHandler(over: (call: FakeCall) => FakeResult | undefined = () => un
         if (call.ops.some((x) => x.op === 'update')) return { data: null };
         if (call.ops.some((x) => x.op === 'select') && opArgs(call, 'select')[0]?.[0] === 'updated_at') return { data: { updated_at: T0 } };
         if (state.tableDown && opArgs(call, 'eq').some((a) => a[0] === 'groups.year_id')) return NETWORK;
+        if (state.groupDown && opArgs(call, 'eq').some((a) => a[0] === 'group_id')) return NETWORK;
         return { data: (state.requests ?? REQUESTS).map((r) => ({ ...r, groups: { year_id: YEAR } })) };
       case 'request_submissions': {
-        const rows = [{ group_id: STALL, submitted_at: T0, note: state.note, updated_at: T0, groups: { year_id: YEAR } }];
+        const rows = [{ group_id: STALL, submitted_at: T0, note: state.note, updated_at: state.stallSubUpdatedAt, groups: { year_id: YEAR } }];
         if (call.ops.some((x) => x.op === 'maybeSingle')) {
           const id = opArgs(call, 'eq').find((a) => a[0] === 'group_id')?.[1];
           if (id === DEPT && state.deptSubmittedAt) return { data: { group_id: DEPT, submitted_at: state.deptSubmittedAt, note: null, updated_at: T1 } };
@@ -157,6 +162,8 @@ beforeEach(() => {
   state.closed = false;
   state.tableDown = false;
   state.deptSubmittedAt = null;
+  state.stallSubUpdatedAt = T0;
+  state.groupDown = false;
   try {
     localStorage.clear();
   } catch {
@@ -538,6 +545,118 @@ describe('申請一覧 /requests', () => {
     await waitFor(() => expect(state.calls.filter((c) => c.table === 'rpc:update_requests_after_deadline')).toHaveLength(1));
     const args = opArgs(state.calls.find((c) => c.table === 'rpc:update_requests_after_deadline')!, 'rpc')[0]![0] as { p_submission: unknown };
     expect(args.p_submission).toEqual({ submitted: true, note: '電源が2つ' });
+  });
+
+  it('代理入力（締切前）：提出の通信が途切れたら、送り直さずに読み直し、送った数・備考になっていれば「保存されていました」として閉じる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:submit_requests') {
+        // 届いたが応答が返らなかった（椅子(木) が 1 になり、提出の記録が書き直された）
+        state.requests = [...REQUESTS, { group_id: STALL, item_id: itemId('chair'), count: 1, updated_at: T1 }];
+        state.stallSubUpdatedAt = T1;
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(1);
+  });
+
+  it('代理入力（締切前）：提出の通信が途切れ、読み直しもできなければ、確かめるまで提出を押せない。確かめて保存されていなければ送り直せる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:submit_requests') {
+        state.groupDown = true;
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toContain('保存できたか確かめられません'));
+    expect((within(sheet).getByRole('button', { name: '提出する' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(document.getElementById(`proxy-${STALL}-chair`)).toHaveProperty('value', '1');
+
+    // 通信が戻った。保存されていなかった
+    state.groupDown = false;
+    await user.click(within(sheet).getByRole('button', { name: '確かめる' }));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toContain('保存されていませんでした'));
+    expect(within(sheet).queryByRole('button', { name: '確かめる' })).toBeNull();
+    expect((within(sheet).getByRole('button', { name: '提出する' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(document.getElementById(`proxy-${STALL}-chair`)).toHaveProperty('value', '1');
+    expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(1);
+
+    // 送り直す
+    state.handler = makeHandler();
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(state.calls.filter((c) => c.table === 'rpc:submit_requests')).toHaveLength(2));
+  });
+
+  it('代理入力（締切後）：保存の通信が途切れたら、読み直して変えた品目と提出の記録が届いていれば「保存されていました」として閉じる', async () => {
+    const user = userEvent.setup();
+    state.closed = true;
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:update_requests_after_deadline') {
+        state.requests = [...REQUESTS, { group_id: STALL, item_id: itemId('chair'), count: 1, updated_at: T1 }];
+        state.stallSubUpdatedAt = T1;
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    await user.click(within(sheet).getByRole('button', { name: '理由をつけて保存・提出済みにする' }));
+    const reason = await screen.findByRole('dialog', { name: /締切後に変更する/ });
+    await user.type(within(reason).getByLabelText('理由（必須）'), '代理入力');
+    await user.click(within(reason).getByRole('button', { name: '保存する' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(state.calls.filter((c) => c.table === 'rpc:update_requests_after_deadline')).toHaveLength(1);
+  });
+
+  it('代理入力（締切後）：保存の通信が途切れ、読み直して届いていなければ「保存されていませんでした」と出して入力を残す', async () => {
+    const user = userEvent.setup();
+    state.closed = true;
+    state.handler = makeHandler((call) => (call.table === 'rpc:update_requests_after_deadline' ? NETWORK : undefined));
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    await user.click(within(sheet).getByRole('button', { name: '理由をつけて保存・提出済みにする' }));
+    const reason = await screen.findByRole('dialog', { name: /締切後に変更する/ });
+    await user.type(within(reason).getByLabelText('理由（必須）'), '代理入力');
+    await user.click(within(reason).getByRole('button', { name: '保存する' }));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toContain('保存されていませんでした'));
+    expect(document.getElementById(`proxy-${STALL}-chair`)).toHaveProperty('value', '1');
+  });
+
+  it('締切前の直接の保存：DB からコードつきで返った知らないエラーは届いた失敗として出し、「保存できたか分かりません」にしない', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) =>
+      call.table === 'requests' && call.ops.some((o) => o.op === 'update')
+        ? { error: { code: '57014', message: 'canceling statement due to statement timeout' }, status: 500 }
+        : undefined,
+    );
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await user.click(screen.getByRole('button', { name: '保存（1件）' }));
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toContain('コード：57014'));
+    expect(screen.getByTestId('save-error').textContent).toContain('1 件は保存できませんでした');
+    expect(screen.getByTestId('save-error').textContent).not.toContain('分かりません');
+    expect(screen.getByTestId('save-error').textContent).not.toContain('保存されていませんでした');
   });
 
   it('代理入力：未保存の入力があれば、Esc で閉じる前に確かめる。送信中は閉じない', async () => {

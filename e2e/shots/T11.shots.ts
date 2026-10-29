@@ -183,6 +183,45 @@ test.describe('T11 管理者', () => {
     }
   });
 
+  test('T11 申請一覧（PC）：代理入力の提出の応答が届かず、読み直しもできないとき（確かめる）', async ({ page }) => {
+    test.setTimeout(120_000);
+    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/?category=rest_area');
+      await page.locator('tr[data-group-name="E2E休憩所"]').getByRole('button', { name: '代理入力' }).click();
+      const sheet = page.getByRole('dialog');
+      await expect(sheet.getByRole('heading', { name: '代理入力：E2E休憩所' })).toBeVisible();
+      await sheet.getByRole('button', { name: '机(木)の数を1増やす' }).click();
+      // 提出は DB に届くが応答を落とし、その後の団体の読み直しも落とす
+      let down = false;
+      await page.route('**/rest/v1/rpc/submit_requests*', async (route: Route) => {
+        await route.fetch();
+        down = true;
+        await route.abort('failed');
+      });
+      await page.route('**/rest/v1/requests*', async (route: Route) => {
+        if (down && route.request().url().includes('group_id=eq.')) {
+          await route.abort('failed');
+          return;
+        }
+        await route.continue();
+      });
+      await sheet.getByRole('button', { name: '提出する' }).click();
+      // 読み直しは supabase-js が GET を送り直してから失敗になるので、待ちを長くする
+      await expect(sheet.getByRole('alert')).toContainText('保存できたか確かめられません', { timeout: 60_000 });
+      await expect(sheet.getByRole('button', { name: '確かめる' })).toBeVisible();
+      await shoot(page, 'T11', 'requests-proxy-unverified-pc');
+      down = false;
+      await sheet.getByRole('button', { name: '確かめる' }).click();
+      await expect(page.getByText('通信が途切れましたが、E2E休憩所の申請は保存されていました')).toBeVisible();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+      await shoot(page, 'T11', 'requests-proxy-saved-after-unknown-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T11 取り込み（PC）：ファイルを選ぶ前・プレビュー・手で選ぶ・読めない CSV・結果', async ({ page }) => {
     const s = await createScenario({
       roles: { admin: true },

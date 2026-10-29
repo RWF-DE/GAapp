@@ -513,9 +513,28 @@ export function savedAfterUnknown(changes: readonly CellChange[], t: Pick<Reques
   return out;
 }
 
-/** 応答が届かず、保存されたか分からない失敗か（network・unknown。2.6） */
-export function isUnknownOutcome(error: AppError): boolean {
-  return error.info.kind === 'network' || error.info.kind === 'unknown';
+/**
+ * 応答が届かず、保存されたか分からない失敗か（2.6）。通信の失敗（network：fetch の失敗・中止・status 0）と、コードのない応答の
+ * うちタイムアウトやゲートウェイの失敗（408・5xx など。PostgREST の応答が届いていない）だけを「分からない」にする。
+ * DB・PostgREST からコードつきで返ったエラーは、classifyError が知らないコード（kind が unknown。57014 の文のタイムアウトなど）でも
+ * 届いた失敗（1リクエスト＝1トランザクションなので保存されていない）。コードのない 4xx（408 を除く）は PostgREST の前で断られた失敗。
+ */
+export function isUnknownOutcome(error: unknown): boolean {
+  const c = classifyError(error);
+  if (c.kind === 'network') return true;
+  if (c.kind !== 'unknown' || c.code !== null) return false;
+  return c.status === null || c.status === 408 || c.status >= 500;
+}
+
+/** 申請一覧の保存の結果の文の頭（「N 件を保存しました。M 件は保存できませんでした。K 件は保存できたか分かりません（L 件は送っていません）」） */
+export function saveSummary(
+  unit: '件' | '団体',
+  n: { saved: number; failed: number; uncertain: number; notSent: number },
+): string {
+  const sentences = [`${n.saved} ${unit}を保存しました`];
+  if (n.failed > 0) sentences.push(`${n.failed} ${unit}は保存できませんでした`);
+  if (n.uncertain > 0) sentences.push(`${n.uncertain} ${unit}は保存できたか分かりません`);
+  return `${sentences.join('。')}${n.notSent > 0 ? `（${n.notSent} ${unit}は送っていません）` : ''}`;
 }
 
 /** 締切後の保存：団体ごとの p_rows（行がある品目は updatedAt を付ける） */
@@ -627,6 +646,37 @@ export async function fetchGroupRequestState(groupId: string, client: AppSupabas
   if (r.error) throw toAppError(r.error, r.status);
   const requests = ((r.data ?? []) as unknown as RequestDbRow[]).filter((x) => x.group_id === groupId);
   return { requests, submission };
+}
+
+/** 代理入力で送ったもの（応答が届かなかったときに、読み直した記録と突き合わせる。2.6） */
+export interface ProxySent {
+  /** 送った品目の数。updatedAt は締切後に付けた楽観ロックの値（行がなかった品目と締切前は付けない） */
+  rows: { itemId: string; count: number; updatedAt?: string }[];
+  /** 送った備考（undefined なら送っていない。締切後に備考を変えなかったとき） */
+  note?: string | null;
+  /** 送る直前の提出の記録の updated_at（記録がなければ null） */
+  submissionUpdatedAt: string | null;
+  /** 行の updated_at が送った値から進んだことも確かめる（締切後。送るのは変えた品目だけで、届けば必ず書き直される） */
+  checkRowVersions: boolean;
+}
+
+/**
+ * 代理入力の送信（submit_requests・update_requests_after_deadline）の応答が届かなかったとき、読み直した団体の申請と提出の記録で
+ * 保存されていたかを確かめる（2.6）。どちらの RPC も提出の記録を必ず書き直す（updated_at が進む）ので、それを届いた印にし、
+ * 送った品目の数・備考が自分の入れたものになっていて、提出済みなら保存されていた。どちらの RPC も全部か何もないかなので、
+ * 一部だけを保存されていたとはしない。
+ */
+export function proxySavedAfterUnknown(sent: ProxySent, latest: GroupRequestState): boolean {
+  const s = latest.submission;
+  if (!s || s.submitted_at === null) return false;
+  if (ms(s.updated_at) === ms(sent.submissionUpdatedAt)) return false;
+  if (sent.note !== undefined && (s.note ?? null) !== sent.note) return false;
+  const rows = new Map(latest.requests.map((r) => [r.item_id, r]));
+  return sent.rows.every((r) => {
+    const row = rows.get(r.itemId);
+    if ((row?.count ?? 0) !== r.count) return false;
+    return !sent.checkRowVersions || ms(row?.updated_at ?? null) !== ms(r.updatedAt ?? null);
+  });
 }
 
 /** 読み込んだ表の行から、ほかの人が変えたもの（品目ごとの数・提出の記録） */

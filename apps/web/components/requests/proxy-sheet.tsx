@@ -18,7 +18,9 @@ import {
   hasGroupChanges,
   hasNoRequests,
   hasPreviousFor,
+  isUnknownOutcome,
   previousCountsFor,
+  proxySavedAfterUnknown,
   stateChangesSince,
   submitAfterDeadline,
   submitRequests,
@@ -26,6 +28,7 @@ import {
   toSubmitRows,
   type GroupRequestState,
   type MatrixRow,
+  type ProxySent,
 } from '@/lib/data/requests';
 import type { ItemRow, YearRow } from '@/lib/db/types';
 import { classifyError, messageFor } from '@/lib/errors';
@@ -45,7 +48,10 @@ export type ProxyMode = 'direct' | 'deadline';
  * また変わっていれば送らずに最新の値でもう一度確かめる。
  * 締切後は、備考を変えたときだけ備考を送る（開いた後にほかの人が変えた備考を上書きしない）。
  * 未保存の入力があれば、外側のクリック・Esc・×・「やめる」で閉じる前に確かめる。送信中は閉じない。
- * 失敗は onError に渡す（呼ぶ側が年度を読み直し、DB が締切後と判断したなら書き方を切り替える）。
+ * 失敗は onError に渡す（呼ぶ側が年度を読み直し、DB が締切後と判断したなら書き方を切り替える）。ただし応答が届かなかった失敗
+ * （通信の失敗・タイムアウト。isUnknownOutcome）は自動で送り直さず、団体の申請と提出の記録を読み直して、送った値になっていれば
+ * 「保存されていました」として閉じる（2.6）。なっていなければ入力を残して送り直してもらう。読み直せなければ、確かめるまで
+ * 送信を押せなくし、「確かめる」を出す。
  */
 export function ProxySheet({
   open,
@@ -165,6 +171,8 @@ function ProxyForm({
   const [checking, setChecking] = useState(false);
   /** 読み直してほかの人の変更が見つかった（上書きしてよいか確かめる）。変わった品目の「名前（前 → 今）」と、提出の記録が変わったか */
   const [overwrite, setOverwrite] = useState<{ items: string[]; submission: boolean } | null>(null);
+  /** 応答が届かず、読み直しもできなかった送信（確かめるまで送り直せない。2.6） */
+  const [unverified, setUnverified] = useState<ProxySent | null>(null);
   const dirty = hasCountChanges(model.fields, edits) || (noteEdit !== null && noteEdit !== savedNote);
   const noteTooLong = note.length > NOTE_MAX;
   const showPrev = group.category === 'rest_area' && !!year.prev_year_id && hasNoRequests(requests);
@@ -176,8 +184,7 @@ function ProxyForm({
     mutationFn: (vars: { rows: { itemId: string; count: number }[]; note: string | null }) => submitRequests(group.id, vars.rows, vars.note),
   });
   const deadline = useMutation({
-    mutationFn: (reason: string) =>
-      submitAfterDeadline(group.id, toDeadlineRows(model.fields, edits), noteChanged ? noteValue() : undefined, reason),
+    mutationFn: (vars: { sent: ProxySent; reason: string }) => submitAfterDeadline(group.id, vars.sent.rows, vars.sent.note, vars.reason),
   });
   const busy = direct.isPending || deadline.isPending || checking;
   // シートに入力と送信中を知らせる（閉じる前の確かめ・送信中に閉じない）。外れたら何もない状態に戻す
@@ -210,14 +217,49 @@ function ProxyForm({
     onClose();
   };
 
-  const sendDirect = async () => {
+  /**
+   * 応答が届かなかった送信を、団体の申請と提出の記録を読み直して確かめる（2.6）。送った値になっていれば「保存されていました」として
+   * 閉じる。なっていなければ入力を残して送り直してもらう。読み直せなければ unverified に残し、確かめるまで送信を押せなくする。
+   */
+  const verifySent = async (sent: ProxySent) => {
     setError(null);
+    setChecking(true);
+    let latest: GroupRequestState;
     try {
-      await direct.mutateAsync({ rows: toSubmitRows(model.fields, edits), note: noteValue() });
-      await finish();
-    } catch (e) {
-      setError(await onError(e, 'submit_requests', group.id));
+      latest = await fetchGroupRequestState(group.id);
+    } catch {
+      setUnverified(sent);
+      setChecking(false);
+      setError('通信が途切れ、保存できたか確かめられません。通信が戻ったら「確かめる」を押してください');
+      return;
     }
+    setUnverified(null);
+    setChecking(false);
+    if (proxySavedAfterUnknown(sent, latest)) {
+      toast.success(`通信が途切れましたが、${group.name}の申請は保存されていました`);
+      await onSaved();
+      onClose();
+      return;
+    }
+    setError('保存されていませんでした（通信できませんでした）。もう一度押してください');
+  };
+
+  /** 締切前の提出。before は送る直前に読み直した記録（応答が届かなかったときに、提出の記録が書き直されたかを比べる） */
+  const sendDirect = async (before: GroupRequestState) => {
+    setError(null);
+    const rows = toSubmitRows(model.fields, edits);
+    const sentNote = noteValue();
+    try {
+      await direct.mutateAsync({ rows, note: sentNote });
+    } catch (e) {
+      if (isUnknownOutcome(e)) {
+        await verifySent({ rows, note: sentNote, submissionUpdatedAt: before.submission?.updated_at ?? null, checkRowVersions: false });
+        return;
+      }
+      setError(await onError(e, 'submit_requests', group.id));
+      return;
+    }
+    await finish();
   };
 
   /**
@@ -239,7 +281,7 @@ function ProxyForm({
     const changed = stateChangesSince(base, latest);
     if (!hasGroupChanges(changed)) {
       setChecking(false);
-      await sendDirect();
+      await sendDirect(latest);
       return 'sent';
     }
     const current = new Map(model.fields.map((f) => [f.item.id, f.current]));
@@ -256,7 +298,7 @@ function ProxyForm({
 
   const onSubmit = async () => {
     setError(null);
-    if (noteTooLong || busy) return;
+    if (noteTooLong || busy || unverified) return;
     if (mode === 'deadline') {
       setReasonOpen(true);
       return;
@@ -298,7 +340,12 @@ function ProxyForm({
         />
       </div>
       <SheetFooter>
-        <Button disabled={busy || noteTooLong} aria-busy={busy || undefined} onClick={() => void onSubmit()}>
+        {unverified ? (
+          <Button variant="secondary" disabled={busy} aria-busy={checking || undefined} onClick={() => void verifySent(unverified)}>
+            {checking ? '確かめています…' : '確かめる'}
+          </Button>
+        ) : null}
+        <Button disabled={busy || noteTooLong || unverified !== null} aria-busy={busy || undefined} onClick={() => void onSubmit()}>
           {checking ? '確かめています…' : busy ? '保存中…' : mode === 'deadline' ? '理由をつけて保存・提出済みにする' : '提出する'}
         </Button>
         <Button variant="outline" disabled={busy} onClick={onCancel}>
@@ -336,9 +383,20 @@ function ProxyForm({
         presets={['団体の希望', '代理入力', '紙の申請の入力']}
         pending={deadline.isPending}
         onSubmit={async (reason) => {
+          const sent: ProxySent = {
+            rows: toDeadlineRows(model.fields, edits),
+            ...(noteChanged ? { note: noteValue() } : {}),
+            submissionUpdatedAt: base.submission?.updated_at ?? null,
+            checkRowVersions: true,
+          };
           try {
-            await deadline.mutateAsync(reason ?? '');
+            await deadline.mutateAsync({ sent, reason: reason ?? '' });
           } catch (e) {
+            if (isUnknownOutcome(e)) {
+              // 理由のダイアログは閉じ、シートで確かめる（自動で送り直さない）
+              void verifySent(sent);
+              return;
+            }
             const msg = await onError(e, 'update_requests_after_deadline', group.id);
             setError(msg);
             if (classifyError(e).kind === 'reason') throw e;

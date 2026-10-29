@@ -38,6 +38,7 @@ import {
   saveCellsDirect,
   saveGroupsAfterDeadline,
   savedAfterUnknown,
+  saveSummary,
   setPendingCell,
   useRequestsTables,
   type AdminWriteMode,
@@ -444,7 +445,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       const failed = results.length - savedCount - checked.uncertain;
       setSaveInfo(checked.info);
       if (parts.length > 0) {
-        const head = `${savedCount} 件を保存しました。${failed > 0 ? `${failed} 件は保存できませんでした` : ''}${checked.uncertain > 0 ? `${checked.uncertain} 件は保存できたか分かりません` : ''}${notSent > 0 ? `（${notSent} 件は送っていません）` : ''}`;
+        const head = saveSummary('件', { saved: savedCount, failed, uncertain: checked.uncertain, notSent });
         setSaveError(`${head}：${parts.join('／')}`);
         toast.error(parts[parts.length - 1]!);
       } else {
@@ -509,7 +510,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         const notSent = byGroup.size - results.length;
         const failed = results.length - okGroups - uncertainGroups;
         setSaveError(
-          `${okGroups} 団体を保存しました。${failed > 0 ? `${failed} 団体は保存できませんでした` : ''}${uncertainGroups > 0 ? `${uncertainGroups} 団体は保存できたか分かりません` : ''}${notSent > 0 ? `（${notSent} 団体は送っていません）` : ''}：${messages.join('／')}`,
+          `${saveSummary('団体', { saved: okGroups, failed, uncertain: uncertainGroups, notSent })}：${messages.join('／')}`,
         );
         toast.error(messages[0]!);
       } else {
