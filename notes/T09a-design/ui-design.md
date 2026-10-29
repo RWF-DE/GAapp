@@ -818,7 +818,7 @@ export function getAllocatorEngine(): AllocatorEngine;
    - 取り込まない行（rejected）：行番号と理由だけ（中身は持たない）。
    - 団体ごとの結果：団体・フォームのタイムスタンプ・品目ごとの数（CSV）と今の DB の数（違うセルに印）・DB の提出日時・備考の有無・「上書きする／取り込まない」（既定は Q2）。読み替え（企業以外の長机(3人掛) → 長机(2人掛)）が起きた団体には「長机(3人掛)を長机(2人掛)に読み替えました」。
    - 申請できない品目（不可机など。resolveResponses は読み替え先のない申請をそのまま残す）は送らず、「申請できない品目のため取り込みません」と団体ごとに出す（送ると DB のトリガーが E006 でその団体の全部を拒否するため）。
-5. **保存**：「取り込む（K 団体）」→ 理由（既定「Googleフォームの回答の取り込み（模擬店・{ファイル名}）」。編集できる）→ 団体ごとに順に `update_requests_after_deadline(p_group_id, p_rows, p_reason, p_submission)`：
+5. **保存**：「取り込む（K 団体）」→ 理由（既定「Googleフォームの回答の取り込み（模擬店）」。編集できる。理由は audit_logs に残り続け、ファイル名には人の名前が入りうるので、ファイル名は入れない〔T11 で変えた〕）→ 団体ごとに順に `update_requests_after_deadline(p_group_id, p_rows, p_reason, p_submission)`：
    - p_rows：その団体の区分で申請できる品目と、DB に行がある品目のすべてについて `{ itemId, count（CSV になければ 0）, updatedAt（DB に行があるとき） }`。フォームの回答は申請の全体なので、CSV にない品目は 0 にする。
    - p_submission：`{ submittedAt: フォームのタイムスタンプ（resolveResponses の submissions。+09:00 の ISO）, note }`。DB が提出済みにし、submitted_at をその日時にする（D-19・D-29。admin の RPC だけが日時を渡せる）。
    - 状態が preparing・requesting（締切前も）・allocating ならこの RPC で書ける（締切の前後で書き方を分けない。提出日時を残すため）。

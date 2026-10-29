@@ -1,4 +1,5 @@
 import { AlertTriangle, Inbox, Loader2, Lock, ShieldX } from 'lucide-react';
+import { ErrorBanner } from '@/components/common/error-banner';
 import { Button } from '@/components/ui/button';
 import type { YearStatus } from '@/lib/auth/membership';
 import { classifyError, messageFor, type MessageContext } from '@/lib/errors';
@@ -101,7 +102,9 @@ export interface QueryLike<T> {
 
 /**
  * クエリの状態から、読み込み中・失敗・空・中身のどれを出すかを決める（画面の設計 1.3・3 章の前書き。T09a）。
- * 失敗は 2.5 の文言（messageFor）と「もう一度読み込む」。空は isEmpty が真のとき empty（既定は EmptyState）。
+ * data がまだないときの失敗は、2.5 の文言（messageFor）と「もう一度読み込む」の ErrorState。空は isEmpty が真のとき empty（既定は EmptyState）。
+ * data があるときに読み直しが失敗したら（isError かつ data あり）、中身（入力のあるフォームを含む）は外さずに出し続け、
+ * 失敗はその上の帯（ErrorBanner。2.5 の文言と「もう一度」）で知らせる。読み直しが通れば帯は消える。
  *
  * @example
  * <QueryState query={q} isEmpty={(rows) => rows.length === 0} empty={<EmptyState title="場所がありません" … />}>
@@ -123,12 +126,21 @@ export function QueryState<T>({
   errorContext?: MessageContext;
   children: (data: T) => React.ReactNode;
 }) {
-  if (query.isError) {
-    return <ErrorState message={messageFor(classifyError(query.error), errorContext)} onRetry={() => void query.refetch()} />;
+  if (query.data === undefined) {
+    if (query.isError) {
+      return <ErrorState message={messageFor(classifyError(query.error), errorContext)} onRetry={() => void query.refetch()} />;
+    }
+    return <>{loading ?? <LoadingState />}</>;
   }
-  if (query.isPending || query.data === undefined) return <>{loading ?? <LoadingState />}</>;
-  if (isEmpty?.(query.data)) return <>{empty ?? <EmptyState />}</>;
-  return <>{children(query.data)}</>;
+  // 帯の有無で中身の位置（React の木の上の場所）が変わらないように、帯は null でも同じ位置に置く
+  return (
+    <>
+      {query.isError ? (
+        <ErrorBanner error={query.error} context={errorContext} onRetry={() => void query.refetch()} className="mb-4" />
+      ) : null}
+      {isEmpty?.(query.data) ? (empty ?? <EmptyState />) : children(query.data)}
+    </>
+  );
 }
 
 const READ_ONLY_MESSAGES: Partial<Record<YearStatus, string>> = {

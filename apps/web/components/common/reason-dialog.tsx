@@ -14,6 +14,13 @@ export interface ReasonDialogProps {
   description?: React.ReactNode;
   /** 理由が必須か（確定・確定の解除・締切後の申請の変更など）。既定 true */
   required?: boolean;
+  /**
+   * 理由の欄の初期値（「Googleフォームの回答の取り込み（模擬店）」など）。開くたびにこの値から始まる（開いている間に変えても欄は変わらない）。
+   * 既定は空。
+   * 注意：理由は audit_logs に残り続け（消さない）、管理者が履歴の画面で読む。ファイル名（人の名前が入りうる）・メールアドレス・
+   * 個人名など、人が分かるものを初期値に入れない（T11 の取り込みもファイル名を入れないと決めた）。
+   */
+  defaultValue?: string;
   /** よく使う理由のボタン（「数え直し」「団体の希望」など） */
   presets?: readonly string[];
   /** 理由の欄の上に置くもの（warning の一覧と「確認しました」のチェックなど） */
@@ -48,6 +55,7 @@ export function reasonError(value: string, required: boolean): string | null {
  * @example
  * <ReasonDialog open={open} onOpenChange={setOpen} title="確定を解除する" presets={['数え直し']}
  *   onSubmit={(reason) => m.mutateAsync({ p_reason: reason })} pending={m.isPending} error={reasonFieldError} />
+ * <ReasonDialog … defaultValue="Googleフォームの回答の取り込み（模擬店）" />   // 理由の欄に初期値を入れておく（ファイル名は入れない）
  */
 export function ReasonDialog(props: ReasonDialogProps) {
   const { open, onOpenChange, pending = false } = props;
@@ -56,7 +64,7 @@ export function ReasonDialog(props: ReasonDialogProps) {
   return (
     <Dialog open={open} onOpenChange={(o) => (busy ? undefined : onOpenChange(o))}>
       <DialogContent showCloseButton={!busy}>
-        {/* 閉じると中身が外れるので、開き直すと理由は空に戻る */}
+        {/* 閉じると中身が外れるので、開き直すと理由は初期値（既定は空）に戻る */}
         <ReasonForm {...props} busy={busy} setRunning={setRunning} />
       </DialogContent>
     </Dialog>
@@ -68,6 +76,7 @@ function ReasonForm({
   title,
   description,
   required = true,
+  defaultValue = '',
   presets,
   children,
   confirmLabel = '保存する',
@@ -80,7 +89,7 @@ function ReasonForm({
   setRunning,
 }: ReasonDialogProps & { busy: boolean; setRunning: (v: boolean) => void }) {
   const id = useId();
-  const [value, setValue] = useState('');
+  const [value, setValue] = useState(defaultValue);
   const [touched, setTouched] = useState(false);
 
   const localError = reasonError(value, required);

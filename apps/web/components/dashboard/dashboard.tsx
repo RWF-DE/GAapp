@@ -44,8 +44,6 @@ export function Dashboard({ yearId, audiences }: { yearId: string; audiences: re
   const header = (
     <PageHeader
       title="ダッシュボード"
-      // スマホ（390px）で題名が「最終読み込み」と「読み直す」に押されて折れないよう、題名の段を1行にする（T09a への申し送り）
-      className="[&>div:first-child]:basis-full md:[&>div:first-child]:basis-0"
       loadedAt={snap.data?.loadedAt ?? null}
       onReload={() => void snap.refetch()}
       reloading={snap.isFetching}

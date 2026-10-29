@@ -34,6 +34,19 @@ export function matchesEntity(option: EntityOption, search: string): boolean {
 }
 
 /**
+ * ポップオーバーが閉じきったとき（閉じるアニメーションの後）に、Radix が開いたボタンへフォーカスを戻すのを、
+ * フォーカスがすでに別の要素（閉じている間に開いた別の EntitySelect の検索の欄など）へ移っていればやめる。
+ * 戻すと、その別のポップオーバーにとって「外へのフォーカス」になり、開いたばかりのものが閉じる（T12 の E2E で起きた）。
+ * フォーカスが body にある（閉じて中身が外れた）ときは今までどおり開いたボタンへ戻す。
+ */
+export function keepFocusIfMoved(event: Event): void {
+  const active = document.activeElement;
+  if (!active || active === document.body) return;
+  if (event.currentTarget instanceof Node && event.currentTarget.contains(active)) return;
+  event.preventDefault();
+}
+
+/**
  * 団体・場所・品目を名前で選ぶ（cmdk の Combobox。画面の設計 1.4。T09a）。
  * group（区分・建物など）ごとに見出しを分け、名前・group・keywords で絞れる。並びは渡した順（sort_order → 名前 → id で並べて渡す）。
  * 絞り込みは cmdk の既定（value〔ここでは id〕も含めたあいまい一致と点の順の並べ替え）を使わず、matchesEntity で自前で行う。
@@ -108,7 +121,11 @@ export function EntitySelect({
           <ChevronsUpDown aria-hidden className="opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] min-w-64 p-0" align="start">
+      <PopoverContent
+        className="w-[var(--radix-popover-trigger-width)] min-w-64 p-0"
+        align="start"
+        onCloseAutoFocus={keepFocusIfMoved}
+      >
         <Command shouldFilter={false}>
           <CommandInput
             value={search}
