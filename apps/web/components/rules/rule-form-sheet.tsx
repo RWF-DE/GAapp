@@ -128,7 +128,8 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
 
   const save = async () => {
     if (pending) return;
-    setSubmitError(null);
+    // 前の保存の失敗の知らせ（submitError）は、送ると決まってから消す（下の setPending の前）。欄の確かめで止まって戻るときに消すと、
+    // 応答が届かなかった後だという印（afterUnknownOutcome → mustSend）も消え、次に開いたときの値へ戻した保存が送らずに閉じてしまう（2.6 の (B1) の 2）
     if (target.type === 'edit' && (!rule || !lockUpdatedAt)) return;
     const locked = rule && lockUpdatedAt ? { ...rule, updated_at: lockUpdatedAt } : null;
     /**
@@ -168,6 +169,7 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
       }
       send = target.type === 'new' ? () => onInsert(write) : () => onUpdate(locked!, write);
     }
+    setSubmitError(null);
     setPending(true);
     try {
       const out = await send();

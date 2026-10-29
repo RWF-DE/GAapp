@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ruleToForm, type RulesData } from '@/lib/data/rules';
 import type { RuleDbRow, YearRow } from '@/lib/db/types';
 import { appError, unknownOutcomeMessage } from '@/lib/errors';
+import { NOTE_MAX } from '@/lib/schemas/common';
 import { FIXTURE_UPDATED_AT, fixtureToTables } from '@/lib/testing/fixture-rows';
 import { RuleFormSheet, type RuleFormSheetProps, type RuleSheetTarget, type SaveOutcome } from './rule-form-sheet';
 
@@ -249,6 +250,67 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
     const [rule, patch] = onUpdate.mock.calls[1]!;
     expect(rule.updated_at).toBe(s05.updated_at);
+    expect(patch.memo).toBe(original === '' ? null : original);
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('保存できたか分からない後、メモの長さ超えで一度止まっても、開いたときの値に戻した保存は送る（メモだけ）', async () => {
+    const user = userEvent.setup();
+    const original = s05.memo ?? '';
+    const onUpdate = vi
+      .fn<RuleFormSheetProps['onUpdate']>()
+      .mockResolvedValueOnce({ ok: false, error: new TypeError('Failed to fetch'), notice: unknownOutcomeMessage() })
+      .mockResolvedValue({ ok: true });
+    const { onClose } = setup({ editMode: 'memo', onUpdate });
+    await user.clear(memoBox());
+    await user.type(memoBox(), 'わたしのメモ');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+
+    await user.clear(memoBox());
+    await user.click(memoBox());
+    await user.paste('あ'.repeat(NOTE_MAX + 1));
+    await user.click(saveButton());
+    await screen.findByText(`メモは ${NOTE_MAX} 字までです`);
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
+    await user.clear(memoBox());
+    if (original) await user.type(memoBox(), original);
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    expect(onUpdate.mock.calls[1]![1].memo).toBe(original === '' ? null : original);
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('保存できたか分からない後、コードを空にして欄のエラーで一度止まっても、開いたときの値に戻した保存は送る', async () => {
+    const user = userEvent.setup();
+    const original = s05.memo ?? '';
+    const onUpdate = vi
+      .fn<RuleFormSheetProps['onUpdate']>()
+      .mockResolvedValueOnce({ ok: false, error: new TypeError('Failed to fetch'), notice: unknownOutcomeMessage() })
+      .mockResolvedValue({ ok: true });
+    const { onClose } = setup({ onUpdate });
+    await user.clear(memoBox());
+    await user.type(memoBox(), 'わたしのメモ');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+
+    const codeBox = screen.getByLabelText('コード');
+    await user.clear(codeBox);
+    await user.click(saveButton());
+    await waitFor(() => expect(codeBox.getAttribute('aria-invalid')).toBe('true'));
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
+    await user.type(codeBox, s05.code);
+    await user.clear(memoBox());
+    if (original) await user.type(memoBox(), original);
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    const [rule, patch] = onUpdate.mock.calls[1]!;
+    expect(rule.updated_at).toBe(s05.updated_at);
+    expect(patch.code).toBe(s05.code);
     expect(patch.memo).toBe(original === '' ? null : original);
     expect(toast.info).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
