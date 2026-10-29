@@ -416,6 +416,74 @@ test.describe('T10 部員', () => {
     }
   });
 
+  test('T10 応答が届かなかった保存：確かめられない間にほかの人が保存していれば、「確かめる」で言い切らずに上書きするか読み直すかを選べる', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', roles: { staff: true, admin: true } });
+    try {
+      const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
+      const desk = s.ids.items.desk!;
+      await pinYear(page, SEED_USER_IDS.staff, s.yearId);
+      await page.setViewportSize(MOBILE);
+      await page.goto(`/stock/?room=${roomA}`);
+      await waitInput(page, 10);
+      await plus(page, '机(木)').click();
+      // 1回目の upsert は DB に届かずに切れる。その後は部屋の行の読み込みも通信できない（offline で切る）
+      let upserts = 0;
+      let offline = false;
+      await page.route('**/rest/v1/stocks?*', async (route) => {
+        const req = route.request();
+        if (req.method() === 'POST') {
+          upserts += 1;
+          if (upserts === 1) {
+            offline = true;
+            return route.abort('failed');
+          }
+          return route.fallback();
+        }
+        if (offline && req.url().includes('room_id=')) return route.abort('failed');
+        return route.fallback();
+      });
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await confirmNotLatest(page);
+      const banner = page.getByTestId('error-banner');
+      await expect(banner).toHaveAttribute('data-kind', 'network');
+      await banner.getByRole('button', { name: 'もう一度' }).click();
+      await confirmNotLatest(page);
+      const notice = page.getByTestId('stock-unconfirmed');
+      await expect(notice).toBeVisible({ timeout: 20_000 });
+      // 確かめられない間に、管理者が別の端末で保存した
+      await sql('update public.stocks set count = 7, counted_by = $3, counted_at = now() where year_id = $1 and room_id = $2 and item_id = $4', [
+        s.yearId,
+        roomA,
+        SEED_USER_IDS.admin,
+        desk,
+      ]);
+      offline = false;
+      await notice.getByRole('button', { name: '確かめる' }).click();
+      // 自分の保存が入ったか決められないので「保存されていませんでした」とは言わず、ほかの人の保存のダイアログに回す
+      const dialog = page.getByTestId('stock-conflict-dialog');
+      await expect(dialog).toContainText('テスト管理者さんが');
+      await expect(dialog.getByTestId('conflict-row').filter({ hasText: '机(木)' })).toContainText('711');
+      await expect(page.getByText('保存されていませんでした')).toHaveCount(0);
+      await expect(notice).toHaveCount(0);
+      // やめても入力はほかの人の数に置き換わらず、知らせが残る
+      await dialog.getByRole('button', { name: 'やめる' }).click();
+      await expect(dialog).toBeHidden();
+      await expect(input(page, '机(木)')).toHaveValue('11');
+      await expect(page.getByTestId('stock-remote-change')).toContainText('テスト管理者さんが');
+      // 「保存」でもう一度選ばせる → 上書きする
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await confirmNotLatest(page);
+      await dialog.getByRole('button', { name: '上書きする' }).click();
+      await expect(page.getByTestId('stock-saved')).toContainText('保存しました');
+      expect(upserts).toBe(2);
+      const after = await roomStocks(s.yearId, roomA);
+      expect(after.get(desk)!.count).toBe(11);
+      expect(after.get(desk)!.counted_by).toBe(SEED_USER_IDS.staff);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T10 最新でない年度：最新の年度に切り替えるボタンを出し、保存の前に確かめる（やめれば保存しない）', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', roles: { staff: true } });
     try {
