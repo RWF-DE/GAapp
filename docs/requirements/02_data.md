@@ -43,7 +43,7 @@ create type delivery_status as enum ('pending','done','problem');
 create table years (
   id uuid primary key default gen_random_uuid(),
   label text not null unique check (btrim(label) <> '' and length(label) <= 50), -- 'R9'
-  festival_start date not null,               -- 1日目
+  festival_start date not null check (festival_start between '2000-01-01' and '2200-12-31'), -- 1日目（有限で現実的な範囲。D-18）
   request_open_at timestamptz,
   request_close_at timestamptz,               -- 受付開始の前に入れる。requesting の間は null にできない
   status year_status not null default 'preparing',
@@ -148,7 +148,7 @@ create unique index on invitations (year_id, email, group_id) where group_id is 
 -- 申請の提出（団体ごとに1つ）
 create table request_submissions (
   group_id uuid primary key references groups on delete cascade,
-  submitted_at timestamptz,                   -- 未提出は null。提出のたびに DB が now() にする
+  submitted_at timestamptz,                   -- 未提出は null。提出のたびに DB が now() にする（CSV の取り込みで admin が submittedAt を渡したときを除く。D-19）
   note text check (length(note) <= 2000),     -- 備考（数には影響しない）
   updated_by uuid references auth.users on delete set null -- DB が auth.uid() を入れる
 );
@@ -290,7 +290,7 @@ create view v_remaining with (security_invoker = true) as
 - rules.year_id は作った後に変えられない（トリガーで拒否する。ルールを閉じた年度へ移す抜け道を、ポリシーに頼らず DB で止める）
 - 行を別の年度・団体へ動かす更新も止める。確定中・closed の守りと版の増分は新しい行の年度しか見ないので、動かせると確定中の年度から振り分けを抜き出せるため。年度を持つ表の year_id（room_years・stocks・groups・year_roles・invitations・allocations・slots・deliveries）と、団体を主キーに含む表の group_id（group_members・request_submissions・requests・substitution_consents）は、作った後に変えられない（トリガー `check_immutable`。`invalid_input`）。allocations・deliveries・invitations の group_id は、複合外部キーで year_id と対になっているので、同じ年度の別の団体にだけ変えられる
 - anon と PUBLIC には、public・private スキーマの表・ビュー・シーケンス・関数の権限を何も与えない（PUBLIC への既定の execute も外す）。authenticated には、「権限とRLS」の表の権限（全表の select と、W の表の insert・update・delete）、RPC の execute、ポリシーが呼ぶ private の判定関数の execute と private の usage だけを与える。シーケンスの権限は誰にも与えない（audit_logs は SECURITY DEFINER のトリガーだけが書く）。pgTAP が has_*_privilege で全オブジェクトを棚卸しして、一覧と比べる
-- 前年度の複製（フェーズ1、RPC `create_year_from`）は、groups・rules・room_years を新しい year_id で作り直し、呼んだ人を新しい年度の admin にする（year_roles に1行）。呼べるのは複製元の年度の admin だけで（複製元が closed でもよい）、複製元は最新の年度（それを複製元にした年度も、1日目が同じかそれより後の年度もない）に限る。新しい年度の1日目は複製元より後にする（update_year で1日目を変えるときも、複製元より後で、その年度を複製元にした年度より前でなければならない。崩すと、どの年度も最新でなくなり次の年度を作れなくなる）。古い年度の admin や、ほかの年度の admin が年度を作って権限を取り戻したり、ロールのない年度を複製して読んだりできないようにするため。新しい年度の prev_year_id に複製元を入れる。rules.params の団体 id（group・groups）は、名前が同じ新しい団体に付け替える。付け替えられなかったルールは無効にして memo に理由を書く。stocks・requests・allocations・substitution_consents・year_roles（呼んだ人以外）・invitations は複製しない（在庫入力の「前年の数」と休憩所の申請の初期値は、RPC `previous_year_stocks`・`previous_year_requests` で前年度の数を読んで出す）
+- 前年度の複製（フェーズ1、RPC `create_year_from`）は、groups・rules・room_years を新しい year_id で作り直し、呼んだ人を新しい年度の admin にする（year_roles に1行）。呼べるのは複製元の年度の admin だけで（複製元が closed でもよい）、複製元は最新の年度（それを複製元にした年度も、1日目が同じかそれより後の年度もない）に限る。新しい年度の1日目は複製元より後にする（update_year で1日目を変えるときも、複製元より後で、その年度を複製元にした年度より前でなければならない。崩すと、どの年度も最新でなくなり次の年度を作れなくなる）。1日目は有限で現実的な範囲（2000-01-01〜2200-12-31）に限る（years の CHECK。update_year・create_year_from は invalid_input（field: festival_start）を返す）。infinity や date の上限を入れた年度を closed にすると、それより後の1日目がなくなり、誰も次の年度を作れなくなるため（D-18）。古い年度の admin や、ほかの年度の admin が年度を作って権限を取り戻したり、ロールのない年度を複製して読んだりできないようにするため。新しい年度の prev_year_id に複製元を入れる。rules.params の団体 id（group・groups）は、名前が同じ新しい団体に付け替える。付け替えられなかったルールは無効にして memo に理由を書く。stocks・requests・allocations・substitution_consents・year_roles（呼んだ人以外）・invitations は複製しない（在庫入力の「前年の数」と休憩所の申請の初期値は、RPC `previous_year_stocks`・`previous_year_requests` で前年度の数を読んで出す）
 - 最初の年度と最初の admin は、オーナーが一度アプリにログインしてから、管理画面の SQL Editor で years と year_roles に1行ずつ入れて作る。最新の年度の admin が誰も残っていないときも同じ方法で admin を足す。手順は README に書く。卒業する admin は、年度を closed にする前後に remove_role で外す（closed でも外せる）
 - 同じ行を複数の管理者が同時に変えないよう、allocations と requests の更新は updated_at を条件に入れた楽観ロックにする。クライアントは受け取った updated_at の文字列をそのまま返し、DB はミリ秒までで比べる。合わなければ「他の人が変更しました」と出して読み直す
 - 自動振り分けと確定は、years.allocation_version（振り分けの入力と結果の版）で、計算・検証している間に何かが変わっていないかを確かめる。年度が allocating の間に、allocate の入力になる表（stocks、room_years、groups、requests、request_submissions、rules、substitution_consents、allocations と、rooms・items・distance_overrides）が変わると、文ごとのトリガーで版が増える。状態を遷移したときも増える。画面は版をほかのデータより先に読み、入力を組み立てたときの版を save_auto_allocations と確定（set_year_status）に渡す。違えば conflict になって読み直す。書き込みの RPC は年度の行を `for no key update` でロックしてから書くので、同じ年度の保存は順に処理され、外部キーの確認（在庫の入力など）は待たされない
@@ -323,7 +323,7 @@ R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ
 | profiles | R（自分と、その年度のメンバー） | R（自分と、その年度のメンバー。表示名） | R（自分） | R（自分） |
 | audit_logs | R（その年度の admin。年度のない行は、年度をまたぐ3表の分を closed でない年度の admin が読む） | — | — | — |
 
-admin・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。ロールと団体代表は兼ねられ、兼ねた人は両方の権限を持つ（例：staff が自団体の代表として申請を書く）。
+admin・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。「自分のメール」は、本人のものと確かめられる今のメール（`private.verified_email`。下の招待の受け入れと同じ判定。ポリシーは自分の分だけを返す `private.my_verified_email()` を呼ぶ）で、JWT の email とは比べない（email を他人のアドレスに変えた状態で、その人あての未使用の招待を読ませないため。D-17a）。ロールと団体代表は兼ねられ、兼ねた人は両方の権限を持つ（例：staff が自団体の代表として申請を書く）。
 
 状態が closed の年度は、どのロールも書き込めない（読み取り専用）。例外は、ルールの memo（admin）と、運搬・返却のチェック（RPC `check_delivery`、admin・staff）と、ロール・団体代表を外すことと未使用の招待の取り消し（RPC `remove_role`・`remove_group_member`・`revoke_invitation`、admin。卒業した admin などの権限を残さないため）。確定中（confirmed）は、「設計上の決めごと」の確定中の守りのとおり、確定済みのデータに error を作る書き込みができない。
 
@@ -332,7 +332,7 @@ admin・staff・viewer は、その行の年度でのロールを指す（R9 の
 - ポリシーの update は using と with check に同じ述語を書く。with check は更新後の行しか見られないので、「年度・団体を変えない」はトリガー（check_immutable、rules は guard_rules）で止める（「設計上の決めごと」）
 - deliveries の「状態・問題・返却だけ更新できる」は、RLS ではなく RPC `check_delivery` で実現する（RLS は列を制限できない）
 - ログインは Supabase Auth の Google プロバイダー。学校のドメイン以外は Before User Created フック（Postgres 関数）で拒否する。許可するドメインは関数の中に定数で書く。Google は組織の判定に hd クレームを使うよう求めているので、フックの入力に hd が含まれるかを T04 で確かめ、含まれなければメールのドメインで判定する
-- 招待の受け入れは、auth.users への追加時のトリガー（SECURITY DEFINER）で行う。profiles を作り、メールが一致する未使用の invitations から year_roles と group_members を作る。すでにアカウントがある人を招待したときは、RPC `invite` の中でその場で同じ処理をする。メールは小文字にそろえて比べる
+- 招待の受け入れは、auth.users への追加時のトリガー（SECURITY DEFINER）で行う。profiles を作り、メールが一致する未使用の invitations から year_roles と group_members を作る。すでにアカウントがある人を招待したときは、RPC `invite` の中でその場で同じ処理をする。メールは小文字にそろえて比べる。招待を付ける（invite のその場の受け入れ・`accept_my_invitations`）のは、今のメールが本人のものと確かめられるアカウント（`private.verified_email`：削除されていない・メールを確認済み・メールの変更の途中でない、かつ auth.users.email と同じメールの Google の identity か email_verified が true の email の identity がある。email_confirmed_at は最初の確認の時刻で、メールを変えても null に戻らないため。D-17a）だけ
 - 学校の Google Workspace では、18歳未満に指定された利用者は、管理者が許可していない外部アプリにログインできない。1〜3年生が使えるかは情報担当への確認待ち（[概要](00_overview.md) の未決事項）
 - RLS と RPC の権限は pgTAP（`supabase test db`）でロールごとにテストする。権限表の全セルは、期待値の表（表・操作・年度の状態・ペルソナごとの可否）から生成して確かめる。確定中の守りも、confirmed のセルとして確かめる。関数の execute と表の権限の棚卸し（anon が何も実行・参照できないこと、authenticated が実行できるのは RPC とポリシーの判定関数だけであること、supabase_auth_admin が実行できるのはフックだけであること）もテストする
 
@@ -350,4 +350,4 @@ stateDiagram-v2
   confirmed --> closed: 祭の後
 ```
 
-図にない遷移はエラーにする。requesting へは、request_close_at が未来の日時で入っているときだけ進める。confirmed へは、理由と base_version（確定ボタンを押した画面が検証に使った版）が要る。版が今の版と違えば（検証の後に振り分けや入力が変わっていれば）エラーにする。そのうえで、DB の中で在庫超過（E001。固定・手動・残すの行を含む）・使用不可からの振り分け（E002）・残すの不整合（E005）がないことを確かめてから進める。warning（W102 の了承待ちを含む）では止めない。確定中は、確定済みのデータに error を作る書き込みをトリガーで止める（「設計上の決めごと」）。確定を解除すると理由が必須で、団体への公開も止まる。closed は終点で、closed の年度は読み取り専用になる（ルールの memo と、運搬・返却のチェックを除く）。
+図にない遷移はエラーにする。requesting へは、request_close_at が未来の日時で入っているときだけ進める。confirmed へは、理由と base_version（確定ボタンを押した画面が検証に使った版）が要る。版が今の版と違えば（検証の後に振り分けや入力が変わっていれば）エラーにする。そのうえで、DB の中で在庫超過（E001。固定・手動・残すの行を含む）・使用不可からの振り分け（E002）・残すの不整合（E005）がないことを確かめてから進める。warning（W102 の了承待ちを含む）では止めない。確定中は、確定済みのデータに error を作る書き込みをトリガーで止める（「設計上の決めごと」）。確定を解除すると理由が必須で、団体への公開も止まる。closed は終点で、closed の年度は読み取り専用になる（ルールの memo と、運搬・返却のチェック（`check_delivery`）と、ロール・団体代表を外すこと（`remove_role`・`remove_group_member`）と未使用の招待の取り消し（`revoke_invitation`）を除く。「設計上の決めごと」）。

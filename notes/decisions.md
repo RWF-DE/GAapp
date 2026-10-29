@@ -137,11 +137,11 @@
 
 - **決定**：
   - closed の年度は読み取り専用。例外はルールの memo（admin。トリガーで memo 以外を止める）と、運搬・返却のチェック（RPC check_delivery、admin・staff）。01 の「年間の業務の流れ」9 はそのまま成り立つ。ロールと団体代表を外すこと（remove_role、remove_group_member）と未使用の招待の取り消し（revoke_invitation）も closed でできる（卒業した admin などの権限を残さないため）。ロールを付ける・変えるのは set_role（role は必須）、外すのは remove_role に分ける（外す操作を生成した型で表せるように。set_role の null は invalid_input）。
-  - staff・団体代表・viewer は、自分の year_roles・group_members の行と、自分のメールあての invitations を読める（02 の権限表の staff の「—」は書き漏れとみる）。招待は、どこかの年度のロールか団体代表がある間だけ読める。ロールと団体代表は兼ねられ、権限は足し合わせになる。
+  - staff・団体代表・viewer は、自分の year_roles・group_members の行と、自分のメール（本人のものと確かめられる今のメール。D-17a）あての invitations を読める（02 の権限表の staff の「—」は書き漏れとみる）。招待は、どこかの年度のロールか団体代表がある間だけ読める。ロールと団体代表は兼ねられ、権限は足し合わせになる。
   - profiles は、自分と、自分が admin・staff である年度のメンバー（ロールか団体代表の行がある人）の分だけ読める。
   - 前年度の数は RPC で読む：previous_year_stocks（admin・staff）、previous_year_requests（admin。団体名と数だけ）。前年度にロールがなくても、今の年度のロールで複製元の数を読める。個人情報は含まない。
-  - 招待は、メールを確認済みで削除されていないアカウントにだけ付ける（invite・accept_my_invitations。auth.users のトリガーは T04）。画面はログインのたびに accept_my_invitations を呼ぶ。
-  - 権限の判定関数は、ポリシーが呼ぶ 12 個だけにする（設計の 14 個から、使われていない private.year_role と private.is_request_open を消した）。authenticated に execute を与えるのはこの 12 個だけで、RPC の補助とトリガー関数には与えない。
+  - 招待は、メールを確認済みで削除されていないアカウントにだけ付ける（invite・accept_my_invitations。auth.users のトリガーは T04）。画面はログインのたびに accept_my_invitations を呼ぶ。「今のメールが本人のものと確かめられるアカウント」に狭めた（D-17a）。
+  - 権限の判定関数は、ポリシーが呼ぶ 12 個だけにする（設計の 14 個から、使われていない private.year_role と private.is_request_open を消した）。authenticated に execute を与えるのはこの 12 個だけで、RPC の補助とトリガー関数には与えない。D-17a で invitations_select が呼ぶ private.my_verified_email を足して 13 個にした。
   - 権限表の全セル（20 の表・ビュー × 操作 × 年度の6つの状態 × 6 人）を pgTAP で確かめる。
   - 確定中・closed の守りのトリガー（room_years・stocks・groups）は、RLS の対象のロール（anon・authenticated）で書いているとき、最初にポリシーと同じ条件で「書けるか」を確かめ、書けなければ年度の行をロックせずに拒否を RLS に任せる（BEFORE ROW トリガーは with check より先に動くので、拒否される insert の繰り返しで admin の RPC を待たせられないように）。RLS の判定は変えない。
   - 変えられない列のトリガー（check_immutable）は SECURITY DEFINER にする（authenticated の書き込みでも 42501 でなく invalid_input を返す）。
@@ -150,15 +150,26 @@
 - **チケット**：T03、T04（トリガーでの招待の受け入れ）、T09（ユーザーの画面）、T10（前年の数）。
 - **状態**：要件定義に反映済み（T03 の PR）。
 
+## D-17a 招待を受け入れる「本人のメール」（2026-10-29、T03・T04、T03 の security の指摘）
+
+- **決定**：
+  - 招待を付ける（invite のその場の受け入れ・accept_my_invitations。T04 の auth のトリガーも同じ）のは、`private.verified_email(user_id)` が値を返すときだけ。条件は、削除されていない・email がある・email_confirmed_at がある・メールの変更の途中でない（email_change が空）、かつ auth.identities に auth.users.email と同じメール（小文字で比べる）の identity があり、それが Google の identity か、identity_data の email_verified が true（真偽値）の email の identity であること。招待のメールはこの値と比べる。
+  - 自分あての招待の読み取り（ポリシー invitations_select）も同じ判定にする。JWT の email（auth.jwt() ->> 'email'）とは比べない。ポリシーは、自分の分だけを返す判定関数 `private.my_verified_email()` を呼ぶ（authenticated に execute を与える判定関数は 13 個になる）。`private.verified_email` は任意の user_id のメールを返すので、authenticated には execute を与えない。
+- **理由**：auth.users.email_confirmed_at は最初の確認の時刻で、あとでメールアドレスを変えても null に戻らない。メールの変更に確認が要らない設定（や GoTrue の版の違い、SQL・管理 API での変更）だと、ログイン済みの人が自分の email を招待された人のアドレスに変えて、その人あての招待（admin を含む）を受け取れ、JWT の email もそのアドレスになるので、その人あての未使用の招待（年度・ロール）を読めた。identity_data は利用者が書き換えられない（user_metadata と違う）。Google の identity のメールは Google が持ち主を確かめたアドレスで、ログインのたびに Google の値で上書きされる。GoTrue は、受信箱で確かめたメールの変更のときだけ email の identity を新しいアドレスと email_verified: true に書き換える。メールの変更の途中を除くのは、確かめ終わる前の状態で判断しないため。T03 だけをマージしたときにも穴が残らないよう、T04 から T03 に移した（auth のトリガーと本番の Auth の設定は T04）。
+- **反映先**：02_data.md「権限とRLS」（権限表の下の説明、招待の受け入れの箇条書き）、04_screens_api.md「DB関数（RPC）」の invite・accept_my_invitations。
+- **チケット**：T03（verified_email・invite・accept_my_invitations・invitations_select）、T04（auth のトリガー、本番の Auth の設定、テストユーザーの identity）。
+- **状態**：要件定義に反映済み（T03 の PR）。
+
 ## D-18 年度の複製と確定（2026-10-29、DB 設計・T03）
 
 - **決定**：
   - create_year_from を呼べるのは、複製元の年度の admin だけ（複製元が closed でもよい）。複製元は最新の年度（それを複製元にした年度も、1日目が同じか後の年度もない）に限る。新しい年度の1日目は複製元より後。卒業する admin は年度を closed にする前後に remove_role で外す。update_year で1日目を変えるときも、複製元（prev_year_id）より後で、この年度を複製元にした年度より前でなければならない（invalid_input。崩すとどの年度も最新でなくなり、次の年度を作れなくなる）。最新の年度の admin が誰もいなければ、オーナーが SQL Editor で足す（D-01 の手順）。
   - 確定（set_year_status の confirmed）には理由と、検証に使った版（p_base_version）が要る。版が違えば conflict。確定の解除にも理由が要る。受付開始（requesting）には未来の締切が要る。状態の遷移のたびに版を増やす。
   - 画面（ダッシュボードの確定ボタン、振り分け画面）は、ほかのデータより先に years.allocation_version を読み、その版で検証し、確定のときにその版を渡す。conflict なら読み直して検証し直し、結果を見せてからもう一度押してもらう（自動で再送しない）。
+  - 1日目（festival_start）は有限で現実的な範囲（2000-01-01〜2200-12-31）だけを受け付ける（years の CHECK `years_festival_start_check`。update_year・create_year_from は違反を invalid_input（field: festival_start）にする）。infinity や date の上限は、前後の年度との比較では止まらず、その年度を closed にすると、それより後の1日目がなくなって誰も次の年度を作れなくなる（毎年の流れが壊れ、画面の日付の表示も壊れる）ため。
   - W102 は今の仕様どおり warning のままで、確定を止めない。了承の後に置き換えが了承した台数より増えたら W102 として出す。DB は了承の状態を勝手に変えない。
 - **理由**：古い年度やほかの年度の admin が、年度を作って権限を取り戻したり、ロールのない年度を複製して読んだりできないようにするため。検証していない振り分けや入力のまま確定しないため。
-- **反映先**：02_data.md「年度ステータスの状態遷移」、04_screens_api.md「ダッシュボード」「振り分け」「マスタ設定」「DB関数（RPC）」、03_allocation.md「検証コード一覧」。
+- **反映先**：02_data.md「年度ステータスの状態遷移」・years の DDL・「設計上の決めごと」（前年度の複製）、04_screens_api.md「ダッシュボード」「振り分け」「マスタ設定」「DB関数（RPC）」、03_allocation.md「検証コード一覧」。
 - **チケット**：T03、T09・T13（画面）。
 - **状態**：要件定義に反映済み（T03 の PR）。
 

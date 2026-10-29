@@ -1,7 +1,8 @@
 -- 0003_private_auth.sql（T03）：権限の判定と RPC の共通関数
 -- 判定関数はすべて SECURITY DEFINER・search_path = ''・STABLE。呼んだ人（auth.uid()）についてだけ答える。
--- ポリシーは呼んだ人の権限で評価されるので、authenticated には private の usage と、ポリシーが呼ぶ判定関数 12 個の
--- execute だけを与える。RPC の補助とトリガー関数には execute を与えない（DEFINER の RPC・トリガーから所有者の権限で呼ぶ）。
+-- ポリシーは呼んだ人の権限で評価されるので、authenticated には private の usage と、ポリシーが呼ぶ判定関数（ここの 12 個と、
+-- 0005 の private.my_verified_email）の execute だけを与える。RPC の補助とトリガー関数には execute を与えない
+-- （DEFINER の RPC・トリガーから所有者の権限で呼ぶ）。
 -- 0002 のトリガー関数はここの関数を呼ばない（T02 だけを当てた状態でも動くように）。
 
 create function private.has_role(p_year_id uuid, p_role public.app_role)

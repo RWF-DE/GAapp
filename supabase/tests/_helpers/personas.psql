@@ -25,6 +25,10 @@ begin
           p_name || '@pgtap.test', '', now(),
           '{"provider":"email","providers":["email"]}', jsonb_build_object('full_name', p_name),
           now(), now(), '', '', '', '');
+  -- メールの identity（email_verified: true）。これがないと本人のメールと確かめられず、招待が付かず、自分あての招待も読めない（D-17a）
+  insert into auth.identities (provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
+  values (v_id::text, v_id, jsonb_build_object('sub', v_id::text, 'email', p_name || '@pgtap.test', 'email_verified', true),
+          'email', now(), now(), now());
   insert into public.profiles (user_id, display_name) values (v_id, p_name) on conflict (user_id) do nothing;
   insert into tests.ids values (p_name, v_id);
   return v_id;

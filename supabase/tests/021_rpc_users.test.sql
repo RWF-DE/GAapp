@@ -1,9 +1,28 @@
 -- 021_rpc_users：invite、set_role、remove_role、revoke_invitation、remove_group_member、accept_my_invitations（T03）
 -- auth.users のトリガー（0007）は T04。ここではトリガーなしで動く部分（RPC の中での招待の受け入れ）だけを確かめる。
+-- 招待を付けるのは、今のメールが本人のものと確かめられるアカウントだけ（private.verified_email、D-17a）。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(65);
+select plan(78);
+
+-- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
+-- provider が google なら Google の identity、email なら email_verified: true の email の identity
+create function tests.user_with_identity(p_name text, p_provider text) returns uuid language plpgsql as $$
+declare
+  v_id uuid := gen_random_uuid();
+  v_sub text := case when p_provider = 'google' then 'g-' || p_name else v_id::text end;
+begin
+  insert into auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+                          raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
+                          confirmation_token, recovery_token, email_change_token_new, email_change)
+  values ('00000000-0000-0000-0000-000000000000', v_id, 'authenticated', 'authenticated', p_name || '@pgtap.test', '', now(),
+          jsonb_build_object('provider', p_provider, 'providers', jsonb_build_array(p_provider)), '{}', now(), now(), '', '', '', '');
+  insert into auth.identities (provider_id, user_id, identity_data, provider, created_at, updated_at)
+  values (v_sub, v_id, jsonb_build_object('sub', v_sub, 'email', p_name || '@pgtap.test', 'email_verified', true), p_provider, now(), now());
+  insert into tests.ids values (p_name, v_id);
+  return v_id;
+end $$;
 
 -- ================================================================ invite
 select tests.login_anon();
@@ -45,6 +64,9 @@ select is((select role from public.invitations where email = 'new@pgtap.test' an
 insert into auth.users (instance_id, id, aud, role, email, email_confirmed_at, raw_user_meta_data, created_at, updated_at)
 values ('00000000-0000-0000-0000-000000000000', '44444444-4444-4444-8444-444444444444', 'authenticated', 'authenticated',
         'late@pgtap.test', null, '{}', now(), now());
+insert into auth.identities (provider_id, user_id, identity_data, provider, created_at, updated_at)
+values ('44444444-4444-4444-8444-444444444444', '44444444-4444-4444-8444-444444444444',
+        '{"sub": "44444444-4444-4444-8444-444444444444", "email": "late@pgtap.test", "email_verified": true}', 'email', now(), now());
 insert into tests.ids values ('late', '44444444-4444-4444-8444-444444444444');
 select tests.login_as('admin');
 select is((public.invite(tests.id('Y1'), 'late@pgtap.test', 'viewer') ->> 'applied')::boolean, false, 'invite は未確認のアカウントには付けない');
@@ -173,6 +195,68 @@ select tests.set_scenario('closed');
 select tests.login_as('admin');
 select lives_ok($$ select public.remove_group_member(tests.id('G1'), tests.id('rep'), '卒業') $$, 'closed の年度でも団体代表を外せる');
 select tests.logout();
+
+-- ================================================================ 本人のメールの確認（private.verified_email、D-17a）
+-- email_confirmed_at は最初の確認の時刻のまま残る。メールの変更に確認が要らない設定（や SQL・管理 API での変更）で、
+-- auth.users.email だけが招待された人のアドレスに変わった状態を作る
+select tests.set_scenario('requesting');
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'victim@pgtap.test', 'admin');
+insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'victim@pgtap.test', tests.id('G1'));
+-- Google のユーザー：Google の identity のメールは自分のまま
+select tests.user_with_identity('sw_google', 'google');
+update auth.users set email = 'victim@pgtap.test' where id = tests.id('sw_google');
+select tests.login_as('sw_google');
+select is(public.accept_my_invitations(), 0, 'email を他人のアドレスに変えた Google のユーザーは、その人あての招待を受け入れられない');
+select tests.logout();
+select tests.login_as('admin');
+select is((public.invite(tests.id('Y1'), 'victim@pgtap.test', 'admin') ->> 'applied')::boolean, false,
+  'invite も、email を変えただけのアカウントにはその場で付けない');
+select tests.logout();
+select is((select count(*)::int from public.year_roles where user_id = tests.id('sw_google'))
+          + (select count(*)::int from public.group_members where user_id = tests.id('sw_google')), 0,
+  'email を変えた Google のユーザーには、admin の招待も団体代表の招待も付かない');
+select is((select count(*)::int from public.invitations where email = 'victim@pgtap.test' and used_at is null), 2, 'その招待は未使用のまま');
+update auth.users set email = 'sw_google@pgtap.test' where id = tests.id('sw_google');   -- 元に戻す（email は一意）
+-- メールの identity（seed の形）：identity のメールは自分のまま、または変えたアドレスでも email_verified でない
+select tests.user_with_identity('sw_email', 'email');
+update auth.users set email = 'victim@pgtap.test' where id = tests.id('sw_email');
+select tests.login_as('sw_email');
+select is(public.accept_my_invitations(), 0, 'email の identity のメールが元のままなら受け入れない');
+select tests.logout();
+update auth.identities set identity_data = identity_data || '{"email": "victim@pgtap.test", "email_verified": false}'
+where user_id = tests.id('sw_email');
+select tests.login_as('sw_email');
+select is(public.accept_my_invitations(), 0, 'email の identity のメールが変わっても、email_verified でなければ受け入れない');
+select tests.logout();
+update auth.identities set identity_data = identity_data || '{"email_verified": "true"}' where user_id = tests.id('sw_email');
+select tests.login_as('sw_email');
+select is(public.accept_my_invitations(), 0, 'email_verified が真偽値でなければ（文字列の "true" も）受け入れない');
+select tests.logout();
+-- 本人のメールでも、メールの変更の途中（email_change が空でない）は受け入れない
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'pending@pgtap.test', 'viewer');
+select tests.user_with_identity('pending', 'google');
+update auth.users set email_change = 'other@pgtap.test' where id = tests.id('pending');
+select tests.login_as('pending');
+select is(public.accept_my_invitations(), 0, 'メールの変更の途中なら受け入れない');
+select tests.logout();
+select tests.login_as('admin');
+select is((public.invite(tests.id('Y1'), 'pending@pgtap.test', 'viewer') ->> 'applied')::boolean, false,
+  'invite も、メールの変更の途中のアカウントにはその場で付けない');
+select tests.logout();
+update auth.users set email_change = '' where id = tests.id('pending');
+select tests.login_as('pending');
+select is(public.accept_my_invitations(), 1, '変更が終われば（取り消されれば）、ログイン時に受け入れる');
+select tests.logout();
+-- 受信箱で確かめた変更（GoTrue は email の identity を新しいアドレスと email_verified: true に書き換える）なら受け入れる
+update auth.identities set identity_data = identity_data || '{"email": "victim@pgtap.test", "email_verified": true}'
+where user_id = tests.id('sw_email');
+select tests.login_as('sw_email');
+select is(public.accept_my_invitations(), 2, '新しいアドレスを受信箱で確かめた変更なら、そのアドレスあての招待を受け入れる');
+select tests.logout();
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('sw_email')), 'admin'::public.app_role,
+  '確かめたアドレスの持ち主に招待のロールが付く');
+select ok(exists (select 1 from public.group_members where group_id = tests.id('G1') and user_id = tests.id('sw_email')),
+  '団体代表の招待も付く');
 
 select * from finish();
 rollback;

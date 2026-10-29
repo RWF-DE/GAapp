@@ -66,11 +66,18 @@ end $$;
 ------------------------------------------------------------------------
 -- update_year（P-01）
 ------------------------------------------------------------------------
+-- 1日目は有限で現実的な範囲だけ（D-18）。infinity や date の上限を入れて closed にすると、それより後の1日目がなくなり、
+-- 誰も次の年度を作れなくなる（前後の年度との比較では止まらない）。画面の日付の表示も壊れる。
+-- update_year・create_year_from はこの CHECK の違反を invalid_input（field = festival_start）に直す
+alter table public.years add constraint years_festival_start_check
+  check (festival_start between date '2000-01-01' and date '2200-12-31');
+
 create function public.update_year(p_year_id uuid, p_patch jsonb, p_reason text default null)
 returns public.years language plpgsql security definer set search_path = '' as $$
 declare
   v public.years;
   k text;
+  v_constraint text;
 begin
   v := private.lock_year(p_year_id, '{preparing,requesting,allocating,confirmed}', '{admin}');
   if p_patch is null or jsonb_typeof(p_patch) <> 'object' then
@@ -96,7 +103,11 @@ begin
     end if;
   exception
     when unique_violation then perform private.fail('conflict', jsonb_build_object('field', 'label'));
-    when data_exception or check_violation or not_null_violation then      -- 22xxx（範囲外の日付 22008 を含む）
+    when check_violation then
+      get stacked diagnostics v_constraint = constraint_name;
+      perform private.fail('invalid_input', jsonb_build_object('field',
+        case when v_constraint = 'years_festival_start_check' then 'festival_start' else 'patch' end));
+    when data_exception or not_null_violation then      -- 22xxx（範囲外の日付 22008 を含む）
       perform private.fail('invalid_input', jsonb_build_object('field', 'patch'));
   end;
   if v.status = 'requesting' and v.request_close_at is null then
@@ -146,6 +157,7 @@ declare
   v_map  jsonb;
   r      record;
   v_remap record;
+  v_constraint text;
 begin
   -- 呼べるのは複製元の年度の admin だけ（複製元が closed でもよい）。複製元は最新の年度でなければならない（D-01）
   if (select auth.uid()) is null or not private.has_role(p_prev_year_id, 'admin') then
@@ -170,7 +182,10 @@ begin
     values (btrim(p_label), p_festival_start, p_prev_year_id) returning * into v_new;
   exception
     when unique_violation then perform private.fail('conflict', jsonb_build_object('field', 'label'));
-    when check_violation then perform private.fail('invalid_input', jsonb_build_object('field', 'label'));
+    when check_violation then                -- 年度名の長さか、1日目の範囲（years_festival_start_check）
+      get stacked diagnostics v_constraint = constraint_name;
+      perform private.fail('invalid_input', jsonb_build_object('field',
+        case when v_constraint = 'years_festival_start_check' then 'festival_start' else 'label' end));
   end;
   insert into public.year_roles (year_id, user_id, role) values (v_new.id, auth.uid(), 'admin');
   insert into public.room_years (year_id, room_id, usable, note)
@@ -199,6 +214,32 @@ end $$;
 ------------------------------------------------------------------------
 -- 招待とロール
 ------------------------------------------------------------------------
+-- 本人のものと確かめられる今のメール（小文字）。確かめられなければ null。招待を付けるかどうかはこれで決める（D-17a）。
+-- auth.users.email_confirmed_at は最初の確認の時刻で、あとで email を変えても null に戻らないので、それだけでは足りない。
+-- 次をすべて満たすときだけ返す：
+-- - 削除されていない・email がある・email_confirmed_at がある
+-- - メールの変更の途中でない（email_change が空）
+-- - auth.identities に、今の email と同じメールの、Google の identity（Google が持ち主を確かめたアドレス）か、
+--   email_verified が true の email の identity（GoTrue は受信箱で確かめた変更のときだけ、email の identity を新しいアドレスと
+--   email_verified: true に書き換える）がある。identity_data は利用者が書き換えられない（user_metadata と違う）
+create function private.verified_email(p_user_id uuid)
+returns text language sql stable security definer set search_path = '' as $$
+  select lower(u.email)
+  from auth.users u
+  where u.id = p_user_id
+    and u.deleted_at is null
+    and u.email is not null
+    and u.email_confirmed_at is not null
+    and coalesce(u.email_change, '') = ''
+    and exists (
+      select 1 from auth.identities i
+      where i.user_id = u.id
+        and lower(i.identity_data ->> 'email') = lower(u.email)
+        and (i.provider = 'google'
+             or (i.provider = 'email' and jsonb_typeof(i.identity_data -> 'email_verified') = 'boolean'
+                 and (i.identity_data ->> 'email_verified')::boolean)))
+$$;
+
 create function private.apply_invitations(p_user_id uuid, p_email text)
 returns integer language plpgsql security definer set search_path = '' as $$
 declare
@@ -246,9 +287,10 @@ begin
      and not exists (select 1 from public.groups g where g.id = p_group_id and g.year_id = p_year_id) then
     perform private.fail('invalid_input', jsonb_build_object('field', 'group_id'));
   end if;
-  -- その場で付けるのは、メールを確認済みで削除されていないアカウントだけ（未確認のアカウントに招待を取らせない）
+  -- その場で付けるのは、今のメールが本人のものと確かめられるアカウントだけ（未確認のアカウントや、
+  -- email を他人のアドレスに変えたアカウントに招待を取らせない。private.verified_email、D-17a）
   select u.id into v_user from auth.users u
-  where lower(u.email) = v_email and u.email_confirmed_at is not null and u.deleted_at is null;
+  where lower(u.email) = v_email and private.verified_email(u.id) = v_email;
   if v_user is not null and p_role is not null then
     select yr.role into v_current from public.year_roles yr where yr.year_id = p_year_id and yr.user_id = v_user;
     if v_current is not null and v_current <> p_role then
@@ -335,25 +377,41 @@ begin
   if not found then perform private.fail('not_found'); end if;
 end $$;
 
--- ログインのたびに画面が呼ぶ：自分のメール（確認済み）あての未使用の招待を受け入れる。
+-- ログインのたびに画面が呼ぶ：自分のメール（本人のものと確かめられるとき。private.verified_email）あての未使用の招待を受け入れる。
 -- invite と初回ログインが同時に起きて、どちらからも招待が見えなかったときの取りこぼしを拾う
 create function public.accept_my_invitations()
 returns integer language plpgsql security definer set search_path = '' as $$
 declare
   v_uid uuid := (select auth.uid());
-  v_email text;
+  v_email text := private.verified_email((select auth.uid()));
 begin
-  select u.email into v_email from auth.users u
-  where u.id = v_uid and u.email_confirmed_at is not null and u.deleted_at is null;
-  if v_email is null then return 0; end if;
+  if v_uid is null or v_email is null then return 0; end if;
   perform private.set_reason('招待の受け入れ');
   return private.apply_invitations(v_uid, v_email);
 end $$;
 
 ------------------------------------------------------------------------
+-- 自分あての招待の読み取り（D-17a）
+------------------------------------------------------------------------
+-- 呼んだ人の、本人のものと確かめられる今のメール（ポリシー invitations_select が呼ぶ判定関数）。
+-- private.verified_email は任意の user_id のメールを返すので authenticated には与えず、自分の分だけを返すこれを与える
+create function private.my_verified_email()
+returns text language sql stable security definer set search_path = '' as $$
+  select private.verified_email((select auth.uid()))
+$$;
+
+-- JWT の email（auth.jwt() ->> 'email'）とは比べない。JWT の email は auth.users.email の写しで、email を他人のアドレスに
+-- 変えた（email_confirmed_at は最初の確認のまま残る）状態では、その人あての未使用の招待（年度・ロール）を読めてしまうため。
+-- 招待を受け入れる条件（invite・accept_my_invitations）と同じ private.verified_email で決める
+create policy invitations_select on public.invitations for select to authenticated
+  using ((email = (select private.my_verified_email()) and private.has_any_access())
+         or private.has_role(year_id, 'admin'));
+
+------------------------------------------------------------------------
 -- 権限
 ------------------------------------------------------------------------
 revoke all on all functions in schema private from public;
+grant execute on function private.my_verified_email() to authenticated;
 do $$
 declare f text;
 begin

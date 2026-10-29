@@ -3,7 +3,19 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(76);
+select plan(87);
+
+-- エラーの message と detail（invalid_input の field を確かめる）。成功したら 'ok'
+create function tests.error_of(p_sql text) returns text language plpgsql as $$
+declare v_msg text; v_detail text;
+begin
+  execute p_sql;
+  return 'ok';
+exception when others then
+  get stacked diagnostics v_msg = message_text, v_detail = pg_exception_detail;
+  return v_msg || ' ' || v_detail;
+end $$;
+grant execute on function tests.error_of(text) to authenticated;
 
 -- ================================================================ set_year_status
 select tests.login_anon();
@@ -95,6 +107,19 @@ select throws_ok($$ select public.update_year(tests.id('Y1'), '["label"]', null)
 select throws_ok(format($$ select public.update_year(%L, %L, null) $$, tests.id('Y1'), jsonb_build_object('label', repeat('x', 51))), 'P0001', 'invalid_input', '年度名の上限（CHECK 違反も invalid_input）');
 select throws_ok($$ select public.update_year(tests.id('Y1'), '{"label": "T-Y2"}', null) $$, 'P0001', 'conflict', '年度名の重複は conflict');
 select throws_ok($$ select public.update_year(tests.id('Y1'), '{"request_close_at": null}', null) $$, 'P0001', 'invalid_input', 'requesting の間は締切を消せない');
+-- 1日目は有限で現実的な範囲（2000-01-01〜2200-12-31）だけ。infinity などを入れて closed にすると、それより後の1日目が
+-- なくなり、誰も次の年度を作れなくなる（D-18）。前後の年度との比較では止まらない（Y1 は最新で、複製元もない）
+select is(tests.error_of($$ select public.update_year(tests.id('Y1'), '{"festival_start": "infinity"}', null) $$),
+  'invalid_input {"field": "festival_start"}', '1日目に infinity は入れられない');
+select is(tests.error_of($$ select public.update_year(tests.id('Y1'), '{"festival_start": "5874897-12-31"}', null) $$),
+  'invalid_input {"field": "festival_start"}', '1日目に date の上限は入れられない');
+select is(tests.error_of($$ select public.update_year(tests.id('Y1'), '{"festival_start": "2201-01-01"}', null) $$),
+  'invalid_input {"field": "festival_start"}', '1日目は 2200-12-31 まで');
+select is(tests.error_of($$ select public.update_year(tests.id('Y1'), '{"festival_start": "1999-12-31"}', null) $$),
+  'invalid_input {"field": "festival_start"}', '1日目は 2000-01-01 から');
+select is(tests.error_of($$ select public.update_year(tests.id('Y1'), '{"festival_start": "-infinity"}', null) $$),
+  'invalid_input {"field": "festival_start"}', '1日目に -infinity は入れられない');
+select ok((select festival_start = date '2027-10-16' from public.years where id = tests.id('Y1')), '範囲外の1日目は保存されない');
 select is((public.update_year(tests.id('Y1'), jsonb_build_object('request_close_at', now() + interval '2 day', 'label', ' T-Y1改 '), '延長')).label,
   'T-Y1改', 'update_year は patch のキーだけを変える（前後の空白を除く）');
 select tests.logout();
@@ -123,6 +148,10 @@ select tests.logout();
 select tests.login_as('admin');
 select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', date '2027-10-16') $$, 'P0001', 'invalid_input', '新しい年度の1日目は複製元より後');
 select throws_ok($$ select public.create_year_from(tests.id('Y1'), ' ', date '2028-10-01') $$, 'P0001', 'invalid_input', '年度名は空にできない');
+select is(tests.error_of($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', 'infinity'::date) $$),
+  'invalid_input {"field": "festival_start"}', '新しい年度の1日目に infinity は入れられない');
+select is(tests.error_of($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', date '2201-01-01') $$),
+  'invalid_input {"field": "festival_start"}', '新しい年度の1日目も 2200-12-31 まで');
 select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y2', date '2028-10-01') $$, 'P0001', 'conflict', '同じ名前の年度は作れない');
 select throws_ok($$ select public.create_year_from(tests.id('Y2'), 'T-Y3', date '2028-10-01') $$, 'P0001', 'forbidden', 'ロールのない年度は複製できない（他の年度のデータを読み出せない）');
 select tests.logout();
@@ -172,6 +201,13 @@ select lives_ok($$ select public.update_year(tests.id('Y1'), '{"festival_start":
 select isnt((select id from public.create_year_from(tests.id('Y3'), 'T-Y4', date '2029-10-01')), null,
   '1日目を変えた後も、最新の年度（複製先）から次の年度を作れる');
 select tests.logout();
+
+-- ================================================================ 1日目の CHECK（RPC を通らない書き込みも止める）
+select throws_ok($$ update public.years set festival_start = 'infinity' where label = 'T-Y4' $$, '23514', null,
+  'years の CHECK：1日目に infinity は入れられない');
+select throws_ok($$ insert into public.years (label, festival_start) values ('T-Y9', date '1999-12-31') $$, '23514', null,
+  'years の CHECK：1日目は 2000-01-01 から');
+select lives_ok($$ insert into public.years (label, festival_start) values ('T-Y9', date '2200-12-31') $$, 'years の CHECK：2200-12-31 は入れられる');
 
 select * from finish();
 rollback;

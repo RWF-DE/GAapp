@@ -240,7 +240,7 @@ begin
   return tests.try_cell(p_sql, p_persona, p_op);
 end $$;
 
-select plan((select count(*)::int from tests.cells) + 3 + 15);
+select plan((select count(*)::int from tests.cells) + 3 + 20);
 
 -- 期待値の表の形
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
@@ -312,6 +312,37 @@ select is(tests.try_cell(tests.sql('update public.requests set count = 7 where g
   '締切が null なら団体代表は書けない（K-24）');
 select is(tests.try_cell(tests.sql('update public.requests set count = 7 where group_id = :G1'), 'admin', 'update'), 'denied',
   '締切が null の requesting は admin も RPC なしでは書けない');
+
+-- 自分あての招待は、JWT の email ではなく、本人のものと確かめられる今のメール（private.verified_email、D-17a）で決める。
+-- viewer（Y1 の viewer。自分あての使用済みの招待がある）の JWT の email だけを、未使用の招待がある someone に変える
+select tests.set_scenario('requesting');
+select tests.login_as('viewer');
+select set_config('request.jwt.claims', jsonb_build_object('sub', tests.id('viewer'), 'role', 'authenticated',
+                                                           'email', 'someone@pgtap.test')::text, true);
+select is((select count(*)::int from public.invitations where email = 'someone@pgtap.test'), 0,
+  'JWT の email が他人のアドレスでも、その人あての招待は読めない');
+select tests.logout();
+-- auth.users.email を他人のアドレスに変えた（email_confirmed_at は最初の確認のまま残る）。identity のメールは元のまま
+update auth.users set email = 'someone@pgtap.test' where id = tests.id('viewer');
+select tests.login_as('viewer');
+select set_config('request.jwt.claims', jsonb_build_object('sub', tests.id('viewer'), 'role', 'authenticated',
+                                                           'email', 'someone@pgtap.test')::text, true);
+select is((select count(*)::int from public.invitations where email = 'someone@pgtap.test'), 0,
+  'メールを他人のアドレスに変えたユーザーは、その人あての未使用の招待（年度・ロール）を読めない');
+select is((select count(*)::int from public.invitations), 0, 'メールが確かめられない間は、元のメールあての招待も読めない');
+select tests.logout();
+-- 新しいアドレスを受信箱で確かめた（GoTrue は email の identity を新しいアドレスと email_verified: true に書き換える）
+update auth.identities set identity_data = identity_data || '{"email": "someone@pgtap.test", "email_verified": true}'
+where user_id = tests.id('viewer');
+select tests.login_as('viewer');
+select is((select count(*)::int from public.invitations where email = 'someone@pgtap.test'), 1,
+  '確かめたアドレスあての招待は読める');
+select tests.logout();
+update auth.identities set identity_data = identity_data || '{"email": "viewer@pgtap.test"}' where user_id = tests.id('viewer');
+update auth.users set email = 'viewer@pgtap.test' where id = tests.id('viewer');
+select tests.login_as('viewer');
+select is((select count(*)::int from public.invitations), 1, 'メールを戻せば、自分あての招待だけを読める');
+select tests.logout();
 
 -- anon は表もビューも読めない
 select tests.login_anon();

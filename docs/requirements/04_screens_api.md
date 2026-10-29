@@ -92,14 +92,14 @@
 | 名前 | 呼べる人 | 動作 |
 | --- | --- | --- |
 | set_year_status(year_id, to, reason, base_version) | admin | 状態遷移の図に合わない遷移はエラー。requesting へは締切が未来のときだけ。confirmed へは、base_version（検証に使った版）が今の版と同じで、E001・E002・E005 がないときだけ。確定と確定の解除は理由必須。遷移のたびに版を増やす |
-| update_year(year_id, patch, reason) | admin | 年度名・1日目・受付期間を変える（patch に入れたキーだけ。ほかのキーは invalid_input）。1日目は複製元（prev_year_id）より後で、この年度を複製元にした年度より前（違えば invalid_input）。requesting の間は締切を消せない。終了した年度は変えられない |
-| create_year_from(prev_year_id, label, festival_start) | 複製元の年度の admin（複製元が終了していてもよい） | 複製元が最新の年度のときだけ（それを複製元にした年度も、1日目が同じか後の年度もない）。1日目は複製元より後。年度を作り、団体・ルール・場所の状態を複製してルールの団体 id を付け替える。呼んだ人を新しい年度の admin にする |
-| invite(year_id, email, role, group_id) | admin | 招待を作る。メールを確認済みのアカウントがあればその場でロールを付ける（別のロールを持っていればエラー）。終了した年度には招待できない。返り値は招待の id と、その場で付けたか（applied） |
+| update_year(year_id, patch, reason) | admin | 年度名・1日目・受付期間を変える（patch に入れたキーだけ。ほかのキーは invalid_input）。1日目は複製元（prev_year_id）より後で、この年度を複製元にした年度より前（違えば invalid_input）。1日目は 2000-01-01〜2200-12-31（infinity なども含め、範囲外は invalid_input（field: festival_start）。D-18）。requesting の間は締切を消せない。終了した年度は変えられない |
+| create_year_from(prev_year_id, label, festival_start) | 複製元の年度の admin（複製元が終了していてもよい） | 複製元が最新の年度のときだけ（それを複製元にした年度も、1日目が同じか後の年度もない）。1日目は複製元より後で、2000-01-01〜2200-12-31（範囲外は invalid_input（field: festival_start））。年度を作り、団体・ルール・場所の状態を複製してルールの団体 id を付け替える。呼んだ人を新しい年度の admin にする |
+| invite(year_id, email, role, group_id) | admin | 招待を作る。今のメールが本人のものと確かめられるアカウント（02「権限とRLS」の `private.verified_email`）があればその場でロールを付ける（別のロールを持っていればエラー）。終了した年度には招待できない。返り値は招待の id と、その場で付けたか（applied） |
 | set_role(year_id, user_id, role, reason) | admin | ロールを付ける・変える（role は必須。null は invalid_input）。終了した年度ではできない。最後の admin は降格できない |
 | remove_role(year_id, user_id, reason) | admin | ロールを外す（終了した年度でも。卒業した admin を外すため）。最後の admin は外せない。ロールがなければ not_found |
 | revoke_invitation(invitation_id) | admin | 未使用の招待を取り消す（終了した年度でも）。招待が見つからなければ forbidden（有無を漏らさない） |
 | remove_group_member(group_id, user_id, reason) | admin | 団体代表を外す（終了した年度でも） |
-| accept_my_invitations() | ログインしている人 | 自分の確認済みのメールあての未使用の招待（終了していない年度）を受け入れ、件数を返す。画面がログインのたびに呼ぶ |
+| accept_my_invitations() | ログインしている人 | 自分のメール（本人のものと確かめられるときだけ。`private.verified_email`）あての未使用の招待（終了していない年度）を受け入れ、件数を返す。画面がログインのたびに呼ぶ |
 | save_auto_allocations(year_id, rows, mode, base_version) | admin | 版が base_version と同じときだけ、auto かつ未固定の行を差分で入れ替える。年度の一致・E002・E005 を保存前に、在庫超過を保存後に確かめ、だめなら全体を取り消す。振り分け中のみ（確定中はエラー） |
 | save_allocation_rows(year_id, changes, reason) | admin | 行の追加・変更・削除・固定。データを変えた行は origin = manual。各行の updated_at で楽観ロック。理由必須。ロックした時点の版と保存後の版を返す。振り分け中のみ（確定中はエラー） |
 | set_consent(group_id, from_item, to_item, status, note) | admin、その団体の代表 | 依頼済みにすると、その時点の置き換え台数を count に入れる。了承なら該当の置き換え行を pinned にし、拒否なら pinned を外す。団体代表は依頼済み以降に了承・拒否だけを記録できる。依頼した台数より置き換えが増えていれば了承は conflict。振り分け中のみ |

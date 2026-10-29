@@ -18,8 +18,8 @@ select set_eq($$ select p.proname::text from pg_proc p
 select set_eq($$ select p.proname::text from pg_proc p
                  where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   array['has_role','has_any_role','is_group_member','group_year_id','year_status','can_read_year','has_any_access',
-        'is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks','can_write_requests'],
-  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 12 個だけ（RPC の補助・トリガー関数は実行できない）');
+        'is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks','can_write_requests','my_verified_email'],
+  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 13 個だけ（RPC の補助・トリガー関数・verified_email は実行できない）');
 -- T04 でフック（private.hook_before_user_created）を足したら、ここをフックだけの集合に変える
 select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
@@ -38,7 +38,7 @@ select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace = 'private'::regnamespace
                      and p.proname in ('has_role','has_any_role','is_group_member','group_year_id','year_status','can_read_year',
                                        'has_any_access','is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks',
-                                       'can_write_requests')
+                                       'can_write_requests','my_verified_email')
                      and not (p.prosecdef and p.provolatile = 's') $$,
   '判定関数はすべて SECURITY DEFINER・STABLE');
 

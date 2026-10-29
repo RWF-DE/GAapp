@@ -69,9 +69,7 @@ create policy year_roles_select on public.year_roles for select to authenticated
   using (user_id = (select auth.uid()) or private.has_role(year_id, 'admin'));
 create policy group_members_select on public.group_members for select to authenticated
   using (user_id = (select auth.uid()) or private.has_role(private.group_year_id(group_id), 'admin'));
-create policy invitations_select on public.invitations for select to authenticated
-  using ((email = lower((select auth.jwt() ->> 'email')) and private.has_any_access())
-         or private.has_role(year_id, 'admin'));
+-- invitations_select は 0005 で作る（本人のメールの判定 private.verified_email の後。D-17a）
 
 -- 申請
 create policy request_submissions_select on public.request_submissions for select to authenticated
