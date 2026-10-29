@@ -115,11 +115,11 @@ export function HistoryFilters({
   return (
     <section aria-label="絞り込み" className="mb-4 rounded-lg border p-4" data-testid="history-filters">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <div className="space-y-1">
+        <div className="min-w-0 space-y-1">
           <span className="text-sm font-medium">表</span>
           <TableSelect value={filter.tables} onChange={(update) => onChange((f) => ({ ...f, tables: update(f.tables) }))} />
         </div>
-        <div className="space-y-1">
+        <div className="min-w-0 space-y-1">
           <span className="text-sm font-medium">団体</span>
           <EntitySelect
             label="団体"
@@ -130,9 +130,9 @@ export function HistoryFilters({
             allowClear
           />
         </div>
-        <div className="space-y-1">
+        <div className="min-w-0 space-y-1">
           <span className="text-sm font-medium">期間（日付。その日を含む）</span>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <Label htmlFor={fromId} className="sr-only">
               期間の始め
             </Label>
@@ -144,7 +144,7 @@ export function HistoryFilters({
             <Input id={toId} type="date" value={filter.to ?? ''} min={filter.from ?? undefined} onChange={(e) => setDate('to', e.target.value)} />
           </div>
         </div>
-        <div className="space-y-1">
+        <div className="min-w-0 space-y-1">
           <span className="text-sm font-medium">した人</span>
           <EntitySelect
             label="した人"

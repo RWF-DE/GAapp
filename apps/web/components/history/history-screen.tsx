@@ -38,7 +38,7 @@ export function HistoryScreen() {
   const { membership } = useAuth();
   const m = membership.status === 'ready' ? membership.membership : null;
   if (!m?.year) return <LoadingState />;
-  return <HistoryBody key={m.year.id} yearId={m.year.id} />;
+  return <HistoryBody key={m.year.id} yearId={m.year.id} yearLabel={m.year.label} />;
 }
 
 const ACTION_VARIANT: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
@@ -47,7 +47,7 @@ const ACTION_VARIANT: Record<string, 'default' | 'secondary' | 'outline' | 'dest
   delete: 'destructive',
 };
 
-function HistoryBody({ yearId }: { yearId: string }) {
+function HistoryBody({ yearId, yearLabel }: { yearId: string; yearLabel: string }) {
   const params = useSearchParams();
   const filter = useMemo(() => parseHistoryParams(params), [params]);
   const router = useGuardedRouter();
@@ -64,8 +64,8 @@ function HistoryBody({ yearId }: { yearId: string }) {
     const users = new Map<string, string>();
     for (const mem of o?.members ?? []) if (mem.displayName !== null) users.set(mem.userId, mem.displayName);
     for (const [id, name] of n?.users ?? []) users.set(id, name);
-    return { groups, rooms: o?.rooms ?? new Map(), items: o?.items ?? new Map(), users };
-  }, [o, n]);
+    return { groups, rooms: o?.rooms ?? new Map(), items: o?.items ?? new Map(), users, years: new Map([[yearId, yearLabel]]) };
+  }, [o, n, yearId, yearLabel]);
 
   // URL の反映（router.replace）は少し遅れて届くので、続けて変えたとき（始めと終わりの日付を続けて入れるなど）に前の変更を
   // 落とさないよう、最後に送った絞り込みを持ち、次の変更はそこから作る。URL が変わったら（戻る・リンク）それに合わせる
@@ -170,13 +170,13 @@ function HistoryTable({ rows, lookups }: { rows: readonly AuditLogRow[]; lookups
             <th scope="col" className="px-3 py-2 whitespace-nowrap">
               表
             </th>
-            <th scope="col" className="px-3 py-2">
+            <th scope="col" className="min-w-32 px-3 py-2">
               対象
             </th>
-            <th scope="col" className="px-3 py-2">
+            <th scope="col" className="min-w-56 px-3 py-2">
               変更
             </th>
-            <th scope="col" className="px-3 py-2">
+            <th scope="col" className="min-w-24 px-3 py-2 whitespace-nowrap">
               理由
             </th>
             <th scope="col" className="px-3 py-2 whitespace-nowrap">
@@ -203,7 +203,7 @@ function HistoryTable({ rows, lookups }: { rows: readonly AuditLogRow[]; lookups
                   {diff.length === 0 ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
-                    <ul className="max-w-md space-y-0.5 break-words">
+                    <ul className="max-w-sm space-y-0.5 break-words">
                       {diff.map((d) => (
                         <li key={d.key}>{formatDiffEntry(r.table_name, d, lookups)}</li>
                       ))}

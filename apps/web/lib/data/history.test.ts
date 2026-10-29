@@ -88,6 +88,7 @@ describe('差の表示', () => {
     expect(formatAuditValue('stocks', 'counted_by', U)).toBe(NAME_UNKNOWN);
     expect(formatAuditValue('groups', 'aliases', ['a', 'b'])).toBe('a、b');
     expect(formatAuditValue('rules', 'params', { group: 'x' })).toBe('{"group":"x"}');
+    expect(formatAuditValue('groups', 'year_id', Y, { years: new Map([[Y, 'R8']]) })).toBe('R8');
   });
 
   it('操作・した人', () => {

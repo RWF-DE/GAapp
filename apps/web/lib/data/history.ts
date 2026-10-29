@@ -261,6 +261,8 @@ export interface HistoryLookups {
   items: Map<string, string>;
   /** 利用者の表示名（読めた人だけ） */
   users: Map<string, string>;
+  /** 年度の名前（開いている年度。year_id・prev_year_id の表示） */
+  years: Map<string, string>;
 }
 
 export interface HistoryOptions {
@@ -424,6 +426,7 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
   if (typeof v === 'string') {
     const ref = UUID_REF_KEYS[key];
     if (ref) return lookups?.[ref]?.get(v) ?? v;
+    if (key === 'year_id' || key === 'prev_year_id') return lookups?.years?.get(v) ?? v;
     if (key === 'user_id' || key === 'counted_by' || key === 'updated_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
     if (key === 'status') {
       if (table === 'years') return labelOf(YEAR_STATUS_LABELS, v, v);
