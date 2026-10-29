@@ -215,7 +215,7 @@ export interface OtherSave {
  * 読み込んだときの行（loaded）と保存の直前に読み直した行（latest）を比べる。updated_at（受け取った文字列のまま）が
  * 違う・行が増えた・消えた品目があれば、ほかの人が保存している。なければ null。
  */
-export function detectOtherSave(loaded: readonly StockDbRow[], latest: readonly StockDbRow[]): OtherSave | null {
+export function detectOtherSave(loaded: readonly Pick<StockDbRow, 'item_id' | 'updated_at'>[], latest: readonly StockDbRow[]): OtherSave | null {
   const before = new Map(loaded.map((r) => [r.item_id, r]));
   const after = new Map(latest.map((r) => [r.item_id, r]));
   const changed: string[] = [];

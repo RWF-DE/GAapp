@@ -282,6 +282,25 @@ describe('StockInput：ほかの人の保存', () => {
     expect(upserts()).toHaveLength(0);
   });
 
+  it('ダイアログを開くとフォーカスが中（やめる）へ移り、やめると「保存」に戻る（送らない）', async () => {
+    serve({
+      stocks: [stock(DESK, 10), stock(CHAIR, 20)],
+      stocksLater: [stock(DESK, 7, 'u-other', id(77)), stock(CHAIR, 20)],
+    });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const dialog = await screen.findByTestId('stock-conflict-dialog');
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'やめる' }));
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.queryByTestId('stock-conflict-dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: '保存' })));
+    expect(upserts()).toHaveLength(0);
+  });
+
   it('上書きするなら自分の数で送る', async () => {
     serve({
       stocks: [stock(DESK, 10), stock(CHAIR, 20)],
@@ -308,7 +327,10 @@ describe('StockInput：下書き', () => {
     await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
     r.unmount(); // 画面を離れる（書いていない分を書き切る）
     const key = draftKey({ userId: USER, yearId: Y, screen: 'stock', target: ROOM.id });
-    expect(JSON.parse(localStorage.getItem(key)!).value).toEqual({ counts: { [DESK.id]: 11, [CHAIR.id]: 20 } });
+    expect(JSON.parse(localStorage.getItem(key)!).value).toEqual({
+      counts: { [DESK.id]: 11, [CHAIR.id]: 20 },
+      base: { [DESK.id]: `u-${DESK.id}`, [CHAIR.id]: `u-${CHAIR.id}` },
+    });
 
     renderInput({ role: 'staff', status: 'requesting' });
     const notice = await screen.findByTestId('draft-notice');
@@ -319,9 +341,61 @@ describe('StockInput：下書き', () => {
     expect(localStorage.getItem(key)).toBeNull();
   });
 
+  it('下書きを作った後にほかの人が保存していれば、戻して保存するときに選ばせる（触っていない品目も黙って上書きしない）', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)] });
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    r.unmount(); // カメラで次の QR を読みに離れる（下書きが残る）
+
+    // 離れている間に、ほかの人がこの部屋を保存した（椅子だけ 25 にした）
+    const theirs = [stock(DESK, 10, 'u-other-desk', id(77)), stock(CHAIR, 25, 'u-other-chair', id(77))];
+    serve({ stocks: theirs });
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((screen.getByRole('textbox', { name: '椅子(木)の数' }) as HTMLInputElement).value).toBe('25'));
+    await user.click(within(await screen.findByTestId('draft-notice')).getByRole('button', { name: '戻す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('11'));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const dialog = await screen.findByTestId('stock-conflict-dialog');
+    await waitFor(() => expect(dialog.textContent).toContain('テスト管理者さんが'));
+    expect(upserts()).toHaveLength(0);
+    // 読み直すと相手の数になる（下書きは消える）
+    await user.click(within(dialog).getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    expect((screen.getByRole('textbox', { name: '椅子(木)の数' }) as HTMLInputElement).value).toBe('25');
+    expect(upserts()).toHaveLength(0);
+  });
+
+  it('下書きを作った後にだれも保存していなければ、戻して保存しても確かめない', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)] });
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    r.unmount();
+    const key = draftKey({ userId: USER, yearId: Y, screen: 'stock', target: ROOM.id });
+    expect(JSON.parse(localStorage.getItem(key)!).value.base).toEqual({ [DESK.id]: `u-${DESK.id}`, [CHAIR.id]: `u-${CHAIR.id}` });
+
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)] });
+    renderInput({ role: 'staff', status: 'requesting' });
+    await user.click(within(await screen.findByTestId('draft-notice')).getByRole('button', { name: '戻す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('11'));
+    // 戻した後にさらに入力しても、下書きの元は最初に読み込んだ行のまま
+    await user.click(screen.getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    expect(JSON.parse(localStorage.getItem(key)!).value.base).toEqual({ [DESK.id]: `u-${DESK.id}`, [CHAIR.id]: `u-${CHAIR.id}` });
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-saved');
+    expect(screen.queryByTestId('stock-conflict-dialog')).toBeNull();
+    expect(opArgs(upserts()[0]!, 'upsert')[0]![0]).toEqual([
+      { year_id: Y, room_id: ROOM.id, item_id: DESK.id, count: 11 },
+      { year_id: Y, room_id: ROOM.id, item_id: CHAIR.id, count: 21 },
+    ]);
+  });
+
   it('読み取り専用のときは下書きを出さない', async () => {
     const key = draftKey({ userId: USER, yearId: Y, screen: 'stock', target: ROOM.id });
-    localStorage.setItem(key, JSON.stringify({ value: { counts: { [DESK.id]: 3 } }, savedAt: Date.now() }));
+    localStorage.setItem(key, JSON.stringify({ value: { counts: { [DESK.id]: 3 }, base: {} }, savedAt: Date.now() }));
     serve({ stocks: [stock(DESK, 10)] });
     renderInput({ role: 'staff', status: 'confirmed' });
     await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));

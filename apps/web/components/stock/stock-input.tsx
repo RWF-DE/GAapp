@@ -6,6 +6,7 @@
 //   読み込んだ後にほかの人が保存していれば「上書きする」「読み直す」を選んでもらう。
 // - 年度の状態とロールで書けるか（stockAccess）。管理者は振り分け中なら振り分けの合計より少なくなる品目を確かめ、確定中なら止める。
 // - 最新でない年度なら保存の前に確かめる（useNotLatestYearConfirm）。入力の途中で離れるときは確かめ、入力は部屋ごとの下書きに残す。
+//   下書きには入力の元にした行の updated_at も置き、戻した後の保存では、下書きを作った後のほかの人の保存も確かめる。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -20,6 +21,7 @@ import { PageHeader } from '@/components/common/page-header';
 import { TokyoTime } from '@/components/common/tokyo-time';
 import {
   AlertDialog,
+  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
@@ -60,12 +62,23 @@ import {
 import { createDraftWriter, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
 import { appError, classifyError, effectOf, messageFor, type NameLookup } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
-import { stockCountsSchema, stockDraftSchema, type StockCounts, type StockDraft } from '@/lib/schemas/stock';
+import {
+  stockCountsSchema,
+  stockDraftSchema,
+  type StockBaseStamps,
+  type StockCounts,
+  type StockDraft,
+} from '@/lib/schemas/stock';
 import { useUnsavedChanges } from '@/lib/unsaved-changes';
 import { cn } from '@/lib/utils';
 import { countedName, type OpenYear } from './common';
 
 type Phase = 'idle' | 'checking' | 'saving';
+
+/** 行の updated_at（品目の id → updated_at） */
+function stampsOf(rows: readonly StockDbRow[]): StockBaseStamps {
+  return Object.fromEntries(rows.map((r) => [r.item_id, r.updated_at]));
+}
 
 interface Conflict {
   latest: StockDbRow[];
@@ -129,6 +142,13 @@ export function StockInput({
   const baseCounts = useMemo(() => (base ? countsFromRows(items, base) : null), [base, items]);
   const dirty = access.writable && !!counts && !!baseCounts && !sameCounts(items, counts, baseCounts);
   useUnsavedChanges(dirty);
+  // 下書きを戻したときは、入力の元が「下書きを作ったときの行」になる（null なら base が元）。
+  // 保存の直前に読み直した行とこれを比べるので、下書きを作った後のほかの人の保存も確かめられる
+  const [restoredStamps, setRestoredStamps] = useState<StockBaseStamps | null>(null);
+  const stamps = useMemo(() => restoredStamps ?? (base ? stampsOf(base) : null), [restoredStamps, base]);
+  // ほかの人の保存のダイアログを閉じたら「保存」へフォーカスを戻す（送信中で押せなければ、終わってから戻す）
+  const saveButtonRef = useRef<HTMLButtonElement>(null);
+  const refocusSave = useRef(false);
 
   // 下書き（部屋ごと。カメラで次の QR を読んだ・別のアプリへ行った・タブが捨てられた後に戻せる）
   const draftKey = useMemo<DraftKey>(() => ({ userId: open.userId, yearId, screen: 'stock', target: roomId }), [open.userId, yearId, roomId]);
@@ -142,7 +162,7 @@ export function StockInput({
       removeDraft(draftKey);
       return null;
     }
-    return { savedAt: d.savedAt, counts: parsed.data.counts };
+    return { savedAt: d.savedAt, counts: parsed.data.counts, base: parsed.data.base };
   });
   const showDraft = access.writable && !!draft && !!counts && !sameCounts(items, { ...counts, ...draft.counts }, counts);
 
@@ -170,7 +190,7 @@ export function StockInput({
     setSavedAt(null);
     setBlocked(null);
     if (baseCounts && sameCounts(items, next, baseCounts)) writer.clear();
-    else writer.write({ counts: next });
+    else if (stamps) writer.write({ counts: next, base: stamps });
   };
 
   const handleError = async (e: unknown) => {
@@ -197,6 +217,7 @@ export function StockInput({
       writer.clear();
       setDraft(null);
       setBase(rows);
+      setRestoredStamps(null);
       setCounts(countsFromRows(items, rows));
       setSavedAt(new Date().toISOString());
       toast.success('保存しました');
@@ -214,7 +235,7 @@ export function StockInput({
   };
 
   const save = async () => {
-    if (!counts || !base || phase !== 'idle' || !access.writable) return;
+    if (!counts || !base || !stamps || phase !== 'idle' || !access.writable) return;
     setError(null);
     setBlocked(null);
     const parsed = stockCountsSchema.safeParse(counts);
@@ -241,7 +262,8 @@ export function StockInput({
         }
       }
       const latest = await fetchRoomStocks(yearId, roomId);
-      const other = detectOtherSave(base, latest);
+      const loaded = Object.entries(stamps).map(([item_id, updated_at]) => ({ item_id, updated_at }));
+      const other = detectOtherSave(loaded, latest);
       if (other) {
         setConflict({ latest, other });
         return;
@@ -259,6 +281,7 @@ export function StockInput({
   const overwrite = async () => {
     if (!conflict || !counts) return;
     setBase(conflict.latest);
+    setRestoredStamps(null);
     setConflict(null);
     await write(counts);
   };
@@ -266,12 +289,19 @@ export function StockInput({
   const reloadLatest = () => {
     if (!conflict) return;
     setBase(conflict.latest);
+    setRestoredStamps(null);
     setCounts(countsFromRows(items, conflict.latest));
     writer.clear();
     setDraft(null);
     setConflict(null);
     toast.info('ほかの人が保存した数を読み直しました');
   };
+
+  useEffect(() => {
+    if (phase !== 'idle' || !refocusSave.current) return;
+    refocusSave.current = false;
+    saveButtonRef.current?.focus();
+  }, [phase]);
 
   // 保存の後の「次の部屋へ」（今の部屋は数えたものとして探す）
   const next = useMemo(() => {
@@ -343,7 +373,8 @@ export function StockInput({
             onRestore={() => {
               const restored = { ...counts!, ...Object.fromEntries(items.filter((i) => i.id in draft.counts).map((i) => [i.id, draft.counts[i.id]!])) };
               setCounts(restored);
-              writer.write({ counts: restored });
+              setRestoredStamps(draft.base);
+              writer.write({ counts: restored, base: draft.base });
               setDraft(null);
             }}
             onDiscard={() => {
@@ -431,7 +462,14 @@ export function StockInput({
       {access.writable && counts ? (
         <div className="sticky bottom-0 z-10 -mx-4 mt-4 border-t bg-background/95 px-4 py-3 backdrop-blur md:-mx-6 md:px-6 print:hidden">
           {dirty ? <p className="mb-2 text-xs text-amber-700">保存していない変更があります</p> : null}
-          <Button size="lg" className="h-12 w-full text-base" onClick={() => void save()} disabled={busy} aria-busy={busy || undefined}>
+          <Button
+            ref={saveButtonRef}
+            size="lg"
+            className="h-12 w-full text-base"
+            onClick={() => void save()}
+            disabled={busy}
+            aria-busy={busy || undefined}
+          >
             {phase === 'saving' ? '保存中…' : phase === 'checking' ? '確かめています…' : '保存'}
           </Button>
         </div>
@@ -452,7 +490,16 @@ export function StockInput({
       />
 
       <AlertDialog open={conflict !== null} onOpenChange={(o) => (!o ? setConflict(null) : undefined)}>
-        <AlertDialogContent data-testid="stock-conflict-dialog">
+        <AlertDialogContent
+          data-testid="stock-conflict-dialog"
+          onCloseAutoFocus={(e) => {
+            // 開いた元（「保存」）は Radix が知らないので、自分で戻す。上書きして送信中なら、終わってから戻す
+            e.preventDefault();
+            const b = saveButtonRef.current;
+            if (b && !b.disabled) b.focus();
+            else refocusSave.current = true;
+          }}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>ほかの人が先に保存しています</AlertDialogTitle>
             <AlertDialogDescription>
@@ -491,9 +538,8 @@ export function StockInput({
             </table>
           ) : null}
           <AlertDialogFooter>
-            <Button variant="ghost" onClick={() => setConflict(null)}>
-              やめる
-            </Button>
+            {/* AlertDialogCancel にすると、開いたときに Radix がここへフォーカスを移す（Esc と同じく閉じるだけ） */}
+            <AlertDialogCancel variant="ghost">やめる</AlertDialogCancel>
             <Button variant="outline" onClick={reloadLatest}>
               読み直す
             </Button>

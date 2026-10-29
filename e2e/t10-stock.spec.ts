@@ -112,6 +112,14 @@ test.describe('T10 部員', () => {
       const dialog = page.getByTestId('stock-conflict-dialog');
       await expect(dialog).toContainText('テスト管理者さんが');
       await expect(dialog.getByTestId('conflict-row').filter({ hasText: '机(木)' })).toContainText('711');
+      // 開くとフォーカスはダイアログの中（やめる）。Esc で閉じると「保存」へ戻る
+      await expect(dialog.getByRole('button', { name: 'やめる' })).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(page.getByRole('button', { name: '保存', exact: true })).toBeFocused();
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await confirmNotLatest(page);
+      await expect(dialog).toContainText('テスト管理者さんが');
       // 読み直す：相手の数になり、保存しない
       await dialog.getByRole('button', { name: '読み直す' }).click();
       await waitInput(page, 7);
@@ -197,6 +205,51 @@ test.describe('T10 部員', () => {
       await waitInput(page, 12);
       // 戻しただけでは保存していない
       expect((await roomStocks(s.yearId, roomA)).get(s.ids.items.desk!)!.count).toBe(10);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T10 下書き：下書きを作った後にほかの人が保存していれば、戻して保存するときに上書きするか読み直すかを選べる', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', roles: { staff: true, admin: true } });
+    try {
+      const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
+      const desk = s.ids.items.desk!;
+      const chair = s.ids.items.chair!;
+      await pinYear(page, SEED_USER_IDS.staff, s.yearId);
+      await page.setViewportSize(PC);
+      await page.goto(`/stock/?room=${roomA}`);
+      await waitInput(page, 10);
+      await plus(page, '机(木)').click();
+      await expect(input(page, '机(木)')).toHaveValue('11');
+      // 別の画面へ離れる（下書きが残る）
+      await page.getByRole('navigation', { name: 'メインメニュー' }).getByRole('link', { name: '在庫一覧' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '移る' }).click();
+      await expect(page).toHaveURL((u) => u.pathname === '/stocks/');
+      // 離れている間に、管理者がこの部屋の椅子(木)を保存した
+      await sql('update public.stocks set count = 19, counted_by = $3, counted_at = now() where year_id = $1 and room_id = $2 and item_id = $4', [
+        s.yearId,
+        roomA,
+        SEED_USER_IDS.admin,
+        chair,
+      ]);
+      await page.goto(`/stock/?room=${roomA}`);
+      await expect(input(page, '椅子(木)')).toHaveValue('19');
+      await page.getByTestId('draft-notice').getByRole('button', { name: '戻す' }).click();
+      await waitInput(page, 11);
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await confirmNotLatest(page);
+      const dialog = page.getByTestId('stock-conflict-dialog');
+      await expect(dialog).toContainText('テスト管理者さんが');
+      await expect(dialog.getByRole('button', { name: 'やめる' })).toBeFocused();
+      // 読み直す：相手の数になり、保存しない（椅子(木)の 19 は残る）
+      await dialog.getByRole('button', { name: '読み直す' }).click();
+      await waitInput(page, 10);
+      await expect(input(page, '椅子(木)')).toHaveValue('19');
+      const after = await roomStocks(s.yearId, roomA);
+      expect(after.get(desk)!.count).toBe(10);
+      expect(after.get(chair)!.count).toBe(19);
+      expect(after.get(chair)!.counted_by).toBe(SEED_USER_IDS.admin);
     } finally {
       await s.cleanup();
     }

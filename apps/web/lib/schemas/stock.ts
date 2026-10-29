@@ -15,8 +15,15 @@ export const stockCountSchema = z
 export const stockCountsSchema = z.record(uuidSchema, stockCountSchema);
 export type StockCounts = z.output<typeof stockCountsSchema>;
 
-/** 下書き（lib/drafts.ts）に置く値。壊れた下書きは捨てる */
-export const stockDraftSchema = z.object({ counts: stockCountsSchema });
+/**
+ * 入力の元にした部屋の行の updated_at（品目の id → updated_at。行のない品目は入れない）。
+ * 下書きを戻して保存するとき、下書きを作った後にほかの人が保存したかをこれと比べて確かめる。
+ */
+export const stockBaseStampsSchema = z.record(uuidSchema, z.string());
+export type StockBaseStamps = z.output<typeof stockBaseStampsSchema>;
+
+/** 下書き（lib/drafts.ts）に置く値。入力中の数と、その元にした行の updated_at。壊れた下書きは捨てる */
+export const stockDraftSchema = z.object({ counts: stockCountsSchema, base: stockBaseStampsSchema });
 export type StockDraft = z.output<typeof stockDraftSchema>;
 
 /**

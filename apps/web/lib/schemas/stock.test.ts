@@ -16,8 +16,12 @@ describe('在庫の数', () => {
   it('品目の id → 数。id の形が違えば落とす。下書きも同じ形でなければ捨てる', () => {
     expect(stockCountsSchema.safeParse({ [A]: 3 }).success).toBe(true);
     expect(stockCountsSchema.safeParse({ x: 3 }).success).toBe(false);
-    expect(stockDraftSchema.safeParse({ counts: { [A]: 3 } }).success).toBe(true);
-    expect(stockDraftSchema.safeParse({ counts: { [A]: -3 } }).success).toBe(false);
+    expect(stockDraftSchema.safeParse({ counts: { [A]: 3 }, base: { [A]: '2026-10-05T09:01:00+00:00' } }).success).toBe(true);
+    expect(stockDraftSchema.safeParse({ counts: { [A]: 3 }, base: {} }).success).toBe(true);
+    expect(stockDraftSchema.safeParse({ counts: { [A]: -3 }, base: {} }).success).toBe(false);
+    // 元にした行の updated_at がなければ、ほかの人の保存を確かめられないので捨てる
+    expect(stockDraftSchema.safeParse({ counts: { [A]: 3 } }).success).toBe(false);
+    expect(stockDraftSchema.safeParse({ counts: { [A]: 3 }, base: { x: 't' } }).success).toBe(false);
     expect(stockDraftSchema.safeParse('壊れた値').success).toBe(false);
   });
 });
