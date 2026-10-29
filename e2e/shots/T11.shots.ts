@@ -1,5 +1,6 @@
 // T11 のスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T11` で notes/T11/ に撮る（CI では流さない）。
-// 段 1：申請（スマホ）と申請一覧（PC）。読み込み中は page.route で応答を止めてから撮る。取り込みのダイアログは段 2 で足す。
+// 申請（スマホ）と申請一覧（PC）、取り込みのダイアログ（PC）。読み込み中は page.route で応答を止めてから撮る。
+import { fileURLToPath } from 'node:url';
 import { expect, test, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
@@ -7,6 +8,8 @@ import { SMALL } from '../support/datasets';
 import { MOBILE, PC, shoot } from '../support/shots';
 import { SEED_USER_IDS } from '../support/users';
 import { pinYear } from '../support/year';
+
+const STALL_CSV = fileURLToPath(new URL('../../fixtures/importer-samples/stall.csv', import.meta.url));
 
 test.describe('T11 団体代表', () => {
   test.use({ storageState: storageStateFor('rep') });
@@ -112,6 +115,48 @@ test.describe('T11 管理者', () => {
       await page.locator('tr[data-group-name="E2E休憩所"]').getByRole('button', { name: '提出済みにする' }).click();
       await expect(page.getByRole('dialog')).toBeVisible();
       await shoot(page, 'T11', 'requests-mark-submitted-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 取り込み（PC）：ファイルを選ぶ前・プレビュー・手で選ぶ・読めない CSV・結果', async ({ page }) => {
+    const s = await createScenario({
+      roles: { admin: true },
+      extraGroups: [
+        { name: '模擬店甲', category: 'stall' },
+        { name: '模擬店乙', category: 'stall' },
+        { name: '模擬店丙', category: 'stall' },
+      ],
+    });
+    try {
+      const kou = s.ids.groups['模擬店甲']!;
+      // 模擬店甲はフォームの回答より後にアプリで提出した（既定で上書きしない）
+      await sql("insert into public.request_submissions (group_id, submitted_at) values ($1, now())", [kou]);
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/');
+      await page.getByRole('button', { name: 'Googleフォームの回答を取り込む' }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByLabel('CSV ファイル')).toBeVisible();
+      await shoot(page, 'T11', 'import-start-pc');
+
+      await dialog.getByLabel('CSV ファイル').setInputFiles({ name: 'broken.csv', mimeType: 'text/csv', buffer: Buffer.from('a,b\n1,2\n') });
+      await expect(dialog.getByRole('alert')).toBeVisible();
+      await shoot(page, 'T11', 'import-format-error-pc');
+
+      await dialog.getByLabel('CSV ファイル').setInputFiles(STALL_CSV);
+      await expect(dialog.getByTestId('import-counts')).toBeVisible();
+      await shoot(page, 'T11', 'import-preview-pc', { fullPage: true });
+      await dialog.getByRole('combobox', { name: '行8の団体' }).click();
+      await expect(page.getByRole('option', { name: '模擬店丙', exact: true })).toBeVisible();
+      await shoot(page, 'T11', 'import-manual-pc');
+      await page.getByRole('option', { name: '模擬店丙', exact: true }).click();
+      await expect(dialog.getByTestId('plan-模擬店丙')).toBeVisible();
+      await dialog.getByTestId('import-plans').scrollIntoViewIfNeeded();
+      await shoot(page, 'T11', 'import-plans-pc');
+      await dialog.getByRole('button', { name: '取り込む（2 団体）' }).click();
+      await expect(dialog.getByTestId('import-results')).toBeVisible();
+      await shoot(page, 'T11', 'import-results-pc');
     } finally {
       await s.cleanup();
     }
