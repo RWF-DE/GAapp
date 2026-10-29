@@ -613,6 +613,10 @@ describe('StockInput：読み直し（設計 2.6）', () => {
     await waitFor(() => expect(screen.getByTestId('stock-remote-change').textContent).toContain('テスト管理者さんが'));
     expect((deskInput() as HTMLInputElement).value).toBe('10');
     expect(upserts()).toHaveLength(0);
+    // 入力（10）はほかの人の数と違うので保存していない入力。下書きを捨てた後でも、離れたら下書きに残す
+    expect(screen.getByText('保存していない変更があります')).toBeTruthy();
+    r.unmount();
+    expect(JSON.parse(localStorage.getItem(KEY())!).value.counts[DESK.id]).toBe(10);
   });
 
   it('R1：数を変えた後に書けなくなったら（振り分け中の部員）、印は効かず届いた行で作り直す。入力は下書きに残り、「上書きするか選べます」は出さない', async () => {
@@ -691,6 +695,69 @@ describe('StockInput：読み直し（設計 2.6）', () => {
     await waitFor(() => expect(screen.queryByTestId('stock-conflict-dialog')).toBeNull());
     expect((deskInput() as HTMLInputElement).value).toBe('10');
     expect(screen.getByText('保存していない変更があります')).toBeTruthy();
+  });
+
+  /** 開き直した画面（DB はほかの人の机 7）で、下書きの知らせの「戻す」で机 10 に戻り、「保存」でダイアログの「あなた」が 10 になる */
+  async function reopenAndRestoreTen(user: ReturnType<typeof userEvent.setup>) {
+    serve({ stocks: theirs() });
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('7'));
+    await user.click(within(await screen.findByTestId('draft-notice')).getByRole('button', { name: '戻す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(saveButton());
+    expect(within(await screen.findByTestId('stock-conflict-dialog')).getAllByTestId('conflict-row')[0]!.textContent).toBe('机(木)710');
+    expect(upserts()).toHaveLength(0);
+  }
+
+  it('R1：同じ数のまま「保存」を押し、ほかの人の保存のダイアログを「やめる」と、入力を下書きに残す（離れて開き直せば戻して選べる）', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], stocksLater: theirs() });
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(saveButton());
+    await user.click(within(await screen.findByTestId('stock-conflict-dialog')).getByRole('button', { name: 'やめる' }));
+    await waitFor(() => expect(screen.queryByTestId('stock-conflict-dialog')).toBeNull());
+    expect(screen.getByText('保存していない変更があります')).toBeTruthy();
+    r.unmount();
+    expect(JSON.parse(localStorage.getItem(KEY())!).value.counts[DESK.id]).toBe(10);
+    await reopenAndRestoreTen(user);
+  });
+
+  it('R1・R3：入力を元の数へ戻した後にほかの人の保存が届いたら、入力を下書きに残す（離れて開き直せば戻して選べる）', async () => {
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1減らす' }));
+    expect(screen.queryByText('保存していない変更があります')).toBeNull();
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    await screen.findByTestId('stock-remote-change');
+    expect((deskInput() as HTMLInputElement).value).toBe('10');
+    expect(screen.getByText('保存していない変更があります')).toBeTruthy();
+    r.unmount();
+    expect(JSON.parse(localStorage.getItem(KEY())!).value.counts[DESK.id]).toBe(10);
+    await reopenAndRestoreTen(user);
+  });
+
+  it('R1：数を変えずに「保存」を押して確かめをやめた後に、ほかの人の保存が裏で届いたら、入力を下書きに残す', async () => {
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting', latest: false });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(saveButton());
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'やめる' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(screen.queryByText('保存していない変更があります')).toBeNull();
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    await screen.findByTestId('stock-remote-change');
+    expect(screen.getByText('保存していない変更があります')).toBeTruthy();
+    r.unmount();
+    expect(JSON.parse(localStorage.getItem(KEY())!).value.counts[DESK.id]).toBe(10);
   });
 
   it('R3：ダイアログの「読み直す」は、戻していない前の下書きを消さない（ほかの人の数の上に「戻す」を出す）', async () => {

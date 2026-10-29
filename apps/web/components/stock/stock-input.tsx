@@ -19,6 +19,7 @@
 //   ほかの人の数を取ったとき（知らせ・ダイアログの「読み直す」）だけ（エラー・段階・ダイアログ・下書きの「捨てる」では変えない）。
 //   印は書ける間だけ効かせる。書けなくなったら（読み取り専用）印を下ろし、届いた行で作り直す（入力は下書きに残る）。
 //   「保存していない」かは、入力の元と、届いた最新の行の両方と比べて決める（ほかの人の保存が届いた後に元の数へ戻しても未保存）。
+//   保存していない入力はいつも下書きに写す（数を変えずに未保存になったとき〔ほかの人の保存が届いた・ダイアログを出した〕も書く）。
 // - R2 「保存できたか分かりません」（unknownOutcome）は、次の保存が決まる（送った・「保存されていました」・ほかの人の保存の
 //   ダイアログを出した）か、ほかの人の数を取るまで消さない。送る前の読み直しがコードつきで失敗しても残し、その失敗は toast で出す。
 // - R3 下書きを消すのは、保存が決まったとき・「捨てる」・戻していない下書きがある間に届いた行の記録（updated_at）が下書きの
@@ -276,6 +277,14 @@ export function StockInput({
 
   const showDraft = access.writable && !!draft && !!counts && !sameCounts(items, { ...counts, ...draft.counts }, counts);
   const writeDraft = (values: StockCounts, baseStamps: StockBaseStamps) => writer.write({ counts: values, base: baseStamps });
+  // 保存していない入力（unsaved）は、いつも下書きに写す（画面の設計 1.4。離れるときの確かめは「入力は下書きに残り…戻せます」と言う）。
+  // 数を変えた・戻した・送るときは各操作で書くが、数を変えずに未保存になるとき（印が立っている間にほかの人の保存が届いた・
+  // ダイアログを出した・「保存できたか分かりません」になった）もここで書く。戻していない下書き（draft）がある間は、それを上書きしない
+  // （利用者が戻すか捨てるかを選ぶまで残す。R3）。元は入力の元（戻した下書きならその base）なので、開き直すと最新の行と比べて
+  // 「戻す」が出て、戻して保存すればほかの人の保存のダイアログで選べる
+  useEffect(() => {
+    if (unsaved && !draft && counts && stamps) writer.write({ counts, base: stamps });
+  }, [unsaved, draft, counts, stamps, writer]);
 
   const [savedAt, setSavedAt] = useState<string | null>(null);
   /** 保存の表示：saved（今送って保存した）・recovered（読み直したら保存されていた） */
