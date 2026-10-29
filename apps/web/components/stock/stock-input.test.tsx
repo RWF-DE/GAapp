@@ -528,6 +528,79 @@ describe('StockInput：読み直し（設計 2.6）', () => {
     expect(upserts()).toHaveLength(0);
   });
 
+  it('R1：数を変えずに「保存」を押して最新でない年度の確かめをやめても、入力を守る（裏の読み直しのほかの人の数で置き換えず知らせる）', async () => {
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting', latest: false });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(saveButton());
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'やめる' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    await waitFor(() => expect(screen.getByTestId('stock-remote-change').textContent).toContain('テスト管理者さんが'));
+    expect((deskInput() as HTMLInputElement).value).toBe('10');
+    expect(upserts()).toHaveLength(0);
+  });
+
+  it('R1：保存が決まったら印を下ろす（その後の裏の読み直しは、その行で作り直す）', async () => {
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(saveButton());
+    await screen.findByTestId('stock-saved');
+    await waitFor(() => expect(screen.getByTestId('stock-input').getAttribute('data-fetching')).toBe('false'));
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('7'));
+    expect(screen.queryByTestId('stock-remote-change')).toBeNull();
+  });
+
+  it('R1：下書きを戻したら入力を守る（裏の読み直しのほかの人の数で置き換えず、下書きの元と比べて知らせる）', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)] });
+    const user = userEvent.setup();
+    const r0 = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    r0.unmount();
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await user.click(within(await screen.findByTestId('draft-notice')).getByRole('button', { name: '戻す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('11'));
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    await waitFor(() => expect(screen.getByTestId('stock-remote-change').textContent).toContain('テスト管理者さんが'));
+    expect((deskInput() as HTMLInputElement).value).toBe('11');
+  });
+
+  it('R1：戻していない下書きを「捨てる」と印を下ろす（裏の読み直しの行で作り直す）', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)] });
+    const user = userEvent.setup();
+    const r0 = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    r0.unmount();
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const r = renderInput({ role: 'staff', status: 'requesting', latest: false });
+    // 下書きを戻さずに「保存」を押して（印が立つ）最新でない年度の確かめをやめ、その後に下書きを「捨てる」
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(saveButton());
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'やめる' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await user.click(within(await screen.findByTestId('draft-notice')).getByRole('button', { name: '捨てる' }));
+    expect(localStorage.getItem(KEY())).toBeNull();
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('7'));
+    expect(screen.queryByTestId('stock-remote-change')).toBeNull();
+  });
+
   it('名前を読めない人の保存は「ほかの人が … 保存しました（名前は表示できません）」', async () => {
     serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], stocksLater: [stock(DESK, 7, 'u-other', null), stock(CHAIR, 20)] });
     const user = userEvent.setup();
@@ -558,10 +631,10 @@ describe('StockInput：保存できたか分からないとき・401（設計 2.
   const UNKNOWN = '保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります';
 
   /** 机を 1 増やして（recount なら増やさずに）保存し、応答が届かなかったところまで進める。later は部屋の3回目以降の読み込み */
-  async function lostSave(later: (n: number) => FakeResult | undefined, o: { recount?: boolean; latest?: boolean } = {}) {
+  async function lostSave(later: (n: number) => FakeResult | undefined, o: { recount?: boolean; qc?: QueryClient } = {}) {
     serve({ stocks: loadedRows(), upsert: (n) => (n === 1 ? NETWORK : undefined), roomRead: (n) => (n >= 3 ? later(n) : undefined) });
     const user = userEvent.setup();
-    const r = renderInput({ role: 'staff', status: 'requesting' });
+    const r = renderInput({ role: 'staff', status: 'requesting', qc: o.qc });
     await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
     if (!o.recount) await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
     await user.click(saveButton());
@@ -696,7 +769,7 @@ describe('StockInput：保存できたか分からないとき・401（設計 2.
     expect(sentDesk(1)).toBe(10);
   });
 
-  it('数え直しの応答が届かなかった後、ダイアログを「やめる」と、裏の読み直しが来ても入力を残して知らせ続け、次の「保存」でもダイアログを出す', async () => {
+  it('数え直しの応答が届かなかった後、ダイアログを「やめる」と、裏の読み直しが来ても入力（R1 の印）と下書きを残してほかの人の保存を知らせ続け、次の「保存」でもダイアログを出す。「分かりません」はダイアログを出したので消える（R2）', async () => {
     const { user, qc } = await lostSave(() => ({ data: theirRows() }), { recount: true });
     await user.click(saveButton());
     const dialog = await screen.findByTestId('stock-conflict-dialog');
@@ -708,8 +781,9 @@ describe('StockInput：保存できたか分からないとき・401（設計 2.
     await waitFor(() => expect(screen.getByTestId('stock-input').getAttribute('data-fetching')).toBe('false'));
     expect((deskInput() as HTMLInputElement).value).toBe('10');
     await waitFor(() => expect(screen.getByTestId('stock-remote-change').textContent).toContain('テスト管理者さんが'));
-    expect(screen.getByTestId('stock-unknown-outcome').textContent).toContain(UNKNOWN);
-    expect(screen.getByText('保存していない変更があります')).toBeTruthy();
+    expect(screen.queryByTestId('stock-unknown-outcome')).toBeNull();
+    // 入力は下書きにも残っている（離れて戻れば、ほかの人の数の上に「戻す」が出る）
+    expect(JSON.parse(localStorage.getItem(KEY())!).value.counts[DESK.id]).toBe(10);
     await user.click(saveButton());
     expect(within(await screen.findByTestId('stock-conflict-dialog')).getAllByTestId('conflict-row')[0]!.textContent).toBe('机(木)710');
     expect(upserts()).toHaveLength(1);
@@ -927,6 +1001,137 @@ describe('StockInput：保存できたか分からないとき・401（設計 2.
     await act(async () => release());
     await waitFor(() => expect(toasts.success).not.toHaveBeenCalled());
     expect(JSON.parse(localStorage.getItem(KEY())!).value.counts[DESK.id]).toBe(12);
+  });
+
+  // ---- 入力の守りの印（R1）・「保存できたか分かりません」を消すとき（R2）・下書きを消すとき（R3）・確かめの途中で離れたとき（R4）----
+  const CODED: FakeResult = { error: { code: '57014', message: 'canceling statement due to statement timeout' }, status: 500 };
+
+  it('R2：数え直しの応答が届かなかった後、送る前の読み直しがコードつきで失敗しても「分かりません」と入力は残る。失敗は別に知らせ、裏の読み直しのほかの人の数で置き換えない', async () => {
+    const { user, qc } = await lostSave((n) => (n === 3 ? CODED : { data: theirRows() }), { recount: true });
+    await user.click(saveButton());
+    await waitFor(() => expect(roomReads()).toBe(3));
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    expect(screen.getByTestId('stock-unknown-outcome').textContent).toContain(UNKNOWN);
+    expect(toasts.error).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('保存していない変更があります')).toBeTruthy();
+    await act(() => qc.invalidateQueries());
+    await waitFor(() => expect(roomReads()).toBeGreaterThanOrEqual(4));
+    await waitFor(() => expect(screen.getByTestId('stock-input').getAttribute('data-fetching')).toBe('false'));
+    expect((deskInput() as HTMLInputElement).value).toBe('10');
+    await waitFor(() => expect(screen.getByTestId('stock-remote-change').textContent).toContain('テスト管理者さんが'));
+    expect(screen.getByTestId('stock-unknown-outcome').textContent).toContain(UNKNOWN);
+    // 次の「保存」は自分の数で黙って送らず、ダイアログで選ばせる
+    await user.click(saveButton());
+    expect(within(await screen.findByTestId('stock-conflict-dialog')).getAllByTestId('conflict-row')[0]!.textContent).toBe('机(木)710');
+    expect(upserts()).toHaveLength(1);
+  });
+
+  it('R1・R2：応答が届かなかった後に元の数へ戻し、送る前の読み直しがコードつきで失敗しても、裏の読み直しの自分の保存で入力を置き換えず、次の「保存」で戻した数を送る', async () => {
+    const { user, qc } = await lostSave((n) => (n === 3 ? CODED : { data: mineRows(11) }));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1減らす' }));
+    await user.click(saveButton());
+    await waitFor(() => expect(roomReads()).toBe(3));
+    await waitFor(() => expect(saveButton().disabled).toBe(false));
+    expect(screen.getByTestId('stock-unknown-outcome').textContent).toContain(UNKNOWN);
+    await act(() => qc.invalidateQueries());
+    await waitFor(() => expect(roomReads()).toBeGreaterThanOrEqual(4));
+    await waitFor(() => expect(screen.getByTestId('stock-input').getAttribute('data-fetching')).toBe('false'));
+    expect((deskInput() as HTMLInputElement).value).toBe('10');
+    expect(screen.queryByTestId('stock-remote-change')).toBeNull();
+    expect(screen.getByTestId('stock-unknown-outcome').textContent).toContain(UNKNOWN);
+    await user.click(saveButton());
+    expect((await screen.findByTestId('stock-saved')).textContent).toContain('保存しました');
+    expect(upserts()).toHaveLength(2);
+    expect(sentDesk(1)).toBe(10);
+  });
+
+  it('R3：応答が届かなかった後に元の数へ戻して離れ、同じタブで開き直すと、キャッシュの送る前の行では下書きを消さない（DB の自分の保存が届けば「戻す」を出す）', async () => {
+    const { user, unmount, qc } = await lostSave(() => undefined);
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1減らす' }));
+    unmount();
+    fake.issued.length = 0;
+    serve({ stocks: mineRows(11) });
+    renderInput({ role: 'staff', status: 'requesting', qc });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('11'));
+    await waitFor(() => expect(screen.getByTestId('stock-input').getAttribute('data-fetching')).toBe('false'));
+    expect(JSON.parse(localStorage.getItem(KEY())!).value.counts[DESK.id]).toBe(10);
+    await user.click(within(await screen.findByTestId('draft-notice')).getByRole('button', { name: '戻す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(saveButton());
+    expect((await screen.findByTestId('stock-saved')).textContent).toContain('保存しました');
+    expect(sentDesk(0)).toBe(10);
+  });
+
+  it('R3：キャッシュの行を読み直さないうち（staleTime の間）も、送る前の行では下書きを消さない', async () => {
+    const qc0 = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000 } } });
+    const { user, unmount, qc } = await lostSave(() => undefined, { qc: qc0 });
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1減らす' }));
+    unmount();
+    fake.issued.length = 0;
+    serve({ stocks: mineRows(11) });
+    renderInput({ role: 'staff', status: 'requesting', qc });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 50));
+    });
+    expect(JSON.parse(localStorage.getItem(KEY())!).value.counts[DESK.id]).toBe(10);
+  });
+
+  it('R3：応答が届かなかった保存が入っていれば、同じタブで開き直したとき（キャッシュは送る前の行）も、届いた行で下書きを消す', async () => {
+    const { unmount, qc } = await lostSave(() => undefined);
+    unmount();
+    expect(localStorage.getItem(KEY())).not.toBeNull();
+    fake.issued.length = 0;
+    serve({ stocks: mineRows(11) });
+    const r = renderInput({ role: 'staff', status: 'requesting', qc });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('11'));
+    await waitFor(() => expect(screen.getByTestId('stock-input').getAttribute('data-fetching')).toBe('false'));
+    expect(screen.queryByTestId('draft-notice')).toBeNull();
+    r.unmount();
+    expect(localStorage.getItem(KEY())).toBeNull();
+    serve({ stocks: theirRows() });
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('7'));
+    expect(screen.queryByTestId('draft-notice')).toBeNull();
+  });
+
+  it('R4：「確かめています…」の間に離れたら、読み直しが後で返っても送らない（開き直した画面の新しい保存を古い数で上書きしない）', async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let dbRows = loadedRows();
+    serve({
+      stocks: loadedRows(),
+      upsert: (n) => {
+        const vals = opArgs(upserts()[n - 1]!, 'upsert')[0]![0] as { item_id: string; count: number }[];
+        dbRows = mineRows(vals.find((v) => v.item_id === DESK.id)!.count);
+        return { data: dbRows };
+      },
+      roomRead: (n) => (n === 2 ? held.then(() => ({ data: loadedRows() })) : { data: dbRows }),
+    });
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(saveButton());
+    await screen.findByRole('button', { name: '確かめています…' });
+    r.unmount();
+    renderInput({ role: 'staff', status: 'requesting', qc: r.qc });
+    await user.click(within(await screen.findByTestId('draft-notice')).getByRole('button', { name: '戻す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('11'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(saveButton());
+    await screen.findByTestId('stock-saved');
+    expect(upserts()).toHaveLength(1);
+    expect(sentDesk(0)).toBe(12);
+    await act(async () => release());
+    await act(async () => {
+      await new Promise((res) => setTimeout(res, 100));
+    });
+    expect(upserts()).toHaveLength(1);
+    expect(dbRows.find((x) => x.item_id === DESK.id)!.count).toBe(12);
+    expect((deskInput() as HTMLInputElement).value).toBe('12');
   });
 
   it('応答が届いた失敗（conflict など）は、ふつうの失敗として出す（分からないとは言わない）', async () => {

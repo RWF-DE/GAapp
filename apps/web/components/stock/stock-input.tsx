@@ -12,14 +12,17 @@
 // - 最新でない年度なら保存の前に確かめる（useNotLatestYearConfirm）。入力の途中で離れるときは確かめ、入力は部屋ごとの下書きに残す。
 //   下書きには入力の元にした行の updated_at も置き、戻した後の保存では、下書きを作った後のほかの人の保存も確かめる。
 //   下書きは 500 ms まとめて書くほか、画面を外れる・pagehide・裏に回った（visibilitychange で hidden）ときにすぐ書き出す。
-// - 読み直し（設計 2.6）：部屋の行を読み直したら、未保存の入力がなければその数で作り直し、入力があれば入力を残して
-//   「ほかの人が保存しました」と知らせる（入力の元の行は変えないので、保存の前のほかの人の保存の確かめが効く）。
-//   「保存できたか分かりません」を出している間・保存の途中・ほかの人の保存のダイアログを開いている間・「ほかの人が保存しました」を
-//   出している間は、入力の元と同じ数でも入力があるものとして扱う（押した数をそのまま残す。読み直した行で黙って置き換えない。
-//   ほかの人の数にするのは「ほかの人の数を読み直す」かダイアログの「読み直す」だけ）。
-// - 「保存できたか分かりません」は、保存の結果が決まったとき（送る・保存されていた・ほかの人の数にした）にだけ消す。確かめを
-//   やめた・止まった・ほかの人の保存のダイアログをやめたときは残す。出している間は、入力の元と同じ数でも離れるときに確かめ、
-//   下書きにも残す（応答が届かなかった保存の後に元の数へ戻した入力も守る）。
+// 入力の守りと下書きの消し方は、次の4つの決まりだけで決める（notes/T10.md の決めたことの 22）。
+// - R1 入力の守りの印（held）：この画面で数を変えた・下書きを戻した・「保存」を押したら立てる。立っている間は、裏で届いた行
+//   （読み直し・invalidate・通信の復帰・キャッシュ）で入力・入力の元・戻した下書きの元を置き換えず、「ほかの人が保存しました」
+//   （detectOtherSave）と「前回の入力」だけを新しくする。下ろすのは、保存が決まったとき（送って成功・「保存されていました」）、
+//   ほかの人の数を取ったとき（知らせ・ダイアログの「読み直す」）、下書きを「捨てる」ときだけ（エラー・段階・ダイアログでは変えない）。
+// - R2 「保存できたか分かりません」（unknownOutcome）は、次の保存が決まる（送った・「保存されていました」・ほかの人の保存の
+//   ダイアログを出した）か、ほかの人の数を取るまで消さない。送る前の読み直しがコードつきで失敗しても残し、その失敗は toast で出す。
+// - R3 下書きを消すのは、保存が決まったとき・「捨てる」・戻していない下書きがある間に届いた行の記録（updated_at）が下書きの
+//   base から変わっていて、下書きを重ねても行と同じ数のとき（下書きの数が書かれた証拠がある）だけ。キャッシュに残った送る前の行
+//   （記録が下書きの base と同じ）では消さない。ほかに、入力を元の数へ戻したら（分からない間を除く）書く中身がないので消す。
+// - R4 送る前の読み直し（「確かめています…」）の間に画面を離れたら、読み直しが返っても何もしない（送らない。入力は下書きにある）。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -174,18 +177,18 @@ export function StockInput({
   const stamps = useMemo(() => restoredStamps ?? (base ? stampsOf(base) : null), [restoredStamps, base]);
 
   const [phase, setPhase] = useState<Phase>('idle');
+  /** 応答が届いた失敗・入力の誤り（ErrorBanner で出す） */
   const [error, setError] = useState<unknown>(null);
   const [blocked, setBlocked] = useState<Shortfall[] | null>(null);
   const [conflict, setConflict] = useState<Conflict | null>(null);
   const [remote, setRemote] = useState<OtherSave | null>(null);
-  // 保存できたか分からない（押した数を残す。2.6 の (A) の 1）。入力の元と同じ数でも、保存していない入力として守る
+  // R1 入力の守りの印（上の決まり）
+  const [held, setHeld] = useState(false);
+  // R2 保存できたか分からない（2.6 の (A) の 1）。入力の元と同じ数でも、保存していない入力として扱う
   // （離れるときに確かめ、下書きに残し、「保存していない変更があります」を出す）
-  const unknownOutcome = !!error && isUnknownOutcome(error);
+  const [unknownOutcome, setUnknownOutcome] = useState(false);
   const unsaved = dirty || (access.writable && unknownOutcome);
   useUnsavedChanges(unsaved);
-  // 入力の元と同じ数でも読み直した行で置き換えないとき：上の unsaved・保存の途中・ほかの人の保存のダイアログを開いている
-  // （押した数で上書きするか選んでいる）・ほかの人の保存を知らせている（ほかの人の数にするのは、知らせかダイアログの「読み直す」だけ）
-  const keepInput = unsaved || phase !== 'idle' || conflict !== null || remote !== null;
 
   // 下書き（部屋ごと。カメラで次の QR を読んだ・別のアプリへ行った・タブが捨てられた後に戻せる）
   const draftKey = useMemo<DraftKey>(() => ({ userId: open.userId, yearId, screen: 'stock', target: roomId }), [open.userId, yearId, roomId]);
@@ -216,33 +219,35 @@ export function StockInput({
     }
     return { savedAt: d.savedAt, ...parsed.data };
   });
-  /** 下書きを今の DB の行（rows）に重ねても、rows と同じ数か */
-  const sameDraft = (rows: readonly StockDbRow[]) => {
+  /**
+   * R3 (c)：戻していない下書きの数が rows（届いた部屋の行）に書かれた証拠があるか。行の記録（updated_at。counted_at が変われば
+   * これも変わる）が下書きの base から変わっていて、しかも下書きを重ねても rows と同じ数のとき。キャッシュに残った送る前の行は
+   * 記録が base と同じなので、数が同じに見えても証拠にしない
+   */
+  const draftWritten = (rows: readonly StockDbRow[]) => {
+    if (!draft || sameStamps(draft.base, stampsOf(rows))) return false;
     const fromRows = countsFromRows(items, rows);
-    return !!draft && sameCounts(items, withDraft(items, fromRows, draft.counts), fromRows);
+    return sameCounts(items, withDraft(items, fromRows, draft.counts), fromRows);
   };
 
-  // 読み直し（設計 2.6）：部屋の行が新しくなったら（初めて読めた、ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、
-  // 自分の保存の後の invalidate など）、未保存の入力がなければその行で作り直す。入力があれば（keepInput）入力も元の行も残し、
-  // 自分以外の人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
+  // 部屋の行が届いたら（初めて読めた、ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、通信の復帰、
+  // 自分の保存の後の invalidate など）：R3 の (c) で下書きを確かめ、R1 の印がなければその行で作り直す。印があれば入力も
+  // 入力の元も残し、自分以外の人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
   const [seen, setSeen] = useState<StockDbRow[] | null>(null);
   const data = stocksQ.data;
   if (data && data !== seen) {
     setSeen(data);
-    if (base === null && draft && sameDraft(data)) {
-      // 戻していない下書きが、初めて読めた DB の行と同じ数しか持っていない（応答が届かなかった保存が入っていた、など）なら、
-      // 守る入力はもうないので消す（後でほかの人が保存しても、保存済みの数を「保存していない入力」として出さない）
+    if (draftWritten(data)) {
       removeDraft(draftKey);
       setDraft(null);
     }
-    if (base === null || !keepInput) {
+    if (base === null || !held) {
       setBase(data);
       setCounts(countsFromRows(items, data));
       setRestoredStamps(null);
       setRemote(null);
     } else if (stamps) {
-      const other = detectOtherSave(items, stamps, data, open.userId);
-      if (other) setRemote(other);
+      setRemote(detectOtherSave(items, stamps, data, open.userId));
     }
   }
   // ほかの人の保存のダイアログを閉じたら「保存」へフォーカスを戻す（送信中で押せなければ、終わってから戻す）
@@ -279,23 +284,30 @@ export function StockInput({
     if (!counts) return;
     const next = { ...counts, [itemId]: value };
     setCounts(next);
+    setHeld(true);
     setDraft(null);
     setSavedAt(null);
     setBlocked(null);
-    // 保存できたか分からない間は、入力の元と同じ数に戻しても下書きに残す（送った数が入っていれば、戻した数を送り直す入力になる）
+    // 入力の元と同じ数に戻したら、下書きに書く中身がないので消す（印は下ろさない）。保存できたか分からない間は下書きに残す
+    // （送った数が入っていれば、戻した数を送り直す入力になる）
     if (baseCounts && !unknownOutcome && sameCounts(items, next, baseCounts)) writer.clear();
     else if (stamps) writeDraft(next, stamps);
   };
 
-  const handleError = async (e: unknown) => {
+  /**
+   * 保存の流れの失敗。応答が届かない・読み直しが通信できないときは unknownOutcome（設計 2.6 の (A) の 1・4）。応答が届いた失敗は
+   * ErrorBanner に出すが、keepUnknown（「保存できたか分かりません」を出したまま確かめ始めた）なら知らせを残して toast で出す（R2）
+   */
+  const handleError = async (e: unknown, keepUnknown: boolean) => {
     const c = classifyError(e);
     if (c.kind === 'auth') {
       // 'retry' でも自動では送り直さない（もう一度「保存」を押してもらう）。'signedOut' なら /login へ移る（下書きは残る）
       await onAuthError(e);
       return;
     }
-    // 応答が届かなかった（保存できたか分からない）失敗も、ここで入れて画面で unknownOutcomeMessage を出す（設計 2.6 の (A) の 1）
-    setError(e);
+    if (isUnknownOutcome(e)) setUnknownOutcome(true);
+    else if (keepUnknown) toast.error(messageFor(c, { names }));
+    else setError(e);
     const eff = effectOf(c);
     if (eff.reload === 'year') {
       void queryClient.invalidateQueries({ queryKey: queryKeys.yearRow(yearId) });
@@ -320,6 +332,8 @@ export function StockInput({
   /** 保存できた（今送った・読み直したら保存されていた）後の片づけ。rows が今の DB の部屋の行 */
   const finishSaved = (rows: StockDbRow[], kind: 'saved' | 'recovered') => {
     setError(null);
+    setUnknownOutcome(false);
+    setHeld(false);
     writer.clear();
     setDraft(null);
     rebase(rows);
@@ -332,8 +346,9 @@ export function StockInput({
 
   /** values を送る。latest は送る前に読み直した部屋の行（入力の元にする。設計 2.6 の (A) の 4） */
   const write = async (values: StockCounts, latest: StockDbRow[], retried = false): Promise<void> => {
-    // 送ると決まったので、前の「保存できたか分かりません」は消す（この送信の結果で決まる）
+    // 送ると決まったので、前の「保存できたか分かりません」は消す（この送信の結果で決まる。R2）。印は成功まで残す（R1）
     setError(null);
+    setUnknownOutcome(false);
     setPhase('saving');
     rebase(latest);
     // 戻していない下書きは、今の入力を送ると決めたので使わない。送っている間に離れても入力を戻せるよう、元を latest にして書き切る
@@ -363,7 +378,7 @@ export function StockInput({
         if ((await onAuthError(e)) === 'retry') return write(values, latest, true);
         return;
       }
-      await handleError(e);
+      await handleError(e, false);
     } finally {
       if (sendsInFlight.get(storageKey) === inFlight) sendsInFlight.delete(storageKey);
       setPhase('idle');
@@ -383,6 +398,8 @@ export function StockInput({
 
   const save = async () => {
     if (!counts || !base || !stamps || phase !== 'idle' || !access.writable) return;
+    // R1：「保存」を押したら入力を守る（確かめの途中・やめた・止まった・ダイアログの間も、裏で届いた行で置き換えない）
+    setHeld(true);
     setBlocked(null);
     const parsed = stockCountsSchema.safeParse(counts);
     if (!parsed.success) {
@@ -391,19 +408,22 @@ export function StockInput({
     }
     writer.flush();
     if (!(await notLatest.confirmBeforeWrite())) return;
-    // 前の失敗は確かめ始めるときに消す。ただし「保存できたか分かりません」は、結果が決まる（送る・保存されていた・ほかの人の
-    // 数にする）まで残す（確かめをやめた・止まった・ダイアログをやめたときも入力を守る）。'checking' の間に裏の読み直しが
-    // 届いても入力は置き換わらない（keepInput）
-    setError((e: unknown) => (e && isUnknownOutcome(e) ? e : null));
+    // 前の失敗は確かめ始めるときに消す。「保存できたか分かりません」は別に持ち、保存が決まるまで残す（R2）
+    const keepUnknown = unknownOutcome;
+    setError(null);
     setPhase('checking');
+    // R4：確かめの途中で画面を離れたら、読み直しが返っても何もしない
+    const gone = () => !mounted.current;
     // 送ると決まったら、送る前に読み直した部屋の行が入る
     let latest: StockDbRow[] | null = null;
     try {
       // 前の画面（離れた画面）の送信が残っていれば、終わってから読み直す
       await sendsInFlight.get(storageKey);
+      if (gone()) return;
       if (access.shortfall !== 'none') {
         // 振り分けの合計は保存の直前に読み直す（DB の確定中の守りと同じ条件を先に確かめる）
         const allocated = await fresh(() => fetchRoomAllocated(yearId, roomId));
+        if (gone()) return;
         queryClient.setQueryData(queryKeys.yearPart(yearId, 'allocated', roomId), allocated);
         const list = shortfalls(items, parsed.data, allocated);
         if (list.length > 0) {
@@ -416,10 +436,13 @@ export function StockInput({
       }
       // 毎回、送る前に部屋の行を読み直して決める（設計 2.6 の (A) の 2〜4）
       const rows = await fresh(() => fetchRoomStocks(yearId, roomId));
+      if (gone()) return;
       const decision = decideStockSave(items, parsed.data, stamps, rows, open.userId);
       if (decision.kind === 'saved') {
         finishSaved(rows, 'recovered');
       } else if (decision.kind === 'conflict') {
+        // ほかの人の保存のダイアログを出したら、前の「保存できたか分かりません」は決まった（R2）。印は残す（R1）
+        setUnknownOutcome(false);
         setConflict({ latest: rows, other: decision.other, values: parsed.data });
         // やめた後も「ほかの人が保存しました」を出し、入力を残す（ほかの人の数にするのは「読み直す」だけ）。
         // 知らせの「ほかの人の数を読み直す」と「前回の入力」が今読み直した行を使うよう、キャッシュにも入れる
@@ -429,8 +452,9 @@ export function StockInput({
         latest = rows;
       }
     } catch (e) {
-      // 読み直しが通信できなければ送らない（handleError が入れた失敗で unknownOutcomeMessage を出す。(A) の 4）
-      if (!(e instanceof AuthHandled)) await handleError(e);
+      // 読み直しが通信できなければ送らずに unknownOutcomeMessage を出す（(A) の 4）。コードつきの失敗は、知らせを出していれば
+      // 残して toast で出す（R2）
+      if (!gone() && !(e instanceof AuthHandled)) await handleError(e, keepUnknown);
     } finally {
       if (!latest) setPhase('idle');
     }
@@ -445,9 +469,15 @@ export function StockInput({
     await write(values, latest);
   };
 
-  /** ほかの人の数を入力にする（入力と下書きは捨てる）。rows は今の DB の部屋の行 */
+  /**
+   * ほかの人の数を入力にする（入力と下書きは捨てる）。rows は今の DB の部屋の行。利用者がほかの人の数を取ったので、印を下ろし（R1）、
+   * 「保存できたか分かりません」も消す（ダイアログの「読み直す」はダイアログを出したときに消えている。知らせの「ほかの人の数を
+   * 読み直す」も同じく、押した数を捨てると決めたので、残すと「入力はそのまま残しています」が事実と違う）
+   */
   const adopt = (rows: StockDbRow[]) => {
     setError(null);
+    setUnknownOutcome(false);
+    setHeld(false);
     rebase(rows);
     setCounts(countsFromRows(items, rows));
     writer.clear();
@@ -543,6 +573,7 @@ export function StockInput({
             onRestore={() => {
               const restored = withDraft(items, counts!, draft.counts);
               setCounts(restored);
+              setHeld(true);
               setRestoredStamps(draft.base);
               writeDraft(restored, draft.base);
               setDraft(null);
@@ -550,6 +581,7 @@ export function StockInput({
             onDiscard={() => {
               writer.clear();
               setDraft(null);
+              setHeld(false);
             }}
           />
         ) : null}
@@ -563,7 +595,8 @@ export function StockInput({
               <p className="text-xs text-muted-foreground">入力はそのまま残しています。</p>
             </div>
           </div>
-        ) : error ? (
+        ) : null}
+        {error ? (
           <ErrorBanner
             error={error}
             context={{ names }}
