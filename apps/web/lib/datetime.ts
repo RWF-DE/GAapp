@@ -68,6 +68,18 @@ export function formatDate(date: string | null | undefined): string {
   return m ? `${m[1]}/${m[2]}/${m[3]}` : '';
 }
 
+/**
+ * 日付（Asia/Tokyo の `YYYY-MM-DD`）。`YYYY-MM-DD` の文字列はそのまま（date の列。タイムゾーンを通さない）、
+ * Date と timestamptz の文字列は Asia/Tokyo の日付にする（UTC の日付にしない）。読めなければ空文字。
+ */
+export function tokyoDate(v: string | Date): string {
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  const d = toDate(v);
+  if (!d) return '';
+  const p = tokyoParts(d);
+  return `${p.y}-${pad(p.mo)}-${pad(p.d)}`;
+}
+
 /** timestamptz の値 → `<input type="datetime-local">` の値（Asia/Tokyo の `YYYY-MM-DDTHH:mm`） */
 export function toDateTimeLocal(v: string | null | undefined): string {
   if (!v) return '';
@@ -101,6 +113,5 @@ export function tokyoStartOfNextDay(date: string): string {
 
 /** 今日の日付（Asia/Tokyo の `YYYY-MM-DD`） */
 export function tokyoToday(now: Date = new Date()): string {
-  const p = tokyoParts(now);
-  return `${p.y}-${pad(p.mo)}-${pad(p.d)}`;
+  return tokyoDate(now);
 }

@@ -1,4 +1,4 @@
-import { formatDate, formatDateTime, formatDateTimeSeconds, formatShortDateTime, formatTime } from '@/lib/datetime';
+import { formatDate, formatDateTime, formatDateTimeSeconds, formatShortDateTime, formatTime, tokyoDate } from '@/lib/datetime';
 
 const FORMATS = {
   datetime: formatDateTime,
@@ -8,7 +8,7 @@ const FORMATS = {
 
 /**
  * 日時を Asia/Tokyo で表示する（`2026/10/05 18:01`。title に秒まで）。画面の設計 1.4・2.8。T09a。
- * date を渡すと日付だけ（YYYY-MM-DD の文字列。1日目など）。値がなければ empty。
+ * date を渡すと日付だけ（YYYY-MM-DD の文字列はそのまま。Date・timestamptz は Asia/Tokyo の日付）。値がなければ・読めなければ empty。
  *
  * @example
  * <TokyoTime value={row.updated_at} />
@@ -27,7 +27,9 @@ export function TokyoTime({
 }) {
   if (value === null || value === undefined || value === '') return <span className={className}>{empty}</span>;
   if (format === 'date') {
-    const s = typeof value === 'string' ? value : value.toISOString().slice(0, 10);
+    // Date・timestamptz の文字列は Asia/Tokyo の日付にする（toISOString は UTC の日付になるので使わない）
+    const s = tokyoDate(value);
+    if (!s) return <span className={className}>{empty}</span>;
     return (
       <time dateTime={s} className={className}>
         {formatDate(s)}
