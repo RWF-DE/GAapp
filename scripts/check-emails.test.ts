@@ -89,16 +89,25 @@ describe('check-emails.mjs の実行', () => {
 
   it('検査から外すのは、このテストファイルの中の例示用ドメインだけ', () => {
     const self = 'scripts/check-emails.test.ts';
+    // 例外のドメインに完全一致しない例示用のアドレス。ここにそのまま書くと本物の検査で検出されるので、組み立てる
+    const notExempt = ['y', 'sub.example.jp'].join('@');
     const exempt = setup({ [self]: `${realLike} ${schoolLike}\n` });
+    // このテストファイルの中でも、例外のドメイン以外は検出する（ファイル全体を外していない）
+    const selfOther = setup({ [self]: `${realLike}\n${notExempt}\n` });
     // 同じアドレスでも、ほかのファイルにあれば検出する
     const other = setup({ 'scripts/other.test.ts': `${realLike}\n` });
     try {
       expect(run(exempt).status).toBe(0);
+      const s = run(selfOther);
+      expect(s.status).toBe(1);
+      expect(s.stderr).toContain(`${self}:2`);
+      expect(s.stderr).not.toContain(`${self}:1`);
       const r = run(other);
       expect(r.status).toBe(1);
       expect(r.stderr).toContain('scripts/other.test.ts:1');
     } finally {
       rmSync(exempt, { recursive: true, force: true });
+      rmSync(selfOther, { recursive: true, force: true });
       rmSync(other, { recursive: true, force: true });
     }
   });
