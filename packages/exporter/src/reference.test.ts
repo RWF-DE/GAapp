@@ -38,7 +38,7 @@ if (!hasR8()) {
       throw new Error('fixtures/r8/reference/allocations.csv がありません');
     });
   } else {
-    it.todo('fixtures/r8 がないため、R8 の振り分け（参考）の再計算を実行していない');
+    it.todo('fixtures/r8 がないため、R8 の振り分け（参考）の再計算を実行していない（D-40：R8 の元データは使わず、合成データ r8like で確かめる）');
   }
 }
 

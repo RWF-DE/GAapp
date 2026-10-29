@@ -34,7 +34,7 @@ export type ParsedForm = {
 
 /**
  * 列の対応表（種類ごと）。見出しは NFKC で正規化し、空白を除いてから比べる。
- * 本物のフォームの見出しに合わせて直すのはここだけ（R8 の元データが届いたら確かめる。notes/T05.md）。
+ * 本物のフォームの見出しに合わせて直すのはここだけ（R8 の元データは使わない〔D-40〕ので、本物のフォームの CSV を取り込むときに確かめる。notes/T05.md）。
  */
 export const FORM_COLUMN_MAP: Record<
   FormKind,

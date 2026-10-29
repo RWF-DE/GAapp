@@ -28,10 +28,9 @@ const group = (name: string, category: GroupCategory, aliases: string[] = []): I
 });
 const gid = (name: string) => fixtureIds.group('test', name);
 
-// 実在しうるドメインのメールは、検査に引っかからないよう実行時に組み立てる
-const at = '@';
-const realMail = `taro${at}${'gmail'}.com`;
-const schoolMail = `x.y${at}${'kumamoto-nct'}.ac.jp`;
+// メールのテストには予約済みのドメイン（.example）を使う。取り込みはドメインによらず、すべてのアドレスを捨てる
+const realMail = 'taro@mail.example';
+const schoolMail = 'x.y@school.example';
 
 describe('parseCsvLoose', () => {
   it('BOM・CRLF・引用符内の改行と引用符を読む', () => {
@@ -108,11 +107,11 @@ describe('parseFormCsv: 模擬店フォーム', () => {
     for (const r of parsed.responses) expect(Object.keys(r).sort()).toEqual(['counts', 'groupName', 'note', 'rowNumber', 'submittedAt']);
   });
   it('どの列にメールがあっても、結果の全体にメールのパターンが出ない', () => {
-    expect(JSON.stringify(parsed)).not.toContain(at);
+    expect(JSON.stringify(parsed)).not.toContain('@');
     // 備考の中のメールは取り除かれ、そのほかの文は残る
     const r = parsed.responses.find((x) => x.rowNumber === 4)!;
     expect(r.note).toContain('人数が増えました');
-    expect(r.note).not.toContain(at);
+    expect(r.note).not.toContain('@');
   });
 });
 
@@ -146,7 +145,7 @@ describe('parseFormCsv: 途中で切れた行', () => {
 
 describe('parseFormCsv: メールの扱い', () => {
   const header = 'タイムスタンプ,メール,団体名,机(木),備考';
-  it('実在しうるドメインのメールも、団体名・備考・数のどこにあっても出さない', () => {
+  it('どのドメインのメールも、団体名・備考・数のどこにあっても出さない', () => {
     const csv = [
       header,
       `2026/10/01 10:00:00,${realMail},団体1 ${schoolMail},2,連絡先 ${realMail} です`,
@@ -156,7 +155,7 @@ describe('parseFormCsv: メールの扱い', () => {
     ].join('\r\n');
     const parsed = parseFormCsv('department', csv, itemDefs);
     const dump = JSON.stringify(parsed);
-    expect(dump).not.toContain(at);
+    expect(dump).not.toContain('@');
     expect(parsed.responses.map((r) => [r.groupName, r.note])).toEqual([
       ['団体1', '連絡先  です'],
       [null, null],
@@ -164,13 +163,13 @@ describe('parseFormCsv: メールの扱い', () => {
     expect(parsed.rejected).toEqual([{ rowNumber: 3, reason: 'misaligned' }]);
     expect(containsEmail(realMail)).toBe(true);
     expect(containsEmail('全角＠でも')).toBe(false);
-    expect(containsEmail(`a${'＠'}${'gmail'}.com`)).toBe(true);
+    expect(containsEmail('a＠mail.example')).toBe(true);
   });
   it('見出しがメールなら、見出しも返さない', () => {
     const csv = `タイムスタンプ,${realMail},団体名,机(木)\n2026/10/01 10:00:00,x,団体,1\n`;
     const parsed = parseFormCsv('department', csv, itemDefs);
     expect(parsed.ignoredColumns).toEqual(['(列2)']);
-    expect(JSON.stringify(parsed)).not.toContain(at);
+    expect(JSON.stringify(parsed)).not.toContain('@');
   });
   it('必要な列がなければ、中身を含まないメッセージで失敗する', () => {
     expect(() => parseFormCsv('stall', `団体名,机(木)\n${realMail},1\n`, itemDefs)).toThrow(/タイムスタンプ/);
@@ -179,7 +178,7 @@ describe('parseFormCsv: メールの扱い', () => {
     try {
       parseFormCsv('stall', `団体名,机(木)\n${realMail},1\n`, itemDefs);
     } catch (e) {
-      expect(String((e as Error).message)).not.toContain(at);
+      expect(String((e as Error).message)).not.toContain('@');
     }
   });
 });
@@ -187,13 +186,13 @@ describe('parseFormCsv: メールの扱い', () => {
 describe('メールのパターン：書き方の揺れと処理時間', () => {
   const strip = (s: string) => stripEmails(s);
   it('@ の前後に空白がある書き方も見つけて取り除く', () => {
-    for (const s of [`taro ${at} ${'gmail'}.com`, `taro${at} ${'gmail'}.com`, `taro ${at}${'gmail'}.com`, `taro\u3000${'＠'}\u3000${'gmail'}.com`]) {
+    for (const s of ['taro @ mail.example', 'taro@ mail.example', 'taro @mail.example', 'taro\u3000＠\u3000mail.example']) {
       expect(containsEmail(s), s).toBe(true);
       expect(strip(`連絡先 ${s} です`).text, s).toBe('連絡先  です');
     }
   });
   it('ドメインの区切りが「。」「．」でも見つけて取り除く（それ以外の文は変えない）', () => {
-    for (const s of [`taro${at}${'gmail'}。com`, `taro${at}${'gmail'}．com`, `taro${at}${'gmail'}｡com`, `x.y${at}${'kumamoto-nct'}。ac。jp`]) {
+    for (const s of ['taro@mail。example', 'taro@mail．example', 'taro@mail｡example', 'x.y@mail。school。example']) {
       expect(containsEmail(s), s).toBe(true);
       expect(strip(`連絡先 ${s} 以上`).text, s).toBe('連絡先  以上');
     }
@@ -201,7 +200,7 @@ describe('メールのパターン：書き方の揺れと処理時間', () => {
     expect(strip('ありがとう。よろしく。')).toEqual({ text: 'ありがとう。よろしく。', stripped: false });
   });
   it('メールのない文は見つけない', () => {
-    for (const s of ['机は2台', `${at}だけ`, `a ${at}`, `${at} gmail.com`, 'a@b']) expect(containsEmail(s), s).toBe(false);
+    for (const s of ['机は2台', '@だけ', 'a @', '@ mail.example', 'a@b']) expect(containsEmail(s), s).toBe(false);
   });
   it('5万字のセルでも十分速い（@ のない長い列・@ だらけ・空白だらけ・ドット列）', () => {
     const N = 50_000;
@@ -209,13 +208,13 @@ describe('メールのパターン：書き方の揺れと処理時間', () => {
       'a'.repeat(N),
       'ab.'.repeat(N / 3),
       ' '.repeat(N),
-      `${'a'.repeat(N)}${at}`,
-      `${at}${'a'.repeat(N)}`,
-      `${'a'.repeat(N)}${at}${'b'.repeat(N)}`,
-      `a${at}`.repeat(N / 2),
-      `a ${at} `.repeat(N / 4),
-      `x${at}${'b'.repeat(62)}`.repeat(N / 64),
-      `x${at}${'a.'.repeat(N / 2)}`,
+      `${'a'.repeat(N)}@`,
+      `@${'a'.repeat(N)}`,
+      `${'a'.repeat(N)}@${'b'.repeat(N)}`,
+      'a@'.repeat(N / 2),
+      'a @ '.repeat(N / 4),
+      `x@${'b'.repeat(62)}`.repeat(N / 64),
+      `x@${'a.'.repeat(N / 2)}`,
       '長'.repeat(N),
     ];
     for (const c of cells) {
@@ -226,9 +225,9 @@ describe('メールのパターン：書き方の揺れと処理時間', () => {
     }
   });
   it('local 部が長くても、全体を取り除く（一部を残さない）', () => {
-    expect(strip(`${'a'.repeat(100)}${at}${'gmail'}.com`)).toEqual({ text: '', stripped: true });
+    expect(strip(`${'a'.repeat(100)}@mail.example`)).toEqual({ text: '', stripped: true });
     // 2 つのアドレスがつながっていても、全部取り除く
-    expect(strip(`a${at}b.com${at}c.com`)).toEqual({ text: '', stripped: true });
+    expect(strip('a@b.example@c.example')).toEqual({ text: '', stripped: true });
   });
   it('フォームの CSV に長い備考があっても、取り込みが速い', () => {
     const csv = `タイムスタンプ,団体名,机(木),備考\n2026/10/01 10:00:00,団体,1,${'あ'.repeat(50_000)}\n`;

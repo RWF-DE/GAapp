@@ -7,7 +7,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(71);
+select plan(76);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。confirmed = false なら email_confirmed_at を null にする。
 -- provider が google なら Google の identity（Google の経路）、email なら email_verified: true の email の identity（seed の経路）
@@ -70,6 +70,13 @@ select ok(has_function_privilege('supabase_auth_admin', 'private.hook_before_use
 select ok(not has_function_privilege('authenticated', 'private.hook_before_user_created(jsonb)', 'execute')
           and not has_function_privilege('anon', 'private.hook_before_user_created(jsonb)', 'execute'),
   'authenticated・anon はフックを実行できない');
+select ok((select not prosecdef and provolatile = 's' and proconfig @> array['search_path=""'] from pg_proc
+           where oid = 'private.school_domain()'::regprocedure),
+  'school_domain は SECURITY DEFINER にしない・STABLE・search_path = ""');
+select ok(has_function_privilege('supabase_auth_admin', 'private.school_domain()', 'execute')
+          and not has_function_privilege('authenticated', 'private.school_domain()', 'execute')
+          and not has_function_privilege('anon', 'private.school_domain()', 'execute'),
+  'school_domain は supabase_auth_admin（フックが呼ぶ）だけが実行でき、authenticated・anon は実行できない');
 select ok(not has_function_privilege('authenticated', 'private.handle_new_user()', 'execute')
           and not has_function_privilege('authenticated', 'private.handle_user_confirmed()', 'execute')
           and not has_function_privilege('authenticated', 'private.handle_identity_created()', 'execute')
@@ -245,6 +252,15 @@ select ok((select bool_and(i.provider = 'email' and u.encrypted_password like '$
   'seed のテストユーザーはメールとパスワードでログインできる形（identities あり、bcrypt）');
 
 -- ================================================================ Before User Created フック
+-- 本番の値（D-04）。実在のドメインのメールアドレスはテストに書かない（公開リポジトリ。実在の人のアドレスと重なるおそれ）ので、
+-- ドメインの値とフックがそれを使うことだけを確かめ、判定はこのトランザクションの中で school_domain を予約済みのドメイン
+-- school.example を返すものに置き換えてから確かめる（最後の rollback で元に戻る）。
+select is(private.school_domain(), 'g.kumamoto-nct.ac.jp', '学校のドメインは g.kumamoto-nct.ac.jp（D-04）');
+select ok((select prosrc ~ 'private\.school_domain\(\)' from pg_proc where oid = 'private.hook_before_user_created(jsonb)'::regprocedure),
+  'フックは許可するドメインを school_domain から取る');
+select ok(tests.hook('google', 'taro@school.example') ? 'error', '置き換える前は、予約済みのドメイン（school.example）は学校のドメインではないので拒否');
+create or replace function private.school_domain()
+returns text language sql stable set search_path = '' as $$ select 'school.example'::text $$;
 -- 許可（{}）
 select is(tests.hook('google', 'taro@school.example'), '{}'::jsonb, 'Google・学校のドメイン・hd なし（userinfo の経路）は許可');
 select is(tests.hook('google', 'taro@school.example', 'school.example'), '{}'::jsonb, 'Google・学校のドメイン・hd も学校は許可');

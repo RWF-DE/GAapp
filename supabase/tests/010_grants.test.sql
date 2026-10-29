@@ -20,12 +20,12 @@ select set_eq($$ select p.proname::text from pg_proc p
   array['has_role','has_any_role','is_group_member','group_year_id','year_status','can_read_year','has_any_access',
         'is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks','can_write_requests','my_verified_email'],
   'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 13 個だけ（RPC の補助・トリガー関数・verified_email は実行できない）');
--- Before User Created フック（0007、T04）だけ。トリガー関数・招待の受け入れの関数は実行できない
+-- Before User Created フック（0007、T04）と、フックが呼ぶ学校のドメインの関数だけ。トリガー関数・招待の受け入れの関数は実行できない
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
                    and has_function_privilege('supabase_auth_admin', p.oid, 'execute') $$,
-  array['private.hook_before_user_created(jsonb)'],
-  'supabase_auth_admin が実行できる public・private の関数はフックだけ');
+  array['private.hook_before_user_created(jsonb)', 'private.school_domain()'],
+  'supabase_auth_admin が実行できる public・private の関数は、フックとフックが呼ぶ school_domain だけ');
 select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace = 'public'::regnamespace
                      and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')

@@ -16,7 +16,7 @@ if (!hasR8()) {
       throw new Error('fixtures/r8/meta.json がありません');
     });
   } else {
-    it.todo('fixtures/r8 がないため、R8 の不変条件を実行していない');
+    it.todo('fixtures/r8 がないため、R8 の不変条件を実行していない（D-40：R8 の元データは使わず、合成データ r8like で確かめる）');
   }
 }
 
