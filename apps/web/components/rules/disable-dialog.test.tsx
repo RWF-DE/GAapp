@@ -70,4 +70,23 @@ describe('DisableDialog', () => {
     expect((confirmButton() as HTMLButtonElement).disabled).toBe(false);
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it('ほかの人が先に変えた（changed）：入力の元を読み直した行に付け替えても、メモの入力と知らせを残して開いたまま', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onReload = vi.fn();
+    const rebased: RuleDbRow = { ...s04, memo: 'ほかの人のメモ', updated_at: '2026-10-29T01:00:00.000000+00:00' };
+    const onConfirm = vi.fn<(memo: string | null) => Promise<DisableFailure | null>>().mockResolvedValue({ message: '他の人が先に変更しました' });
+    const { rerender } = render(<DisableDialog rule={s04} onClose={onClose} onConfirm={onConfirm} onReload={onReload} />);
+    const memo = screen.getByLabelText('メモ');
+    await user.clear(memo);
+    await user.type(memo, 'わたしのメモ');
+    await user.click(confirmButton());
+    await screen.findByTestId('disable-failure');
+    // 呼ぶ側が rebase の行を渡し直す（作り直さない）
+    rerender(<DisableDialog rule={rebased} onClose={onClose} onConfirm={onConfirm} onReload={onReload} />);
+    expect((screen.getByLabelText('メモ') as HTMLTextAreaElement).value).toBe('わたしのメモ');
+    expect(screen.getByTestId('disable-failure').textContent).toContain('他の人が先に変更しました');
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

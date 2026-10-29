@@ -6,6 +6,7 @@ import { appError, classifyError, messageFor, unknownOutcomeMessage } from '@/li
 import { fixtureToTables } from '@/lib/testing/fixture-rows';
 import {
   DISABLE_NOTICES,
+  disableFailureAction,
   DUPLICATE_CODE_MESSAGE,
   REREAD_FAILED_MESSAGE,
   SAVED_BEFORE_MESSAGE,
@@ -297,5 +298,57 @@ describe('runRuleWrite：一覧の切り替えと「無効にする」のダイ�
     expect(unread.notice).toContain('「無効にする」');
     expect(unread.notice).not.toContain('保存');
     expect(unread.showReload).toBe(true);
+    // 押し直したときの実際の動き（開いたときの版で送り、ほかの人の変更を確かめる）に合わせる。
+    // 「読み直す」はダイアログの入力の元を変えないので、押してからと言わない
+    expect(unread.notice).toBe('ほかの人が先に変えた可能性がありますが、読み直せませんでした。もう一度「無効にする」を押すと、ほかの人の変更を確かめます');
+  });
+});
+
+describe('disableFailureAction：「無効にする」のダイアログが失敗をどう扱うか（判定の結果だけで決める）', () => {
+  const lockConflict = () => appError('conflict', 'lock_conflict', { table: 'rules' });
+  const lockMissing = () => appError('not_found', 'lock_missing', { table: 'rules' });
+  const disable = (send: () => Promise<unknown>, reread: () => Promise<RuleDbRow | null>): RuleWriteRequest => ({
+    mode: 'update',
+    send,
+    reread,
+    input: { enabled: false, memo: 'わたしのメモ' },
+    baseVersion: T0,
+    okMessage: 'ルール S05 を無効にしました',
+    notices: DISABLE_NOTICES,
+  });
+  const msg = (e: unknown) => messageFor(classifyError(e));
+  const other = row({ memo: 'ほかの人のメモ', updated_at: T1 });
+
+  it('changed（止められた後に読み直した行がある）：閉じずに、読み直した行を入力の元にし、今のメモをダイアログの中に知らせる', async () => {
+    const out = failed(await runRuleWrite(disable(() => Promise.reject(lockConflict()), async () => other), deps()));
+    const a = disableFailureAction(out, msg);
+    expect(a.type).toBe('rebase');
+    if (a.type !== 'rebase') return;
+    expect(a.row).toBe(other);
+    expect(a.failure.message).toContain('他の人が先に変更しました');
+    expect(a.failure.message).toContain('ほかの人のメモ');
+    expect(a.failure.message).toContain('もう一度「無効にする」を押すと、入力したメモで上書きします');
+    expect(a.failure.showReload).toBeFalsy();
+  });
+
+  it('changed（応答が届かず、ほかの人が先に変えていた）も同じ（読み直した行を入力の元にする）', async () => {
+    const out = failed(await runRuleWrite(disable(() => Promise.reject(network()), async () => other), deps()));
+    const a = disableFailureAction(out, msg);
+    expect(a.type).toBe('rebase');
+  });
+
+  it('行がなくなっていた（rebase が null）：閉じて toast で知らせる', async () => {
+    for (const send of [() => Promise.reject(lockMissing()), () => Promise.reject(network())]) {
+      const out = failed(await runRuleWrite(disable(send, async () => null), deps()));
+      const a = disableFailureAction(out, msg);
+      expect(a).toEqual({ type: 'close', message: msg(appError('not_found', 'lock_missing', { table: 'rules' })) });
+    }
+  });
+
+  it('止められた後に読み直せなかった（unread）・保存できたか分からない：入力の元を変えずに開いたまま知らせる', async () => {
+    const unread = failed(await runRuleWrite(disable(() => Promise.reject(lockConflict()), () => Promise.reject(network())), deps()));
+    expect(disableFailureAction(unread, msg)).toEqual({ type: 'keep', failure: { message: DISABLE_NOTICES.rereadFailed, showReload: true } });
+    const unknown = failed(await runRuleWrite(disable(() => Promise.reject(network()), async () => row({})), deps()));
+    expect(disableFailureAction(unknown, msg)).toEqual({ type: 'keep', failure: { message: DISABLE_NOTICES.unknownOutcome, showReload: undefined } });
   });
 });

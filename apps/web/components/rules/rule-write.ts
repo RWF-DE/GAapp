@@ -72,11 +72,51 @@ export const TOGGLE_NOTICES: RuleWriteNotices = {
   unknownOutcome: '切り替えられたか分かりません。もう一度切り替えると、確かめてから送ります',
   rereadFailed: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度切り替えてください',
 };
-/** 「無効にする」のダイアログ */
+/**
+ * 「無効にする」のダイアログ。止められた後に読み直せなかったとき（unread）、ダイアログの入力の元（版）は開いたときのまま
+ * （一覧の「読み直す」では変えない）。押し直すと開いたときの版で送り、版が進んでいれば DB が conflict で止め、読み直して決める
+ */
 export const DISABLE_NOTICES: RuleWriteNotices = {
   unknownOutcome: '無効にできたか分かりません。もう一度「無効にする」を押すと、確かめてから送ります',
-  rereadFailed: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度「無効にする」を押してください',
+  rereadFailed: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。もう一度「無効にする」を押すと、ほかの人の変更を確かめます',
 };
+
+/** 無効にするダイアログを開いたままにするときの知らせ（showReload なら「読み直す」も出す） */
+export interface DisableFailure {
+  message: string;
+  showReload?: boolean;
+}
+
+/**
+ * 「無効にする」のダイアログが、runRuleWrite の失敗をどう扱うか（2.6 の (B1)）。判定の結果（SaveOutcome の rebase）だけで決める。
+ * - rebase：changed（読み直した行がある）。閉じずに、読み直した行を入力の元にし（版を進める）、メモの入力を残して、今の行をダイアログの中に知らせる
+ *   （シートと同じ。もう一度押すと、ほかの人の変更を見た後の、その版での意図した上書き）。
+ * - close：行がなくなっていた（rebase が null）。閉じて toast で知らせる。
+ * - keep：それ以外（保存できたか分からない・止められた後に読み直せなかった・forbidden など）。入力の元を変えずに開いたまま知らせる。
+ */
+export type DisableFailureAction =
+  | { type: 'rebase'; row: RuleDbRow; failure: DisableFailure }
+  | { type: 'close'; message: string }
+  | { type: 'keep'; failure: DisableFailure };
+
+/** 知らせに出す今のメモの長さ（メモは 2000 字まで書けるので、知らせでは縮める） */
+const MEMO_PREVIEW = 60;
+
+export function disableFailureAction(out: Extract<SaveOutcome, { ok: false }>, message: (e: unknown) => string): DisableFailureAction {
+  if (out.rebase === null) return { type: 'close', message: message(out.error) };
+  if (out.rebase) {
+    const row = out.rebase;
+    const memo = row.memo ? `「${row.memo.length > MEMO_PREVIEW ? `${row.memo.slice(0, MEMO_PREVIEW)}…` : row.memo}」` : 'なし';
+    return {
+      type: 'rebase',
+      row,
+      failure: {
+        message: `${message(out.error)}（今は${row.enabled ? '有効' : '無効'}、メモ：${memo}）。もう一度「無効にする」を押すと、入力したメモで上書きします`,
+      },
+    };
+  }
+  return { type: 'keep', failure: { message: toggleFailureMessage(out, message), showReload: out.showReload } };
+}
 
 /**
  * 書き込みを送り、エラーを分ける（2.5・2.6 の (B1)）。401 は1回だけセッションを更新して送り直す。

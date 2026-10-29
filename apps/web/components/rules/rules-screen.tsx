@@ -59,9 +59,11 @@ import { cn } from '@/lib/utils';
 import { RuleFormSheet, type RuleSheetTarget } from './rule-form-sheet';
 import {
   DISABLE_NOTICES,
+  disableFailureAction,
   runRuleWrite,
   TOGGLE_NOTICES,
   toggleFailureMessage,
+  type DisableFailure,
   type RuleWriteDeps,
   type RuleWriteNotices,
   type SaveOutcome,
@@ -417,21 +419,21 @@ function RulesView({
           onClose={() => setDisableTarget(null)}
           onReload={onReload}
           onConfirm={async (memo) => {
-            // 開いたときの行（updated_at）で送る。開いた後に一覧が読み直されても版を進めない
-            // （メモの欄は開いたときのメモから作ったので、進めるとほかの人のメモを黙って上書きする）
+            // 入力の元の行（開いたときの行か、changed で読み直した行）の版で送る。一覧の読み直し（「読み直す」・裏の読み直し）では
+            // 版を進めない（メモの欄は開いたときのメモから作ったので、利用者が見ていない版で通すと、ほかの人のメモを黙って上書きする）
             const out = await setEnabled(disableTarget, false, DISABLE_NOTICES, memo);
             if (out.ok) return null;
-            // ほかの人が先に変えた・消した（判定の結果が changed。一覧は読み直した）：閉じて toast で知らせる
-            // （古い行・古いメモで送り続けない。開き直すと今のメモが入る）。
-            // 保存できたか分からない・止められた後に読み直せなかったときなどは、メモの入力を残して開いたまま、ダイアログの中に知らせる
-            // （モーダルの間は toast の「読み直す」を押せないので、読み直すボタンもダイアログの中に出す。もう一度押すとふつうに送る）
-            const message = failureMessage(out);
-            const kind = classifyError(out.error).kind;
-            if (!out.notice && (kind === 'conflict' || kind === 'not_found')) {
-              toast.error(message);
+            // 入力の元の付け替え・ほかの人の変更の知らせは、判定の結果（rebase）からだけ決める（disableFailureAction）
+            const action = disableFailureAction(out, (e) => messageFor(classifyError(e)));
+            if (action.type === 'close') {
+              // 行がなくなっていた：閉じて toast で知らせる（一覧は読み直した）
+              toast.error(action.message);
               return null;
             }
-            return { message, showReload: out.showReload };
+            // changed：読み直した行を入力の元にする。DisableDialog は作り直さないので、メモの入力は残る
+            if (action.type === 'rebase') setDisableTarget(action.row);
+            // モーダルの間は toast の「読み直す」を押せないので、知らせ（と読み直すボタン）はダイアログの中に出す
+            return action.failure;
           }}
         />
       ) : null}
@@ -524,16 +526,13 @@ function EnabledSwitch({ rule, disabled, onChange }: { rule: RuleDbRow; disabled
   );
 }
 
-/** 無効にするダイアログを開いたままにするときの知らせ（showReload なら「読み直す」も出す） */
-export interface DisableFailure {
-  message: string;
-  showReload?: boolean;
-}
+export type { DisableFailure };
 
 /**
  * 無効にする前の確認（理由をメモに残す。削除はしない）。
  * onConfirm が null を返せば閉じ、DisableFailure を返せばメモの入力を残して開いたまま、ダイアログの中に知らせる
  * （モーダルの間は toast の action を押せないので、「読み直す」もダイアログの中に出す）。
+ * changed のとき、呼ぶ側は rule を読み直した行に付け替える（key を変えて作り直さない）。メモの入力と知らせは残る。
  */
 export function DisableDialog({
   rule,

@@ -150,7 +150,7 @@ test.describe('T12 管理者', () => {
     }
   });
 
-  test('T12 無効にするダイアログで止められた後に読み直せなかった（ダイアログの中に知らせと「読み直す」）', async ({ page }) => {
+  test('T12 無効にするダイアログで止められた後に読み直せなかった（ダイアログの中に知らせと「読み直す」）と、押し直して conflict（開いたまま今のメモを知らせる）', async ({ page }) => {
     // supabase-js の GET の再試行で、読み直しの失敗が出るまで数秒かかる
     test.setTimeout(120_000);
     const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
@@ -170,6 +170,11 @@ test.describe('T12 管理者', () => {
       await dlg.getByRole('button', { name: '無効にする' }).click();
       await expect(dlg.getByTestId('disable-failure')).toBeVisible({ timeout: 60_000 });
       await shoot(page, 'T12', 'disable-reread-failed-pc');
+      // 通信が戻ってからもう一度押すと conflict → 読み直して changed：開いたまま今のメモを知らせ、メモの入力は残る
+      await page.unroute('**/rest/v1/rules*');
+      await dlg.getByRole('button', { name: '無効にする' }).click();
+      await expect(dlg.getByTestId('disable-failure')).toContainText('他の人が先に変更しました');
+      await shoot(page, 'T12', 'disable-conflict-pc');
     } finally {
       await s.cleanup();
     }
