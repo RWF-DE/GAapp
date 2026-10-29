@@ -18,7 +18,8 @@ async function hold(page: Page, pattern: string): Promise<() => void> {
   const held = new Promise<void>((r) => (release = r));
   await page.route(pattern, async (route) => {
     await held;
-    await route.continue();
+    // 止めている間に unroute した要求は Playwright が先に通すことがある（「Route is already handled」）。そのときは何もしない
+    await route.continue().catch(() => undefined);
   });
   return release;
 }
@@ -32,7 +33,9 @@ test.describe('T13 管理者', () => {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       const releaseLoad = await hold(page, '**/rest/v1/allocations*');
       await page.goto('/allocation/');
-      await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
+      // アプリ全体の読み込み中（空の画面）ではなく、ナビの出た画面の中の読み込み中を撮る（allocations の応答は止めたまま）
+      await expect(page.getByRole('main').getByRole('status').filter({ hasText: '読み込み中…' })).toBeVisible();
+      await expect(page.getByRole('link', { name: '振り分け', exact: true })).toBeVisible();
       await shoot(page, 'T13', 'allocation-loading-pc');
       releaseLoad();
       await page.unroute('**/rest/v1/allocations*');
@@ -292,7 +295,9 @@ test.describe('T13 キャスター机交換', () => {
       );
       const release = await hold(page, '**/rest/v1/allocations*');
       await page.goto('/swaps/');
-      await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
+      // アプリ全体の読み込み中（空の画面）ではなく、見出しの下の読み込み中を撮る（allocations の応答は止めたまま）
+      await expect(page.getByRole('heading', { level: 1, name: 'キャスター机交換' })).toBeVisible();
+      await expect(page.getByRole('main').getByRole('status').filter({ hasText: '読み込み中…' })).toBeVisible();
       await shoot(page, 'T13', 'swaps-loading-pc');
       release();
       const row10 = page.locator('[data-row-id]').filter({ has: page.getByText('模擬店10', { exact: true }) });
