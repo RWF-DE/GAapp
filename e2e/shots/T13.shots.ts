@@ -378,7 +378,10 @@ test.describe('T13 自団体の振り分け', () => {
       await pinYear(page, SEED_USER_IDS.rep, s.yearId);
       const release = await hold(page, '**/rest/v1/substitution_consents*');
       await page.goto('/my/');
-      await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
+      // アプリ全体の読み込み中（空の画面）ではなく、/my の見出しの下の読み込み中を撮る（consents の応答は止めたまま）
+      await expect(page.getByRole('heading', { level: 1, name: '自団体の振り分け' })).toBeVisible();
+      await expect(page.getByRole('main').getByRole('status').filter({ hasText: '読み込み中…' })).toBeVisible();
+      await expect(page.getByTestId('my-screen')).toHaveCount(0);
       await shoot(page, 'T13', 'my-loading-mobile');
       release();
       const card = page.getByTestId('my-consent');
