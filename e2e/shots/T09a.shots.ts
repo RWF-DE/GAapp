@@ -1,0 +1,116 @@
+// T09a のスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T09a` で notes/T09a/ に撮る（CI では流さない）。
+// 雛形のページ・年度の切り替え・3状態（読み込み中・空・権限なし）とエラーの状態。読み込み中は page.route で応答を止めてから撮る。
+// エラーの帯（ErrorBanner）と下書きを戻す表示（DraftNotice）は、まだ使う画面がないので、一時的な画面で撮って消した（notes/T09a.md）。
+import { expect, test, type Route } from '@playwright/test';
+import { storageStateFor } from '../support/auth';
+import { createScenario } from '../support/db';
+import { MOBILE, PC, shoot } from '../support/shots';
+import { SEED_USER_IDS } from '../support/users';
+import { pinYear } from '../support/year';
+
+test.describe('T09a 管理者', () => {
+  test.use({ storageState: storageStateFor('admin'), viewport: PC });
+
+  test('T09a 雛形のページ（PC）', async ({ page }) => {
+    await page.goto('/settings/');
+    await expect(page.getByText('この画面は準備中です（T09）')).toBeVisible();
+    await shoot(page, 'T09a', 'placeholder-pc');
+  });
+
+  test('T09a 読み込み中（立場の読み込みを止めて撮る）', async ({ page }) => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => (release = r));
+    await page.route('**/rest/v1/year_roles*', async (route: Route) => {
+      await held;
+      await route.continue();
+    });
+    await page.goto('/stocks/');
+    await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
+    await shoot(page, 'T09a', 'state-loading-pc');
+    release();
+    await expect(page.getByText('この画面は準備中です（T10）')).toBeVisible();
+  });
+
+  test('T09a 立場を読めないとき（エラーの状態と「もう一度読み込む」）', async ({ page }) => {
+    // 通信の失敗（abort）は supabase-js が読み直しを試みて長くかかるので、サーバーのエラーを返す
+    await page.route('**/rest/v1/year_roles*', (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ code: 'XX000', message: 'E2E', details: null, hint: null }) }),
+    );
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: 'もう一度読み込む' })).toBeVisible();
+    await shoot(page, 'T09a', 'state-error-pc');
+  });
+});
+
+test.describe('T09a 部員', () => {
+  test.use({ storageState: storageStateFor('staff') });
+
+  test('T09a 雛形のページ（スマホ）・空の状態', async ({ page }) => {
+    await page.setViewportSize(MOBILE);
+    await page.goto('/stock/');
+    await expect(page.getByText('この画面は準備中です（T10）')).toBeVisible();
+    await shoot(page, 'T09a', 'placeholder-mobile');
+    await page.getByRole('button', { name: 'メニューを開く' }).click();
+    await shoot(page, 'T09a', 'nav-staff-mobile');
+  });
+
+  test('T09a 年度の切り替え（選択・最新でない年度の帯）', async ({ page }) => {
+    const s = await createScenario({ status: 'allocating', roles: { staff: true } });
+    try {
+      await page.setViewportSize(PC);
+      await page.goto('/');
+      await shoot(page, 'T09a', 'year-select-pc');
+      await page.getByTestId('year-select').selectOption(s.yearId);
+      await expect(page.getByTestId('not-latest-year-banner')).toBeVisible();
+      await shoot(page, 'T09a', 'year-switched-pc');
+      await page.setViewportSize(MOBILE);
+      await page.reload();
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
+      await shoot(page, 'T09a', 'year-switched-mobile');
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+test.describe('T09a 団体代表', () => {
+  test.use({ storageState: storageStateFor('rep'), viewport: PC });
+
+  test('T09a 権限なし（団体代表がマスタ設定を開く）', async ({ page }) => {
+    await page.goto('/settings/');
+    await expect(page.getByText('権限がありません', { exact: true })).toBeVisible();
+    await shoot(page, 'T09a', 'state-forbidden-pc');
+  });
+});
+
+test.describe('T09a 閲覧のみ', () => {
+  test.use({ storageState: storageStateFor('viewer'), viewport: PC });
+
+  test('T09a 確定した年度の振り分け（Q1。閲覧のみは確定後だけ開ける）', async ({ page }) => {
+    const s = await createScenario({ status: 'confirmed', roles: { viewer: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.viewer, s.yearId);
+      await page.goto('/allocation/');
+      await expect(page.getByText('この画面は準備中です（T13）')).toBeVisible();
+      await shoot(page, 'T09a', 'viewer-confirmed-allocation-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+test('T09a ログイン（アプリ内ブラウザの案内。スマホ）', async ({ browser }) => {
+  const ctx = await browser.newContext({
+    viewport: MOBILE,
+    userAgent:
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Line/14.0.0',
+  });
+  try {
+    const page = await ctx.newPage();
+    await page.goto('/login/');
+    await expect(page.getByTestId('in-app-browser-notice')).toBeVisible();
+    await shoot(page, 'T09a', 'login-in-app-browser-mobile');
+  } finally {
+    await ctx.close();
+  }
+});
