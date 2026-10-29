@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { AppError } from '@/lib/errors';
+import { AppError, isUnknownOutcome } from '@/lib/errors';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
-import { fixedRowsFrom, opsBeforeUnusable, setRoomUsable } from './room-years';
+import { isLockRejection, settleLockedWrite } from './locked-save';
+import { fixedRowsFrom, opsBeforeUnusable, readRoomYear, roomYearMatches, setRoomUsable } from './room-years';
 
 const Y = '11111111-1111-4111-8111-111111111111';
 const R = '22222222-2222-4222-8222-222222222222';
@@ -94,6 +95,110 @@ describe('setRoomUsable', () => {
     await expect(setRoomUsable('x', R, null, false, null, client)).rejects.toBeInstanceOf(AppError);
     await expect(setRoomUsable(Y, R, '', false, null, client)).rejects.toBeInstanceOf(AppError);
     expect(issued).toHaveLength(0);
+  });
+});
+
+const NETWORK: FakeResult = { data: null, error: { code: '', message: 'TypeError: Failed to fetch' }, status: 0 };
+
+/**
+ * 画面の使い方（2.6 の (B1)）：setRoomUsable が応答なし・conflict・not_found で失敗したら、readRoomYear で読み直して
+ * settleLockedWrite で決める。読み直しの応答は reread で順に返す（setRoomUsable の中の 0 行の読み直しも select だけ）。
+ */
+async function saveRoomUsable(write: FakeResult, rereads: FakeResult[], base: string | null, usable: boolean, note: string | null) {
+  const queue = [...rereads];
+  const { client, issued } = createFakeSupabase((call: FakeCall) => {
+    const isWrite = call.ops.some((o) => o.op === 'update' || o.op === 'insert' || o.op === 'upsert');
+    if (isWrite) return write;
+    const next = queue.shift();
+    if (!next) throw new Error('読み直しが多すぎる');
+    return next;
+  });
+  try {
+    await setRoomUsable(Y, R, base, usable, note, client);
+    return { result: 'ok' as const, issued };
+  } catch (e) {
+    if (!isUnknownOutcome(e) && !isLockRejection(e)) return { result: 'thrown' as const, issued };
+    const outcome = await settleLockedWrite({
+      reread: () => readRoomYear(Y, R, client),
+      matches: (row) => roomYearMatches(row, usable, note),
+      baseVersion: base,
+      versionOf: (row) => row.updated_at,
+    });
+    return { result: outcome, unknown: isUnknownOutcome(e), issued };
+  }
+}
+
+describe('setRoomUsable の応答が届かなかったとき・止められたとき（2.6 の (B1)）', () => {
+  const row = (usable: boolean, note: string | null, updated_at: string) => ({ year_id: Y, room_id: R, usable, note, updated_at });
+
+  it('readRoomYear は (year_id, room_id) で1行読む。なければ null、失敗は AppError', async () => {
+    const { client, issued } = fake({ data: null }, { data: row(false, null, T1) });
+    expect(await readRoomYear(Y, R, client)).toEqual(row(false, null, T1));
+    expect(issued[0]!.ops.map((o) => o.op)).toEqual(['select', 'match', 'maybeSingle']);
+    expect(opArgs(issued[0]!, 'match')).toEqual([[{ year_id: Y, room_id: R }]]);
+    expect(await readRoomYear(Y, R, fake({ data: null }, { data: null }).client)).toBeNull();
+    await expect(readRoomYear(Y, R, fake({ data: null }, NETWORK).client)).rejects.toBeInstanceOf(AppError);
+  });
+
+  it('roomYearMatches は note を setRoomUsable と同じにそろえて比べる（前後の空白・空は null）', () => {
+    expect(roomYearMatches({ usable: false, note: '工事' }, false, '  工事 ')).toBe(true);
+    expect(roomYearMatches({ usable: false, note: null }, false, '   ')).toBe(true);
+    expect(roomYearMatches({ usable: true, note: '工事' }, false, '工事')).toBe(false);
+    expect(roomYearMatches({ usable: false, note: '別' }, false, '工事')).toBe(false);
+  });
+
+  it('更新の応答が届かず、読み直すと書いた値 → saved（「保存されていました」）', async () => {
+    const r = await saveRoomUsable(NETWORK, [{ data: row(false, '工事', T1) }], T0, false, ' 工事 ');
+    expect(r).toMatchObject({ result: 'saved', unknown: true });
+    // 書き込み1回と読み直し1回だけ（自動で送り直さない）
+    expect(r.issued.map((c) => c.ops[0]!.op)).toEqual(['update', 'select']);
+  });
+
+  it('更新の応答が届かず、版が入力の元のまま → not-saved（入力を残して unknownOutcomeMessage。次の保存はふつうに送る）', async () => {
+    expect(await saveRoomUsable(NETWORK, [{ data: row(true, null, T0) }], T0, false, null)).toMatchObject({
+      result: 'not-saved',
+      unknown: true,
+    });
+  });
+
+  it('応答が届かず、読み直しも通信できない → unread', async () => {
+    expect(await saveRoomUsable(NETWORK, [NETWORK], T0, false, null)).toMatchObject({ result: 'unread', unknown: true });
+  });
+
+  it('前の送信が後から通っていて、次の保存が conflict → 読み直すと書いた値なので saved', async () => {
+    // update の 0 行 → setRoomUsable の中の読み直し（updated_at が違う → conflict）→ readRoomYear
+    const r = await saveRoomUsable({ data: null }, [{ data: { updated_at: T1 } }, { data: row(false, '工事', T1) }], T0, false, '工事');
+    expect(r).toMatchObject({ result: 'saved', unknown: false });
+  });
+
+  it('conflict で、読み直すとほかの人の値 → changed（今までの conflict の扱い）', async () => {
+    const r = await saveRoomUsable({ data: null }, [{ data: { updated_at: T1 } }, { data: row(true, '戻した', T1) }], T0, false, '工事');
+    expect(r).toMatchObject({ result: 'changed', unknown: false });
+  });
+
+  it('not_found（行がなくなった）→ changed', async () => {
+    const r = await saveRoomUsable({ data: null }, [{ data: null }, { data: null }], T0, false, null);
+    expect(r).toMatchObject({ result: 'changed', unknown: false });
+  });
+
+  it('insert が 23505 で、読み直すと書いた値（前の insert が通っていた）→ saved', async () => {
+    const dup: FakeResult = { error: { code: '23505', message: 'duplicate key value violates unique constraint' }, status: 409 };
+    expect(await saveRoomUsable(dup, [{ data: row(false, null, T1) }], null, false, null)).toMatchObject({ result: 'saved' });
+    expect(await saveRoomUsable(dup, [{ data: row(true, null, T1) }], null, false, null)).toMatchObject({ result: 'changed' });
+  });
+
+  it('insert の応答が届かず、行がない → not-saved。conflict の後に読み直せない → unread', async () => {
+    expect(await saveRoomUsable(NETWORK, [{ data: null }], null, false, null)).toMatchObject({ result: 'not-saved', unknown: true });
+    expect(await saveRoomUsable({ data: null }, [{ data: { updated_at: T1 } }, NETWORK], T0, false, null)).toMatchObject({
+      result: 'unread',
+      unknown: false,
+    });
+  });
+
+  it('forbidden（RLS）は読み直さず 2.5 の表のとおり', async () => {
+    const r = await saveRoomUsable({ data: null }, [{ data: { updated_at: T0 } }], T0, false, null);
+    expect(r.result).toBe('thrown');
+    expect(r.issued).toHaveLength(2);
   });
 });
 
