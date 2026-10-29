@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from './support/auth';
 import { createScenario, createUser, sql, type TestUser } from './support/db';
 import { S05_GROUP, SMALL } from './support/datasets';
@@ -134,6 +134,42 @@ test.describe('T09 マスタ設定（管理者）', () => {
         { name: 'E2E企業1', display_name: '企業の企画', aliases: [], is_food: false, location: null },
         { name: 'E2E取込1', display_name: '取込の企画', aliases: ['甲', '乙'], is_food: true, location: SMALL.rooms.class1 },
       ]);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09 保存中に通信が切れても、フォームと入力は残り、年度の読み直しの失敗は帯で知らせ、通信が戻れば保存できて帯も消える', async ({ page }) => {
+    // 通信の失敗は supabase-js（GET を3回まで間を空けて再試行）と React Query（1回）が読み直すので、帯が出るまで15秒ほどかかる
+    test.setTimeout(90_000);
+    const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=groups');
+      await expect(rowOf(page, SMALL.groups.stall)).toBeVisible();
+      await page.getByTestId('group-add').click();
+      const form = page.getByTestId('group-form');
+      await form.getByLabel('団体名').fill('E2E通信切れ');
+
+      // 通信が切れた：保存も、保存の失敗の後の年度の行の読み直し（再試行を含む）も届かない
+      const offline = (route: Route) => route.abort('internetdisconnected');
+      await page.route('**/rest/v1/**', offline);
+      await form.getByRole('button', { name: '保存' }).click();
+      const banner = page.getByTestId('settings-reload-error');
+      await expect(banner).toBeVisible({ timeout: 45_000 });
+      // 画面は差し替わらず、フォームと入力は残る
+      await expect(page.getByRole('button', { name: 'もう一度読み込む' })).toHaveCount(0);
+      await expect(form).toBeVisible();
+      await expect(form.getByLabel('団体名')).toHaveValue('E2E通信切れ');
+      await expect(page.getByTestId('settings-tab-groups')).toBeVisible();
+
+      // 通信が戻れば、残った入力のまま保存できる。保存の後は年度のクエリを読み直すので帯も消える
+      // （フォームのシートはモーダルなので、開いている間は帯の「もう一度」は押せない）
+      await page.unroute('**/rest/v1/**', offline);
+      await form.getByRole('button', { name: '保存' }).click();
+      await expect(page.getByText('「E2E通信切れ」を足しました')).toBeVisible();
+      await expect(form).toHaveCount(0);
+      await expect(banner).toHaveCount(0);
     } finally {
       await s.cleanup();
     }
@@ -298,7 +334,7 @@ test.describe('T09 マスタ設定（開いている年度の管理者が、終�
 });
 
 test.describe('T09 場所（開いている年度が2つ以上）', () => {
-  test('T09 場所の削除：表示中でない終了していない年度の有効なルールが参照していれば削除できず、ルールを読めない年度は知らせる', async ({ page }) => {
+  test('T09 場所の削除：表示中でない終了していない年度の有効なルールが参照しているか、ルールを読めない終了していない年度があれば削除できない', async ({ page }) => {
     const u = await createUser({ purpose: 'rooms-refs' });
     // 表示する年度（ルールなし）、部員の年度（S05 が 1-1 を運び元にする）、団体代表だけの年度（ルールを読めない）、終了した年度（見ない）
     const shown = await createScenario({ status: 'requesting', dataset: 'small', rules: 'none', grants: [{ userId: u.id, role: 'admin' }] });
@@ -321,6 +357,17 @@ test.describe('T09 場所（開いている年度が2つ以上）', () => {
       await expect(dialog.getByRole('button', { name: '削除する' })).toBeDisabled();
       await dialog.getByRole('button', { name: 'やめる' }).click();
       expect(await sql("select id from public.rooms where name = '1-1'")).toHaveLength(1);
+
+      // 読める年度のルールが参照していない場所でも、ルールを読めない終了していない年度があれば削除を押せない
+      // （年度をまたぐ表なので押さずに確かめるだけ）
+      await rowOf(page, SMALL.rooms.storageA).getByRole('button', { name: '削除' }).click();
+      const unreadable = dialog.getByTestId('rule-refs-unreadable');
+      await expect(unreadable).toContainText(repOnly.label);
+      await expect(unreadable).toContainText('終了していないすべての年度のルールを読める管理者');
+      await expect(dialog.getByText('この場所を参照している有効なルールがある')).toHaveCount(0);
+      await expect(dialog.getByRole('button', { name: '削除する' })).toBeDisabled();
+      await dialog.getByRole('button', { name: 'やめる' }).click();
+      expect(await sql('select id from public.rooms where name = $1', [SMALL.rooms.storageA])).toHaveLength(1);
     } finally {
       await Promise.all([shown.cleanup(), other.cleanup(), repOnly.cleanup(), closed.cleanup()]);
       await u.cleanup();

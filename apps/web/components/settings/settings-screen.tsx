@@ -3,6 +3,7 @@
 // マスタ設定 /settings（画面の設計 3.2。T09）。admin だけ（ページの RequireAudience）。タブは `?tab=`（既定 years）。
 // closed の年度では、ロールを外す・団体代表を外す・招待の取り消し・新しい年度の作成以外は読み取り専用。
 import { useSearchParams } from 'next/navigation';
+import { ErrorBanner } from '@/components/common/error-banner';
 import { PageHeader } from '@/components/common/page-header';
 import { ErrorState, LoadingState, ReadOnlyNotice } from '@/components/states';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -39,7 +40,9 @@ export function SettingsScreen() {
   const yearQ = useYearRow(m?.year?.id);
 
   if (!m?.year) return <LoadingState />;
-  if (yearQ.isError) {
+  // 年度の行がまだないときだけ ErrorState。あるときの読み直し（書き込みの失敗の後など）の失敗は、タブ（開いているフォーム・
+  // ダイアログと入力を含む）を外さずに、上の帯で知らせる（2.5・2.6。ダッシュボード・QueryState と同じ）
+  if (yearQ.isError && !yearQ.data) {
     return <ErrorState message={messageFor(classifyError(yearQ.error))} onRetry={() => void yearQ.refetch()} />;
   }
   if (!yearQ.data) return <LoadingState />;
@@ -55,6 +58,11 @@ export function SettingsScreen() {
   return (
     <SettingsContext.Provider value={ctx}>
       <PageHeader title="マスタ設定" />
+      {yearQ.isError ? (
+        <div data-testid="settings-reload-error" className="mb-4">
+          <ErrorBanner error={yearQ.error} onRetry={() => void yearQ.refetch()} />
+        </div>
+      ) : null}
       {year.status === 'closed' ? (
         <ReadOnlyNotice className="mb-4">
           終了した年度のため、読み取り専用です（ロールを外す・団体代表を外す・招待の取り消し・新しい年度の作成はできます）

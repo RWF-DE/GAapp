@@ -123,6 +123,37 @@ test.describe('T09 マスタ設定（管理者）', () => {
     }
   });
 
+  test('T09 マスタ設定：保存中に通信が切れたとき（フォームは残して帯で知らせる）とルールを読めない年度がある場所の削除', async ({ page }) => {
+    test.setTimeout(90_000);
+    const s = await createScenario({ status: 'requesting', dataset: 'small', rules: 'none', roles: { admin: true } });
+    // 閲覧のみの終了していない年度（ルールを読めない）
+    const viewerOnly = await createScenario({ status: 'preparing', dataset: 'small', grants: [{ userId: SEED_USER_IDS.admin, role: 'viewer' }] });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=rooms');
+      await page
+        .getByRole('row')
+        .filter({ has: page.getByRole('cell', { name: SMALL.rooms.storageA, exact: true }) })
+        .getByRole('button', { name: '削除' })
+        .click();
+      await expect(page.getByTestId('rule-refs-unreadable')).toContainText(viewerOnly.label);
+      await shoot(page, 'T09', 'settings-room-delete-unreadable-pc');
+      await page.getByRole('alertdialog').getByRole('button', { name: 'やめる' }).click();
+
+      await page.getByTestId('settings-tab-groups').click();
+      await page.getByTestId('group-add').click();
+      const form = page.getByTestId('group-form');
+      await form.getByLabel('団体名').fill('通信が切れた団体');
+      await page.route('**/rest/v1/**', (route: Route) => route.abort('internetdisconnected'));
+      await form.getByRole('button', { name: '保存' }).click();
+      await expect(page.getByTestId('settings-reload-error')).toBeVisible({ timeout: 45_000 });
+      await shoot(page, 'T09', 'settings-reload-error-pc');
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await Promise.all([s.cleanup(), viewerOnly.cleanup()]);
+    }
+  });
+
   test('T09 マスタ設定の空と終了した年度（読み取り専用）', async ({ page }) => {
     const s = await createScenario({ status: 'closed', dataset: 'empty', roles: { admin: true } });
     try {

@@ -1,4 +1,5 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from './helpers';
 import { storageStateFor } from './support/auth';
 import { createScenario, createUser, sql, type TestUser } from './support/db';
 import { SMALL } from './support/datasets';
@@ -25,6 +26,8 @@ async function openDashboard(page: Page): Promise<void> {
 }
 
 const statusOf = async (yearId: string) => (await sql<{ status: string }>('select status from public.years where id = $1', [yearId]))[0]!.status;
+const versionOf = async (yearId: string) =>
+  (await sql<{ v: number }>('select allocation_version as v from public.years where id = $1', [yearId]))[0]!.v;
 const actions = (page: Page) => page.getByTestId('year-status-actions');
 const dialog = (page: Page) => page.getByRole('dialog');
 
@@ -95,7 +98,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
     }
   });
 
-  test('T09 確定：別の画面で確定と解除をされた後に確定を押すと検証をやり直し、もう一度押すと確定する。確定の解除は理由が必須', async ({ page, browser }) => {
+  test('T09 確定：別の画面で在庫が変わると検証をやり直し、もう一度押すと確定する。確定の解除は理由が必須', async ({ page, browser }) => {
     const s = await createScenario({ status: 'allocating', dataset: 'synthetic', allocations: 'reference', roles: { admin: true } });
     const other = await openSecondAdmin(browser, s.yearId);
     try {
@@ -104,25 +107,21 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await expect(page.getByTestId('dashboard-validation-counts')).toContainText('0error');
       await openDashboard(other);
       await expect(other.getByTestId('dashboard-validation-counts')).toContainText('0error');
-      const [{ v: before }] = (await sql<{ v: number }>('select allocation_version as v from public.years where id = $1', [s.yearId])) as [
-        { v: number },
-      ];
+      const before = await versionOf(s.yearId);
 
-      // もう1つの画面（別の管理者のブラウザ）で、画面から確定して確定を解除する（状態が2回変わり、版が進む）。
-      // こちらの画面は読み直していないので、見張りが気づく前に確定を押す
-      await actions(other).getByRole('button', { name: '確定', exact: true }).click();
-      await confirmInDialog(other, '別の画面での確定');
-      await expect(other.getByTestId('home-year')).toHaveText(`${s.label}（確定）`);
-      await actions(other).getByRole('button', { name: '確定を解除' }).click();
-      await dialog(other).getByLabel(/理由/).fill('別の画面での確定の解除');
-      await dialog(other).getByRole('button', { name: '確定を解除' }).click();
-      await expect(other.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
-      expect(await statusOf(s.yearId)).toBe('allocating');
-      const [{ v: after }] = (await sql<{ v: number }>('select allocation_version as v from public.years where id = $1', [s.yearId])) as [
-        { v: number },
-      ];
-      expect(after).toBeGreaterThan(before);
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      // もう1つの画面（別の管理者のブラウザ）で在庫を1つ増やす（在庫入力の画面は T10 なので、そのブラウザのセッションで
+      // REST API を呼ぶ。版が進む）。こちらの画面は読み直していないので、見張りが気づく前に確定を押す
+      const [st] = await sql<{ room_id: string; item_id: string; count: number }>(
+        'select room_id, item_id, count from public.stocks where year_id = $1 order by room_id, item_id limit 1',
+        [s.yearId],
+      );
+      await updateStockFrom(other, { yearId: s.yearId, roomId: st!.room_id, itemId: st!.item_id, count: st!.count + 1 });
+      const [{ count: after }] = (await sql<{ count: number }>(
+        'select count from public.stocks where year_id = $1 and room_id = $2 and item_id = $3',
+        [s.yearId, st!.room_id, st!.item_id],
+      )) as [{ count: number }];
+      expect(after).toBe(st!.count + 1);
+      expect(await versionOf(s.yearId)).toBeGreaterThan(before);
 
       const confirm = actions(page).getByRole('button', { name: '確定', exact: true });
       await expect(confirm).toBeEnabled();
@@ -150,6 +149,45 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await dialog(page).getByRole('button', { name: '確定を解除' }).click();
       await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
       expect(await statusOf(s.yearId)).toBe('allocating');
+    } finally {
+      await other.context().close();
+      await s.cleanup();
+    }
+  });
+
+  test('T09 確定：別の画面で確定と解除をされた後に確定を押しても検証をやり直す', async ({ page, browser }) => {
+    const s = await createScenario({ status: 'allocating', dataset: 'synthetic', allocations: 'reference', roles: { admin: true } });
+    const other = await openSecondAdmin(browser, s.yearId);
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await openDashboard(page);
+      await expect(page.getByTestId('dashboard-validation-counts')).toContainText('0error');
+      await openDashboard(other);
+      await expect(other.getByTestId('dashboard-validation-counts')).toContainText('0error');
+      const before = await versionOf(s.yearId);
+
+      // もう1つの画面で、画面から確定して確定を解除する（状態が2回変わり、版が進む）
+      await actions(other).getByRole('button', { name: '確定', exact: true }).click();
+      await confirmInDialog(other, '別の画面での確定');
+      await expect(other.getByTestId('home-year')).toHaveText(`${s.label}（確定）`);
+      await actions(other).getByRole('button', { name: '確定を解除' }).click();
+      await dialog(other).getByLabel(/理由/).fill('別の画面での確定の解除');
+      await dialog(other).getByRole('button', { name: '確定を解除' }).click();
+      await expect(other.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      expect(await statusOf(s.yearId)).toBe('allocating');
+      expect(await versionOf(s.yearId)).toBeGreaterThan(before);
+
+      const confirm = actions(page).getByRole('button', { name: '確定', exact: true });
+      await expect(confirm).toBeEnabled();
+      await confirm.click();
+      await confirmInDialog(page, '在庫の確認が済んだため');
+      await expect(page.getByTestId('error-banner')).toContainText('確定の前に入力が変わったので、検証をやり直しました');
+      expect(await statusOf(s.yearId)).toBe('allocating');
+      await expect(confirm).toBeEnabled();
+      await confirm.click();
+      await confirmInDialog(page, '在庫の確認が済んだため');
+      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（確定）`);
+      expect(await statusOf(s.yearId)).toBe('confirmed');
     } finally {
       await other.context().close();
       await s.cleanup();
@@ -213,6 +251,32 @@ async function openSecondAdmin(browser: Browser, yearId: string): Promise<Page> 
   const p = await ctx.newPage();
   await pinYear(p, SEED_USER_IDS.admin, yearId);
   return p;
+}
+
+/**
+ * そのページ（ブラウザのコンテキスト）のログインのセッションで、そのページから在庫の行の数を REST API で変える（在庫入力の画面〔T10〕の代わり。
+ * 書き込みは画面と同じ RLS・トリガーを通る）。
+ */
+async function updateStockFrom(p: Page, row: { yearId: string; roomId: string; itemId: string; count: number }): Promise<void> {
+  // そのコンテキストで supabase-js が localStorage に保存しているセッション（画面を開いた後なので、期限切れなら更新済み）
+  const state = await p.context().storageState();
+  const entry = state.origins.flatMap((o) => o.localStorage).find((e) => /^sb-.+-auth-token$/.test(e.name));
+  const token = entry ? (JSON.parse(entry.value) as { access_token?: string }).access_token : undefined;
+  expect(token, '2つ目の画面のログインのセッション').toBeTruthy();
+  const result = await p.evaluate(
+    async ({ url, key, token, row }) => {
+      const q = `year_id=eq.${row.yearId}&room_id=eq.${row.roomId}&item_id=eq.${row.itemId}`;
+      const res = await fetch(`${url}/rest/v1/stocks?${q}`, {
+        method: 'PATCH',
+        headers: { apikey: key, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
+        body: JSON.stringify({ count: row.count }),
+      });
+      const body: unknown = await res.json();
+      return { status: res.status, rows: Array.isArray(body) ? body.length : 0 };
+    },
+    { url: SUPABASE_URL, key: SUPABASE_PUBLISHABLE_KEY, token: token!, row },
+  );
+  expect(result).toEqual({ status: 200, rows: 1 });
 }
 
 /** 確定のダイアログ：理由を入れ、warning があれば確認のチェックを入れて押す */

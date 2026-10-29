@@ -43,7 +43,7 @@ export function RuleRefsNotice({ refs, what }: { refs: RuleRefs | null; what: '�
 /**
  * 場所の削除の確認に出す参照（場所は全年度で共有なので、終了していない年度のうち読める年度のルールをすべて見る）。
  * 表示中の年度のルールはルール画面へのリンク、ほかの年度はコードと年度名だけ（その年度を開いて直す）。
- * ルールを読めない年度（団体代表・閲覧のみの年度）があれば、削除の前に知らせる。
+ * ルールを読めない年度（団体代表・閲覧のみの年度）があれば、削除できない理由として知らせる（削除は呼ぶ側で押せなくする）。
  */
 export function RoomRuleRefsNotice({ refs, currentYearId }: { refs: RoomRuleRefs | null; currentYearId: string }) {
   if (refs === null) return <p className="text-sm text-muted-foreground">ルールの参照を確かめています…</p>;
@@ -90,8 +90,9 @@ export function RoomRuleRefsNotice({ refs, currentYearId }: { refs: RoomRuleRefs
       ) : null}
       {refs.unreadable.length > 0 ? (
         <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900" data-testid="rule-refs-unreadable">
-          ルールを読めない終了していない年度があります（{refs.unreadable.map((y) => y.label).join('、')}。その年度の総務管理者・総務部員でないため）。
-          削除する前に、その年度の管理者に、この場所を参照する有効なルールがないかを確かめてください。
+          {`ルールを読めない終了していない年度があるので、削除できません（${refs.unreadable.map((y) => y.label).join('、')}。`}
+          {'その年度の総務管理者・総務部員でないため、この場所を参照する有効なルールがないかを確かめられません）。'}
+          {'削除は、終了していないすべての年度のルールを読める管理者が行ってください。'}
         </p>
       ) : null}
     </div>
@@ -100,7 +101,8 @@ export function RoomRuleRefsNotice({ refs, currentYearId }: { refs: RoomRuleRefs
 
 /**
  * 団体・場所の削除の確認（3.2）。団体は表示中の年度の、場所は終了していない年度のうち読める年度のルールを読み、
- * 参照している有効なルールがあれば削除を押せなくする。
+ * 参照している有効なルールがあれば削除を押せなくする。場所は、ルールを読めない終了していない年度があるときも押せなくする
+ * （ロールのない年度は画面から見えないので、DB 側の確かめ〔rooms の削除のトリガー〕は別のチケット。notes/T09.md）。
  * 「削除しました」は onConfirm（deleteChecked）が行を返したときだけ呼ぶ側が出す。
  */
 export function DeleteWithRefsDialog({
@@ -144,7 +146,10 @@ export function DeleteWithRefsDialog({
     'roomId' in target && openRulesQ.data && !openRulesQ.isFetching
       ? roomRefsAcrossYears(openRulesQ.data.rules, openRulesQ.data.scope, target.roomId)
       : null;
-  const blocked = isRoom ? roomRefs === null || roomRefs.enabledCount > 0 : groupRefs === null || groupRefs.enabled.length > 0;
+  // 場所は、ルールを読めない終了していない年度が1つでもあれば押せない（その年度のルールが参照していないかを確かめられないため）
+  const blocked = isRoom
+    ? roomRefs === null || roomRefs.enabledCount > 0 || roomRefs.unreadable.length > 0
+    : groupRefs === null || groupRefs.enabled.length > 0;
   return (
     <ConfirmDialog
       open={open}
