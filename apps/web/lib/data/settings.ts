@@ -16,7 +16,8 @@ import {
   type YearRow,
 } from '@/lib/db/types';
 import { updateWithLock } from '@/lib/db/update-with-lock';
-import { appError, toAppError } from '@/lib/errors';
+import { AppError, appError, isUnknownOutcome, toAppError } from '@/lib/errors';
+import { isLockRejection, settleLockedWrite } from '@/lib/data/locked-save';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { callRpc } from '@/lib/rpc';
 import type { AppRole, YearSummary } from '@/lib/auth/membership';
@@ -474,6 +475,153 @@ export const updateDistance = (row: DistanceOverrideRow, cost: number, client: A
   updateWithLock(client, 'distance_overrides', { building_a: row.building_a, building_b: row.building_b }, row.updated_at, { cost });
 export const deleteDistance = (row: DistanceOverrideRow, client: AppSupabaseClient = getSupabase()) =>
   deleteChecked(client, 'distance_overrides', { building_a: row.building_a, building_b: row.building_b }, row.updated_at);
+
+// ---- 楽観ロックの更新・一意のキーの insert の読み直し（2.6 の (B1)） ----
+// 応答が届かなかったとき（isUnknownOutcome）と、conflict・not_found・23505（isLockRejection）のときに、対象の行
+// （更新は主キー、insert は一意のキー）を1回読み直し、settleLockedWrite（lib/data/locked-save.ts。T09a）で決める。
+// 確かめるためだけの状態は持たない（次の保存はふつうに送る。前の送信が通っていれば DB が conflict・23505 で止める）。
+
+/** 1行を読む（なければ null。失敗は AppError で投げる） */
+async function readOne<T>(
+  client: AppSupabaseClient,
+  table: 'rooms' | 'items' | 'groups' | 'distance_overrides',
+  columns: string,
+  match: Record<string, string>,
+): Promise<T | null> {
+  const c = client as unknown as {
+    from(t: string): {
+      select(c: string): { match(m: Record<string, string>): { maybeSingle(): PromiseLike<{ data: unknown; error: unknown; status?: number }> } };
+    };
+  };
+  const res = await c.from(table).select(columns).match(match).maybeSingle();
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data as T | null) ?? null;
+}
+
+/** 場所を id で読む（更新の読み直し） */
+export const readRoom = (id: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<RoomRow>(client, 'rooms', COLUMNS.rooms, { id });
+/** 場所を一意のキー（name）で読む（insert の読み直し） */
+export const readRoomByName = (name: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<RoomRow>(client, 'rooms', COLUMNS.rooms, { name });
+/** 品目を id で読む */
+export const readItem = (id: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<ItemRow>(client, 'items', COLUMNS.items, { id });
+/** 品目を一意のキー（code）で読む */
+export const readItemByCode = (code: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<ItemRow>(client, 'items', COLUMNS.items, { code });
+/** 団体を id で読む */
+export const readGroup = (id: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<GroupRow>(client, 'groups', COLUMNS.groups, { id });
+/** 団体を一意のキー（year_id, name）で読む */
+export const readGroupByName = (yearId: string, name: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<GroupRow>(client, 'groups', COLUMNS.groups, { year_id: yearId, name });
+
+/** 2つの文字列を C の照合順序（コードポイントの順。UTF-8 のバイト順と同じ）で比べる */
+function codePointCompare(a: string, b: string): number {
+  const x = Array.from(a, (ch) => ch.codePointAt(0)!);
+  const y = Array.from(b, (ch) => ch.codePointAt(0)!);
+  for (let k = 0; k < Math.min(x.length, y.length); k += 1) if (x[k] !== y[k]) return x[k]! - y[k]!;
+  return x.length - y.length;
+}
+
+/**
+ * 建物の組を DB と同じ向きにする（トリガー normalize_pair：C の照合順序で小さい方を building_a に。D-15）。
+ * insert の読み直しは、この向きの主キーで読む。純粋関数。
+ */
+export function distancePair(a: string, b: string): { building_a: string; building_b: string } {
+  return codePointCompare(a, b) <= 0 ? { building_a: a, building_b: b } : { building_a: b, building_b: a };
+}
+
+/** 距離の上書きを建物の組で読む（向きは distancePair でそろえる。更新・insert の読み直し） */
+export const readDistance = (a: string, b: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<DistanceOverrideRow>(client, 'distance_overrides', COLUMNS.distance_overrides, distancePair(a, b));
+
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, k) => sameValue(x, b[k]));
+  }
+  // 送らなかった（undefined）と null は同じ（DB では null）
+  return (a ?? null) === (b ?? null);
+}
+
+/**
+ * 読み直した行の、書いた列（written のキー）が書いた値と同じか（settleLockedWrite の matches）。
+ * written は送った値そのもの（フォームの zod で前後の空白を除き、空なら null にした後の値。DB はそのまま保存する）なので、
+ * 書いたときと同じ正規化で比べることになる。配列（別名・申請できる区分）は順も含めて比べる。undefined の列は書いていない
+ * ので比べない。純粋関数。
+ */
+export function matchesWritten(row: object, written: object): boolean {
+  const r = row as Record<string, unknown>;
+  return Object.entries(written).every(([k, v]) => v === undefined || sameValue(r[k], v));
+}
+
+/** runLockedWrite の結果 */
+export type LockedWriteResult<Row> =
+  /** 保存できた（earlier：応答が届かなかった・止められたが、読み直すと入力のとおりだった＝「保存されていました」） */
+  | { kind: 'done'; earlier: boolean }
+  /**
+   * 今までの conflict の扱い（読み直した行を入力の元にして入力を残す）。row は読み直した行（なくなっていれば null）、
+   * conflict は文言に使うエラー（止められたときはそのエラー、応答が届かなかったときは作ったもの）
+   */
+  | { kind: 'changed'; row: Row | null; conflict: AppError }
+  /** 応答が届かず、保存されたか決められない（入力を残して unknownOutcomeMessage()） */
+  | { kind: 'unknown'; error: unknown }
+  /** 止められたが、読み直せなかった（入力を残し、「読み直せませんでした」と読み直すボタン） */
+  | { kind: 'unread'; error: unknown }
+  /** それ以外の失敗（forbidden・input など。2.5 の表のとおり） */
+  | { kind: 'failed'; error: unknown };
+
+export interface LockedWriteCall<Row extends { updated_at: string }> {
+  /** 書き込み（updateWithLock・insert・setRoomUsable） */
+  write: () => Promise<unknown>;
+  /** 対象の行を1行読む（更新は主キー、insert は一意のキー。なければ null。失敗は投げる） */
+  reread: () => Promise<Row | null>;
+  /** 読み直した行の書いた列が入力と同じか */
+  matches: (row: Row) => boolean;
+  /** 入力の元の updated_at（insert は null） */
+  baseVersion: string | null;
+  /**
+   * 一意のキーの insert か（応答が届かず、読み直すと別の値の行ができていたときの文言を 23505 の「同じものがすでにあります」に
+   * する）。偽なら更新の文言（「他の人が先に変更しました」、行がなくなっていれば「すでに消えていました」）
+   */
+  insert?: boolean;
+}
+
+/**
+ * 楽観ロックの更新・一意のキーの insert を送り、失敗したら 2.6 の (B1) で決める。
+ * 1. 成功 → done。
+ * 2. isUnknownOutcome でも isLockRejection でもない失敗 → failed。
+ * 3. 対象の行を読み直して settleLockedWrite：saved → done（earlier）。応答が届かなかった後の not-saved・unread → unknown。
+ *    止められた後の unread → unread。それ以外（changed と、止められた後の not-saved）→ changed。
+ * 画面の状態には触らない（呼ぶ側が文言・入力の元の付け替え・閉じるを決める）。
+ */
+export async function runLockedWrite<Row extends { updated_at: string }>(call: LockedWriteCall<Row>): Promise<LockedWriteResult<Row>> {
+  try {
+    await call.write();
+    return { kind: 'done', earlier: false };
+  } catch (e) {
+    const unknown = isUnknownOutcome(e);
+    if (!unknown && !isLockRejection(e)) return { kind: 'failed', error: e };
+    let fresh: Row | null = null;
+    const outcome = await settleLockedWrite<Row>({
+      reread: async () => (fresh = await call.reread()),
+      matches: call.matches,
+      baseVersion: call.baseVersion,
+      versionOf: (row) => row.updated_at,
+    });
+    if (outcome === 'saved') return { kind: 'done', earlier: true };
+    if (unknown && (outcome === 'not-saved' || outcome === 'unread')) return { kind: 'unknown', error: e };
+    if (outcome === 'unread') return { kind: 'unread', error: e };
+    const row = fresh as Row | null;
+    let conflict: AppError;
+    if (!unknown) conflict = toAppError(e);
+    else if (row === null) conflict = appError('not_found', 'lock_missing');
+    else if (call.insert) conflict = new AppError({ kind: 'conflict', code: '23505', reason: null, details: null, issues: [], status: null });
+    else conflict = appError('conflict', 'lock_conflict');
+    return { kind: 'changed', row, conflict };
+  }
+}
 
 // ---- 団体の CSV の取り込み（3.2） ----
 

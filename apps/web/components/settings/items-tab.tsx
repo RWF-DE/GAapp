@@ -16,13 +16,13 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { fetchItems, insertItem, updateItem } from '@/lib/data/settings';
+import { fetchItems, insertItem, matchesWritten, readItem, readItemByCode, updateItem } from '@/lib/data/settings';
 import type { ItemRow } from '@/lib/db/types';
 import { CATEGORY_LABELS } from '@/lib/labels';
 import { queryKeys } from '@/lib/query';
 import { NAME_MAX } from '@/lib/schemas/common';
 import { itemFormSchema, ITEM_CODE_MAX, joinAliases, type ItemFormInput, type ItemFormOutput } from '@/lib/schemas/settings';
-import { Field, FormSheet, GlobalReadOnlyNote, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
+import { Field, FormSheet, GlobalReadOnlyNote, settingsKeys, TabHeading, useLockedSave, useSettings } from './shared';
 
 export function ItemsTab() {
   const { globalWritable } = useSettings();
@@ -102,7 +102,9 @@ export function ItemsTab() {
 }
 
 function ItemForm({ item, onDone }: { item: ItemRow | null; onDone: () => Promise<void> }) {
-  const onError = useWriteErrorHandler();
+  // 入力の元（更新で送る updated_at）。conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
+  const [base, setBase] = useState(item);
+  const locked = useLockedSave({ dataKeys: [queryKeys.items()] });
   const form = useForm<ItemFormInput, unknown, ItemFormOutput>({
     resolver: zodResolver(itemFormSchema),
     defaultValues: {
@@ -121,23 +123,30 @@ function ItemForm({ item, onDone }: { item: ItemRow | null; onDone: () => Promis
   const onSubmit = handleSubmit(async (v) => {
     setSaving(true);
     try {
-      if (item) {
-        // コードは送らない（作った後は変えない）
-        await updateItem(item, {
-          name: v.name,
-          aliases: v.aliases,
-          requestable_categories: v.requestable_categories,
-          sort_order: v.sort_order,
-        });
-        toast.success(`「${v.name}」を保存しました`);
-      } else {
-        await insertItem(v);
-        toast.success(`「${v.name}」を足しました`);
-      }
+      // 送る値（zod の後）。更新ではコードを送らない（作った後は変えない）。読み直した行もこの値で比べる
+      const patch = { name: v.name, aliases: v.aliases, requestable_categories: v.requestable_categories, sort_order: v.sort_order };
+      const values = { code: v.code, ...patch };
+      const r = await locked.run<ItemRow>(
+        base
+          ? {
+              write: () => updateItem(base, patch),
+              reread: () => readItem(base.id),
+              matches: (row) => matchesWritten(row, patch),
+              baseVersion: base.updated_at,
+              onRebase: (row) => row && setBase(row),
+            }
+          : {
+              write: () => insertItem(values),
+              reread: () => readItemByCode(values.code),
+              matches: (row) => matchesWritten(row, values),
+              baseVersion: null,
+              insert: true,
+            },
+      );
+      if (r.kind !== 'done') return;
+      toast.success(r.earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
       form.reset(form.getValues());
       await onDone();
-    } catch (e) {
-      await onError(e, { dataKeys: [queryKeys.items()] });
     } finally {
       setSaving(false);
     }
@@ -146,8 +155,9 @@ function ItemForm({ item, onDone }: { item: ItemRow | null; onDone: () => Promis
 
   return (
     <form onSubmit={onSubmit} className="space-y-4" noValidate data-testid="item-form">
-      <Field label="コード" error={err('code')} hint={item ? '作った後は変えられません（ルールがコードで参照するため）' : '半角の英小文字・数字・_（例 long_desk_2）'}>
-        {(p) => <Input {...p} {...register('code')} readOnly={!!item} maxLength={ITEM_CODE_MAX} className="font-mono" />}
+      {locked.notice}
+      <Field label="コード" error={err('code')} hint={base ? '作った後は変えられません（ルールがコードで参照するため）' : '半角の英小文字・数字・_（例 long_desk_2）'}>
+        {(p) => <Input {...p} {...register('code')} readOnly={!!base} maxLength={ITEM_CODE_MAX} className="font-mono" />}
       </Field>
       <Field label="表示名" error={err('name')}>
         {(p) => <Input {...p} {...register('name')} maxLength={NAME_MAX} />}

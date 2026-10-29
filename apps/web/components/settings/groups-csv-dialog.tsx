@@ -70,7 +70,7 @@ export function GroupsCsvDialog({
       setPlan(null);
       await onSaved();
     } catch (e) {
-      await onError(e, { dataKeys: [settingsKeys.groups(year.id)] });
+      await onError(e, { dataKeys: [settingsKeys.groups(year.id)], unknownMessage: null });
     } finally {
       setSaving(false);
     }

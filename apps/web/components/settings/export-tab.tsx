@@ -29,7 +29,7 @@ export function ExportTab() {
       setNotice(broken);
       if (broken) toast.warning(broken, { duration: 15000 });
     } catch (e) {
-      await onError(e);
+      await onError(e, { unknownMessage: null });
     } finally {
       setBusy(null);
     }
@@ -43,7 +43,7 @@ export function ExportTab() {
       toast.success(`${fileName} を保存しました`);
     } catch (e) {
       if (e instanceof ExportBlockedError) toast.error(e.message);
-      else await onError(e);
+      else await onError(e, { unknownMessage: null });
     } finally {
       setBusy(null);
     }

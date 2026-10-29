@@ -109,7 +109,7 @@ function YearEditCard({ year }: { year: YearRow }) {
       } else if (c.kind === 'conflict' && field === 'label') {
         setError('label', { message: messageFor(c) });
       } else {
-        await onError(e, { context: { rpc: 'update_year' }, dataKeys: [queryKeys.yearRow(year.id)] });
+        await onError(e, { context: { rpc: 'update_year' }, dataKeys: [queryKeys.yearRow(year.id)], unknownMessage: null });
       }
     } finally {
       setSaving(false);
@@ -221,7 +221,7 @@ function YearCreateCard({ year, onCreated }: { year: YearRow; onCreated: (r: Cre
         setError('label', { message });
         setError('festival_start', { message });
       } else if (c.kind === 'conflict' && field === 'label') setError('label', { message });
-      else await onError(e, { context: { rpc: 'create_year_from', prevFestivalStart: year.festival_start } });
+      else await onError(e, { context: { rpc: 'create_year_from', prevFestivalStart: year.festival_start }, unknownMessage: null });
     } finally {
       setSaving(false);
     }

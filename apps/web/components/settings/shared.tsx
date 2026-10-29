@@ -3,7 +3,7 @@
 // マスタ設定の各タブが使う小さな部品と、書き込みのエラーの扱い（画面の設計 2.5・2.6・3.2。T09）。
 // 2つ目の画面が要るようになったら common/ に移す（docs/prompts/T09.md）。
 import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
-import { createContext, useCallback, useContext, useId } from 'react';
+import { createContext, useCallback, useContext, useId, useState } from 'react';
 import { toast } from 'sonner';
 import { Label } from '@/components/ui/label';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
@@ -11,9 +11,16 @@ import { useAuth } from '@/lib/auth/auth-provider';
 import { Button } from '@/components/ui/button';
 import { useAuthErrorHandler, useGuardedSetYear } from '@/lib/auth/guarded';
 import type { Membership } from '@/lib/auth/membership';
-import { fetchMyYearRoles, freshDataOf, latestAdminOpenYear } from '@/lib/data/settings';
+import {
+  fetchMyYearRoles,
+  freshDataOf,
+  latestAdminOpenYear,
+  runLockedWrite,
+  type LockedWriteCall,
+  type LockedWriteResult,
+} from '@/lib/data/settings';
 import type { YearRow } from '@/lib/db/types';
-import { classifyError, effectOf, messageFor, type MessageContext } from '@/lib/errors';
+import { classifyError, effectOf, isUnknownOutcome, messageFor, unknownOutcomeMessage, type AppError, type MessageContext } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
 import { cn } from '@/lib/utils';
 
@@ -61,7 +68,8 @@ export function GlobalReadOnlyNote({ what }: { what: '場所' | '品目' | '距�
   // 読み直し中・失敗では前の結果を使わない（ロールが変わっていれば、直せない年度へ案内してしまうため）
   const roles = freshDataOf(rolesQ);
   const target = roles ? latestAdminOpenYear(membership.years, roles) : null;
-  const decided = roles !== null || rolesQ.isError;
+  // 行き先がないと言えるのは、読めたうえで行き先がないときだけ。読み込みに失敗したら確かめられなかったと知らせ、もう一度読める
+  const failed = rolesQ.isError;
   return (
     <span className="mt-1 block" data-testid="global-read-only">
       終了した年度のため、{what}は直せません（すべての年度で共有の表です）。
@@ -79,7 +87,21 @@ export function GlobalReadOnlyNote({ what }: { what: '場所' | '品目' | '距�
             {target.label}を開く
           </Button>
         </>
-      ) : decided ? (
+      ) : failed ? (
+        <span data-testid="global-read-only-roles-error">
+          直せる年度を確かめられませんでした。
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto px-1 py-0"
+            disabled={rolesQ.isFetching}
+            onClick={() => void rolesQ.refetch()}
+          >
+            {rolesQ.isFetching ? '確かめ中…' : 'もう一度'}
+          </Button>
+        </span>
+      ) : roles !== null ? (
         <span data-testid="global-read-only-no-target">この表は、開いている年度の管理者が直します。</span>
       ) : null}
     </span>
@@ -92,11 +114,19 @@ export interface WriteErrorOptions {
   context?: MessageContext;
   /** conflict・not_found などで読み直すクエリ */
   dataKeys?: readonly QueryKey[];
+  /**
+   * 応答が届かず保存できたか分からない失敗（isUnknownOutcome）で出す文言。省くと unknownOutcomeMessage()
+   * （「保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります」。2.6 の (B1)）。
+   * 押し直しても確かめてから送らない書き込み（年度の作成・変更、招待・ロール、団体の CSV、削除）は null を渡し、
+   * 2.5 の表の文言（「通信できませんでした…」など）にする（notes/T09.md の「(B1) にそろえる」）
+   */
+  unknownMessage?: string | null;
 }
 
 /**
  * 書き込みの失敗を、2.5・2.6 の決まりで扱う：文言を toast で出し、forbidden・state は年度の行と立場を、conflict・not_found は
  * その画面のデータを読み直す。auth はセッションの更新を試す。入力は残す（呼ぶ側はフォームを閉じない）。文言を返す。
+ * 応答が届かなかった失敗は unknownOutcomeMessage()（WriteErrorOptions.unknownMessage）。
  */
 export function useWriteErrorHandler(): (e: unknown, opts?: WriteErrorOptions) => Promise<string> {
   const queryClient = useQueryClient();
@@ -106,7 +136,8 @@ export function useWriteErrorHandler(): (e: unknown, opts?: WriteErrorOptions) =
   return useCallback(
     async (e: unknown, opts: WriteErrorOptions = {}) => {
       const c = classifyError(e);
-      const message = messageFor(c, opts.context);
+      const unknownMessage = opts.unknownMessage === undefined ? unknownOutcomeMessage() : opts.unknownMessage;
+      const message = isUnknownOutcome(e) && unknownMessage !== null ? unknownMessage : messageFor(c, opts.context);
       if (c.kind === 'auth') {
         await onAuthError(e);
         return message;
@@ -124,6 +155,102 @@ export function useWriteErrorHandler(): (e: unknown, opts?: WriteErrorOptions) =
     },
     [queryClient, reloadMembership, onAuthError, year.id],
   );
+}
+
+/** 止められた後に読み直せなかったときの文言（2.6 の (B1) の 3。「読み直しました」とは言わない） */
+export const LOCKED_UNREAD_MESSAGE = 'ほかの人が変えた可能性がありますが、読み直せませんでした';
+
+export interface LockedSaveRun<Row extends { updated_at: string }> extends LockedWriteCall<Row> {
+  /**
+   * changed のとき（と、読み直せなかった後に「読み直す」で読めたとき）に、読み直した行（なくなっていれば null）を渡す。
+   * 呼ぶ側は更新なら入力の元をこの行にする（入力は残す）。insert は何もしない（insert のまま）
+   */
+  onRebase?: (row: Row | null) => void;
+  /** changed のとき、toast の代わりに欄にエラーを出す（距離の組の重複など）。真を返したら toast を出さない */
+  onChanged?: (result: { row: Row | null; conflict: AppError }) => boolean;
+  /** failed のとき、欄にエラーを出す（23514 など）。真を返したら useWriteErrorHandler に回さない */
+  onFailed?: (e: unknown) => boolean;
+}
+
+/**
+ * マスタ設定の楽観ロックの更新・一意のキーの insert（団体・場所・品目・距離・今年の使用）を、2.6 の (B1) で送る。
+ * run は runLockedWrite の結果を返す（done なら呼ぶ側が「保存しました」か、earlier なら「保存されていました」と出して閉じ、
+ * 関係するクエリを読み直す）。changed は conflict の文言を出してデータを読み直し、onRebase で入力の元を付け替える。
+ * unknown は unknownOutcomeMessage()。unread は notice（読み直すボタンつき）を出す。確かめるための状態は持たず、
+ * 保存のボタンは押せるまま（次の保存はまた同じ道を通る）。
+ */
+export function useLockedSave(opts: { dataKeys: readonly QueryKey[]; context?: MessageContext }) {
+  const onError = useWriteErrorHandler();
+  const queryClient = useQueryClient();
+  const [unread, setUnread] = useState<{ reload: () => Promise<void> } | null>(null);
+  const [reloading, setReloading] = useState(false);
+  const { dataKeys, context } = opts;
+
+  const invalidate = useCallback(
+    () => Promise.all(dataKeys.map((k) => queryClient.invalidateQueries({ queryKey: k }))),
+    [dataKeys, queryClient],
+  );
+
+  const run = useCallback(
+    async <Row extends { updated_at: string }>(call: LockedSaveRun<Row>): Promise<LockedWriteResult<Row>> => {
+      setUnread(null);
+      const r = await runLockedWrite(call);
+      switch (r.kind) {
+        case 'done':
+          break;
+        case 'failed':
+          if (!call.onFailed?.(r.error)) await onError(r.error, { ...(context ? { context } : {}), dataKeys });
+          break;
+        case 'unknown':
+          // 入力を残して unknownOutcomeMessage()。年度の行と立場も読み直す（通信の失敗と同じ。useWriteErrorHandler）。
+          // 読み直しは待たない（通信が切れていると再試行で十数秒かかり、その間「保存中…」で保存を押せなくなるため）
+          void onError(r.error, { ...(context ? { context } : {}), dataKeys });
+          break;
+        case 'changed':
+          call.onRebase?.(r.row);
+          if (call.onChanged?.(r)) await invalidate();
+          else await onError(r.conflict, { ...(context ? { context } : {}), dataKeys });
+          break;
+        case 'unread':
+          toast.error(LOCKED_UNREAD_MESSAGE);
+          setUnread({
+            reload: async () => {
+              const row = await call.reread();
+              call.onRebase?.(row);
+              await invalidate();
+            },
+          });
+          break;
+      }
+      return r;
+    },
+    [context, dataKeys, invalidate, onError],
+  );
+
+  const reload = async () => {
+    if (!unread) return;
+    setReloading(true);
+    try {
+      await unread.reload();
+      setUnread(null);
+      toast.success('読み直しました');
+    } catch (e) {
+      toast.error(messageFor(classifyError(e)));
+    } finally {
+      setReloading(false);
+    }
+  };
+
+  const notice = unread ? (
+    <div role="alert" className="space-y-2 rounded-md border border-destructive/40 p-2 text-sm text-destructive" data-testid="locked-save-unread">
+      <p>{LOCKED_UNREAD_MESSAGE}。読み直してから、もう一度保存してください（入力は残しています）。</p>
+      <Button type="button" size="sm" variant="outline" onClick={() => void reload()} disabled={reloading}>
+        {reloading ? '読み直し中…' : '読み直す'}
+      </Button>
+    </div>
+  ) : null;
+
+  return { run, notice };
 }
 
 // ---- フォームの欄 ----
