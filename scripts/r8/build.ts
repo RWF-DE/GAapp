@@ -255,11 +255,19 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
   if (existsSync(src('anonymize'))) {
     const t = readTable(src('anonymize'), 'anonymize.csv');
     requireHeader(t, ['source_name', 'fixture_name'], 'anonymize.csv');
+    // 元の名前（個人名を含みうる）が手で書いたファイルにあると、生成する groups.csv などに出てしまう。
+    // manual/ の名前の欄はすべてここで確かめる。値は出さず、anonymize.csv の行番号とファイル名・欄だけ示す
+    const manualNames: { where: string; keys: Set<string> }[] = [
+      { where: 'manual/groups.csv の name・aliases', keys: new Set(groupLookup.keys()) },
+      { where: 'manual/groups.csv の display_name', keys: new Set(manual.groups.flatMap((g) => (g.displayName === null ? [] : [compact(g.displayName)]))) },
+      { where: 'manual/reference_skip.csv の use', keys: new Set(manual.referenceSkip.map(compact)) },
+      { where: 'manual/settings.json の splitGroups', keys: new Set(Object.keys(settings.splitGroups).map(compact)) },
+    ];
     for (const r of t.rows) {
-      // 元の名前（個人名を含みうる）が手で書いたファイルにあると、生成する groups.csv などに出てしまう。値は出さず、行番号だけ示す
-      if (groupLookup.has(compact(r.cells.source_name!)))
-        throw new BuildError(`anonymize.csv:${r.rowNumber}: source_name が manual/groups.csv の name・aliases に入っています（元の名前を fixtures に書かないでください）`);
-      anon.set(compact(r.cells.source_name!), r.cells.fixture_name!);
+      const key = compact(r.cells.source_name!);
+      const hit = manualNames.find((m) => m.keys.has(key));
+      if (hit) throw new BuildError(`anonymize.csv:${r.rowNumber}: source_name が ${hit.where} に入っています（元の名前を fixtures に書かないでください）`);
+      anon.set(key, r.cells.fixture_name!);
     }
   }
   const anonymize = (s: string) => anon.get(compact(s)) ?? s;
@@ -387,10 +395,10 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
     // 「残す」は団体名ではない。集計シートでは除き、振り分け表では運び元の部屋の団体の行にする（下）
     const keepKey = compact('残す');
     const skipKeys = new Set([...RESERVED_GROUP_NAMES, '合計', '計', ...manual.referenceSkip].map(compact));
-    const splitKeys = new Map(Object.entries(settings.splitGroups).map(([k, v]) => [compact(anonymize(k)), v]));
+    const splitKeys = new Map(Object.entries(settings.splitGroups).map(([k, v]) => [compact(k), v]));
     const resolveUse = (use: string): { skip: true } | { skip: false; group?: string; split?: string[] } => {
       const a = anonymize(use);
-      if (skipKeys.has(compact(use)) || skipKeys.has(compact(a))) return { skip: true };
+      if (skipKeys.has(compact(a))) return { skip: true };
       const split = splitKeys.get(compact(a));
       if (split) return { skip: false, split };
       const g = groupLookup.get(compact(a));

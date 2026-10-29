@@ -256,6 +256,37 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
       expect(existsSync(path.join(out, 'requests.csv'))).toBe(false);
     }
   });
+  it('anonymize.csv の source_name が manual/ の display_name・reference_skip の use・settings.json の splitGroups の名前に入っていても、値を出さず失敗する', () => {
+    const edit = (rel: string, from: string, to: string) => {
+      const f = path.join(out, rel);
+      const original = readFileSync(f, 'utf8');
+      const edited = original.replace(from, to);
+      expect(edited).not.toBe(original);
+      writeFileSync(f, edited);
+    };
+    const cases: { rel: string; from: string; to: string; where: string }[] = [
+      { rel: 'manual/groups.csv', from: '研究室A,,department', to: '研究室A,研究室源,department', where: 'manual/groups.csv' },
+      { rel: 'manual/reference_skip.csv', from: '予備,', to: '研究室源,', where: 'manual/reference_skip.csv' },
+      { rel: 'manual/settings.json', from: '"剣道部":', to: '"研究室源":', where: 'manual/settings.json' },
+    ];
+    for (const c of cases) {
+      cpSync(path.join(SAMPLE, 'fixture'), out, { recursive: true });
+      edit(c.rel, c.from, c.to);
+      const r = run();
+      expect(r.code, c.where).toBe(1);
+      expect(r.stderr).toContain('anonymize.csv:2');
+      expect(r.stderr).toContain(c.where);
+      expect(r.stderr).not.toContain('研究室源');
+      expect(existsSync(path.join(out, 'requests.csv'))).toBe(false);
+    }
+  });
+  it('reference_skip の use は、匿名化した後の名前で当てる（元の名前では当たらない）', () => {
+    // 匿名化の後の名前（研究室A）を use に書くと、その団体の行が除かれる。元の名前は上のテストで失敗になる
+    const f = path.join(out, 'manual', 'reference_skip.csv');
+    writeFileSync(f, readFileSync(f, 'utf8') + '研究室A,テスト\n');
+    const r = run();
+    expect(r.code).toBe(0);
+  });
   it('対応しない使用用途：名前を出さずに行番号だけを示して失敗する', () => {
     appendFileSync(path.join(source, 'allocation.csv'), `机(木),倉庫,${secret},1,\n`);
     const r = run();
