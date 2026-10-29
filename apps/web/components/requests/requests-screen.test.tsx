@@ -248,7 +248,7 @@ describe('申請一覧 /requests', () => {
       p_reason: '団体の希望',
     });
   });
-  it('未保存のセルの後に、ほかの人が同じセルを変えて読み直すと、読み直した値に戻して印をつけ、上書きしない（楽観ロックの基準は編集したときの行）', async () => {
+  it('未保存のセルの後に、ほかの人が同じセルを変えて表が読み直されても、入力と入力の元は残す。保存の読み直しで確かめ、上書きしない（楽観ロックの基準は編集したときの行）', async () => {
     const user = userEvent.setup();
     state.handler = makeHandler();
     renderScreen();
@@ -256,15 +256,25 @@ describe('申請一覧 /requests', () => {
     await typeCell(user, '部門Aの椅子(木)', '2');
     expect(screen.getByRole('button', { name: '保存（2件）' })).toBeTruthy();
 
-    // ほかの人が模擬店Aの机(木)を 4 にした（updated_at が進む）→ 読み直す
+    // ほかの人が模擬店Aの机(木)を 4 にした（updated_at が進む）→ 読み直す：入力は捨てない
     state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    const reads = state.calls.length;
     await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(state.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存（2件）' })).toBeTruthy());
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5');
+    expect(cellOf('模擬店A:desk').getAttribute('data-pending')).toBe('true');
+    expect(cellOf('模擬店A:desk').hasAttribute('data-mark')).toBe(false);
+    expect(screen.getByLabelText('部門Aの椅子(木)')).toHaveProperty('value', '2');
+
+    // 保存：送る前の読み直しで、入力の元（3）とも入力（5）とも違う 4 → 送らずに確かめる。「読み直す」で読み直した値に戻す
+    await user.click(screen.getByRole('button', { name: '保存（2件）' }));
+    const ask = await screen.findByRole('alertdialog');
+    expect(within(ask).getByTestId('cell-conflicts').textContent).toBe('模擬店Aの机(木)：3 → 4（入れた数 5）');
+    await user.click(within(ask).getByRole('button', { name: '読み直す' }));
     await waitFor(() => expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '4'));
     expect(cellOf('模擬店A:desk').getAttribute('data-mark')).toBe('conflict');
-    expect(cellOf('模擬店A:desk').hasAttribute('data-pending')).toBe(false);
-    // ほかの人が変えていないセルの入力は残る
-    expect(screen.getByLabelText('部門Aの椅子(木)')).toHaveProperty('value', '2');
-    expect(cellOf('部門A:chair').getAttribute('data-pending')).toBe('true');
+    expect(writes()).toHaveLength(0);
 
     await user.click(screen.getByRole('button', { name: '保存（1件）' }));
     await waitFor(() => expect(writes()).toHaveLength(1));
@@ -272,7 +282,7 @@ describe('申請一覧 /requests', () => {
     expect(writes()[0]!.ops.find((o) => o.op === 'insert')?.args[0]).toEqual({ group_id: DEPT, item_id: itemId('chair'), count: 2 });
   });
 
-  it('戻した下書きは、編集したときの行と今の行を比べ、ほかの人が変えたセルは読み直した値に戻して印をつける', async () => {
+  it('戻した下書きは入れた数と編集したときの行を戻し（DB と同じになったセルだけ外す）、ほかの人が変えたセルは保存の読み直しで確かめる', async () => {
     const user = userEvent.setup();
     state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
     const key = (g: string, code: string) => `${g}:${itemId(code)}`;
@@ -283,6 +293,7 @@ describe('申請一覧 /requests', () => {
         value: {
           [key(STALL, 'desk')]: { value: 5, baseCount: 3, baseUpdatedAt: T0 },
           [key(STALL, 'long_desk_3')]: { value: 0, baseCount: 2, baseUpdatedAt: T0 },
+          [key(DEPT, 'lectern')]: { value: 0, baseCount: 1, baseUpdatedAt: T0 }, // DB と同じ数（行がない＝0）になった
           [key(DEPT, 'chair')]: 9, // 形の違う古い下書きの値は捨てる
         },
       }),
@@ -290,11 +301,17 @@ describe('申請一覧 /requests', () => {
     state.handler = makeHandler();
     renderScreen();
     await user.click(await screen.findByRole('button', { name: '戻す' }));
-    await waitFor(() => expect(cellOf('模擬店A:desk').getAttribute('data-mark')).toBe('conflict'));
-    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '4');
+    await waitFor(() => expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5'));
+    expect(cellOf('模擬店A:desk').getAttribute('data-pending')).toBe('true');
+    expect(cellOf('模擬店A:desk').hasAttribute('data-mark')).toBe(false);
     expect(cellOf('模擬店A:long_desk_3').getAttribute('data-pending')).toBe('true');
     expect(screen.getByLabelText('部門Aの椅子(木)')).toHaveProperty('value', '0');
-    expect(screen.getByRole('button', { name: '保存（1件）' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '保存（2件）' })).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: '保存（2件）' }));
+    const ask = await screen.findByRole('alertdialog');
+    expect(within(ask).getByTestId('cell-conflicts').textContent).toBe('模擬店Aの机(木)：3 → 4（入れた数 5）');
+    expect(writes()).toHaveLength(0);
   });
 
   it('締切前の保存中はセルを編集できず、保存の後に入力が古い写しで戻らない', async () => {
@@ -618,6 +635,100 @@ describe('保存の応答が届かなかったとき（数を絶対値で書く�
     expect(cellOf('模擬店A:desk').hasAttribute('data-mark')).toBe(false);
   });
 
+  it('申請一覧（締切前）：応答が落ち、保存の後の読み直しでほかの人の数（入力の元とも入力とも違う）が見つかっても、入力と印を残して「分かりません」と出す（保存したと数えない）。もう一度押すと確かめる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'requests' && call.ops.some((o) => o.op === 'update')) {
+        // 自分の書き込みは通らず（応答も届かず）、ほかの人が 4 にした
+        state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await user.click(saveButton(1));
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toContain(UNKNOWN));
+    const err = screen.getByTestId('save-error').textContent!;
+    expect(err).toContain('0 件を保存しました');
+    expect(err).toContain('1 件は保存できたか分かりません');
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5');
+    expect(cellOf('模擬店A:desk').getAttribute('data-pending')).toBe('true');
+    expect(cellOf('模擬店A:desk').getAttribute('data-mark')).toBe('error');
+
+    await user.click(saveButton(1));
+    const ask = await screen.findByRole('alertdialog');
+    expect(within(ask).getByTestId('cell-conflicts').textContent).toBe('模擬店Aの机(木)：3 → 4（入れた数 5）');
+    expect(writes()).toHaveLength(1);
+  });
+
+  it('申請一覧（締切後）：応答が落ち、保存の後の読み直しでほかの人の数が見つかっても、入力を残して「分かりません」と出す。もう一度押すと確かめる', async () => {
+    const user = userEvent.setup();
+    state.closed = true;
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:update_requests_after_deadline') {
+        state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await user.click(saveButton(1));
+    let dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('理由（必須）'), '団体の希望');
+    await user.click(within(dialog).getByRole('button', { name: '保存する' }));
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toContain(UNKNOWN));
+    const err = screen.getByTestId('save-error').textContent!;
+    expect(err).toContain('0 団体を保存しました');
+    expect(err).toContain('1 団体は保存できたか分かりません');
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5');
+    expect(cellOf('模擬店A:desk').getAttribute('data-mark')).toBe('error');
+
+    await user.click(saveButton(1));
+    dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText('理由（必須）'), '団体の希望');
+    await user.click(within(dialog).getByRole('button', { name: '保存する' }));
+    const ask = await screen.findByRole('alertdialog');
+    expect(within(ask).getByTestId('cell-conflicts').textContent).toBe('模擬店Aの机(木)：3 → 4（入れた数 5）');
+    expect(deadlines()).toBe(1);
+  });
+
+  it('申請一覧：応答が落ちた（DB には入っている）後に入力を変えると、表が読み直されても（読み直す・通信が戻る）入力が残る。保存では値で決めて確かめる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'requests' && call.ops.some((o) => o.op === 'update')) {
+        state.requests = [{ ...REQUESTS[0]!, count: 5, updated_at: T1 }, REQUESTS[1]!];
+        state.tableDown = true;
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await user.click(saveButton(1));
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toContain(UNKNOWN));
+    await typeCell(user, '模擬店Aの机(木)', '7');
+
+    // 「読み直す」と、裏の読み直し（通信が戻ったとき）：入力の 7 は自分の 5 に戻らない
+    state.tableDown = false;
+    const reads = tableReads();
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(tableReads()).toBeGreaterThan(reads));
+    await lastClient!.invalidateQueries();
+    await waitFor(() => expect(tableReads()).toBeGreaterThan(reads + 1));
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '7');
+    expect(cellOf('模擬店A:desk').getAttribute('data-pending')).toBe('true');
+    expect(cellOf('模擬店A:desk').getAttribute('data-mark')).not.toBe('conflict');
+    expect(saveButton(1)).toBeTruthy();
+
+    // 保存：セルは書いた人を持たないので値で決める（5 は入力の元 3 とも入力 7 とも違う → 確かめる。notes/T11.md の決めたこと 33）
+    await user.click(saveButton(1));
+    const ask = await screen.findByRole('alertdialog');
+    expect(within(ask).getByTestId('cell-conflicts').textContent).toBe('模擬店Aの机(木)：3 → 5（入れた数 7）');
+    expect(writes()).toHaveLength(1);
+  });
+
   it('申請一覧（締切前）：応答が落ち、DB に入っていなければ、もう一度押すと送る', async () => {
     const user = userEvent.setup();
     let n = 0;
@@ -806,6 +917,51 @@ describe('保存の応答が届かなかったとき（数を絶対値で書く�
     await giveReason(user);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(deadlines()).toBe(1);
+  });
+
+  it('代理入力（締切前）：応答が落ちる（DB には入っている）→ 入力を変える → 提出：自分の提出はほかの人の変更にせず、確かめずに送る', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:submit_requests' && submits() === 1) {
+        arriveMySubmit();
+        return NETWORK;
+      }
+      return undefined;
+    });
+    const sheet = await openProxy(user);
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toBe(UNKNOWN_SUBMIT));
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(submits()).toBe(2);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    const args = opArgs(state.calls.filter((c) => c.table === 'rpc:submit_requests')[1]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+    expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(2);
+  });
+
+  it('代理入力（締切前）：自分の提出が通った後に、ほかの人が品目の行だけを変えていれば、その品目だけを出して確かめる（「提出日時・備考」は出さない）', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:submit_requests') {
+        arriveMySubmit();
+        return NETWORK;
+      }
+      return undefined;
+    });
+    const sheet = await openProxy(user);
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toBe(UNKNOWN_SUBMIT));
+    // その後にほかの人が机(木) を 4 にした
+    const T2 = '2026-10-29T03:00:00.111111+00:00';
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T2 }, REQUESTS[1]!, { group_id: STALL, item_id: itemId('chair'), count: 1, updated_at: T1 }];
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    const ask = await screen.findByRole('alertdialog');
+    const text = within(ask).getByTestId('proxy-conflicts').textContent!;
+    expect(text).toContain('机(木)（3 → 4）');
+    expect(text).not.toContain('提出日時・備考');
+    expect(text).not.toContain('椅子(木)');
+    expect(submits()).toBe(1);
   });
 
   it('代理入力：保存できたか分からないまま閉じるときは確かめ、閉じたら表を読み直す（開き直すと入力は残っていない）', async () => {

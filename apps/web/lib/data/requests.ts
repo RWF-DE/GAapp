@@ -116,6 +116,12 @@ export function hasCountChanges(fields: readonly RequestField[], edits: Readonly
   return fields.some((f) => countOf(f, edits) !== f.current);
 }
 
+/** 入れた数のうち、入力の元の欄の値（fields の current）から変えた品目だけを残す（入力の元を読み直したものにするとき、入れていない欄は読み直した値にする） */
+export function keepTyped(fields: readonly RequestField[], edits: Readonly<Record<string, number>>): Record<string, number> {
+  const current = new Map(fields.map((f) => [f.item.id, f.current]));
+  return Object.fromEntries(Object.entries(edits).filter(([id, v]) => v !== current.get(id)));
+}
+
 /** submit_requests の p_rows：表示した入力欄の品目すべての { itemId, count } */
 export function toSubmitRows(fields: readonly RequestField[], edits: Readonly<Record<string, number>>): { itemId: string; count: number }[] {
   return fields.map((f) => ({ itemId: f.item.id, count: countOf(f, edits) }));
@@ -397,42 +403,28 @@ export function pendingChanges(pending: PendingCells, t: RequestsTables): CellCh
   return out.sort((a, b) => compareStrings(a.groupId, b.groupId) || compareStrings(a.itemId, b.itemId));
 }
 
-/** 当て直しの結果：残す未保存のセルと、ほかの人が先に変えたので読み直した値に戻したセルの鍵 */
-export interface RebaseResult {
-  pending: PendingCells;
-  conflicts: string[];
-}
-
 /**
- * 読み直した表・戻した下書きに、未保存のセルを当て直す（3.6）。
- * - なくなった団体・品目のセルと、DB の数と同じになったセル（自分の保存が届いていた・ほかの人が同じ数にした）は外す。
- * - 編集したときの行（基準）から DB の行が変わったセル（updated_at が違う・行ができた・行が消えた）は、読み直した値に戻し
- *   （未保存から外し）、conflicts に入れる（画面が印をつける）。黙って上書きしないため。
+ * 読み直した表・戻した下書きに、未保存のセルを当て直す（3.6・設計 2.6 の (A)）。裏の読み直しでは入力を捨てない：
+ * - なくなった団体・品目のセルと、DB の数が入れた数と同じになったセル（自分の保存が届いていた・同じ数になった）だけを外す。
+ * - ほかのセルは、入れた数も入力の元（編集したときの行）も残す。行が入力の元から変わっていても戻さない
+ *   （ほかの人の変更かどうかは、保存を押したときの読み直し〔judgePendingCells〕で決めて確かめる）。
  * 何も変わらなければ同じ pending を返す。
  */
-export function rebasePending(pending: PendingCells, t: RequestsTables): RebaseResult {
+export function rebasePending(pending: PendingCells, t: RequestsTables): PendingCells {
   const reqs = requestIndex(t);
   const groups = new Set(t.groups.map((g) => g.id));
   const items = new Set(t.items.map((i) => i.id));
   const next: Record<string, PendingCell> = {};
-  const conflicts: string[] = [];
   let changed = false;
   for (const [key, cell] of Object.entries(pending)) {
     const [groupId, itemId] = key.split(':') as [string, string];
-    const row = reqs.get(key);
-    const count = row?.count ?? 0;
-    if (!groups.has(groupId) || !items.has(itemId) || count === cell.value) {
+    if (!groups.has(groupId) || !items.has(itemId) || (reqs.get(key)?.count ?? 0) === cell.value) {
       changed = true;
-      continue;
-    }
-    if ((row?.updated_at ?? null) !== cell.baseUpdatedAt) {
-      changed = true;
-      conflicts.push(key);
       continue;
     }
     next[key] = cell;
   }
-  return changed ? { pending: next, conflicts } : { pending, conflicts };
+  return changed ? next : pending;
 }
 
 /**
@@ -453,7 +445,7 @@ export function rebaseKeysTo(pending: PendingCells, keys: Iterable<string>, t: R
   return next;
 }
 
-/** 送る前の読み直しで見つかった、ほかの人が先に変えたセル（上書きするか読み直すかを確かめる） */
+/** 送る前の読み直しで見つかった、編集した後に数が変わったセル（上書きするか読み直すかを確かめる） */
 export interface CellConflict {
   key: string;
   groupId: string;
@@ -469,7 +461,9 @@ export interface CellConflict {
 /**
  * 送る前に読み直した表で、未保存のセルをセルごとに決める（設計 2.6 の (A)。decideAbsoluteSave）。
  * saved：DB がすでに入れた数（前に送って応答が届かなかった保存が通っていた）。conflicts：入力の元から行が変わり、
- * 数が入力の元とも入れた数とも違う（ほかの人の変更。requests は書いた人を持たないので数で見る）。ほかは送る。
+ * 数が入力の元とも入れた数とも違う（ほかの人の変更とする）。ほかは送る。
+ * セルの直接の更新は書いた人を残さない（requests に書いた人の列がなく、提出の記録も書かない）ので、値でしか決められない。
+ * 応答が届かなかった自分の保存の後に入れ直したセルもここに出る（決まり (3) の「値で決める」を取る。notes/T11.md の決めたこと 33）。
  */
 export function judgePendingCells(pending: PendingCells, t: Pick<RequestsTables, 'requests'>): { saved: string[]; conflicts: CellConflict[] } {
   const reqs = requestIndex(t);
@@ -489,11 +483,12 @@ export function judgePendingCells(pending: PendingCells, t: Pick<RequestsTables,
   return { saved, conflicts: conflicts.sort((a, b) => compareStrings(a.key, b.key)) };
 }
 
+const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX_COUNT;
+
 /** 下書きから読んだ値を未保存のセルにする（形の違う値・範囲の外の数は捨てる。古い形の下書きを読んでも壊れない） */
 export function normalizePending(value: unknown): PendingCells {
   const out: Record<string, PendingCell> = {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
-  const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX_COUNT;
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     if (!/^[^:]+:[^:]+$/.test(key) || !raw || typeof raw !== 'object') continue;
     const c = raw as Record<string, unknown>;
@@ -659,19 +654,42 @@ const normalizedNote = (n: string | null | undefined): string | null => {
 };
 
 /**
+ * 自分の提出が書いた時刻（ミリ秒）。読み直した提出の記録の updated_by が自分のときだけ、その updated_at を返す。
+ * submit_requests と update_requests_after_deadline（p_submission つき）は、申請の行と提出の記録を1つのトランザクションで書く
+ * （updated_at はどちらも now()＝トランザクションの開始の時刻）ので、この時刻に書かれた申請の行は自分の提出が書いたもの。
+ */
+function ownSubmitAt(fresh: GroupRequestState, userId: string): number | null {
+  const s = fresh.submission;
+  return s && s.updated_by === userId ? ms(s.updated_at) : null;
+}
+
+/** 読み直した申請の行が、自分の提出（ownSubmitAt）で書かれたものか */
+const writtenByOwnSubmit = (row: Pick<RequestDbRow, 'updated_at'> | undefined, own: number | null): boolean =>
+  own !== null && !!row && ms(row.updated_at) === own;
+
+/**
  * 申請・代理入力の送る前の判定（設計 2.6 の (A)。decideAbsoluteSave に品目ごとと提出の記録を渡す）。
- * - 品目：数で比べ、行の updated_at（行の有無を含む）が入力の元から変わったかを見る。requests は書いた人を持たないので、
- *   読み直した数が入力の元とも入力とも違えば、ほかの人の変更とする。
+ * - 品目：数で比べ、行の updated_at（行の有無を含む）が入力の元から変わったかを見る。自分の提出で書かれた行（提出の記録の
+ *   updated_by が自分で、行の updated_at がその記録の updated_at と同じ。前に送って応答が届かなかった提出など）は
+ *   ほかの人の変更としない。ほかは requests が書いた人を持たないので、読み直した数が入力の元とも入力とも違えばほかの人の変更とする。
  * - 提出の記録：「提出済みか・備考」で比べ、updated_at が変わったかを見る。ほかの人の変更かは updated_by（自分でなければ。null も）。
  * 'saved' は DB がすでに入力と同じ（前に送って応答が届かなかった保存が通っていた）、'conflict' はほかの人の変更がある、'send' は送る。
  */
 export function decideGroupSave(base: GroupRequestState, fresh: GroupRequestState, input: GroupSaveInput, userId: string): AbsoluteSaveDecision {
   const baseBy = new Map(base.requests.map((r) => [r.item_id, r]));
   const freshBy = new Map(fresh.requests.map((r) => [r.item_id, r]));
+  const own = ownSubmitAt(fresh, userId);
   const entries: AbsoluteSaveEntry<number | string>[] = Object.entries(input.counts).map(([itemId, count]) => {
     const b = baseBy.get(itemId);
     const f = freshBy.get(itemId);
-    return { input: count, base: b?.count ?? 0, fresh: f?.count ?? 0, changed: ms(b?.updated_at ?? null) !== ms(f?.updated_at ?? null) };
+    const entry: AbsoluteSaveEntry<number | string> = {
+      input: count,
+      base: b?.count ?? 0,
+      fresh: f?.count ?? 0,
+      changed: ms(b?.updated_at ?? null) !== ms(f?.updated_at ?? null),
+    };
+    if (writtenByOwnSubmit(f, own)) entry.byOther = false;
+    return entry;
   });
   const sub = (s: SubmissionState | null) => JSON.stringify([!!s?.submitted_at, normalizedNote(s?.note)]);
   const bs = base.submission;
@@ -686,33 +704,38 @@ export function decideGroupSave(base: GroupRequestState, fresh: GroupRequestStat
   return decideAbsoluteSave(entries);
 }
 
-/** 入力の元から変わったもの（ほかの人の保存のダイアログに出す。品目ごとの数・提出の記録） */
+/** 入力の元から、ほかの人が変えたもの（ほかの人の保存のダイアログに出す。品目ごとの数・提出の記録） */
 export interface GroupChanges {
-  /** updated_at が変わった（行が増えた・消えたを含む）品目。from は入力の元の数、to は読み直した数 */
+  /** updated_at が変わった（行が増えた・消えたを含む）品目。自分の提出で書かれた行は除く。from は入力の元の数、to は読み直した数 */
   items: { itemId: string; from: number; to: number }[];
-  /** 提出の記録が変わった（提出日時・備考、または updated_at） */
+  /** ほかの人（updated_by が自分でない）が提出の記録を変えた（提出日時・備考、または updated_at） */
   submission: boolean;
 }
 
-/** 二つの団体の申請・提出の記録を比べる（base は入力の元、fresh は読み直したもの） */
-export function stateChangesSince(base: GroupRequestState, fresh: GroupRequestState): GroupChanges {
+/**
+ * 二つの団体の申請・提出の記録を比べる（base は入力の元、fresh は読み直したもの）。自分の書いたもの（提出の記録の updated_by が
+ * 自分、その提出で書かれた申請の行）は挙げない（前に送って応答が届かなかった自分の提出を、ほかの人の提出として出さない）。
+ */
+export function stateChangesSince(base: GroupRequestState, fresh: GroupRequestState, userId: string): GroupChanges {
   const baseBy = new Map(base.requests.map((r) => [r.item_id, r]));
   const freshBy = new Map(fresh.requests.map((r) => [r.item_id, r]));
+  const own = ownSubmitAt(fresh, userId);
   const ids = new Set<string>([...baseBy.keys(), ...freshBy.keys()]);
   const items: GroupChanges['items'] = [];
   for (const itemId of ids) {
     const was = baseBy.get(itemId);
     const now = freshBy.get(itemId);
+    if (writtenByOwnSubmit(now, own)) continue;
     if (ms(was?.updated_at ?? null) !== ms(now?.updated_at ?? null)) items.push({ itemId, from: was?.count ?? 0, to: now?.count ?? 0 });
   }
   const a = base.submission;
   const b = fresh.submission;
-  // 提出日時・備考が同じでも、記録が書き直されていれば（同じ内容での出し直しなど）変わったとする
-  const submission =
+  // 提出日時・備考が同じでも、記録が書き直されていれば（同じ内容での出し直しなど）変わったとする。自分が書き直したものは除く
+  const rewritten =
     ms(a?.submitted_at ?? null) !== ms(b?.submitted_at ?? null) ||
     (a?.note ?? null) !== (b?.note ?? null) ||
     ms(a?.updated_at ?? null) !== ms(b?.updated_at ?? null);
-  return { items, submission };
+  return { items, submission: rewritten && !(b && b.updated_by === userId) };
 }
 
 /** 表の行を、読み直した団体の申請・提出の記録と同じ形にする（代理入力の入力の元） */
@@ -723,6 +746,44 @@ export function groupStateOf(row: Pick<MatrixRow, 'group' | 'cells' | 'submissio
       .map((c) => ({ group_id: row.group.id, item_id: c.itemId, count: c.count, updated_at: c.updatedAt! })),
     submission: row.submission,
   };
+}
+
+/**
+ * /request の下書き（団体ごと。1.4）：入れた数・書き換えた備考と、最初に編集したときの入力の元（申請の行と提出の記録）。
+ * 戻した後の提出も、この入力の元と送る前に読み直した行を比べて決める（設計 2.6 の (A) の 5。離れている間のほかの人の変更を確かめる）。
+ */
+export interface RequestDraft {
+  edits: Record<string, number>;
+  note: string | null;
+  base: GroupRequestState;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const isStrOrNull = (v: unknown): v is string | null => v === null || typeof v === 'string';
+
+/** 下書きから読んだ値を /request の下書きにする（形が違う・入力の元がない古い形・ほかの団体の行なら null。戻せる下書きにしない） */
+export function normalizeRequestDraft(value: unknown, groupId: string): RequestDraft | null {
+  if (!isRecord(value) || !isRecord(value.edits) || !isStrOrNull(value.note ?? null) || !isRecord(value.base)) return null;
+  const edits: Record<string, number> = {};
+  for (const [id, n] of Object.entries(value.edits)) {
+    if (!isCount(n)) return null;
+    edits[id] = n;
+  }
+  const { requests, submission } = value.base;
+  if (!Array.isArray(requests)) return null;
+  const rows: RequestDbRow[] = [];
+  for (const r of requests) {
+    if (!isRecord(r) || r.group_id !== groupId || typeof r.item_id !== 'string' || !isCount(r.count) || typeof r.updated_at !== 'string') return null;
+    rows.push({ group_id: groupId, item_id: r.item_id, count: r.count, updated_at: r.updated_at });
+  }
+  let sub: SubmissionState | null = null;
+  if (submission != null) {
+    const x = submission;
+    if (!isRecord(x) || x.group_id !== groupId || !isStrOrNull(x.submitted_at) || !isStrOrNull(x.note) || typeof x.updated_at !== 'string') return null;
+    if (!isStrOrNull(x.updated_by ?? null)) return null;
+    sub = { group_id: groupId, submitted_at: x.submitted_at, note: x.note, updated_at: x.updated_at, updated_by: (x.updated_by as string | null | undefined) ?? null };
+  }
+  return { edits, note: (value.note as string | null | undefined) ?? null, base: { requests: rows, submission: sub } };
 }
 
 export function useRepRequest(yearId: string | null | undefined, groupId: string | null) {

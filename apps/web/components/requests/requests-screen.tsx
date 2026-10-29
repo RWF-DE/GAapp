@@ -193,19 +193,12 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   };
 
   /**
-   * 表（読み直した表・戻した下書きの相手）に未保存のセルを当て直す。編集したときの行からほかの人が変えたセルは、読み直した値に
-   * 戻して印をつける（3.6。黙って上書きしない）。戻したセルの数を返す。
+   * 表（読み直した表・戻した下書きの相手）に未保存のセルを当て直す。入れた数は捨てない：DB の数が入れた数と同じになったセルと、
+   * なくなった団体・品目のセルだけを外す（rebasePending）。ほかの人の変更かどうかは、保存を押したときの読み直しで決める（2.6 の (A)）。
    */
-  const rebaseOnto = (t: RequestsTables, prepare: (p: PendingCells) => PendingCells = (p) => p): number => {
-    let conflicts: string[] = [];
-    applyPending((p) => {
-      const r = rebasePending(prepare(p), t);
-      conflicts = r.conflicts;
-      return r.pending;
-    });
+  const rebaseOnto = (t: RequestsTables, prepare: (p: PendingCells) => PendingCells = (p) => p) => {
+    applyPending((p) => rebasePending(prepare(p), t));
     rebasedRef.current = t;
-    applyMarks(Object.fromEntries(conflicts.map((k) => [k, 'conflict' as const])));
-    return conflicts.length;
   };
 
   /**
@@ -237,8 +230,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   /** 表が届いたら当て直す（読み直す・代理入力や取り込みの後の invalidate・ほかの書き込みの後の読み直し）。保存中は保存が行う */
   const onTablesLoaded = useEffectEvent((t: RequestsTables) => {
     if (savingRef.current || rebasedRef.current === t) return;
-    const n = rebaseOnto(t);
-    if (n > 0) toast.info(`${n} 件のセルは、ほかの人が先に変えたので読み直した値に戻しました`);
+    rebaseOnto(t);
   });
   useEffect(() => {
     if (q.data) onTablesLoaded(q.data);
@@ -284,10 +276,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   /** 書き込みの後に読み直す（未保存のセルは当て直す。保存中は保存が当て直す）。読めなければ undefined */
   const reloadTables = async (): Promise<RequestsTables | undefined> => {
     const data = await refetchFresh();
-    if (data && !savingRef.current && rebasedRef.current !== data) {
-      const n = rebaseOnto(data);
-      if (n > 0) toast.info(`${n} 件のセルは、ほかの人が先に変えたので読み直した値に戻しました`);
-    }
+    if (data && !savingRef.current && rebasedRef.current !== data) rebaseOnto(data);
     return data;
   };
 
@@ -319,7 +308,11 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     });
   };
 
-  /** 応答が届かなかったセルのうち、保存の後の読み直しでも未保存のまま残ったもの（保存できたか分からない）。外れたものは印も外す */
+  /**
+   * 応答が届かなかったセルのうち、保存の後の読み直しでも未保存のまま残ったもの（保存できたか分からない。入力と印を残す）の数。
+   * 外れたもの（読み直した DB の数が送った数と同じ）は保存できたので印も外す。読み直した数が違えば、ほかの人が後で変えていても
+   * 入力を残し（裏の当て直しは入力を捨てない）、次の保存の読み直しで確かめる。
+   */
   const stillUnknown = (keys: readonly string[]): number => {
     const left = keys.filter((k) => Object.hasOwn(pendingRef.current, k));
     applyMarks(Object.fromEntries(keys.filter((k) => !left.includes(k)).map((k) => [k, null])));
@@ -483,7 +476,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     await runSave(ask.reason);
   };
 
-  /** 読み直す（ダイアログを閉じたときも）：ほかの人が先に変えたセルを読み直した値に戻して印をつける */
+  /** 読み直す（ダイアログを閉じたときも）：編集した後に変わったセルを読み直した値に戻して印をつける */
   const revertConflicts = () => {
     const ask = conflictAskRef.current;
     if (!ask) return;
@@ -495,7 +488,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       return next;
     });
     applyMarks(Object.fromEntries(keys.map((k) => [k, 'conflict' as const])));
-    toast.info(`${keys.length} 件のセルは、ほかの人が先に変えたので読み直した値に戻しました`);
+    toast.info(`${keys.length} 件のセルを読み直した値に戻しました`);
   };
 
   const onSave = () => {
@@ -563,10 +556,9 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         <DraftNotice
           savedAt={draft.savedAt}
           onRestore={() => {
-            // 編集したときの行と今の行を比べて当て直す（ほかの人が先に変えたセルは読み直した値に戻して印をつける）
-            const n = rebaseOnto(tables, () => draft.value);
+            // 入れた数と編集したときの行（入力の元）を戻す。DB がすでに入れた数のセルだけ外れる。ほかの人の変更は保存のときに確かめる
+            rebaseOnto(tables, () => draft.value);
             setDraft(null);
-            if (n > 0) toast.info(`${n} 件のセルは、ほかの人が先に変えたので読み直した値に戻しました`);
           }}
           onDiscard={() => {
             writer.cancel();
@@ -667,8 +659,8 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         onOpenChange={(o) => {
           if (!o) revertConflicts();
         }}
-        title="ほかの人が先に変えたセルがあります。上書きして保存しますか"
-        description="保存の前に読み直したら、次のセルはほかの人が変えていました（まだ何も送っていません）。上書きすると入れた数で保存します。読み直すと、読み直した値に戻して印をつけます。"
+        title="編集した後に変わったセルがあります。上書きして保存しますか"
+        description="保存の前に読み直したら、次のセルの数が、編集を始めたときとも入れた数とも違っていました（まだ何も送っていません）。ほかの人の変更のほか、前に送って応答が届かなかった自分の保存のこともあります（セルは書いた人を記録しないため）。上書きすると入れた数で保存します。読み直すと、読み直した値に戻して印をつけます。"
         confirmLabel="上書きして保存する"
         cancelLabel="読み直す"
         pendingLabel="保存中…"

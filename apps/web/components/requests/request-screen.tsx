@@ -20,8 +20,10 @@ import {
   fetchGroupRequestState,
   hasCountChanges,
   isOutsideFlagActive,
+  keepTyped,
   judgeSubmitFailure,
   nonZeroSummary,
+  normalizeRequestDraft,
   outsideFlagOf,
   remainingText,
   requestWindowOf,
@@ -33,6 +35,7 @@ import {
   type GroupRequestState,
   type OutsideFlag,
   type RepRequestData,
+  type RequestDraft,
   type RequestWindow,
 } from '@/lib/data/requests';
 import { useYearRow, type YearRow } from '@/lib/data/year';
@@ -46,17 +49,14 @@ import { parseGroupParam, requestFormSchema } from '@/lib/schemas/requests';
 import { RequestFields } from './request-fields';
 import { useNow } from './use-now';
 
-/** 下書き（団体ごと。1.4） */
-interface RequestDraft {
-  edits: Record<string, number>;
-  note: string | null;
-}
-
 /**
  * 申請 /request（団体代表。スマホ。画面の設計 3.5。T11）。
  * 提出は毎回、送る前に自団体の申請と提出の記録を読み直して決める（設計 2.6 の (A)。decideGroupSave）：DB がすでに入力と同じなら
  * 送らずに「提出されていました」、ほかの人の変更があれば上書きしてよいか確かめ、ほかは送る。応答が届かず提出できたか分からない
  * ときは入力を残して知らせるだけで、確かめるための状態は持たない（もう一度押すと、上の読み直しで決まる）。
+ * 入力の元（base）は最初に編集したときの申請と提出の記録で、裏のクエリの読み直し（通信が戻ったとき・失敗の後など）では変えない
+ * （ほかの人の変更を黙って入力の元に入れない）。送る前の読み直しのときだけ変える。下書きにも入力の元を入れ、戻した後の提出も
+ * それと比べる。
  * 団体は `?group=<id>`（自分が代表する団体にない id は無視して最初の団体）。団体・年度を変えると作り直す（入力は団体ごとの下書きに残る）。
  */
 export function RequestScreen() {
@@ -97,6 +97,7 @@ function windowNotice(win: RequestWindow, year: YearRow, outside: boolean): stri
 
 function RequestEditor({ yearId, group, groups, userId }: { yearId: string; group: GroupSummary; groups: GroupSummary[]; userId: string }) {
   const queryClient = useQueryClient();
+  const queryKey = queryKeys.yearPart(yearId, 'request', group.id);
   const { reloadMembership } = useAuth();
   const onAuthError = useAuthErrorHandler();
   const router = useGuardedRouter();
@@ -105,6 +106,8 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
   const q = useRepRequest(yearId, group.id);
   const now = useNow();
 
+  /** 入力の元（最初に編集したときの申請と提出の記録）。編集していなければ null で、読み込んだ値を出す */
+  const [base, setBase] = useState<GroupRequestState | null>(null);
   const [edits, setEdits] = useState<Record<string, number>>({});
   const [noteEdit, setNoteEdit] = useState<string | null>(null);
   const [outside, setOutside] = useState<OutsideFlag | null>(null);
@@ -115,12 +118,22 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
 
   const draftKeyValue: DraftKey = useMemo(() => ({ userId, yearId, screen: 'request', target: group.id }), [userId, yearId, group.id]);
   const writer = useMemo(() => createDraftWriter<RequestDraft>(draftKeyValue), [draftKeyValue]);
-  const [draft, setDraft] = useState(() => loadDraft<RequestDraft>(draftKeyValue));
+  const [draft, setDraft] = useState(() => {
+    // 入力の元のない古い形・形の違う下書きは戻さない（戻した後の提出で、離れていた間のほかの人の変更を確かめられないため）
+    const d = loadDraft<unknown>(draftKeyValue);
+    const value = d ? normalizeRequestDraft(d.value, group.id) : null;
+    return d && value ? { value, savedAt: d.savedAt } : null;
+  });
   useEffect(() => () => writer.flush(), [writer]);
 
   const data = q.data;
-  const model = useMemo(() => (data ? buildRequestForm(data.items, data.group.category, data.requests) : null), [data]);
-  const savedNote = data?.submission?.note ?? '';
+  /** 比べる入力の元と、入力欄の初期値（編集していなければ読み込んだ値） */
+  const shown = useMemo<GroupRequestState | null>(
+    () => base ?? (data ? { requests: data.requests, submission: data.submission } : null),
+    [base, data],
+  );
+  const model = useMemo(() => (data && shown ? buildRequestForm(data.items, data.group.category, shown.requests) : null), [data, shown]);
+  const savedNote = shown?.submission?.note ?? '';
   const note = noteEdit ?? savedNote;
   const dirty = !!model && (hasCountChanges(model.fields, edits) || (noteEdit !== null && noteEdit !== savedNote));
 
@@ -136,7 +149,15 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     mutationFn: (vars: { rows: { itemId: string; count: number }[]; note: string | null }) => submitRequests(group.id, vars.rows, vars.note),
   });
 
-  const writeDraft = (nextEdits: Record<string, number>, nextNote: string | null) => writer.write({ edits: nextEdits, note: nextNote });
+  const writeDraft = (nextEdits: Record<string, number>, nextNote: string | null, nextBase: GroupRequestState) =>
+    writer.write({ edits: nextEdits, note: nextNote, base: nextBase });
+
+  /** 編集を始める：入力の元を今の値で固める（裏の読み直しで変えない）。固めた入力の元を返す */
+  const startEditing = (): GroupRequestState => {
+    const b = base ?? shown!;
+    if (!base) setBase(b);
+    return b;
+  };
 
   if (yearQ.isError || q.isError) {
     const err = yearQ.error ?? q.error;
@@ -188,11 +209,17 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     if (effect.reload === 'data') void q.refetch();
   };
 
-  const queryKey = queryKeys.yearPart(yearId, 'request', group.id);
-
-  /** 入力の元（読み込んだ申請と提出の記録）を読み直したものにする。入れていない欄は読み直した値になり、入れた数と書き換えた備考は残る */
+  /**
+   * 入力の元を読み直したものにする（送る前の読み直しのときだけ）。入れていない欄（入力の元の値のままの欄）は読み直した値になり、
+   * 入れた数と書き換えた備考は残る。下書きの入力の元も書き換える。
+   */
   const rebaseTo = (fresh: GroupRequestState) => {
-    setNoteEdit((n) => (n === savedNote ? null : n));
+    const nextEdits = keepTyped(model.fields, edits);
+    const nextNote = noteEdit === savedNote ? null : noteEdit;
+    setEdits(nextEdits);
+    setNoteEdit(nextNote);
+    setBase(fresh);
+    if (Object.keys(nextEdits).length > 0 || nextNote !== null) writeDraft(nextEdits, nextNote, fresh);
     queryClient.setQueryData<RepRequestData>(queryKey, (old) => (old ? { ...old, requests: fresh.requests, submission: fresh.submission } : old));
   };
 
@@ -200,6 +227,7 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     toast.success(message);
     writer.clear();
     setDraft(null);
+    setBase(null);
     setEdits({});
     setNoteEdit(null);
     void queryClient.invalidateQueries({ queryKey });
@@ -224,15 +252,15 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
       else await handleError(e);
       return 'error';
     }
-    const base: GroupRequestState = { requests: data.requests, submission: data.submission };
-    const decision = decideGroupSave(base, fresh, { counts: parsed.data.counts, note: parsed.data.note }, userId);
+    const from = startEditing();
+    const decision = decideGroupSave(from, fresh, { counts: parsed.data.counts, note: parsed.data.note }, userId);
     if (decision === 'saved') {
       done('提出されていました');
       return 'done';
     }
     rebaseTo(fresh);
     if (decision === 'conflict') {
-      const changed = stateChangesSince(base, fresh);
+      const changed = stateChangesSince(from, fresh, userId);
       const name = (id: string) => data.items.find((i) => i.id === id)?.name ?? '（不明な品目）';
       setOverwrite({
         submittedAt: changed.submission ? (fresh.submission?.submitted_at ?? null) : null,
@@ -285,8 +313,10 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
           className="mb-3"
           savedAt={draft.savedAt}
           onRestore={() => {
-            setEdits(draft.value.edits ?? {});
-            setNoteEdit(draft.value.note ?? null);
+            // 入力と、下書きを書いたときの入力の元を戻す（提出のときに、離れていた間のほかの人の変更を確かめる）
+            setBase(draft.value.base);
+            setEdits(draft.value.edits);
+            setNoteEdit(draft.value.note);
             setDraft(null);
           }}
           onDiscard={() => {
@@ -310,12 +340,12 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
         onCountChange={(itemId, v) => {
           const next = { ...edits, [itemId]: v };
           setEdits(next);
-          writeDraft(next, noteEdit);
+          writeDraft(next, noteEdit, startEditing());
         }}
         note={note}
         onNoteChange={(v) => {
           setNoteEdit(v);
-          writeDraft(edits, v);
+          writeDraft(edits, v, startEditing());
         }}
         disabled={!writable || submit.isPending}
       />
