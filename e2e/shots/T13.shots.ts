@@ -38,7 +38,8 @@ test.describe('T13 管理者', () => {
       await page.unroute('**/rest/v1/allocations*');
 
       await expect(page.getByText('まだ自動振り分けをしていません')).toBeVisible();
-      await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled({ timeout: 30_000 });
+      await expect(page.getByTestId('engine-state')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+      await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled();
       await shoot(page, 'T13', 'allocation-empty-pc');
 
       await page.getByRole('button', { name: '自動振り分け', exact: true }).click();
@@ -73,7 +74,8 @@ test.describe('T13 管理者', () => {
     try {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       await page.goto('/allocation/');
-      await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled({ timeout: 30_000 });
+      await expect(page.getByTestId('engine-state')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+      await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled();
       await page.getByRole('button', { name: '自動振り分け', exact: true }).click();
       await page.getByRole('alertdialog').getByRole('button', { name: '実行する' }).click();
       await expect(page.getByTestId('allocate-failure')).toBeVisible({ timeout: 30_000 });
@@ -200,7 +202,8 @@ test.describe('T13 管理者（段 2：手での編集と使用不可の部屋�
     try {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       await page.goto('/allocation/');
-      await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled({ timeout: 30_000 });
+      await expect(page.getByTestId('engine-state')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+      await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled();
       const block = page.locator(`[data-room-block="${s.ids.rooms['MER']}"]`);
       await block.getByRole('button', { name: 'MERのメニュー' }).click();
       await page.getByRole('menuitem', { name: '今年は使用不可にする' }).click();

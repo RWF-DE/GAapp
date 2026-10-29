@@ -48,7 +48,8 @@ import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
 import { cn } from '@/lib/utils';
 import { AutoResult, seconds } from './auto-result';
-import { AutoRunLock, MODE_LABELS, useAutoAllocation, type AutoRunDeps } from './auto-run';
+import { autoBlockOf, AutoRunLock, MODE_LABELS, useAutoAllocation, type AutoRunDeps } from './auto-run';
+import { useRowFocus } from './use-row-focus';
 import { GroupViewList } from './group-view';
 import { ItemTabView } from './item-tab-view';
 import { IssuesPanel, ProblemsList } from './issues-panel';
@@ -332,16 +333,7 @@ function AllocationLoaded({
   );
 
   // ?row=… で開いたら、その行のタブを開いてスクロールし、目立たせる（行のタブが違えば直す）
-  useEffect(() => {
-    if (!query.row) return;
-    const itemId = rowItem.get(query.row);
-    const tab = itemId ? tabByItem.get(itemId) : undefined;
-    if (tab && query.view === 'item' && tab !== currentTab?.key) {
-      setQuery({ view: 'item', tab, row: query.row });
-      return;
-    }
-    document.querySelector(`[data-row-id="${CSS.escape(query.row)}"]`)?.scrollIntoView({ block: 'center' });
-  }, [query.row, query.view, rowItem, tabByItem, currentTab, setQuery]);
+  useRowFocus({ row: query.row, view: query.view, rowItem, tabByItem, currentTabKey: currentTab?.key, setQuery });
   useEffect(() => {
     if (highlightRoom) document.querySelector(`[data-room-block="${CSS.escape(highlightRoom)}"]`)?.scrollIntoView({ block: 'start' });
   }, [highlightRoom, currentTab]);
@@ -357,20 +349,14 @@ function AllocationLoaded({
   const autoRows = replaceable;
   const problems = validation.yearData?.problems ?? [];
   const unverified = auto.state.outcome?.kind === 'unverified';
-  const autoBlock: string | null = !allocating
-    ? null
-    : running
-      ? null
-      : dirty
-        ? '保存していない変更があります。先に保存するか取り消してください'
-      : problems.length > 0
-        ? '入力に誤りがあるので、自動振り分けはできません（下の一覧を直してください）'
-        : unverified
-          ? '前の保存が保存されたか確かめるまで、もう一度実行できません'
-          : engineState === 'loading' || engineState === 'idle'
-            ? '計算エンジンを読み込み中（初回だけ。約 1.2 MB）'
-            : null;
-  const autoDisabled = !allocating || running || dirty || problems.length > 0 || unverified || engineState === 'loading' || engineState === 'idle';
+  const { disabled: autoDisabled, reason: autoBlock } = autoBlockOf({
+    allocating,
+    running,
+    dirty,
+    problemCount: problems.length,
+    unverified,
+    engineState,
+  });
   const engineNote = isAdmin && allocating && engineState === 'failed' ? '計算エンジンを読み込めませんでした。「自動振り分け」を押すと、もう一度読み込みます。' : null;
 
   // ---- Excel 出力（Q3：確定前は確かめて、ファイル名に「_確定前」） ----

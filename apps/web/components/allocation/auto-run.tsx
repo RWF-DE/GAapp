@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import type { Snapshot } from '@/lib/data/snapshot';
 import { classifyError } from '@/lib/errors';
 import type { SaveAutoAllocationsResult } from '@/lib/rpc/payloads';
-import { EngineCancelledError, solverErrorResult, type AllocatorEngine } from '@/lib/allocation/engine';
+import { EngineCancelledError, solverErrorResult, type AllocatorEngine, type EngineState } from '@/lib/allocation/engine';
 import { buildAllocateInput } from '@/lib/allocation/input';
 import { autoRowsMatch } from '@/lib/data/allocation';
 import { useUnsavedChanges } from '@/lib/unsaved-changes';
@@ -58,6 +58,25 @@ export type AutoOutcome =
   | { kind: 'cancelled'; mode: AllocateMode }
   /** 読み直しなどの失敗 */
   | { kind: 'error'; mode: AllocateMode; error: unknown };
+
+/** 自動振り分け・最小変更で再実行を押せない理由（押せるなら null）。disabled はボタンを押せないこと */
+export function autoBlockOf(p: {
+  allocating: boolean;
+  running: boolean;
+  dirty: boolean;
+  problemCount: number;
+  unverified: boolean;
+  engineState: EngineState;
+}): { disabled: boolean; reason: string | null } {
+  if (!p.allocating) return { disabled: true, reason: null };
+  if (p.running) return { disabled: true, reason: null };
+  if (p.dirty) return { disabled: true, reason: '保存していない変更があります。先に保存するか取り消してください' };
+  if (p.problemCount > 0) return { disabled: true, reason: '入力に誤りがあるので、自動振り分けはできません（下の一覧を直してください）' };
+  if (p.unverified) return { disabled: true, reason: '前の保存が保存されたか確かめるまで、もう一度実行できません' };
+  // idle（開いた直後で warmup の前・「中止」で Worker を止めた後）は押せる：start が engine を読み込んでから計算する（次の run で作り直す）
+  if (p.engineState === 'loading') return { disabled: true, reason: '計算エンジンを読み込み中（初回だけ。約 1.2 MB）' };
+  return { disabled: false, reason: null };
+}
 
 export interface AutoRunDeps {
   engine: AllocatorEngine | null;

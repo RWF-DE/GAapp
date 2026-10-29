@@ -30,7 +30,9 @@ async function rowsOf(yearId: string, where = 'true', params: unknown[] = []): P
 }
 
 async function waitEngineReady(page: Page): Promise<void> {
-  await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled({ timeout: 30_000 });
+  // 中止の後（engine が idle）もボタンは押せるので、読み込みが済んだことは engine-state で見る
+  await expect(page.getByTestId('engine-state')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+  await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled();
 }
 
 /** 行を開く（その行のタブ） */

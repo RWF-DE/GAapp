@@ -13,7 +13,9 @@ test.use({ launchOptions: { env: { ...process.env, LANG: 'C.UTF-8' } } });
 
 /** 計算エンジンの読み込みが終わり、自動振り分けを押せるまで待つ */
 async function waitEngineReady(page: Page): Promise<void> {
-  await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled({ timeout: 30_000 });
+  // 中止の後（engine が idle）もボタンは押せるので、読み込みが済んだことは engine-state で見る
+  await expect(page.getByTestId('engine-state')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+  await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled();
 }
 
 async function runAuto(page: Page, mode: '自動振り分け' | '最小変更で再実行' = '自動振り分け'): Promise<void> {

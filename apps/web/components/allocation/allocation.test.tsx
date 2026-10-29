@@ -14,7 +14,7 @@ import { toYearData } from '@/lib/data/year-data';
 import type { SaveAutoAllocationsResult } from '@/lib/rpc/payloads';
 import { fixtureSnapshot } from '@/lib/testing/fixture-rows';
 import { AutoResult } from './auto-result';
-import { AutoRunLock, CANCEL_AFTER_MS, useAutoAllocation, type AutoRunDeps } from './auto-run';
+import { autoBlockOf, AutoRunLock, CANCEL_AFTER_MS, useAutoAllocation, type AutoRunDeps } from './auto-run';
 import { IssuesPanel } from './issues-panel';
 
 const auth = vi.hoisted(() => ({ membership: { status: 'idle' } as MembershipState }));
@@ -297,6 +297,33 @@ describe('計算中のロック（engine を偽物にして fake timers）', () 
     expect(deps.readVersion).toHaveBeenCalled();
   });
 
+  it('中止の後：engine は idle に戻り、ボタンは押せる。もう一度押すと Worker を作り直して計算する', async () => {
+    vi.useFakeTimers();
+    const { deps, workers, engine } = makeDeps();
+    await act(async () => {
+      await engine.warmup();
+    });
+    render(<Harness deps={deps} />);
+    fireEvent.click(screen.getByRole('button', { name: 'go' }));
+    await flush();
+    await flush();
+    act(() => vi.advanceTimersByTime(CANCEL_AFTER_MS + 500));
+    fireEvent.click(screen.getByRole('button', { name: '中止' }));
+    await flush();
+    await flush();
+    expect(screen.getByTestId('outcome').textContent).toBe('cancelled');
+    expect(engine.state()).toBe('idle');
+    // 画面のボタン：中止の後（engine が idle）も押せる（読み込み中とは出さない）
+    const block = autoBlockOf({ allocating: true, running: false, dirty: false, problemCount: 0, unverified: false, engineState: engine.state() });
+    expect(block).toEqual({ disabled: false, reason: null });
+    // もう一度押す：Worker を作り直し、読み込み → 計算へ進む
+    fireEvent.click(screen.getByRole('button', { name: 'go' }));
+    for (let k = 0; k < 4; k += 1) await flush();
+    expect(workers).toHaveLength(2);
+    expect(workers[1]!.sent.map((m) => m.type)).toContain('allocate');
+    expect(screen.getByTestId('allocate-lock').getAttribute('data-phase')).toBe('solving');
+  });
+
   it('読み直しの段階でも 10 秒を過ぎたら「中止」を出す（DB は変わらない）', async () => {
     vi.useFakeTimers();
     const { deps, engine } = makeDeps({ loadFresh: () => new Promise(() => {}) });
@@ -331,6 +358,23 @@ describe('計算中のロック（engine を偽物にして fake timers）', () 
     expect(screen.queryByRole('button', { name: '中止' })).toBeNull();
     expect(lock.textContent).toContain('（保存中…）');
     expect(lock.textContent).toContain('経過 30 秒');
+  });
+});
+
+describe('自動振り分けを押せない理由（autoBlockOf）', () => {
+  const base = { allocating: true, running: false, dirty: false, problemCount: 0, unverified: false } as const;
+  it('読み込み中だけ「読み込み中」で押せない。idle（開いた直後・中止の後）と ready・failed は押せる', () => {
+    expect(autoBlockOf({ ...base, engineState: 'loading' })).toEqual({ disabled: true, reason: '計算エンジンを読み込み中（初回だけ。約 1.2 MB）' });
+    expect(autoBlockOf({ ...base, engineState: 'idle' })).toEqual({ disabled: false, reason: null });
+    expect(autoBlockOf({ ...base, engineState: 'ready' })).toEqual({ disabled: false, reason: null });
+    expect(autoBlockOf({ ...base, engineState: 'failed' })).toEqual({ disabled: false, reason: null });
+  });
+  it('振り分け中でない・計算中は理由なしで押せない。未保存・入力の誤り・未確認は理由つき', () => {
+    expect(autoBlockOf({ ...base, allocating: false, engineState: 'ready' })).toEqual({ disabled: true, reason: null });
+    expect(autoBlockOf({ ...base, running: true, engineState: 'ready' })).toEqual({ disabled: true, reason: null });
+    expect(autoBlockOf({ ...base, dirty: true, engineState: 'ready' }).reason).toContain('保存していない変更');
+    expect(autoBlockOf({ ...base, problemCount: 1, engineState: 'ready' }).reason).toContain('入力に誤り');
+    expect(autoBlockOf({ ...base, unverified: true, engineState: 'ready' }).reason).toContain('確かめるまで');
   });
 });
 

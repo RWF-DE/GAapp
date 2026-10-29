@@ -114,7 +114,8 @@ test('T13 キャスター机交換：依頼済みにする・拒否 → 最小�
     // 振り分け画面へ → 最小変更で再実行 → その団体の置き換えが消える
     await attention.getByRole('link', { name: '振り分け画面' }).click();
     await expect(page).toHaveURL(/\/allocation\/?\?view=group&group=/);
-    await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await expect(page.getByTestId('engine-state')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+    await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toBeEnabled();
     await page.getByRole('button', { name: '最小変更で再実行', exact: true }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: '実行する' }).click();
     await expect(page.getByTestId('allocate-saved')).toBeVisible({ timeout: 30_000 });
