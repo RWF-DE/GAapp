@@ -1,6 +1,6 @@
 // T12 ルールのスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T12` で notes/T12/ に撮る（CI では流さない）。
 // 一覧（PC・スマホ）、?code=S05 で開いた編集のシート、欄の下のエラー、ひな形のメニュー、無効にする確認、有効にできない理由、
-// 読み直しの失敗（前の一覧を残す帯）、使用不可の場所を指す「残す」の印と知らせ、使用場所のない団体を選んだ「残す」の知らせ、空・読み込み中・権限なし・確定中（メモだけ）。
+// 読み直しの失敗（前の一覧を残す帯）、保存できたか分からないときのシート、使用不可の場所を指す「残す」の印と知らせ、使用場所のない団体を選んだ「残す」の知らせ、空・読み込み中・権限なし・確定中（メモだけ）。
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
@@ -125,6 +125,26 @@ test.describe('T12 管理者', () => {
       await expect(sheet.getByRole('heading', { name: 'ルール S08（残す）を編集' })).toBeVisible();
       await expect(sheet.locator('[data-field="params.room"] [data-field-warning]')).toBeVisible();
       await shoot(page, 'T12', 'form-keep-mobile');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T12 保存できたか分からない（シートの入力を残し、保存は押せるまま。2.6 の (B1)）', async ({ page }) => {
+    // supabase-js の GET の再試行で、読み直しの失敗が出るまで数秒かかる
+    test.setTimeout(120_000);
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/?code=S05');
+      const sheet = page.getByRole('dialog');
+      await expect(sheet.getByRole('heading', { name: 'ルール S05（運び元の制限）を編集' })).toBeVisible();
+      await sheet.getByLabel(/^メモ/).fill('E2E：通信が切れた間のメモ');
+      await page.route('**/rest/v1/rules*', (route: Route) => route.abort('internetdisconnected'));
+      await sheet.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(sheet.getByTestId('unknown-outcome')).toBeVisible({ timeout: 60_000 });
+      await expect(sheet.getByTestId('unknown-outcome')).toBeInViewport();
+      await shoot(page, 'T12', 'form-unknown-outcome-pc');
     } finally {
       await s.cleanup();
     }

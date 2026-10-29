@@ -42,7 +42,6 @@ import {
   ruleNamesOf,
   ruleProblems,
   ruleToForm,
-  sameRuleWrite,
   templateToForm,
   updateRule,
   useRulesData,
@@ -52,12 +51,13 @@ import {
   type RuleWrite,
 } from '@/lib/data/rules';
 import type { RuleDbRow } from '@/lib/db/types';
-import { classifyError, effectOf, messageFor } from '@/lib/errors';
+import { classifyError, messageFor } from '@/lib/errors';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { queryKeys } from '@/lib/query';
 import { NOTE_MAX, optionalText } from '@/lib/schemas/common';
 import { cn } from '@/lib/utils';
-import { RuleFormSheet, type RuleSheetTarget, type SaveOutcome } from './rule-form-sheet';
+import { RuleFormSheet, type RuleSheetTarget } from './rule-form-sheet';
+import { runRuleWrite, toggleFailureMessage, type RuleWriteDeps, type SaveOutcome } from './rule-write';
 
 const memoSchema = optionalText(NOTE_MAX);
 
@@ -150,92 +150,58 @@ function RulesView({
     await queryClient.invalidateQueries({ queryKey: queryKeys.year(yearId) });
   };
 
-  /**
-   * 書き込みを送り、エラーを分ける（2.5・2.6）。401 は1回だけセッションを更新して送り直す。
-   * 通信の失敗（保存されたか分からない）は verify で読み直し、保存されていれば成功とする。
-   */
-  const runWrite = async (send: () => Promise<unknown>, verify: () => Promise<boolean>, okMessage: string): Promise<SaveOutcome> => {
-    let error: unknown;
-    try {
-      await send();
-      await afterSaved();
-      toast.success(okMessage);
-      return { ok: true };
-    } catch (e) {
-      error = e;
-    }
-    if ((await onAuthError(error)) === 'retry') {
-      try {
-        await send();
-        await afterSaved();
-        toast.success(okMessage);
-        return { ok: true };
-      } catch (e) {
-        error = e;
-      }
-    }
-    const c = classifyError(error);
-    if (c.kind === 'network' || (c.kind === 'unknown' && c.reason !== 'unexpected_response')) {
-      try {
-        if (await verify()) {
-          await afterSaved();
-          toast.success('保存されていました');
-          return { ok: true };
-        }
-      } catch {
-        return { ok: false, error, notice: UNKNOWN_OUTCOME_MESSAGE };
-      }
-      return { ok: false, error };
-    }
-    if (c.code === '23505') {
-      onReload();
-      return { ok: false, error, fieldErrors: { code: ['同じコードのルールがあります'] } };
-    }
-    const effect = effectOf(c);
-    if (effect.reload === 'data') onReload();
-    if (effect.reload === 'year') {
-      onReload();
-      reloadMembership();
-    }
-    return { ok: false, error };
-  };
+  const writeDeps: RuleWriteDeps = { afterSaved, onAuthError, onReload, reloadMembership };
 
+  // 書き込みは runRuleWrite（2.6 の (B1)）：応答が届かなかったとき・conflict・not_found・23505 は、
+  // 追加は (year_id, code)、更新は id で行を読み直して決める。確かめるためだけの状態は持たない
   const onInsert = (row: RuleWrite) =>
-    runWrite(
-      () => insertRule(yearId, row),
-      async () => {
-        const saved = await findRuleByCode(yearId, row.code);
-        return !!saved && sameRuleWrite(saved, row);
+    runRuleWrite(
+      {
+        mode: 'insert',
+        send: () => insertRule(yearId, row),
+        reread: () => findRuleByCode(yearId, row.code),
+        input: row,
+        baseVersion: null,
+        okMessage: `ルール ${row.code} を追加しました`,
       },
-      `ルール ${row.code} を追加しました`,
+      writeDeps,
     );
 
   const onUpdate = (rule: RuleDbRow, patch: Partial<RuleWrite>) =>
-    runWrite(
-      () => updateRule(rule, patch),
-      async () => {
-        const saved = await findRuleById(rule.id);
-        return !!saved && saved.updated_at !== rule.updated_at && sameRuleWrite(saved, patch);
+    runRuleWrite(
+      {
+        mode: 'update',
+        send: () => updateRule(rule, patch),
+        reread: () => findRuleById(rule.id),
+        input: patch,
+        baseVersion: rule.updated_at,
+        okMessage: `ルール ${patch.code ?? rule.code} を保存しました`,
       },
-      `ルール ${patch.code ?? rule.code} を保存しました`,
+      writeDeps,
     );
 
-  const setEnabled = async (rule: RuleDbRow, enabled: boolean, memo?: string | null) => {
+  /** 有効・無効の切り替え。失敗は toast で知らせ、結果を返す（無効にするダイアログが閉じるかを決める） */
+  const setEnabled = async (rule: RuleDbRow, enabled: boolean, memo?: string | null): Promise<SaveOutcome> => {
     const patch: Partial<RuleWrite> = memo === undefined ? { enabled } : { enabled, memo };
     setToggling(rule.id);
     try {
-      const out = await runWrite(
-        () => updateRule(rule, patch),
-        async () => {
-          const saved = await findRuleById(rule.id);
-          return !!saved && saved.updated_at !== rule.updated_at && sameRuleWrite(saved, patch);
+      const out = await runRuleWrite(
+        {
+          mode: 'update',
+          send: () => updateRule(rule, patch),
+          reread: () => findRuleById(rule.id),
+          input: patch,
+          baseVersion: rule.updated_at,
+          okMessage: enabled ? `ルール ${rule.code} を有効にしました` : `ルール ${rule.code} を無効にしました`,
         },
-        enabled ? `ルール ${rule.code} を有効にしました` : `ルール ${rule.code} を無効にしました`,
+        writeDeps,
       );
       if (!out.ok) {
-        toast.error(out.notice ?? messageFor(classifyError(out.error)));
-        throw out.error;
+        const message = toggleFailureMessage(out, (e) => messageFor(classifyError(e)));
+        if (out.showReload) toast.error(message, { action: { label: '読み直す', onClick: onReload } });
+        else toast.error(message);
       }
+      return out;
     } finally {
       setToggling(null);
     }
@@ -252,7 +218,7 @@ function RulesView({
       setEnableBlocked({ rule, messages });
       return;
     }
-    void setEnabled(rule, true).catch(() => undefined);
+    void setEnabled(rule, true);
   };
 
   const openEdit = (r: RuleDbRow) => {
@@ -439,14 +405,13 @@ function RulesView({
           onConfirm={async (memo) => {
             // 開いたときの行（updated_at）で送る。開いた後に一覧が読み直されても版を進めない
             // （メモの欄は開いたときのメモから作ったので、進めるとほかの人のメモを黙って上書きする）
-            try {
-              await setEnabled(disableTarget, false, memo);
-            } catch (e) {
-              // ほかの人が先に変えた・消した：一覧は読み直したので閉じる（古い行・古いメモで送り続けない。開き直すと今のメモが入る）
-              const kind = classifyError(e).kind;
-              if (kind === 'conflict' || kind === 'not_found') setDisableTarget(null);
-              throw e;
-            }
+            const out = await setEnabled(disableTarget, false, memo);
+            if (out.ok) return;
+            // ほかの人が先に変えた・消した（読み直した）：一覧は読み直したので閉じる（古い行・古いメモで送り続けない。開き直すと今のメモが入る）。
+            // 保存できたか分からない・止められた後に読み直せなかったときは、メモの入力を残して開いたままにする（もう一度押すとふつうに送る）
+            const kind = classifyError(out.error).kind;
+            if (!out.notice && (kind === 'conflict' || kind === 'not_found')) setDisableTarget(null);
+            throw out.error;
           }}
         />
       ) : null}
@@ -476,9 +441,6 @@ function RulesView({
 
 /** 読んだ後の読み直しに失敗したとき（表示は前に読んだ内容のまま） */
 const RELOAD_FAILED_MESSAGE = 'ルールを読み直せませんでした。表示は前に読んだ内容のままです';
-
-/** 通信の失敗の後、保存されたかを読み直しても確かめられなかったとき（2.6） */
-const UNKNOWN_OUTCOME_MESSAGE = '保存できたか確かめられません。通信が戻ったら「読み直す」で確かめてから、もう一度保存してください';
 
 function Notice({
   icon,

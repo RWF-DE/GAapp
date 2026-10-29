@@ -4,6 +4,7 @@
 // 確定中・終了の年度はメモだけ直せる。保存は rules への直接の書き込み（insert・updated_at で楽観ロックの update）。
 // 楽観ロックの版は、シートを開いたときの行の updated_at（baseUpdatedAt）。開いた後に一覧が読み直されても進めない
 // （フォームは開いたときの値のままなので、進めるとほかの人の変更を黙って上書きする）。conflict を見た後だけ、読み直した行の版に進める（2.5）。
+// 応答が届かなかったとき・止められたときは 2.6 の (B1)（rule-write.ts の runRuleWrite）。確かめるためだけの状態は持たず、保存のボタンは押せるまま。
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
@@ -29,6 +30,7 @@ import { classifyError } from '@/lib/errors';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { NOTE_MAX, optionalText } from '@/lib/schemas/common';
 import { CheckOne, FieldErrors, RuleParamsFields } from './rule-fields';
+import type { SaveOutcome } from './rule-write';
 
 /**
  * 開いているシート（新規はひな形のコードを持つことがある）。
@@ -38,11 +40,7 @@ export type RuleSheetTarget =
   | { type: 'new'; initial: RuleFormValues; template?: string }
   | { type: 'edit'; ruleId: string; initial: RuleFormValues; baseUpdatedAt: string };
 
-/**
- * 保存の結果。失敗は入力を残す。fieldErrors は欄の下に出すもの（コードの重複など）、
- * notice は保存されたか確かめられないときの文言（ErrorBanner の代わりに出す）。
- */
-export type SaveOutcome = { ok: true } | { ok: false; error: unknown; fieldErrors?: RuleFieldErrors; notice?: string };
+export type { SaveOutcome };
 
 export interface RuleFormSheetProps {
   target: RuleSheetTarget | null;
@@ -74,7 +72,7 @@ export function RuleFormSheet(props: RuleFormSheetProps) {
 function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate, onReload }: RuleFormSheetProps & { target: RuleSheetTarget }) {
   const [values, setValues] = useState<RuleFormValues>(target.initial);
   const [errors, setErrors] = useState<RuleFieldErrors>({});
-  const [submitError, setSubmitError] = useState<{ error: unknown; notice?: string } | null>(null);
+  const [submitError, setSubmitError] = useState<{ error: unknown; notice?: string; showReload?: boolean } | null>(null);
   const [pending, setPending] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -84,18 +82,24 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
   const rule = target.type === 'edit' ? (data.rules.find((r) => r.id === target.ruleId) ?? null) : null;
   // 楽観ロックの版（開いたときの行の updated_at）。読み直しでは進めず、conflict を見た後だけ読み直した行の版に進める
   const [lockUpdatedAt, setLockUpdatedAt] = useState(target.type === 'edit' ? target.baseUpdatedAt : null);
+  // conflict の後、止められたときに読み直した行（runRuleWrite の rebase）。版はこの行の updated_at に進める
+  const [rebasedRow, setRebasedRow] = useState<RuleDbRow | null>(null);
+  // conflict を見たが、読み直した行をまだ入力の元にしていない（読み直せなかった・行がなくなっていた）。一覧の読み直しが来たら、その版に進める
   const [adoptAfterConflict, setAdoptAfterConflict] = useState(false);
   if (adoptAfterConflict && rule && rule.updated_at !== lockUpdatedAt) {
     // conflict の後に読み直した行が来た：もう一度の保存は、その版での意図した上書きになる（描画中に state を合わせる）
     setLockUpdatedAt(rule.updated_at);
+    setRebasedRow(null);
     setAdoptAfterConflict(false);
   }
   const dirty = useMemo(() => JSON.stringify(values) !== JSON.stringify(target.initial), [values, target.initial]);
   // 編集で何も変えていなければ、保存を押しても確かめるだけで送らない（update を送ると、振り分け中の年度の版を無駄に上げる）。
-  // 開いたときの値（target.initial）と比べるのは、版が開いたときのままの間だけ。conflict の後に読み直した行の版へ進んだら、
-  // 比べる相手は読み直した行（save の noChange の sameRuleWrite）。開いたときの値に戻した入力も、読み直した行と違えば送る
+  // 開いたときの値（target.initial）と比べるのは、版が開いたときのままで、conflict を見ていない間だけ。conflict の後に読み直した行の版へ進んだら、
+  // 比べる相手は読み直した行（save の noChange の sameRuleWrite）。開いたときの値に戻した入力も、読み直した行と違えば送る。
+  // conflict を見た後、読み直した行をまだ入力の元にしていない間（adoptAfterConflict）は、送らずに閉じる分かれ道を使わない
+  // （DB にはほかの人の値があるので、黙って閉じると入力が捨てられる。送れば今の版で conflict がもう一度返り、そのときに読み直す）
   const lockAdvanced = target.type === 'edit' && lockUpdatedAt !== target.baseUpdatedAt;
-  const unchanged = target.type === 'edit' && !dirty && !lockAdvanced;
+  const unchanged = target.type === 'edit' && !dirty && !lockAdvanced && !adoptAfterConflict;
   const memoOnly = editMode === 'memo';
   const paramsDisabled = memoOnly || pending;
 
@@ -104,6 +108,11 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
     if (Object.keys(errors).length === 0) return;
     bodyRef.current?.querySelector('[data-field-error]')?.scrollIntoView?.({ block: 'center' });
   }, [errors]);
+  // 保存の失敗の知らせ（シートの本文の先頭）も、下の欄まで送っていたら見える所に出す
+  useEffect(() => {
+    if (!submitError) return;
+    bodyRef.current?.querySelector('[data-submit-error]')?.scrollIntoView?.({ block: 'nearest' });
+  }, [submitError]);
 
   const requestClose = () => {
     if (pending) return;
@@ -121,8 +130,9 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
      * 送る内容が保存してある行（版も同じ。conflict の後は読み直した行）と同じ（変えて戻したときなど）。
      * 確かめ（欄の下のエラー）は送るときと同じに通してから閉じる（参照の切れたルールを開いて保存を押すと、エラーが見える）
      */
+    const savedRow = rebasedRow && rebasedRow.updated_at === lockUpdatedAt ? rebasedRow : rule;
     const noChange = (patch: Partial<RuleWrite>) =>
-      unchanged || (!!rule && rule.updated_at === lockUpdatedAt && sameRuleWrite(rule, patch));
+      !adoptAfterConflict && (unchanged || (!!savedRow && savedRow.updated_at === lockUpdatedAt && sameRuleWrite(savedRow, patch)));
     const closeUnchanged = () => {
       toast.info('変更はありません');
       onClose();
@@ -160,8 +170,16 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
       }
       if (out.fieldErrors) setErrors(out.fieldErrors);
       else {
-        setSubmitError({ error: out.error, notice: out.notice });
-        if (target.type === 'edit' && classifyError(out.error).kind === 'conflict') setAdoptAfterConflict(true);
+        setSubmitError({ error: out.error, notice: out.notice, showReload: out.showReload });
+        const kind = classifyError(out.error).kind;
+        if (target.type === 'edit' && out.rebase) {
+          // 止められた後に読み直した行：その版を入力の元にする（もう一度の保存は、その版での意図した上書き）
+          setLockUpdatedAt(out.rebase.updated_at);
+          setRebasedRow(out.rebase);
+          setAdoptAfterConflict(false);
+        } else if (target.type === 'edit' && (out.showReload || kind === 'conflict' || kind === 'not_found')) {
+          setAdoptAfterConflict(true);
+        }
       }
     } finally {
       setPending(false);
@@ -206,14 +224,18 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
         </SheetHeader>
         <div ref={bodyRef} className="flex-1 space-y-5 overflow-y-auto p-4" data-testid="rule-form">
           {submitError?.notice ? (
-            <div role="alert" data-testid="unknown-outcome" className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+            <div role="alert" data-testid="unknown-outcome" data-submit-error className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
               <p className="font-medium text-destructive">{submitError.notice}</p>
-              <Button size="sm" variant="outline" onClick={onReload}>
-                読み直す
-              </Button>
+              {submitError.showReload ? (
+                <Button size="sm" variant="outline" onClick={onReload}>
+                  読み直す
+                </Button>
+              ) : null}
             </div>
           ) : submitError ? (
-            <ErrorBanner error={submitError.error} onReload={onReload} />
+            <div data-submit-error>
+              <ErrorBanner error={submitError.error} onReload={onReload} />
+            </div>
           ) : null}
           {target.type === 'edit' && !rule ? (
             <p className="text-sm text-destructive">このルールは見つかりません（ほかの人が消した可能性があります）。閉じて読み直してください。</p>
