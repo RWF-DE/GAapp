@@ -91,8 +91,11 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
     setAdoptAfterConflict(false);
   }
   const dirty = useMemo(() => JSON.stringify(values) !== JSON.stringify(target.initial), [values, target.initial]);
-  // 編集で何も変えていなければ、保存を押しても確かめるだけで送らない（update を送ると、振り分け中の年度の版を無駄に上げる）
-  const unchanged = target.type === 'edit' && !dirty;
+  // 編集で何も変えていなければ、保存を押しても確かめるだけで送らない（update を送ると、振り分け中の年度の版を無駄に上げる）。
+  // 開いたときの値（target.initial）と比べるのは、版が開いたときのままの間だけ。conflict の後に読み直した行の版へ進んだら、
+  // 比べる相手は読み直した行（save の noChange の sameRuleWrite）。開いたときの値に戻した入力も、読み直した行と違えば送る
+  const lockAdvanced = target.type === 'edit' && lockUpdatedAt !== target.baseUpdatedAt;
+  const unchanged = target.type === 'edit' && !dirty && !lockAdvanced;
   const memoOnly = editMode === 'memo';
   const paramsDisabled = memoOnly || pending;
 
@@ -114,7 +117,8 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
     if (target.type === 'edit' && (!rule || !lockUpdatedAt)) return;
     const locked = rule && lockUpdatedAt ? { ...rule, updated_at: lockUpdatedAt } : null;
     /**
-     * 送らずに閉じるか：入力を開いたときのまま（unchanged）か、送る内容が保存してある行（版も同じ）と同じ（変えて戻したときなど）。
+     * 送らずに閉じるか：入力を開いたときのまま（unchanged。版が開いたときのままの間だけ）か、
+     * 送る内容が保存してある行（版も同じ。conflict の後は読み直した行）と同じ（変えて戻したときなど）。
      * 確かめ（欄の下のエラー）は送るときと同じに通してから閉じる（参照の切れたルールを開いて保存を押すと、エラーが見える）
      */
     const noChange = (patch: Partial<RuleWrite>) =>

@@ -1,6 +1,6 @@
 // T12 ルールのスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T12` で notes/T12/ に撮る（CI では流さない）。
 // 一覧（PC・スマホ）、?code=S05 で開いた編集のシート、欄の下のエラー、ひな形のメニュー、無効にする確認、有効にできない理由、
-// 読み直しの失敗（前の一覧を残す帯）、使用不可の場所を指す「残す」の印と知らせ、空・読み込み中・権限なし・確定中（メモだけ）。
+// 読み直しの失敗（前の一覧を残す帯）、使用不可の場所を指す「残す」の印と知らせ、使用場所のない団体を選んだ「残す」の知らせ、空・読み込み中・権限なし・確定中（メモだけ）。
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
@@ -78,7 +78,15 @@ test.describe('T12 管理者', () => {
       await page.locator(`[data-row-id="${s.ids.rules['S08']}"]`).getByRole('button', { name: 'S08 を編集' }).click();
       await expect(sheet.locator('[data-field="params.room"] [data-field-warning]')).toBeVisible();
       await shoot(page, 'T12', 'form-keep-unusable-pc');
+      // 使用場所のない団体を選ぶと、場所は空になり、欄の下に知らせる
+      await sheet.getByRole('combobox', { name: '団体', exact: true }).click();
+      await page.getByRole('option', { name: '部門(校内分散)', exact: true }).click();
+      await expect(page.locator('[cmdk-root]')).toHaveCount(0);
+      await expect(sheet.locator('[data-field="params.room"] [data-field-notice]')).toBeVisible();
+      await sheet.locator('[data-field="params.room"]').scrollIntoViewIfNeeded();
+      await shoot(page, 'T12', 'form-keep-no-location-pc');
       await sheet.getByRole('button', { name: '閉じる' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '捨てて閉じる' }).click();
       await expect(sheet).toBeHidden();
 
       // 無効にする確認

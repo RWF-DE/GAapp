@@ -350,8 +350,8 @@ function KeepFields({ values, onChange, errors, data, disabled }: RuleFieldsProp
           options={withMissing(groupOptions(data.groups), s.group, '（見つからない団体）')}
           value={s.group}
           onChange={(v) => {
-            // 場所の既定は団体の使用場所。空か前の団体の使用場所のままなら、新しい団体の使用場所に替える（手で選んだ場所は替えない）
-            set({ group: v, room: keepRoomAfterGroupChange(s, v, data.groups) });
+            // 場所はいつも新しい団体の使用場所にする（使用場所がなければ空）。前の場所はほかの団体の場所なので E005 になる
+            set({ group: v, room: keepRoomAfterGroupChange(v, data.groups) });
           }}
           disabled={disabled}
         />
@@ -360,7 +360,7 @@ function KeepFields({ values, onChange, errors, data, disabled }: RuleFieldsProp
         label="場所（団体の使用場所）"
         path="params.room"
         errors={errors}
-        hint={location ? `この団体の使用場所は ${location.name} です` : group ? 'この団体には使用場所がありません' : undefined}
+        hint={location ? `この団体の使用場所は ${location.name} です` : undefined}
       >
         <EntitySelect
           label="場所"
@@ -369,6 +369,12 @@ function KeepFields({ values, onChange, errors, data, disabled }: RuleFieldsProp
           onChange={(v) => set({ room: v })}
           disabled={disabled}
         />
+        {group && !group.location_room_id ? (
+          <p data-field-notice="params.room" className="flex items-start gap-1.5 text-sm text-amber-800">
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+            この団体には使用場所がありません。「残す」は団体の使用場所にしか使えないので、マスタ設定で団体の使用場所を決めてください
+          </p>
+        ) : null}
         {unusableWarning ? (
           <p data-field-warning="params.room" className="flex items-start gap-1.5 text-sm text-amber-800">
             <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />

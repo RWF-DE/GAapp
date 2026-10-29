@@ -224,6 +224,11 @@ describe('checkRuleForm（保存の前の確かめ）', () => {
     expect(res.errors).toEqual({});
     expect(res.row).not.toBeNull();
     expect(res.warnings).toEqual({ 'params.room': [keepUnusableMessage('第一多目的室')] });
+    // 案内は実際にできること（使用を可にするか、無効にする）。場所を選び直すとは言わない（ほかの場所は E005 で保存できない）
+    expect(keepUnusableMessage('第一多目的室')).toBe(
+      '第一多目的室は今年使用不可です。このままでは振り分けが止まります（E002）。マスタ設定で今年の使用を可にするか、このルールを無効にしてください',
+    );
+    expect(keepUnusableMessage('第一多目的室')).not.toContain('選び直');
     // 使用可なら知らせない。ほかの種別も見ない
     expect(checkRuleForm(formOf('S08'), d, rule('S08').id).warnings).toEqual({});
     expect(checkRuleForm(formOf('S05'), data({ unusable: ['1-1'] }), rule('S05').id).warnings).toEqual({});
@@ -292,17 +297,28 @@ describe('ruleRefMessage（checkRuleRefs の文言の品目のコードを名前
 
 describe('keepRoomAfterGroupChange（「残す」で団体を選び直したときの場所）', () => {
   const groups = d.groups;
-  it('場所が空か前の団体の使用場所なら新しい団体の使用場所に、手で選んだ場所はそのまま', () => {
+  it('いつも新しい団体の使用場所（手で選んだ場所も残さない。E005 になるため）。使用場所のない団体・団体を外したときは空', () => {
     const a = groupId('模擬店01');
     const b = groupId('模擬店02');
     const exhibit = groupId('学科展示');
-    expect(keepRoomAfterGroupChange({ group: null, room: null }, a, groups)).toBe(roomId('1-1'));
-    expect(keepRoomAfterGroupChange({ group: a, room: roomId('1-1') }, b, groups)).toBe(roomId('1-2'));
-    expect(keepRoomAfterGroupChange({ group: b, room: roomId('1-2') }, exhibit, groups)).toBe(roomId('第一多目的室'));
-    // 手で選んだ場所（前の団体の使用場所でない）は替えない
-    expect(keepRoomAfterGroupChange({ group: a, room: roomId('2-1') }, b, groups)).toBe(roomId('2-1'));
-    // 団体を外すと、使用場所のままだった場所は空に
-    expect(keepRoomAfterGroupChange({ group: a, room: roomId('1-1') }, null, groups)).toBeNull();
+    const noLocation = groupId('部門(校内分散)');
+    expect(d.groups.find((g) => g.id === noLocation)!.location_room_id).toBeNull();
+    expect(keepRoomAfterGroupChange(a, groups)).toBe(roomId('1-1'));
+    expect(keepRoomAfterGroupChange(b, groups)).toBe(roomId('1-2'));
+    expect(keepRoomAfterGroupChange(exhibit, groups)).toBe(roomId('第一多目的室'));
+    expect(keepRoomAfterGroupChange(noLocation, groups)).toBeNull();
+    expect(keepRoomAfterGroupChange(null, groups)).toBeNull();
+    expect(keepRoomAfterGroupChange(MISSING, groups)).toBeNull();
+  });
+
+  it('前の団体の使用場所でない場所を選んで団体を選び直すと E005 になるので、選び直した後の場所は checkRuleRefs を通る', () => {
+    // 手で選んだ場所（2-1）を残すと、場所が団体の使用場所でないエラーになる（だから残さない）
+    const f = templateToForm(R8_RULE_TEMPLATES.find((t) => t.code === 'S08')!);
+    const exhibit = groupId('学科展示');
+    const manual = checkRuleForm({ ...f, code: 'S98', keep: { ...f.keep, group: exhibit, room: roomId('2-1') } }, d, null);
+    expect(errorsUnder(manual.errors, 'params.room').length).toBeGreaterThan(0);
+    const reset = checkRuleForm({ ...f, code: 'S98', keep: { ...f.keep, group: exhibit, room: keepRoomAfterGroupChange(exhibit, d.groups) } }, d, null);
+    expect(errorsUnder(reset.errors, 'params.room')).toEqual([]);
   });
 });
 

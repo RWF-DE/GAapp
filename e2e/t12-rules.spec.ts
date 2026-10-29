@@ -155,18 +155,27 @@ test.describe('T12 管理者', () => {
       await pick(page, sheet, '団体', '設営');
       await save(page, sheet, 'S06');
 
-      // 残すは、団体を選ぶと場所に使用場所が入る。選び直すと、場所が前の団体の使用場所のままなら新しい団体の使用場所に替わる
+      // 残すは、団体を選ぶと場所に使用場所が入る。選び直すと、場所はいつも新しい団体の使用場所に替わる
+      // （「残す」の場所は団体の使用場所でなければならない。E005）
       sheet = await openTemplate(page, 'S08');
       const roomBox = sheet.getByRole('combobox', { name: '場所', exact: true });
+      const noLocation = sheet.locator('[data-field="params.room"] [data-field-notice]');
       await pick(page, sheet, '団体', '模擬店01');
       await expect(roomBox).toHaveText('1-1');
       await pick(page, sheet, '団体', '模擬店02');
       await expect(roomBox).toHaveText('1-2');
-      // 手で選んだ場所は、団体を選び直しても替えない
+      // 手で選んだ場所も、団体を選び直すと新しい団体の使用場所に替わる
       await pick(page, sheet, '場所', '2-1');
       await pick(page, sheet, '団体', '学科展示');
-      await expect(roomBox).toHaveText('2-1');
-      await pick(page, sheet, '場所', '第一多目的室');
+      await expect(roomBox).toHaveText('第一多目的室');
+      await expect(noLocation).toHaveCount(0);
+      // 使用場所のない団体なら場所は空になり、欄の下に知らせる
+      await pick(page, sheet, '団体', '部門(校内分散)');
+      await expect(roomBox).toHaveText('選んでください');
+      await expect(noLocation).toHaveText('この団体には使用場所がありません。「残す」は団体の使用場所にしか使えないので、マスタ設定で団体の使用場所を決めてください');
+      await pick(page, sheet, '団体', '学科展示');
+      await expect(roomBox).toHaveText('第一多目的室');
+      await expect(noLocation).toHaveCount(0);
       await save(page, sheet, 'S08');
 
       // ひな形は全部入ったので押せない
@@ -443,7 +452,9 @@ test.describe('T12 管理者', () => {
       const s08 = page.locator(`[data-row-id="${s.ids.rules['S08']}"]`);
       const problem = s08.getByTestId('rule-problem');
       await expect(problem).toContainText('使用不可の場所です');
-      await expect(problem).toContainText('第一多目的室は今年使用不可です。このままでは振り分けが止まります（E002）');
+      await expect(problem).toContainText(
+        '第一多目的室は今年使用不可です。このままでは振り分けが止まります（E002）。マスタ設定で今年の使用を可にするか、このルールを無効にしてください',
+      );
       await expect(page.getByTestId('rules-problem-notice')).toContainText('直す必要のある有効なルールが 1 件あります');
 
       // フォームでは場所の欄の下に知らせる。保存は止めない（メモを直して保存できる）
@@ -451,6 +462,8 @@ test.describe('T12 管理者', () => {
       const sheet = page.getByRole('dialog');
       const warning = sheet.locator('[data-field="params.room"] [data-field-warning]');
       await expect(warning).toContainText('第一多目的室は今年使用不可です');
+      await expect(warning).toContainText('マスタ設定で今年の使用を可にするか、このルールを無効にしてください');
+      await expect(warning).not.toContainText('選び直');
       // 使用可の場所を選ぶと消える。戻すとまた出る
       await pick(page, sheet, '場所', '1-1');
       await expect(warning).toHaveCount(0);
@@ -490,10 +503,27 @@ test.describe('T12 管理者', () => {
       await expect(sheet.getByLabel('コード')).toBeDisabled();
       await expect(sheet.getByRole('combobox', { name: '団体', exact: true })).toBeDisabled();
       await expect(sheet.getByRole('group', { name: '運び元の場所' }).getByRole('checkbox', { name: '1-1', exact: true })).toBeDisabled();
+      // 何も変えずに保存しても update を送らない（行の updated_at が変わらない）。「変更はありません」で閉じる
+      const updatedAtOf = async () =>
+        (await sql<{ u: string }>(`select updated_at::text as u from public.rules where year_id = $1 and code = 'S05'`, [s.yearId]))[0]!.u;
+      const u0 = await updatedAtOf();
+      let patches = 0;
+      page.on('request', (r) => {
+        if (r.url().includes('/rest/v1/rules') && r.method() === 'PATCH') patches += 1;
+      });
+      await sheet.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(sheet).toBeHidden();
+      await expect(page.getByText('変更はありません')).toBeVisible();
+      expect(patches).toBe(0);
+      expect(await updatedAtOf()).toBe(u0);
+
+      await s05.getByRole('button', { name: 'S05 のメモを直す' }).click();
+      await expect(sheet.getByRole('heading', { name: 'ルール S05 のメモを直す' })).toBeVisible();
       await sheet.getByLabel(/^メモ/).fill('E2E：来年は 3-1 も候補');
       await sheet.getByRole('button', { name: '保存', exact: true }).click();
       await expect(sheet).toBeHidden();
       await expect(s05).toContainText('E2E：来年は 3-1 も候補');
+      expect(patches).toBe(1);
 
       const after = await rulesOf(s.yearId);
       expect(after).toEqual(before.map((r) => (r.code === 'S05' ? { ...r, memo: 'E2E：来年は 3-1 も候補' } : r)));

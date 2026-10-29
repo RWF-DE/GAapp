@@ -200,9 +200,10 @@ export function unusableRoomIds(data: Pick<RulesData, 'roomYears'>): Set<string>
 /**
  * 「残す」の場所が今年使用不可のときの知らせ（allocate の前処理が E002 で止める。03 の前処理 3）。
  * 保存は止めない（場所の使用はマスタ設定で年度ごとに変えるもので、使用可に戻せば直る。メモだけ直す・無効にするのも止めない）。
+ * 「場所を選び直す」とは案内しない：「残す」の場所は団体の使用場所でなければならず（E005。checkRuleRefs）、ほかの場所は保存できないため。
  */
 export function keepUnusableMessage(roomName: string): string {
-  return `${roomName}は今年使用不可です。このままでは振り分けが止まります（E002）。マスタ設定で使用可にするか、場所を選び直してください`;
+  return `${roomName}は今年使用不可です。このままでは振り分けが止まります（E002）。マスタ設定で今年の使用を可にするか、このルールを無効にしてください`;
 }
 
 /** 「残す」のルールの場所が今年使用不可なら、その知らせ（ほかの種別・使用可の場所なら null） */
@@ -227,18 +228,14 @@ export function ruleRefMessage(e: { path: string; message: string }, names: Pick
 }
 
 /**
- * 「残す」のフォームで団体を選び直したときの場所。場所が空か、前の団体の使用場所のままなら、新しい団体の使用場所にする
- * （新しい団体に使用場所がなければ空）。手で選んだ場所（前の団体の使用場所でない場所）は替えない。
+ * 「残す」のフォームで団体を選んだ（選び直した）ときの場所。いつも新しい団体の使用場所にする（使用場所がなければ空）。
+ * 「残す」の場所は団体の使用場所でなければならない（E005。checkRuleRefs）ので、前の場所（手で選んだ場所も）は残さない。
  */
 export function keepRoomAfterGroupChange(
-  keep: Pick<RuleFormValues['keep'], 'group' | 'room'>,
   nextGroup: string | null,
   groups: readonly Pick<GroupRow, 'id' | 'location_room_id'>[],
 ): string | null {
-  const location = (id: string | null) => groups.find((g) => g.id === id)?.location_room_id ?? null;
-  const prevLocation = location(keep.group);
-  if (keep.room === null || (prevLocation !== null && keep.room === prevLocation)) return location(nextGroup);
-  return keep.room;
+  return groups.find((g) => g.id === nextGroup)?.location_room_id ?? null;
 }
 
 /** 欄の path（`code`・`params.group`・`params.rooms.3` など）→ 文言の一覧 */
