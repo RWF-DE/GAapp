@@ -1,0 +1,4 @@
+node_modules/
+dist/
+out/
+browser/public/highs.wasm

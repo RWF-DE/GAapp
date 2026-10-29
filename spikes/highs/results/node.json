@@ -1,0 +1,161 @@
+{
+ "version": {
+  "npm": "1.15.4",
+  "core": "1.15.1"
+ },
+ "five_original": {
+  "times": [
+   195.226748,
+   80.44179299999996,
+   59.316851999999926,
+   57.13160300000004,
+   38.86030100000005
+  ],
+  "median": 59.316851999999926,
+  "maxFrac": 0,
+  "hashes": [
+   "15c0c62abdabeb",
+   "15c0c62abdabeb",
+   "15c0c62abdabeb",
+   "15c0c62abdabeb",
+   "15c0c62abdabeb"
+  ],
+  "objective": 26562515.5,
+  "w107": 0,
+  "vars": 5630,
+  "rows": 344
+ },
+ "five_integer": {
+  "times": [
+   50.26926500000002,
+   46.6040119999999,
+   41.2485079999999,
+   43.184349999999995,
+   53.84115500000007
+  ],
+  "median": 46.6040119999999,
+  "maxFrac": 0,
+  "hashes": [
+   "152fe14cd0d46d",
+   "152fe14cd0d46d",
+   "152fe14cd0d46d",
+   "152fe14cd0d46d",
+   "152fe14cd0d46d"
+  ],
+  "objective": 2660046647,
+  "w107": 0,
+  "vars": 5630,
+  "rows": 344
+ },
+ "shuffled": [
+  "seed1: LP同一=true 解のハッシュ=15c0c62abdabeb 同一=true",
+  "seed2: LP同一=true 解のハッシュ=15c0c62abdabeb 同一=true",
+  "seed3: LP同一=true 解のハッシュ=15c0c62abdabeb 同一=true"
+ ],
+ "sizes": {
+  "100": {
+   "chars": 154859,
+   "lines": 1753,
+   "maxLine": 104,
+   "status": "Optimal",
+   "err": "",
+   "same": true
+  },
+  "300": {
+   "chars": 151523,
+   "lines": 641,
+   "maxLine": 300,
+   "status": "Optimal",
+   "err": "",
+   "same": true
+  },
+  "1000": {
+   "chars": 150821,
+   "lines": 407,
+   "maxLine": 1000,
+   "status": "Optimal",
+   "err": "",
+   "same": true
+  },
+  "null": {
+   "chars": 150299,
+   "lines": 348,
+   "maxLine": 58917,
+   "status": "Optimal",
+   "err": "",
+   "same": true
+  }
+ },
+ "reuse": {
+  "times": [
+   81.56641799999989,
+   54.93437200000017,
+   59.17035200000009,
+   49.49430399999983,
+   65.40143000000035,
+   46.77443399999993,
+   37.92160199999989,
+   36.89463500000011,
+   36.994014000000334,
+   40.633144999999786,
+   56.389068999999836,
+   52.621924000000035,
+   37.51726400000007,
+   37.215502000000015,
+   36.85487499999999,
+   36.97660700000006,
+   40.692954999999984,
+   36.98282999999992,
+   35.54215999999997,
+   34.80257299999994
+  ],
+  "same": true,
+  "mem0": 21233664,
+  "mem1": 21233664
+ },
+ "recreate_loadHigh": {
+  "ok": true,
+  "loadMedian": 47.08120300000019,
+  "solveMedian": 74.95682350000016,
+  "same": true
+ },
+ "recreate_wasmModu": {
+  "ok": true,
+  "loadMedian": 29.425798499999473,
+  "solveMedian": 59.30986949999988,
+  "same": true
+ },
+ "loadNode": {
+  "times": [
+   40.00899300000037,
+   32.22671400000036,
+   14.630239000000074,
+   11.729185000000143,
+   20.688011000000188
+  ],
+  "median": 20.688011000000188
+ },
+ "infeasible_S05": "Infeasible",
+ "infeasible_教卓の": "Infeasible",
+ "timeLimitStatus": "Time limit reached",
+ "minchange_original": {
+  "merRows": 13,
+  "merUnits": 73,
+  "changedMin": 50,
+  "unitsMin": 186,
+  "changedFull": 246,
+  "unitsFull": 828,
+  "ms": 39.88291599999957,
+  "hat": 237
+ },
+ "minchange_integer": {
+  "merRows": 13,
+  "merUnits": 71,
+  "changedMin": 48,
+  "unitsMin": 178,
+  "changedFull": 242,
+  "unitsFull": 818,
+  "ms": 40.76940099999956,
+  "hat": 238
+ }
+}

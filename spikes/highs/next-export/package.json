@@ -1,0 +1,19 @@
+{
+  "name": "spike-highs-next-export",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "build": "cp node_modules/highs/build/highs.wasm public/highs.wasm && next build"
+  },
+  "dependencies": {
+    "highs": "1.15.4",
+    "next": "16.4.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "typescript": "7.0.2"
+  }
+}

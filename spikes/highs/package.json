@@ -1,0 +1,25 @@
+{
+  "name": "spike-highs",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "scripts": {
+    "bench:node": "tsx bench-node.ts",
+    "bench:p02": "tsx bench-p02.ts",
+    "build": "node scripts/copy-wasm.mjs && vite build",
+    "bench:browser": "tsx bench-browser.ts",
+    "build:next": "npm --prefix next-export run build",
+    "bench:next": "tsx bench-next.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "highs": "1.15.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "playwright": "1.63.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.5"
+  }
+}
