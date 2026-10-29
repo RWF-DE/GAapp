@@ -8,5 +8,12 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@gaapp/shared": "workspace:*",
+    "exceljs": "4.4.0"
+  },
+  "devDependencies": {
+    "jszip": "3.10.2"
   }
 }

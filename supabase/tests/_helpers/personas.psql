@@ -1,0 +1,133 @@
+-- テストの補助（T02・T03 で共有）。各テストファイルの begin; の直後に `\ir _helpers/personas.psql` で読み込む。
+-- 拡張子を .sql にしないので、pg_prove はテストとして実行しない。
+-- T02 のテスト（001・002）は、ロールを切り替えず、tests.act_as() で auth.uid() だけを変える（postgres のまま。RLS を通らない）。
+-- T03 のテスト（010〜023）は、tests.login_as() で authenticated に切り替え、ポリシーと grant を通して確かめる。
+-- tests.try_cell() は権限表のセルを副トランザクションの中で試し、結果を返して取り消す（011）。
+create schema tests;
+grant usage on schema tests to authenticated, anon;
+
+create table tests.ids (name text primary key, id uuid not null);
+
+create function tests.id(p_name text) returns uuid language sql stable as $$
+  select id from tests.ids where name = p_name
+$$;
+
+-- ユーザーを作る（T04 以降は auth.users のトリガーで profiles もできる）
+-- メールは seed のテストユーザー（@example.test）と別のドメイン（@pgtap.test）にする。
+-- auth.users の users_email_partial_key にぶつからず、seed の招待をペルソナが受け入れてしまうこともない
+create function tests.create_user(p_name text) returns uuid language plpgsql as $$
+declare v_id uuid := gen_random_uuid();
+begin
+  insert into auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
+                          raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
+                          confirmation_token, recovery_token, email_change_token_new, email_change)
+  values ('00000000-0000-0000-0000-000000000000', v_id, 'authenticated', 'authenticated',
+          p_name || '@pgtap.test', '', now(),
+          '{"provider":"email","providers":["email"]}', jsonb_build_object('full_name', p_name),
+          now(), now(), '', '', '', '');
+  -- メールの identity（email_verified: true）。これがないと本人のメールと確かめられず、招待が付かず、自分あての招待も読めない（D-17a）
+  insert into auth.identities (provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at)
+  values (v_id::text, v_id, jsonb_build_object('sub', v_id::text, 'email', p_name || '@pgtap.test', 'email_verified', true),
+          'email', now(), now(), now());
+  insert into public.profiles (user_id, display_name) values (v_id, p_name) on conflict (user_id) do nothing;
+  insert into tests.ids values (p_name, v_id);
+  return v_id;
+end $$;
+
+-- ユーザーを切り替える（transaction-local）
+create function tests.login_as(p_name text) returns void language plpgsql as $$
+begin
+  perform set_config('request.jwt.claims',
+    jsonb_build_object('sub', tests.id(p_name), 'role', 'authenticated',
+                       'email', p_name || '@pgtap.test')::text, true);
+  perform set_config('request.jwt.claim.sub', '', true);
+  set local role authenticated;
+end $$;
+
+create function tests.login_anon() returns void language plpgsql as $$
+begin
+  perform set_config('request.jwt.claims', '{"role":"anon"}', true);
+  set local role anon;
+end $$;
+
+create function tests.logout() returns void language plpgsql as $$
+begin
+  perform set_config('request.jwt.claims', '', true);
+  reset role;
+end $$;
+grant execute on function tests.logout() to authenticated, anon;
+
+-- 権限表のセルを1つ試す。書き込みは副トランザクションごと取り消す
+-- 戻り値：allowed / denied / error:<SQLSTATE>（42501・0 行・トリガーの invalid_state は denied）
+create function tests.try_cell(p_sql text, p_persona text, p_op text) returns text language plpgsql as $$
+declare
+  v_n bigint;
+  v_result text;
+begin
+  begin
+    perform tests.login_as(p_persona);
+    if p_op = 'select' then
+      execute p_sql into v_n;
+    else
+      execute p_sql;
+      get diagnostics v_n = row_count;
+    end if;
+    v_result := case when v_n > 0 then 'allowed' else 'denied' end;
+    raise exception using errcode = 'TT001';          -- 取り消し用（ロールの切り替えも戻る）
+  exception
+    when sqlstate 'TT001' then null;
+    when insufficient_privilege then v_result := 'denied';
+    -- 確定中・終了の年度を守るトリガー（invalid_state）による拒否も denied とみなす。ほかの P0001 は error のまま
+    when sqlstate 'P0001' then
+      v_result := case when sqlerrm = 'invalid_state' then 'denied' else 'error:P0001 ' || sqlerrm end;
+    when others then v_result := 'error:' || sqlstate || ' ' || sqlerrm;
+  end;
+  return v_result;
+end $$;
+
+-- :Y1 などの名前を id に置き換える
+create function tests.sql(p_template text) returns text language plpgsql stable as $$
+declare
+  r record;
+  v text := p_template;
+begin
+  for r in select name, id from tests.ids order by length(name) desc loop
+    v := replace(v, ':' || r.name, quote_literal(r.id::text) || '::uuid');
+  end loop;
+  return v;
+end $$;
+
+create function tests.set_scenario(p_scenario text) returns void language plpgsql as $$
+begin
+  update public.years set
+    status = split_part(p_scenario, ':', 1)::public.year_status,
+    request_open_at = null,
+    request_close_at = case split_part(p_scenario, ':', 2)
+                         when 'after' then now() - interval '1 hour'
+                         else now() + interval '1 day' end
+  where id = tests.id('Y1');
+end $$;
+
+create function tests.ver() returns integer language sql stable security definer set search_path = '' as $$
+  select allocation_version from public.years where id = (select id from tests.ids where name = 'Y1')
+$$;
+
+create function tests.ver_of(p_name text) returns integer language sql stable security definer set search_path = '' as $$
+  select allocation_version from public.years where id = (select id from tests.ids where name = p_name)
+$$;
+
+grant select on tests.ids to authenticated, anon;
+grant execute on all functions in schema tests to authenticated, anon;
+
+-- T02 用：postgres のまま auth.uid() だけを変える（ポリシーがないのでロールは切り替えない）
+create function tests.act_as(p_name text) returns void language plpgsql as $$
+begin
+  perform set_config('request.jwt.claims',
+    jsonb_build_object('sub', tests.id(p_name), 'role', 'authenticated')::text, true);
+  perform set_config('request.jwt.claim.sub', '', true);
+end $$;
+
+create function tests.act_clear() returns void language plpgsql as $$
+begin
+  perform set_config('request.jwt.claims', '', true);
+end $$;

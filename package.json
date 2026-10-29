@@ -9,11 +9,15 @@
   "scripts": {
     "dev": "pnpm --filter @gaapp/web dev",
     "build": "pnpm --filter @gaapp/web build",
+    "build:e2e": "node scripts/build-e2e.mjs",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json && pnpm -r --if-present typecheck",
     "test": "vitest run",
     "e2e": "playwright test",
     "check:emails": "node scripts/check-emails.mjs",
+    "gen:types": "node scripts/gen-types.mjs",
+    "check:types": "node scripts/gen-types.mjs --check",
+    "check:no-test-login": "node scripts/check-no-test-login.mjs",
     "build:r8-fixtures": "tsx scripts/build-r8-fixtures.ts",
     "gen:synthetic": "tsx scripts/gen-synthetic-fixtures.ts",
     "gen:synthetic-reference": "tsx scripts/gen-synthetic-reference.ts"
@@ -28,6 +32,7 @@
     "eslint-config-next": "16.4.2",
     "globals": "17.13.0",
     "highs": "1.15.4",
+    "oxfmt": "0.74.0",
     "serve": "14.2.6",
     "tsx": "4.23.15",
     "typescript": "5.9.3",

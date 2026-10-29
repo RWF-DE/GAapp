@@ -32,8 +32,50 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      # LibreOffice での再計算のテストは recalc ジョブで行う
       - run: pnpm test
+        env:
+          SKIP_LIBREOFFICE: '1'
+      # 本番と同じく、テスト用ログインなしでビルドし、そのコードが入っていないことを確かめる
       - run: pnpm build
+      - run: pnpm check:no-test-login
+
+  recalc:
+    name: xlsx の再計算 (LibreOffice)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # 分数を無駄にしない：exporter・共通基盤・合成データ・fixtures/r8・このワークフローに変更があるときだけ動かす（main への push では常に）
+      - id: changed
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --name-only "$BASE_SHA"...HEAD | grep -qE '^(packages/exporter/|packages/shared/|fixtures/synthetic/|fixtures/r8/|pnpm-lock.yaml|\.github/workflows/ci.yml)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.changed.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc python3-uno
+      - if: steps.changed.outputs.run == 'true'
+        uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b # v6.1.0
+      - if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - if: steps.changed.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.changed.outputs.run == 'true'
+        run: pnpm exec vitest run --project exporter src/reference.test.ts
+        env:
+          REQUIRE_LIBREOFFICE: '1'
 
   db:
     name: supabase test db
@@ -49,6 +91,14 @@ jobs:
       # DB だけ起動する（API・Auth・Studio などのコンテナは起こさない）
       - run: supabase db start
       - run: supabase test db
+      # 生成した型（packages/shared）が今のマイグレーションと一致すること
+      - uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:types
 
   e2e:
     name: e2e (Playwright)
@@ -58,14 +108,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359 # v3.0.1
+        with:
+          version: 2.122.0
+      # ローカルの Supabase を、ログインに要るもの（DB・Auth・REST・Kong）だけで起動する。
+      # 使わないコンテナのイメージを取らないので、CI の時間を無駄にしない。起動時にマイグレーションと seed（テストユーザー）が入る
+      - run: supabase start -x realtime,storage-api,imgproxy,mailpit,studio,edge-runtime,logflare,vector,supavisor,postgres-meta
       - uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # E2E は basePath なしの静的書き出しを serve で配って確かめる
-      - run: pnpm build
+      # ローカルの Supabase に向け、テスト用ログインを有効にした静的書き出し（basePath なし）。公開はしない
+      - run: pnpm build:e2e
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm e2e
       - if: ${{ !cancelled() }}
@@ -77,6 +133,8 @@ jobs:
             test-results/
           if-no-files-found: ignore
           retention-days: 7
+      - if: ${{ always() }}
+        run: supabase stop --no-backup
 
   emails:
     name: メールアドレスのチェック

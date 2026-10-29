@@ -344,4 +344,3 @@ describe('fixtures とスクリプトの出力に個人情報がない', () => {
     else expect(existsSync(dir)).toBe(false); // R8 の元データが届くまでは作らない
   });
 });
-

@@ -1,0 +1,110 @@
+-- テスト用のデータ（各テストファイルの \ir _helpers/personas.psql の後に \ir _helpers/fixture.psql）。supabase db reset の後（seed の T02・T04・T05 が入った状態）で流す。
+-- seed とぶつからないように：品目は insert せず seed の9件をコードで引く。場所・建物の名前は pgtap- で始め、
+-- ペルソナのメールは @pgtap.test（seed は @example.test）。消してよい品目・場所はここで作った使い捨てのもの（spare、R4）だけにする。
+insert into tests.ids select code, id from public.items
+where code in ('desk', 'desk_ng', 'chair', 'chair_ng', 'caster_desk', 'blue_chair', 'long_desk_3', 'long_desk_2', 'lectern');
+do $$
+begin
+  if (select count(*) from tests.ids) <> 9 then
+    raise exception 'seed の品目9件がない。supabase db reset で seed を入れてからテストを流す';
+  end if;
+end $$;
+-- 権限表の items の delete で消す品目（seed の品目は在庫・申請から参照されるので消せない）
+with i as (insert into public.items (code, name, sort_order) values ('pgtap_spare', 'pgTAP 削除用', 99) returning id)
+insert into tests.ids select 'spare', id from i;
+
+select tests.create_user(n) from unnest(array['admin','staff','rep','rep2','viewer','outsider','admin2']) n;
+
+with y as (
+  insert into public.years (label, festival_start, request_close_at, status)
+  values ('T-Y1', date '2027-10-16', now() + interval '1 day', 'requesting'),
+         ('T-Y2', date '2026-10-16', null, 'preparing')        -- Y2 は Y1 より前の年度（Y1 が最新。create_year_from の条件）
+  returning id, label)
+insert into tests.ids select case label when 'T-Y1' then 'Y1' else 'Y2' end, id from y;
+do $$
+begin
+  -- Y1 を最新の年度にする（create_year_from の正常系のため）。seed の年度（R8：2026-10-17）より後でなければならない
+  if exists (select 1 from public.years y where y.label <> 'T-Y1' and y.festival_start >= date '2027-10-16') then
+    raise exception 'seed に T-Y1（2027-10-16）より後の年度がある。fixture の1日目を後ろにずらす';
+  end if;
+end $$;
+
+with r as (
+  insert into public.rooms (name, kind, building, floor, is_storage, sort_order) values
+    ('pgtap-R1', 'room', 'pgtap棟A', 1, true, 1),
+    ('pgtap-R2', 'room', 'pgtap棟A', 2, true, 2),
+    ('pgtap-R3', 'room', 'pgtap棟B', 1, true, 3),
+    ('pgtap-R4', 'room', 'pgtap棟B', 2, false, 4)        -- R4 はどこからも参照しない（権限表の rooms の delete で消す）
+  returning id, name)
+insert into tests.ids select substr(name, 7), id from r;
+
+insert into public.room_years (year_id, room_id, usable) values (tests.id('Y1'), tests.id('R3'), false);
+
+with g as (
+  insert into public.groups (year_id, name, category, location_room_id, sort_order) values
+    (tests.id('Y1'), 'T-G1', 'stall', tests.id('R1'), 1),
+    (tests.id('Y1'), 'T-G2', 'department', null, 2),
+    (tests.id('Y2'), 'T-G3', 'stall', tests.id('R1'), 1),
+    (tests.id('Y1'), 'T-G4', 'department', null, 4)       -- staff・viewer が団体代表を兼ねる（group_members(own) の中身のある検査用）
+  returning id, name)
+insert into tests.ids select substr(name, 3), id from g;
+
+insert into public.year_roles (year_id, user_id, role) values
+  (tests.id('Y1'), tests.id('admin'), 'admin'),
+  (tests.id('Y1'), tests.id('staff'), 'staff'),
+  (tests.id('Y1'), tests.id('viewer'), 'viewer'),
+  (tests.id('Y2'), tests.id('admin2'), 'admin'),
+  (tests.id('Y2'), tests.id('rep'), 'viewer');            -- rep が Y2 では viewer（year_roles(own) の rep の中身のある検査用）
+insert into public.group_members (group_id, user_id) values
+  (tests.id('G1'), tests.id('rep')), (tests.id('G2'), tests.id('rep2')),
+  (tests.id('G4'), tests.id('staff')), (tests.id('G4'), tests.id('viewer'));
+
+insert into public.invitations (year_id, email, role, used_at) values
+  (tests.id('Y1'), 'viewer@pgtap.test', 'viewer', now()),
+  (tests.id('Y1'), 'staff@pgtap.test', 'staff', now()),            -- invitations(own) の staff の中身のある検査用
+  (tests.id('Y1'), 'someone@pgtap.test', 'staff', null);
+insert into public.invitations (year_id, email, group_id, used_at) values
+  (tests.id('Y1'), 'rep@pgtap.test', tests.id('G1'), now());
+
+insert into public.stocks (year_id, room_id, item_id, count) values
+  (tests.id('Y1'), tests.id('R1'), tests.id('desk'), 10),
+  (tests.id('Y1'), tests.id('R2'), tests.id('desk'), 5),
+  (tests.id('Y1'), tests.id('R2'), tests.id('caster_desk'), 5),
+  (tests.id('Y1'), tests.id('R3'), tests.id('desk'), 3);
+
+insert into public.request_submissions (group_id, submitted_at) values
+  (tests.id('G1'), now()), (tests.id('G2'), now());
+insert into public.requests (group_id, item_id, count) values
+  (tests.id('G1'), tests.id('desk'), 6), (tests.id('G2'), tests.id('desk'), 3);
+
+with r as (
+  insert into public.rules (year_id, code, kind, params) values
+    (tests.id('Y1'), 'S05', 'source_restrict',
+     jsonb_build_object('group', tests.id('G2'), 'items', jsonb_build_array('desk'), 'rooms', jsonb_build_array(tests.id('R2'))))
+  returning id)
+insert into tests.ids select 'RULE1', id from r;
+
+insert into public.substitution_consents (group_id, from_item_id, to_item_id, status)
+values (tests.id('G1'), tests.id('desk'), tests.id('caster_desk'), 'not_asked');
+
+with a as (
+  insert into public.allocations (year_id, source_room_id, group_id, item_id, requested_item_id, count, is_keep, origin)
+  values (tests.id('Y1'), tests.id('R1'), tests.id('G1'), tests.id('desk'), tests.id('desk'), 4, true, 'auto'),
+         (tests.id('Y1'), tests.id('R2'), tests.id('G1'), tests.id('caster_desk'), tests.id('desk'), 2, false, 'auto'),
+         (tests.id('Y1'), tests.id('R2'), tests.id('G2'), tests.id('desk'), tests.id('desk'), 3, false, 'auto')
+  returning id, group_id, item_id)
+insert into tests.ids
+select case when group_id = tests.id('G2') then 'A_G2'
+            when item_id = tests.id('caster_desk') then 'A_G1_SWAP' else 'A_G1_KEEP' end, id from a;
+
+with s as (
+  insert into public.slots (year_id, day, label) values (tests.id('Y1'), 'day_minus1', '前日 9:00') returning id)
+insert into tests.ids select 'SLOT1', id from s;
+with d as (
+  insert into public.deliveries (year_id, group_id, kind, slot_id) values
+    (tests.id('Y1'), tests.id('G1'), 'furniture', tests.id('SLOT1')),
+    (tests.id('Y1'), tests.id('G2'), 'furniture', null)
+  returning id, group_id)
+insert into tests.ids select case when group_id = tests.id('G1') then 'D_G1' else 'D_G2' end, id from d;
+
+insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟A', 'pgtap棟B', 4);

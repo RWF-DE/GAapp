@@ -1,6 +1,6 @@
 // allocate() の全体の流れ（設計 4 章）
 import type { AllocateFailureReason, AllocateInput, AllocateResult, AllocateStats, Cause, InputError, Issue, Shortage } from '@gaapp/shared';
-import { diagnose, DIAGNOSE_PENDING_MESSAGE } from './diagnose';
+import { diagnose, INFEASIBLE_MESSAGE } from './diagnose';
 import { buildModel, type BuildModelOptions, type Model } from './model';
 import { toRows } from './rows';
 import { runSolver, type LpSolver } from './solve';
@@ -10,7 +10,7 @@ const now = () => performance.now();
 export const FAILURE_MESSAGES: Record<AllocateFailureReason, string> = {
   invalid_input: '入力に誤りがあります',
   precheck: '振り分けの前に直すものがあります',
-  infeasible: DIAGNOSE_PENDING_MESSAGE,
+  infeasible: INFEASIBLE_MESSAGE,
   solver_error: '計算できませんでした',
 };
 
@@ -74,7 +74,7 @@ export function allocate(input: AllocateInput, solver: LpSolver, opts: BuildMode
     case 'precheck':
       return fail('precheck', t0, { issues: m.prepared.issues, stats: statsOf(m, buildMs) });
     case 'shortage': {
-      const d = diagnose(m.ctx.input, solver, m.cands.shortages);
+      const d = diagnose(m.ctx.input, solver, m.cands.shortages, opts);
       return fail('infeasible', t0, { shortages: d.shortages, causes: d.causes, stats: statsOf(m, buildMs) });
     }
     case 'scale_error':
@@ -94,7 +94,7 @@ export function allocate(input: AllocateInput, solver: LpSolver, opts: BuildMode
   const out = runSolver(solver, m.lp, m.names);
   const solveMs = now() - t1;
   if (out.status === 'infeasible') {
-    const d = diagnose(m.ctx.input, solver, []);
+    const d = diagnose(m.ctx.input, solver, [], opts);
     return fail('infeasible', t0, {
       shortages: d.shortages,
       causes: d.causes,
