@@ -5,26 +5,29 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error JS モジュール（型宣言なし）
-import { decodeUtf16, findEmails } from './check-emails.mjs';
+import { decodeUtf16, findEmails, isAllowedDomain } from './check-emails.mjs';
 
-// 検査スクリプト自身に引っかからないよう、実在しうるドメインは連結して組み立てる
-const at = '@';
-const realLike = `taro${at}${'gmail'}.com`;
-const schoolLike = `x${at}${'kumamoto-nct'}.ac.jp`;
+// 検出される例には、JPRS が例示用に予約しているドメイン（実在の人には届かない）を使う。
+// 許可リストの外なので検出される。check-emails.mjs は、このテストファイルの中のこれらのドメインだけを検査から外す。
+const realLike = 'taro@example.jp';
+const schoolLike = 'x@example.ac.jp';
 
 describe('findEmails', () => {
   it('予約ドメインは許可する', () => {
     const text = ['a@example.com', 'b@x.example.org', 'c@foo.test', 'd@bar.invalid', 'e@host.localhost', 'f@x.example'].join(' ');
     expect(findEmails(text)).toEqual([]);
   });
-  it('実在しうるドメインは検出する', () => {
+  it('許可リストにないドメインは検出する', () => {
+    // 例に使うドメインが許可リストに入っていないこと（入るとこのテストの意味がなくなる）
+    expect(isAllowedDomain('example.jp')).toBe(false);
+    expect(isAllowedDomain('example.ac.jp')).toBe(false);
     expect(findEmails(realLike)).toEqual([realLike]);
-    expect(findEmails(schoolLike)).toHaveLength(1);
+    expect(findEmails(schoolLike)).toEqual([schoolLike]);
   });
   it('メール以外（@scope/pkg）や SSH の URL は検出しない', () => {
     expect(findEmails('@gaapp/web')).toEqual([]);
     expect(findEmails('pnpm@10.28.0 /@types/node@22.20.5(x)')).toEqual([]);
-    expect(findEmails(`git${at}github.com:x/y.git`)).toEqual([]);
+    expect(findEmails('git@github.com:x/y.git')).toEqual([]);
   });
 });
 
@@ -81,6 +84,22 @@ describe('check-emails.mjs の実行', () => {
       expect(r.stderr).toContain('docs/b.tsv:1');
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('検査から外すのは、このテストファイルの中の例示用ドメインだけ', () => {
+    const self = 'scripts/check-emails.test.ts';
+    const exempt = setup({ [self]: `${realLike} ${schoolLike}\n` });
+    // 同じアドレスでも、ほかのファイルにあれば検出する
+    const other = setup({ 'scripts/other.test.ts': `${realLike}\n` });
+    try {
+      expect(run(exempt).status).toBe(0);
+      const r = run(other);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('scripts/other.test.ts:1');
+    } finally {
+      rmSync(exempt, { recursive: true, force: true });
+      rmSync(other, { recursive: true, force: true });
     }
   });
 
