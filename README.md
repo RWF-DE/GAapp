@@ -123,7 +123,7 @@ Settings → Branches（または Rulesets）で main に次を設定する。
 
 ログインは Supabase Auth の Google プロバイダーで、ブラウザの PKCE フロー（サーバーなし）。学校のドメイン以外と Google 以外のプロバイダーは、DB の Before User Created フック（`private.hook_before_user_created`、supabase/migrations/0007_auth.sql）が拒否する。次をこの順で行う。
 
-1. **学校のドメインを決める（D-04）**：0007_auth.sql の `c_domain`（今は仮の `school.example`）を学校の Google Workspace のドメインにする。本番に 0007 を適用する前なら 0007 のその1行を直す。適用した後なら、同じ関数を `create or replace` する新しいマイグレーションを足す（適用済みのファイルは書き換えない）。pgTAP（030_auth）と e2e/auth-hook.spec.ts のドメインも合わせる。
+1. **学校のドメイン（D-04）**：`g.kumamoto-nct.ac.jp`（教員と学生で同じ。2026-10-29 に決定）。0007_auth.sql の `private.school_domain()` の1か所に書いてあり、フックはそれを呼ぶ。変えるときは、本番に 0007 を適用する前なら 0007 のその関数の値を直す。適用した後なら、`private.school_domain()` を `create or replace` する新しいマイグレーションを足す（適用済みのファイルは書き換えない。権限は create or replace で変わらない）。pgTAP（030_auth）の「本番の値」のテストも合わせる（判定のテストは予約済みのドメインに置き換えて流すので、直さなくてよい）。実在のドメインのメールアドレスはテストや文書に書かない。
 2. **Google Cloud の OAuth クライアント（K-11）**：組織の持ち物のプロジェクト（個人のアカウントに紐付けない。オーナーを2人以上）で、APIs & Services → OAuth consent screen を作る。
    - 学校の Workspace の中にプロジェクトを作れるなら、User type を **Internal** にする（学校のアカウントだけが使え、Google の審査が要らない）。
    - Workspace の外に作るなら **External** になる。Publishing status が **Testing** のままだと、登録したテストユーザー（100 人まで）しかログインできないので、**In production** に公開する（スコープは email・profile・openid だけで、機密性の高いスコープを使わないので、アプリの審査は原則要らない）。どちらの場合も、許可するアカウントはフックが学校のドメインに絞る。
@@ -141,7 +141,7 @@ Settings → Branches（または Rulesets）で main に次を設定する。
    - ローカルの supabase/config.toml も同じ考え方にしてある（`enable_confirmations = true`、`double_confirm_changes = true`、`enable_manual_linking = false`、`enable_anonymous_sign_ins = false`。Email プロバイダーはテストユーザーのパスワードログインのためだけに有効）。
 8. 確かめる：学校のアカウントでログインして「総務から招待されていません」が出ること、個人の Google アカウントでは「学校の Google アカウントでログインしてください」と出てログインできないこと。
 
-GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン）を足すと、Google のアカウント選択が学校のアカウントに絞られる（任意。見た目だけで、拒否はフックが行う）。
+GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン `g.kumamoto-nct.ac.jp`）を足すと、Google のアカウント選択が学校のアカウントに絞られる（任意。見た目だけで、拒否はフックが行う）。
 
 ### 5. 本番 DB への適用
 
