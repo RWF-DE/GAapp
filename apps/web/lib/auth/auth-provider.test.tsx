@@ -39,6 +39,19 @@ const setup = async (userId = 'u1') => {
   return queryClient;
 };
 
+/** 最新の y9（R9）と古い Y（R8）の両方で管理者 */
+const twoYears = () =>
+  sourceOf({
+    years: [
+      { id: 'y9', label: 'R9', status: 'requesting', festival_start: '2027-10-16' },
+      { id: Y, label: 'R8', status: 'closed', festival_start: '2026-10-17' },
+    ],
+    roles: [
+      { year_id: 'y9', role: 'admin' },
+      { year_id: Y, role: 'admin' },
+    ],
+  });
+
 beforeEach(() => {
   fakeAuth.reset();
   window.sessionStorage.clear();
@@ -101,22 +114,12 @@ describe('AuthProvider：ログアウトと利用者の切り替えで消すも�
   });
 
   it('(a)(b) ログアウトの後に同じ人がまたログインすると、前に選んだ年度ではなく最新の年度で開く（メモリの選択も消す）', async () => {
-    const twoYears = sourceOf({
-      years: [
-        { id: 'y9', label: 'R9', status: 'requesting', festival_start: '2027-10-16' },
-        { id: Y, label: 'R8', status: 'closed', festival_start: '2026-10-17' },
-      ],
-      roles: [
-        { year_id: 'y9', role: 'admin' },
-        { year_id: Y, role: 'admin' },
-      ],
-    });
     for (const kind of ['manual', 'forced'] as const) {
       cleanup();
       fakeAuth.reset();
       window.sessionStorage.clear();
       fakeAuth.session = { user: { id: 'u1' } };
-      fakeAuth.sources.u1 = twoYears;
+      fakeAuth.sources.u1 = twoYears();
       render(
         <TestProviders>
           <Probe />
@@ -131,6 +134,99 @@ describe('AuthProvider：ログアウトと利用者の切り替えで消すも�
       await vi.waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
       expect(ctx().membership).toMatchObject({ membership: { year: { id: 'y9' } } });
     }
+  });
+
+  it('ログアウトの通信の間は、開いている年度のまま（最新の年度で画面を作り直さない）', async () => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = twoYears();
+    const mounts: string[] = [];
+    function YearChild({ yearId }: { yearId: string }) {
+      useEffect(() => {
+        mounts.push(yearId);
+      }, [yearId]);
+      return null;
+    }
+    function Shell() {
+      const auth = useAuth();
+      const yearId = auth.membership.status === 'ready' ? auth.membership.membership.year?.id : undefined;
+      return yearId ? <YearChild key={yearId} yearId={yearId} /> : null;
+    }
+    render(
+      <TestProviders>
+        <Probe />
+        <Shell />
+      </TestProviders>,
+    );
+    await vi.waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+    act(() => ctx().setYear(Y));
+    await vi.waitFor(() => expect(mounts).toEqual(['y9', Y]));
+    // auth の signOut の応答をまだ返さない
+    let finish: () => void = () => {};
+    fakeAuth.signOut.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            fakeAuth.setUser(null);
+            resolve({ error: null });
+          };
+        }),
+    );
+    let done: Promise<void> = Promise.resolve();
+    act(() => {
+      done = ctx().signOut('forced');
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(ctx().membership).toMatchObject({ status: 'ready', membership: { year: { id: Y } } });
+    expect(mounts).toEqual(['y9', Y]);
+    await act(async () => {
+      finish();
+      await done;
+    });
+    expect(screen.getByTestId('status').textContent).toBe('idle');
+    expect(mounts).toEqual(['y9', Y]);
+  });
+
+  it('(b) ほかのタブのログアウト（SIGNED_OUT）の後に同じ人がまたログインすると、最新の年度で開く（メモリの選択も消す）', async () => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = twoYears();
+    render(
+      <TestProviders>
+        <Probe />
+      </TestProviders>,
+    );
+    await vi.waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+    act(() => ctx().setYear(Y));
+    await vi.waitFor(() => expect(ctx().membership).toMatchObject({ membership: { year: { id: Y } } }));
+    act(() => fakeAuth.setUser(null));
+    expect(screen.getByTestId('status').textContent).toBe('idle');
+    act(() => fakeAuth.setUser('u1'));
+    await vi.waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+    expect(ctx().membership).toMatchObject({ membership: { year: { id: 'y9' } } });
+  });
+
+  it('もう一方のタブが localStorage のセッションを消したら（storage イベント）、このタブもログアウトの状態にし、キャッシュと選んだ年度を消す', async () => {
+    const qc = await setup('u1');
+    saveDraft(draftOf('u1'), { a: 1 });
+    act(() => ctx().setYear(Y));
+    const storageEvent = (key: string | null, newValue: string | null) =>
+      new StorageEvent('storage', { key, newValue, oldValue: '{"access_token":"x"}', storageArea: window.localStorage });
+    // 関係のないキーの削除・トークンの更新（newValue がある）では何もしない
+    act(() => {
+      window.dispatchEvent(storageEvent('other-key', null));
+      window.dispatchEvent(storageEvent('sb-test-auth-token', '{"access_token":"y"}'));
+    });
+    expect(ctx().session.status).toBe('signedIn');
+    expect(qc.getQueryData(['year', Y, 'row'])).toEqual({ id: Y });
+    // もう一方のタブの代わりの処理（removeStoredSession）でセッションのキーが消えた
+    act(() => window.dispatchEvent(storageEvent('sb-test-auth-token', null)));
+    expect(ctx().session.status).toBe('signedOut');
+    expect(screen.getByTestId('status').textContent).toBe('idle');
+    expect(qc.getQueryData(['year', Y, 'row'])).toBeUndefined();
+    expect(window.sessionStorage.getItem('gaapp:year:u1')).toBeNull();
+    // 強制と同じく、下書きは残す
+    expect(window.localStorage.getItem(draftKey(draftOf('u1')))).not.toBeNull();
   });
 
   it('signOut が error を返しセッションを消さなかったら（トークンの更新の通信の失敗）、もう一度試し、だめならその端末のセッションを消してログアウトの状態にする', async () => {
