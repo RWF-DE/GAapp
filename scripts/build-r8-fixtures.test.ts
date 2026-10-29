@@ -243,8 +243,8 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
     const g = path.join(out, 'manual', 'groups.csv');
     const original = readFileSync(g, 'utf8');
     for (const edited of [
-      original.replace('研究室A,,department,false,,6,,form', '研究室A,,department,false,,6,研究室源,form'), // aliases
-      original.replace('研究室A,', '研究室源 ,'), // name
+      original.replace('研究室A,,department,false,,6,,form', '研究室A,,department,false,,6,研究室ゼータ,form'), // aliases
+      original.replace('研究室A,', '研究室ゼータ ,'), // name
     ]) {
       expect(edited).not.toBe(original);
       writeFileSync(g, edited);
@@ -252,7 +252,7 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
       expect(r.code).toBe(1);
       expect(r.stderr).toContain('anonymize.csv:2');
       expect(r.stderr).toContain('manual/groups.csv');
-      expect(r.stderr).not.toContain('研究室源');
+      expect(r.stderr).not.toContain('研究室ゼータ');
       expect(existsSync(path.join(out, 'requests.csv'))).toBe(false);
     }
   });
@@ -265,9 +265,9 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
       writeFileSync(f, edited);
     };
     const cases: { rel: string; from: string; to: string; where: string }[] = [
-      { rel: 'manual/groups.csv', from: '研究室A,,department', to: '研究室A,研究室源,department', where: 'manual/groups.csv' },
-      { rel: 'manual/reference_skip.csv', from: '予備,', to: '研究室源,', where: 'manual/reference_skip.csv' },
-      { rel: 'manual/settings.json', from: '"剣道部":', to: '"研究室源":', where: 'manual/settings.json' },
+      { rel: 'manual/groups.csv', from: '研究室A,,department', to: '研究室A,研究室ゼータ,department', where: 'manual/groups.csv' },
+      { rel: 'manual/reference_skip.csv', from: '予備,', to: '研究室ゼータ,', where: 'manual/reference_skip.csv' },
+      { rel: 'manual/settings.json', from: '"剣道部":', to: '"研究室ゼータ":', where: 'manual/settings.json' },
     ];
     for (const c of cases) {
       cpSync(path.join(SAMPLE, 'fixture'), out, { recursive: true });
@@ -276,7 +276,7 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
       expect(r.code, c.where).toBe(1);
       expect(r.stderr).toContain('anonymize.csv:2');
       expect(r.stderr).toContain(c.where);
-      expect(r.stderr).not.toContain('研究室源');
+      expect(r.stderr).not.toContain('研究室ゼータ');
       expect(existsSync(path.join(out, 'requests.csv'))).toBe(false);
     }
   });
@@ -319,7 +319,7 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
     rmSync(path.join(source, 'anonymize.csv'));
     const r = run();
     expect(r.code).toBe(1);
-    expect(r.stderr).not.toContain('研究室源');
+    expect(r.stderr).not.toContain('研究室ゼータ');
   });
 });
 
