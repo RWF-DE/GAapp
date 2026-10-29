@@ -222,15 +222,18 @@ test.describe('T11 管理者', () => {
     }
   });
 
-  /** 代理入力で机(木) を 1 増やして提出し、提出は DB に届けたうえで応答と団体の読み直しを落とす（未確定にする）。down を戻す関数を返す */
-  async function proxyUnverified(page: Page, groupName: string) {
+  /**
+   * 代理入力で机(木) を 1 増やして提出し、応答と団体の読み直しを落とす（未確定にする）。arrive なら提出は DB に届ける（false なら届けない）。
+   * down を戻す関数を返す
+   */
+  async function proxyUnverified(page: Page, groupName: string, arrive = true) {
     await page.locator(`tr[data-group-name="${groupName}"]`).getByRole('button', { name: '代理入力' }).click();
     const sheet = page.getByRole('dialog');
     await expect(sheet.getByRole('heading', { name: `代理入力：${groupName}` })).toBeVisible();
     await sheet.getByRole('button', { name: '机(木)の数を1増やす' }).click();
     let down = false;
     await page.route('**/rest/v1/rpc/submit_requests*', async (route: Route) => {
-      await route.fetch();
+      if (arrive) await route.fetch();
       down = true;
       await route.abort('failed');
     });
@@ -279,6 +282,29 @@ test.describe('T11 管理者', () => {
       await ask.getByRole('button', { name: '閉じる' }).click();
       await expect(page.getByTestId('proxy-notice')).toContainText('E2E休憩所の代理入力は保存されていました');
       await shoot(page, 'T11', 'requests-proxy-notice-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 申請一覧（PC）：代理入力の未確定の間に閉じ、保存されていなかった（開き直すと送った入力が戻る）', async ({ page }) => {
+    test.setTimeout(120_000);
+    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/?category=rest_area');
+      const { restore } = await proxyUnverified(page, 'E2E休憩所', false);
+      await page.keyboard.press('Escape');
+      await page.getByRole('alertdialog').getByRole('button', { name: '閉じる' }).click();
+      await expect(page.getByTestId('proxy-notice')).toContainText('E2E休憩所の代理入力は保存されていませんでした');
+      await expect(page.getByTestId('proxy-notice')).toContainText('代理入力を開くと送った入力が戻ります');
+      await shoot(page, 'T11', 'requests-proxy-notice-not-saved-pc');
+      restore();
+      await page.locator('tr[data-group-name="E2E休憩所"]').getByRole('button', { name: '代理入力' }).click();
+      const sheet = page.getByRole('dialog');
+      await expect(sheet.getByRole('alert')).toContainText('送った入力を戻しました');
+      await expect(sheet.getByRole('button', { name: '提出する' })).toBeEnabled();
+      await shoot(page, 'T11', 'requests-proxy-reopen-not-saved-pc');
     } finally {
       await s.cleanup();
     }

@@ -697,6 +697,18 @@ export interface ProxyUnverified {
   input: ProxyInput;
 }
 
+/**
+ * シートを閉じた後の確かめ（表の読み直し）で、送った値が入っていなかった（not_saved）か、ほかの人の保存があって自分の保存と
+ * 決められなかった（others）送信（2.6。notes/T11.md の 12 の 6）。団体ごとに申請一覧の画面が持ち、開き直したシートが送った入力を
+ * 戻すのに使う（not_saved は送り直せる状態、others は上書きするかのダイアログ）。latest は確かめに使った記録、changes はその変更。
+ */
+export interface ProxyLeftover {
+  u: ProxyUnverified;
+  verdict: 'not_saved' | 'others';
+  latest: GroupRequestState;
+  changes: GroupChanges;
+}
+
 /** 未確定の送信を読み直した記録で確かめた結果。saved：送った値が入った、not_saved：入っておらずほかの人の保存もない、others：ほかの人の保存があり、自分の保存と決められない */
 export interface ProxyJudgement {
   verdict: 'saved' | 'not_saved' | 'others';

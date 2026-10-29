@@ -835,7 +835,7 @@ describe('代理入力の未確定の送信（応答が届かず、保存され�
     expect(args.p_rows).toEqual([{ itemId: itemId('chair'), count: 1 }]);
   });
 
-  it('裏の読み直しで入力は置き換わらない（未確定でなくても）。未確定の間の裏の読み直しでも、まず送った値が入ったかを確かめる', async () => {
+  it('裏の読み直しで入力は置き換わらない（未確定でなくても）。未確定の間の裏の読み直しでも、まず団体を読み直して送った値が入ったかを確かめる', async () => {
     const user = userEvent.setup();
     state.handler = makeHandler();
     renderScreen();
@@ -859,7 +859,11 @@ describe('代理入力の未確定の送信（応答が届かず、保存され�
     state.calls = [];
     sheet = await submitUnverified(user, true);
     await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    // 届いた表の行では判断せず、団体を読み直して確かめる
+    const reads = groupReads();
+    state.groupDown = false;
     await lastClient!.invalidateQueries();
+    await waitFor(() => expect(groupReads()).toBe(reads + 1));
     await waitFor(() =>
       expect(within(sheet).getByRole('status').textContent).toContain('前に送った値は保存されていました。その後に変えた値はまだ保存していません'),
     );
@@ -891,6 +895,137 @@ describe('代理入力の未確定の送信（応答が届かず、保存され�
     await user.click(within(sheet).getByRole('button', { name: '確かめる' }));
     await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toContain('保存されていませんでした'));
     expect((within(sheet).getByRole('button', { name: '提出する' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  /** 申請一覧の表の読み込みか */
+  const isTableRead = (call: FakeCall) => call.table === 'requests' && opArgs(call, 'eq').some((a) => a[0] === 'groups.year_id');
+  /** 次の表の読み込みを、返した関数を呼ぶまで止める（読み込みの中身は呼ばれたときの状態で決まる） */
+  function holdNextTableRead(): () => void {
+    const inner = state.handler!;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let held = false;
+    state.handler = (call) => {
+      const res = inner(call);
+      if (!held && isTableRead(call)) {
+        held = true;
+        return gate.then(() => res);
+      }
+      return res;
+    };
+    return release;
+  }
+
+  it('未確定のまま閉じ、表の読み直しでほかの人の保存が見つかれば、開き直すと送った入力を戻して上書きするか確かめる', async () => {
+    const user = userEvent.setup();
+    await submitUnverified(user, false);
+    // 自分の提出は届かず、ほかの人が机(木) を 4 にした
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    await user.keyboard('{Escape}');
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '閉じる' }));
+    await waitFor(() => expect(screen.getByTestId('proxy-notice').textContent).toContain('保存されたか決められません'));
+    expect(screen.getByTestId('proxy-notice').textContent).toContain('上書きするか');
+    expect(screen.getByTestId('proxy-notice').textContent).not.toContain('保存されていませんでした');
+
+    // 開き直す：送った入力を戻し、ほかの人の保存のダイアログ（上書きする・見直す）を出す
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const confirm = await screen.findByRole('alertdialog');
+    expect(confirm.textContent).toContain('ほかの人が変更しました');
+    expect(confirm.textContent).toContain('前に送った値が保存されたかは決められません');
+    expect(confirm.textContent).toContain('机(木)');
+    expect(value('chair')).toBe('1');
+    expect(value('desk')).toBe('4');
+    expect(submits()).toBe(1);
+    state.groupDown = false;
+    await user.click(within(confirm).getByRole('button', { name: '上書きして提出する' }));
+    await waitFor(() => expect(submits()).toBe(2));
+    const args = opArgs(state.calls.filter((c) => c.table === 'rpc:submit_requests')[1]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+    expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(1);
+    expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(4);
+  });
+
+  it('未確定のまま閉じ、表の読み直しで保存されていなかったと分かれば、開き直すと送った入力を戻して送り直せる', async () => {
+    const user = userEvent.setup();
+    await submitUnverified(user, false);
+    await user.keyboard('{Escape}');
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '閉じる' }));
+    await waitFor(() => expect(screen.getByTestId('proxy-notice').textContent).toContain('保存されていませんでした'));
+    expect(screen.getByTestId('proxy-notice').textContent).toContain('送った入力が戻ります');
+
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    expect(value('chair')).toBe('1');
+    expect(within(sheet).getByRole('alert').textContent).toContain('保存されていませんでした');
+    expect(within(sheet).queryByRole('button', { name: '確かめる' })).toBeNull();
+    expect((within(sheet).getByRole('button', { name: '提出する' }) as HTMLButtonElement).disabled).toBe(false);
+    state.groupDown = false;
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(submits()).toBe(2));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    const args = opArgs(state.calls.filter((c) => c.table === 'rpc:submit_requests')[1]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+    expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(1);
+  });
+
+  it('閉じた後の表の読み直しが届く前に同じ団体を開き直すと、開いているシートが読み直して確かめる（画面が印を外さない）', async () => {
+    const user = userEvent.setup();
+    await submitUnverified(user, true);
+    const release = holdNextTableRead();
+    await user.keyboard('{Escape}');
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '閉じる' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    expect(within(sheet).getByRole('button', { name: '確かめる' })).toBeTruthy();
+    const reads = groupReads();
+    state.groupDown = false;
+    release();
+    // シートが団体を読み直し、送った値が入っていて入力がそのままなので「保存されていました」で閉じる
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(groupReads()).toBe(reads + 1);
+    expect(screen.queryByTestId('proxy-notice')).toBeNull();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(submits()).toBe(1);
+  });
+
+  const T2 = '2026-10-29T03:00:00.111111+00:00';
+  it('送る前に始まった表の読み直しが後から届いても、その行で「保存されていませんでした」と言わず、団体を読み直して確かめる', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:submit_requests' && submits() === 1) {
+        // 上書きの提出は届いた（応答と、その後の確かめは落ちる）
+        state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!, { group_id: STALL, item_id: itemId('chair'), count: 1, updated_at: T2 }];
+        state.stallSubUpdatedAt = T2;
+        state.groupDown = true;
+        return NETWORK;
+      }
+      return undefined;
+    });
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    // ほかの人が机(木) を 4 にした。提出の直前の読み直しで見つかり、表の読み直しが始まる（届くのは送った後）
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    const release = holdNextTableRead();
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+
+    const confirm = await screen.findByRole('alertdialog');
+    await user.click(within(confirm).getByRole('button', { name: '上書きして提出する' }));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toContain('保存できたか確かめられません'));
+    expect(submits()).toBe(1);
+    const reads = groupReads();
+    release();
+    // 古い表の行では決めない：団体を読み直そうとし（まだ通信できない）、言い切らずに「確かめる」を残す
+    await waitFor(() => expect(groupReads()).toBe(reads + 1));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toContain('確かめられません'));
+    expect(within(sheet).getByRole('alert').textContent).not.toContain('保存されていませんでした');
+    expect(within(sheet).getByRole('button', { name: '確かめる' })).toBeTruthy();
+    expect((within(sheet).getByRole('button', { name: '提出する' }) as HTMLButtonElement).disabled).toBe(true);
+    state.groupDown = false;
+    await user.click(within(sheet).getByRole('button', { name: '確かめる' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(submits()).toBe(1);
   });
 
   it('未確定の間に閉じ、表を読み直せたら送った値が入ったかを確かめて知らせる（入っていれば「保存されていました」）', async () => {

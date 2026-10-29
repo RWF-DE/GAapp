@@ -30,7 +30,9 @@ import {
   type GroupChanges,
   type GroupRequestState,
   type MatrixRow,
+  type RequestField,
   type ProxyInput,
+  type ProxyLeftover,
   type ProxySent,
   type ProxyUnverified,
 } from '@/lib/data/requests';
@@ -61,8 +63,11 @@ export type ProxyMode = 'direct' | 'deadline';
  * - ほかの人の保存があれば言い切らず、ほかの人の変更のダイアログ（上書きする・見直す）に回す。
  * - 読み直せなければ知らせを残し、「確かめる」まで送信を押せない。
  * シートの基準（比べる記録）は開いたときの表の行で、提出の直前の読み直し・確かめの読み直しのときだけ変える。裏の表の読み直しでは
- * 入力を置き換えない（未確定の間は、届いた行で上の確かめだけを行う）。
- * 未確定の間に閉じるときは「保存されたか分からない」と確かめてから閉じる（呼ぶ側が表を読み直して確かめる）。開き直すと送った入力を戻す。
+ * 入力を置き換えない。未確定の間に裏の表の行が届いたら、その行では判断せずに団体を読み直して確かめる（届いた行は送る前に始まった
+ * 読み込みのことがあり、それで「保存されていませんでした」と言い切らない）。
+ * 未確定の間に閉じるときは「保存されたか分からない」と確かめてから閉じる（呼ぶ側が表を読み直して確かめる）。開き直すと送った入力を戻す
+ * （まだ確かめていなければ「確かめる」まで送れない。閉じた後の確かめで保存されていなかったなら送り直せる状態、ほかの人の保存が
+ * あったなら上書きするかのダイアログで戻す〔leftover〕）。
  */
 export function ProxySheet({
   open,
@@ -76,6 +81,8 @@ export function ProxySheet({
   onError,
   unverified,
   onUnverifiedChange,
+  leftover,
+  onLeftoverTaken,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -91,6 +98,9 @@ export function ProxySheet({
   /** この団体の未確定の送信（呼ぶ側が団体ごとに持つ。閉じても消さない） */
   unverified: ProxyUnverified | null;
   onUnverifiedChange: (groupId: string, u: ProxyUnverified | null) => void;
+  /** シートを閉じた後の確かめで、保存されていなかったか決められなかった送信（開き直したら送った入力を戻す。受け取ったら onLeftoverTaken） */
+  leftover: ProxyLeftover | null;
+  onLeftoverTaken: (groupId: string) => void;
 }) {
   /** シートの中の入力の状態（閉じる前に確かめる） */
   const formRef = useRef<FormState>({ dirty: false, busy: false });
@@ -124,6 +134,8 @@ export function ProxySheet({
             onError={onError}
             unverified={unverified}
             onUnverifiedChange={(u) => onUnverifiedChange(row.group.id, u)}
+            leftover={leftover}
+            onLeftoverTaken={() => onLeftoverTaken(row.group.id)}
           />
         ) : null}
         {unverified ? (
@@ -131,7 +143,7 @@ export function ProxySheet({
             open={askClose}
             onOpenChange={setAskClose}
             title="保存されたか分からないまま閉じますか"
-            description="前に送った代理入力が保存されたか、まだ分かりません。閉じると表を読み直して確かめます。確かめるまで、この団体の代理入力は送り直せません（開き直すと送った入力が戻ります。その後に変えた入力は消えます）。"
+            description="前に送った代理入力が保存されたか、まだ分かりません。閉じると表を読み直して確かめます。確かめるまで、この団体の代理入力は送り直せません。保存されていたとき以外は、開き直すと送った入力が戻ります（送った後に変えた入力は消えます）。"
             confirmLabel="閉じる"
             cancelLabel="シートに戻る"
             onConfirm={() => onOpenChange(false)}
@@ -158,6 +170,65 @@ interface FormState {
   busy: boolean;
 }
 
+/** 上書きするかのダイアログに出すもの。afterUnknown は未確定の送信を確かめたときに見つかった（前に送った値が保存されたか決められない） */
+interface OverwriteAsk {
+  items: string[];
+  submission: boolean;
+  afterUnknown: boolean;
+}
+
+/** ほかの人の変更をダイアログに出す形にする（変わった品目の「名前（前 → 今）」と、提出の記録が変わったか） */
+function overwriteAsk(items: readonly ItemRow[], changed: GroupChanges, afterUnknown: boolean): OverwriteAsk {
+  const name = (id: string) => items.find((i) => i.id === id)?.name ?? '（不明な品目）';
+  return { items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), submission: changed.submission, afterUnknown };
+}
+
+/** 入れた数のうち、基準の欄の値（fields の current）から変えた品目だけを残す（上書きの確かめで、入れていない欄は読み直した値にする） */
+function keepTyped(fields: readonly RequestField[], edits: Readonly<Record<string, number>>): Record<string, number> {
+  const current = new Map(fields.map((f) => [f.item.id, f.current]));
+  return Object.fromEntries(Object.entries(edits).filter(([id, v]) => v !== current.get(id)));
+}
+
+const UNVERIFIED_TEXT = '前に送った代理入力が保存されたか分かりません。「確かめる」を押して確かめてください';
+const OTHERS_TEXT = '前に送った値が保存されたか決められません（ほかの人がこの団体の申請を保存しました）。最新の値を読み直しました';
+
+/**
+ * シートを開いたときの状態。ふつうは表の行が基準で入力はなし。未確定の送信がある団体は送った入力を戻し、「確かめる」まで送れない。
+ * 閉じた後の確かめの結果（leftover）があれば送った入力を戻し、not_saved は確かめた記録を基準に送り直せる状態、others は
+ * シートの中で見つけたときと同じく（askOverwrite）、確かめた記録を基準にして入れた数と書き換えた備考だけを残し、上書きするかを確かめる。
+ */
+function initialForm(
+  row: MatrixRow,
+  items: readonly ItemRow[],
+  unverified: ProxyUnverified | null,
+  leftover: ProxyLeftover | null,
+): { base: GroupRequestState; edits: Record<string, number>; noteEdit: string | null; error: string | null; overwrite: OverwriteAsk | null } {
+  if (unverified) {
+    return { base: groupStateOf(row), edits: { ...unverified.input.counts }, noteEdit: unverified.input.note, error: UNVERIFIED_TEXT, overwrite: null };
+  }
+  if (leftover) {
+    const { u, latest } = leftover;
+    if (leftover.verdict === 'not_saved') {
+      return {
+        base: latest,
+        edits: { ...u.input.counts },
+        noteEdit: u.input.note,
+        error: '前に送った代理入力は保存されていませんでした（通信できませんでした）。送った入力を戻しました。もう一度押してください',
+        overwrite: null,
+      };
+    }
+    const before = buildRequestForm(items, row.group.category, u.before.requests);
+    return {
+      base: latest,
+      edits: keepTyped(before.fields, u.input.counts),
+      noteEdit: u.input.note === (u.before.submission?.note ?? '') ? null : u.input.note,
+      error: OTHERS_TEXT,
+      overwrite: overwriteAsk(items, leftover.changes, true),
+    };
+  }
+  return { base: groupStateOf(row), edits: {}, noteEdit: null, error: null, overwrite: null };
+}
+
 function ProxyForm({
   row,
   items,
@@ -171,6 +242,8 @@ function ProxyForm({
   onError,
   unverified,
   onUnverifiedChange,
+  leftover,
+  onLeftoverTaken,
 }: {
   row: MatrixRow;
   items: readonly ItemRow[];
@@ -187,24 +260,26 @@ function ProxyForm({
   /** この団体の未確定の送信（確かめるまで送り直せない。2.6） */
   unverified: ProxyUnverified | null;
   onUnverifiedChange: (u: ProxyUnverified | null) => void;
+  /** 閉じた後の確かめの結果（開いたときだけ使う。受け取ったら onLeftoverTaken） */
+  leftover: ProxyLeftover | null;
+  onLeftoverTaken: () => void;
 }) {
   const group = row.group;
+  const [init] = useState(() => initialForm(row, items, unverified, leftover));
   /**
    * シートの基準（比べる団体の申請と提出の記録）。開いたときの表の行で始め、提出の直前の読み直しと確かめの読み直しのときだけ変える
    * （裏の表の読み直しでは変えない。入力を黙って置き換えない。2.6）
    */
-  const [base, setBase] = useState<GroupRequestState>(() => groupStateOf(row));
+  const [base, setBase] = useState<GroupRequestState>(init.base);
   const requests = base.requests;
   const model = useMemo(() => buildRequestForm(items, group.category, requests), [items, group.category, requests]);
   const savedNote = base.submission?.note ?? '';
-  // 未確定の送信がある団体を開き直したときは、送った入力を戻す
-  const [edits, setEdits] = useState<Record<string, number>>(() => ({ ...(unverified?.input.counts ?? {}) }));
+  // 未確定の送信がある団体・閉じた後の確かめで保存されていなかった団体を開き直したときは、送った入力を戻す（initialForm）
+  const [edits, setEdits] = useState<Record<string, number>>(init.edits);
   /** 書き換えた備考（null なら読み込んだ備考のまま。読み直したら新しい備考になる） */
-  const [noteEdit, setNoteEdit] = useState<string | null>(() => unverified?.input.note ?? null);
+  const [noteEdit, setNoteEdit] = useState<string | null>(init.noteEdit);
   const note = noteEdit ?? savedNote;
-  const [error, setError] = useState<string | null>(() =>
-    unverified ? '前に送った代理入力が保存されたか分かりません。「確かめる」を押して確かめてください' : null,
-  );
+  const [error, setError] = useState<string | null>(init.error);
   /** 確かめた後の知らせ（前に送った値は保存されていた、など） */
   const [info, setInfo] = useState<string | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -215,7 +290,7 @@ function ProxyForm({
    * 読み直してほかの人の変更が見つかった（上書きしてよいか確かめる）。変わった品目の「名前（前 → 今）」と、提出の記録が変わったか。
    * afterUnknown は未確定の送信を確かめたときに見つかった（前に送った値が保存されたか決められない）
    */
-  const [overwrite, setOverwrite] = useState<{ items: string[]; submission: boolean; afterUnknown: boolean } | null>(null);
+  const [overwrite, setOverwrite] = useState<OverwriteAsk | null>(init.overwrite);
   const dirty = hasCountChanges(model.fields, edits) || (noteEdit !== null && noteEdit !== savedNote);
   const noteTooLong = note.length > NOTE_MAX;
   const showPrev = group.category === 'rest_area' && !!year.prev_year_id && hasNoRequests(requests);
@@ -244,6 +319,11 @@ function ProxyForm({
     report({ dirty, busy });
   }, [dirty, busy]);
   useEffect(() => () => report({ dirty: false, busy: false }), []);
+  // 閉じた後の確かめの結果は、開いたときに入力へ戻したので呼ぶ側から外す（もう一度開いても二重に戻さない）
+  const takeLeftover = useEffectEvent(() => {
+    if (leftover) onLeftoverTaken();
+  });
+  useEffect(() => takeLeftover(), []);
 
   const fillPrevious = async () => {
     setPrevLoading(true);
@@ -273,18 +353,17 @@ function ProxyForm({
    * 出す）、入れた数（前の基準から変えた品目）と書き換えた備考だけを残して、上書きしてよいか確かめる。表も読み直す。
    */
   const askOverwrite = (latest: GroupRequestState, changed: GroupChanges, afterUnknown: boolean) => {
-    const current = new Map(model.fields.map((f) => [f.item.id, f.current]));
-    setEdits((e) => Object.fromEntries(Object.entries(e).filter(([id, v]) => v !== current.get(id))));
+    setEdits((e) => keepTyped(model.fields, e));
     setNoteEdit((n) => (n === savedNote ? null : n));
     setBase(latest);
-    const name = (id: string) => items.find((i) => i.id === id)?.name ?? '（不明な品目）';
-    setOverwrite({ items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), submission: changed.submission, afterUnknown });
+    setOverwrite(overwriteAsk(items, changed, afterUnknown));
     // 表も読み直す（シートは読み直した記録で確かめるので、待たない）
     void onReload().catch(() => undefined);
   };
 
   /**
-   * 未確定の送信を、読み直した記録で確かめる（2.6。「確かめる」・送った直後・裏の表の読み直しのどれでも同じ。notes/T11.md の 12）。
+   * 未確定の送信を、送った後に読み直した団体の記録で確かめる（2.6。「確かめる」・送った直後・裏の表の行が届いたときのどれでも、
+   * verify が読み直してから呼ぶ。notes/T11.md の 12）。
    * 印は外す（others ならダイアログで選んでもらう）。
    */
   const settle = async (u: ProxyUnverified, latest: GroupRequestState) => {
@@ -310,7 +389,7 @@ function ProxyForm({
       setError('保存されていませんでした（通信できませんでした）。もう一度押してください');
       return;
     }
-    setError('前に送った値が保存されたか決められません（ほかの人がこの団体の申請を保存しました）。最新の値を読み直しました');
+    setError(OTHERS_TEXT);
     askOverwrite(latest, changes, true);
   };
 
@@ -338,15 +417,17 @@ function ProxyForm({
     await verify(u);
   };
 
-  // 裏の表の読み直し（再接続・ほかの書き込みの後など）で行が届いたら、未確定の間は送った値が入ったかを確かめる。入力は置き換えない
+  // 裏の表の読み直し（再接続・ほかの書き込みの後など）で行が届いたら、未確定の間は送った値が入ったかを確かめる。入力は置き換えない。
+  // 届いた行では判断しない（送る前に始まった読み込みが後から届いたことがあり、それで「保存されていませんでした」と言い切らない）。
+  // 送った後に団体を読み直して確かめる（verify）
   const lastRow = useRef(row);
-  const onRowLoaded = useEffectEvent((r: MatrixRow) => {
-    if (unverified && !busyRef.current) void settle(unverified, groupStateOf(r));
+  const onRowLoaded = useEffectEvent(() => {
+    if (unverified && !busyRef.current) void verify(unverified);
   });
   useEffect(() => {
     if (lastRow.current === row) return;
     lastRow.current = row;
-    onRowLoaded(row);
+    onRowLoaded();
   }, [row]);
 
   /** 締切前の提出。before は送る直前に読み直した記録（応答が届かなかったときに、提出の記録が書き直されたかを比べる） */

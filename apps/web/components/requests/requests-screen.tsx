@@ -49,6 +49,7 @@ import {
   type OutsideFlag,
   type PendingCell,
   type PendingCells,
+  type ProxyLeftover,
   type ProxyUnverified,
   type RequestsTables,
 } from '@/lib/data/requests';
@@ -132,12 +133,31 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   /** 通信が途切れて保存されたか分からず、読み直しもできなかった変更（確かめるまで保存を押せない。2.6） */
   const [unverified, setUnverified] = useState<Unverified | null>(null);
   const [proxyGroupId, setProxyGroupId] = useState<string | null>(null);
+  /** proxyGroupId と同じもの（表の読み直しの .then など、await の後でも今開いているシートの団体を読む） */
+  const proxyGroupIdRef = useRef<string | null>(null);
+  const setProxyGroup = (id: string | null) => {
+    proxyGroupIdRef.current = id;
+    setProxyGroupId(id);
+  };
   /**
    * 代理入力の未確定の送信（応答が届かず、保存されたか分からない。団体ごと。2.6）。シートを閉じても消さず、確かめるまで同じ団体の
    * 代理入力の送り直しを止める。シートを開いている団体はシートが確かめ、閉じた団体は表が届いたときにここで確かめる
    */
   const [proxyUnverified, setProxyUnverified] = useState<Readonly<Record<string, ProxyUnverified>>>({});
   const proxyUnverifiedRef = useRef<Readonly<Record<string, ProxyUnverified>>>({});
+  /**
+   * シートを閉じた後の確かめで、保存されていなかった（not_saved）か、ほかの人の保存があって決められなかった（others）送信（団体ごと）。
+   * 開き直したシートが送った入力を戻す（not_saved は送り直せる状態、others は上書きするかのダイアログ）。シートが受け取ったら外す
+   */
+  const [proxyLeftover, setProxyLeftover] = useState<Readonly<Record<string, ProxyLeftover>>>({});
+  const setLeftover = (groupId: string, l: ProxyLeftover | null) =>
+    setProxyLeftover((m) => {
+      if (!l && !(groupId in m)) return m;
+      const next = { ...m };
+      if (l) next[groupId] = l;
+      else delete next[groupId];
+      return next;
+    });
   /** 代理入力の未確定の送信を、シートを閉じた後に確かめた結果の知らせ */
   const [proxyNotice, setProxyNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null);
   const [markRow, setMarkRow] = useState<MatrixRow | null>(null);
@@ -285,11 +305,16 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     else delete next[groupId];
     proxyUnverifiedRef.current = next;
     setProxyUnverified(next);
+    // 新しい送信が未確定になったら、前の確かめの結果は使わない
+    if (u) setLeftover(groupId, null);
   };
 
   /**
    * 届いた表で、シートを閉じた団体の代理入力の未確定の送信を確かめる（2.6。シートの確かめと同じ judgeProxyAfterUnknown）。
-   * シートを閉じたので入力は残っていない。結果を知らせて印を外す（others は表の値を見てもらう）。
+   * 開いているシートの団体（openGroupId）は除く（シートが団体を読み直して確かめる）。結果を知らせて印を外す。保存されていなかった
+   * （not_saved）・ほかの人の保存があった（others）ときは送った入力を団体ごとに残し、開き直したシートが戻す（not_saved は送り直せる
+   * 状態、others は上書きするかのダイアログ。notes/T11.md の 12 の 6）。
+   * 閉じた団体の表は、送信より後に始まった読み込み（閉じたときの読み直しは前の読み込みを取り消す）なので、行で判断してよい。
    */
   const settleProxyMarks = (t: RequestsTables, openGroupId: string | null) => {
     const marks = proxyUnverifiedRef.current;
@@ -302,25 +327,27 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       const row = rows.find((r) => r.group.id === id);
       const u = marks[id];
       if (!row || !u) continue;
-      const { verdict } = judgeProxyAfterUnknown(u, groupStateOf(row));
+      const latest = groupStateOf(row);
+      const { verdict, changes } = judgeProxyAfterUnknown(u, latest);
       setProxyMark(id, null);
       const name = row.group.name;
       if (verdict === 'saved') {
         texts.push(`通信が途切れましたが、${name}の代理入力は保存されていました`);
         continue;
       }
+      setLeftover(id, { u, verdict, latest, changes });
       tone = 'error';
       texts.push(
         verdict === 'not_saved'
-          ? `${name}の代理入力は保存されていませんでした（通信できませんでした）。もう一度入力してください`
-          : `${name}の代理入力は、保存されたか決められません（ほかの人がこの団体の申請を保存しました）。表の値を確かめてください`,
+          ? `${name}の代理入力は保存されていませんでした（通信できませんでした）。代理入力を開くと送った入力が戻ります。もう一度送ってください`
+          : `${name}の代理入力は、保存されたか決められません（ほかの人がこの団体の申請を保存しました）。代理入力を開くと送った入力が戻るので、上書きするか確かめてください`,
       );
     }
     if (texts.length > 0) setProxyNotice({ tone, text: texts.join('。') });
   };
 
   const onTablesLoaded = useEffectEvent((t: RequestsTables) => {
-    settleProxyMarks(t, proxyGroupId);
+    settleProxyMarks(t, proxyGroupIdRef.current);
     rebaseIfNew(t);
   });
   useEffect(() => {
@@ -724,7 +751,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
               }}
               onProxy={(row) => {
                 setProxyNotice(null);
-                setProxyGroupId(row.group.id);
+                setProxyGroup(row.group.id);
               }}
               onMarkSubmitted={(row) => setMarkRow(row)}
             />
@@ -802,14 +829,15 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         onOpenChange={(o) => {
           if (o) return;
           const id = proxyGroupId;
-          setProxyGroupId(null);
+          setProxyGroup(null);
           if (!id || !proxyUnverifiedRef.current[id]) return;
-          // 未確定のまま閉じた：保存されたか分からないと伝えて表を読み直し、送った値が入ったかを確かめる（印は確かめるまで残す）
+          // 未確定のまま閉じた：保存されたか分からないと伝えて表を読み直し、送った値が入ったかを確かめる（印は確かめるまで残す）。
+          // 読み直しの間に同じ団体のシートを開き直したら、その団体はシートが確かめる（ここでは開いている団体を除く）
           const name = proxyRow?.group.name ?? '';
           setProxyNotice({ tone: 'error', text: `${name}の代理入力は、保存されたか分かりません。表を読み直して確かめています` });
           void refetchFresh().then((data) => {
-            if (data) settleProxyMarks(data, null);
-            else if (proxyUnverifiedRef.current[id]) {
+            if (data) settleProxyMarks(data, proxyGroupIdRef.current);
+            else if (proxyUnverifiedRef.current[id] && proxyGroupIdRef.current !== id) {
               setProxyNotice({
                 tone: 'error',
                 text: `${name}の代理入力は、保存されたか分かりません（表を読み直せませんでした）。確かめるまで送り直せません。通信が戻ったら、代理入力を開いて「確かめる」を押してください`,
@@ -830,6 +858,8 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         onError={(e, rpc, groupId) => handleWriteError(e, rpc, groupId)}
         unverified={proxyRow ? (proxyUnverified[proxyRow.group.id] ?? null) : null}
         onUnverifiedChange={setProxyMark}
+        leftover={proxyRow ? (proxyLeftover[proxyRow.group.id] ?? null) : null}
+        onLeftoverTaken={(groupId) => setLeftover(groupId, null)}
       />
     </div>
   );
