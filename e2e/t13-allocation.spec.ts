@@ -1,15 +1,13 @@
 import { expect, test, type Page } from '@playwright/test';
 import { storageStateFor } from './support/auth';
-import { createScenario } from './support/db';
+import { createScenario, sql } from './support/db';
 import { SEED_USER_IDS } from './support/users';
 import { pinYear } from './support/year';
 
 // T13 振り分け（段 1：計算エンジンと自動振り分け。画面の設計 3.9・4 章・7.2 の T13 の行）。
 // シナリオの年度（createScenario）で閉じる。seed の R8 は変えない。
 
-// Chromium は、環境の LANG が UTF-8 でないと a 要素の download の日本語のファイル名を捨てて「download」にする
-// （このコンテナは LANG が空。CI の ubuntu は C.UTF-8）。ファイル名を確かめるので、このファイルのブラウザは UTF-8 で起こす。
-test.use({ launchOptions: { env: { ...process.env, LANG: 'C.UTF-8' } } });
+// ダウンロードの日本語のファイル名を確かめる。Chromium を LANG=C.UTF-8 で起こすのは playwright.config.ts（T09a）が行う。
 
 /** 計算エンジンの読み込みが終わり、自動振り分けを押せるまで待つ */
 async function waitEngineReady(page: Page): Promise<void> {
@@ -151,6 +149,15 @@ test.describe('T13 部員（Q1：いつでも読み取り専用）', () => {
   test('T13 部員は読み取りだけ：自動振り分けのボタンがなく、計算エンジンを読み込まず、検証の一覧からルール画面へのリンクがない', async ({ page }) => {
     const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { staff: true } });
     try {
+      // ルールつきの検証の項目を必ず出す：キャスター机への置き換えがある団体（模擬店01）の了承を未依頼にする → W102（S07）
+      const g = s.ids.groups['模擬店01']!;
+      const caster = await sql<{ n: string }>(
+        `select count(*) as n from public.allocations a join public.items i on i.id = a.item_id join public.items r on r.id = a.requested_item_id
+          where a.year_id = $1 and a.group_id = $2 and i.code = 'caster_desk' and r.code = 'desk'`,
+        [s.yearId, g],
+      );
+      expect(Number(caster[0]!.n)).toBeGreaterThan(0);
+      await sql(`update public.substitution_consents set status = 'not_asked', count = null where group_id = $1`, [g]);
       const wasm: string[] = [];
       page.on('request', (r) => {
         if (r.url().includes('highs.wasm')) wasm.push(r.url());
@@ -167,12 +174,19 @@ test.describe('T13 部員（Q1：いつでも読み取り専用）', () => {
       // ルール画面（admin だけ）へのリンクを出さない
       await expect(page.getByRole('link', { name: /^ルール .* を開く$/ })).toHaveCount(0);
       await expect(page.locator('a[href*="/rules"]')).toHaveCount(0);
-      // ルールのある項目は、押すとコードと内容の文をその場で出す
-      const ruleButton = page.getByRole('button', { name: /^ルール .+ の内容$/ }).first();
-      if (await ruleButton.count()) {
-        await ruleButton.click();
-        await expect(page.getByTestId('rule-text').first()).toBeVisible();
-      }
+      // ルールのある項目は、押すとコードと内容の文をその場で出す。項目がないと何も確かめずに通るので、
+      // シナリオで了承待ち（W102。ルール S07）を必ず出し、項目が 1 件以上あることを表明してから押す
+      const w102 = page.locator('[data-issue-code="W102"]');
+      expect(await w102.count()).toBeGreaterThan(0);
+      const ruleButton = w102.first().getByRole('button', { name: 'ルール S07 の内容' });
+      await expect(ruleButton).toBeVisible();
+      await expect(page.getByTestId('rule-text')).toHaveCount(0);
+      await ruleButton.click();
+      await expect(ruleButton).toHaveAttribute('aria-expanded', 'true');
+      const ruleText = w102.first().getByTestId('rule-text');
+      await expect(ruleText).toBeVisible();
+      await expect(ruleText).not.toHaveText(/内容を読めません/);
+      await expect(ruleText).toContainText('キャスター机');
       // 団体別の表示
       await page.getByRole('button', { name: '団体別' }).click();
       await expect(page).toHaveURL(/view=group/);
