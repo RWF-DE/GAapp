@@ -49,6 +49,14 @@ jobs:
       # DB だけ起動する（API・Auth・Studio などのコンテナは起こさない）
       - run: supabase db start
       - run: supabase test db
+      # 生成した型（packages/shared）が今のマイグレーションと一致すること
+      - uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:types
 
   e2e:
     name: e2e (Playwright)
