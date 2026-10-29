@@ -33,14 +33,7 @@ describe.each(sets)('validate と checkInvariants：$label', (set) => {
     expect(v.filter((i) => i.severity === 'error' || i.code === 'W101' || i.code === 'W107')).toEqual([]);
   });
 
-  it('validate の E/W101 の件数が checkInvariants と同じ（キー単位の E001・E003・W101、行単位の E004・E005）', () => {
-    const { v, inv } = both(rows);
-    for (const c of ['E001', 'E003', 'W101', 'E006'] as const) {
-      expect(v.filter((i) => i.code === c).length, c).toBe(inv.filter((i) => i.code === c).length);
-    }
-  });
-
-  const g = () => input.groups.find((x) => x.submittedAt !== null && rows.some((r) => r.groupId === x.id && !r.isKeep))!;
+  const g = () => input.groups.find((x) => x.submittedAt !== null && x.category !== 'stall' && rows.some((r) => r.groupId === x.id && !r.isKeep && r.itemId === ix.itemId('desk')))!;
   const perturb: [string, (rs: AllocationRow[]) => AllocationRow[]][] = [
     ['行を1つ消す（E003）', (rs) => rs.slice(1)],
     ['行を1台増やす（E001・W101）', (rs) => rs.map((r, n) => (n === 0 ? { ...r, count: r.count + 1 } : r))],
@@ -50,12 +43,35 @@ describe.each(sets)('validate と checkInvariants：$label', (set) => {
     }],
     ['isKeep を反転（E005）', (rs) => rs.map((r, n) => (n === 0 ? { ...r, isKeep: !r.isKeep } : r))],
     ['品目を不可机にする（E004）', (rs) => rs.map((r) => (r.groupId === g().id && !r.isKeep && r.itemId === ix.itemId('desk') ? { ...r, itemId: ix.itemId('desk_ng') } : r))],
-    ['何も足さない行を別の団体へ（E003・W101）', (rs) => rs.map((r, n) => (n === 0 ? { ...r, groupId: g().id } : r))],
+    ['何も足さない行を別の団体へ（E003・W101）', (rs) => {
+      const other = input.groups.find((x) => x.submittedAt !== null && x.id !== rs[0]!.groupId)!;
+      return rs.map((r, n) => (n === 0 ? { ...r, groupId: other.id } : r));
+    }],
   ];
   it.each(perturb)('壊した行でも同じコードが出る：%s', (_name, f) => {
     const rs = f(rows);
     const { vc, ic } = both(rs);
     expect(vc).toEqual(ic);
+  });
+
+  // 件数：E001・E003・W101・E006 はキーごと、E004・E005 は行ごとに1件ずつ数えて、validate と checkInvariants で同じ
+  const COUNTED = ['E001', 'E003', 'W101', 'E006', 'E004', 'E005'] as const;
+  const counts = (rs: AllocationRow[]) => {
+    const { v, inv } = both(rs);
+    const n = (xs: readonly { code: string }[]) => Object.fromEntries(COUNTED.map((c) => [c, xs.filter((i) => i.code === c).length]));
+    return { validate: n(v), invariants: n(inv) };
+  };
+  it('件数が同じ：壊していない結果', () => {
+    const c = counts(rows);
+    expect(c.validate).toEqual(c.invariants);
+  });
+  it.each(perturb)('件数が同じ：壊した行 %s', (_name, f) => {
+    const c = counts(f(rows));
+    expect(c.validate).toEqual(c.invariants);
+  });
+  it('壊した行で件数が 0 でないコードがある（件数の比較が空振りでない）', () => {
+    const total = perturb.map(([, f]) => Object.values(counts(f(rows)).validate).reduce((a, b) => a + b, 0));
+    expect(total.filter((n) => n > 0).length).toBeGreaterThanOrEqual(4);
   });
 
   it('壊した行のうち少なくとも4通りは何かのコードが出る（テスト自体が空でない）', () => {

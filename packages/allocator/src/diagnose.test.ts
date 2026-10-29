@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AllocateInput } from '@gaapp/shared';
 import { FixtureBuilder, RULES, makeInfeasibleS05, toAllocateInput } from '@gaapp/shared/testing';
 import { allocate } from './allocate';
-import { COMBINATION_MESSAGE } from './diagnose';
+import { COMBINATION_MESSAGE, STOCK_SHORT_MESSAGE } from './diagnose';
 import { loadSet } from './testing/fixtureSets';
 import { getHighs } from './testing/getHighs';
 
@@ -73,6 +73,48 @@ describe('diagnose：小さな入力', () => {
       { groupId: ix.groupId('G1'), itemIds: [ix.itemId('desk')], roomIds: [ix.roomId('A')], demand: 4, supply: 3 },
       { groupId: ix.groupId('G2'), itemIds: [ix.itemId('desk')], roomIds: [ix.roomId('C')], demand: 4, supply: 3 },
     ]);
+  });
+
+  it('allocate に渡した disabledRuleCodes を診断でも外したままにする：外したルールは原因に出ず、外していない 2 つが原因になる', async () => {
+    // G1〜G3 とも A だけから受け取る。A は 6 台、各団体の需要は 4 台。S10 を外しても、まだ G1 と G2 で 8 台あり解けない
+    const b = new FixtureBuilder('d')
+      .room('A').room('B').stock('A', { desk: 6 }).stock('B', { desk: 10 })
+      .group('G1', 'department', 'A').group('G2', 'department', 'A').group('G3', 'department', 'A')
+      .request('G1', { desk: 4 }).request('G2', { desk: 4 }).request('G3', { desk: 4 })
+      .rule(RULES.restrict('S05', 'G1', ['desk'], ['A']), RULES.restrict('S09', 'G2', ['desk'], ['A']), RULES.restrict('S10', 'G3', ['desk'], ['A']));
+    const solver = await getHighs();
+    // 外さなければ、どれを 1 つ外しても解けないので組み合わせ
+    expect(fail(allocate(b.input(), solver)).causes.map((c) => c.ruleCode)).toEqual([null]);
+    const r = fail(allocate(b.input(), solver, { disabledRuleCodes: ['S10'] }));
+    expect(r.causes.map((c) => c.ruleCode)).toEqual(['S05', 'S09']);
+  });
+
+  it('運び元の制限がなく、団体の候補が狭くて足りない：組み合わせとは言わず、団体つきの不足を shortages に示す', async () => {
+    // 屋台 G1（机か不可机）が机 1、部門 G2（机だけ）が机 4。机 3・不可机 10 で、品目全体は足りるが G2 は 3 台しか取れない
+    const b = new FixtureBuilder('d')
+      .room('A').stock('A', { desk: 3, desk_ng: 10 })
+      .group('G1', 'stall', 'A').group('G2', 'department', 'A').request('G1', { desk: 1 }).request('G2', { desk: 4 })
+      .rule(RULES.S01());
+    const ix = b.ids();
+    const r = fail(allocate(b.input(), await getHighs()));
+    expect(r.shortages).toEqual([{ requestedItemId: ix.itemId('desk'), groupId: ix.groupId('G2'), demand: 4, supply: 3 }]);
+    expect(r.causes).toEqual([{ ruleCode: null, message: STOCK_SHORT_MESSAGE, details: [] }]);
+    expect(r.causes.some((c) => c.message === COMBINATION_MESSAGE)).toBe(false);
+  });
+
+  it('運び元の制限がなく、代替先の在庫を 2 品目で分け合って足りない（LP だけが Infeasible）：共有する在庫の不足を shortages に示す', async () => {
+    // 企業 C の長机(3人掛)は長机(2人掛)で代替できる（S04）。部門 D は長机(2人掛)だけ。長机(2人掛)は 5 台、需要は合わせて 6 台
+    const b = new FixtureBuilder('d')
+      .room('A').stock('A', { long_desk_2: 5 })
+      .group('C', 'company', 'A').group('D', 'department', 'A').request('C', { long_desk_3: 3 }).request('D', { long_desk_2: 3 })
+      .rule(RULES.S04());
+    const ix = b.ids();
+    const r = fail(allocate(b.input(), await getHighs()));
+    expect(r.shortages).toEqual([
+      { requestedItemId: ix.itemId('long_desk_3'), groupId: null, demand: 6, supply: 5 },
+      { requestedItemId: ix.itemId('long_desk_2'), groupId: null, demand: 6, supply: 5 },
+    ]);
+    expect(r.causes).toEqual([{ ruleCode: null, message: STOCK_SHORT_MESSAGE, details: [] }]);
   });
 
   it('在庫そのものが足りないときは、どのルールでも解けず causes は空（組み合わせとは言わない）', async () => {

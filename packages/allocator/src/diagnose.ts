@@ -2,7 +2,7 @@
 import { giKey, type AllocateInput, type Cause, type Item, type Rule, type Shortage } from '@gaapp/shared';
 import type { Ctx } from './context';
 import { rjKey } from './context';
-import { buildModel, type Model } from './model';
+import { buildModel, type BuildModelOptions, type Model } from './model';
 import type { Prepared } from './prepare';
 import { allowedSources, substituteOptions } from './rules';
 import { runSolver, type LpSolver } from './solve';
@@ -11,6 +11,8 @@ export type Diagnosis = { shortages: Shortage[]; causes: Cause[] };
 
 export const INFEASIBLE_MESSAGE = '解けません';
 export const COMBINATION_MESSAGE = '複数の条件の組み合わせが原因です';
+/** 運び元の制限のルールがなく、どのルールを外しても解けないとき（代替先を含めても在庫が足りない。shortages で示す） */
+export const STOCK_SHORT_MESSAGE = '代替を含めても在庫が足りません';
 
 /** 試すのは source_restrict・keep・fixed_request（代替ルールは外しても解けるようにならない。K-26） */
 type Detail = Cause['details'][number];
@@ -19,8 +21,8 @@ type Detail = Cause['details'][number];
 const asFull = (input: AllocateInput): AllocateInput => ({ ...input, mode: 'full', previousRows: [] });
 
 /** 外したルールで前処理 1〜7 からやり直し、前処理で止まらず、前処理 7 の不足も出ず、HiGHS が Optimal を返したら解けた */
-function solvesWithout(input: AllocateInput, solver: LpSolver, code: string): boolean {
-  const m = buildModel(input, { disabledRuleCodes: [code] });
+function solvesWithout(input: AllocateInput, solver: LpSolver, disabled: readonly string[], code: string): boolean {
+  const m = buildModel(input, { disabledRuleCodes: [...disabled, code] });
   if (m.stage === 'empty') return true;
   if (m.stage !== 'ready') return false;
   return runSolver(solver, m.lp, m.names).status === 'optimal';
@@ -123,23 +125,109 @@ function combinationCause(ctx: Ctx, prepared: Prepared): Cause {
 }
 
 /**
+ * 運び元の制限がないときの、代替先を共有する在庫の不足。
+ * 需要の (団体・申請品目) から候補の品目 J(g,i) へ、品目から在庫の合計へ流す最大流を求め、流しきれなければ
+ * 残余グラフで始点から届く (団体・申請品目) の集まりとその J の和集合を、足りない組として返す（Hall の条件を破る組）。
+ * 申請品目ごとに1件。demand・supply はその組全体の合計（groupId は null）
+ */
+function sharedStockShortages(ctx: Ctx, prepared: Prepared): Shortage[] {
+  type Pair = { itemId: string; demand: number; js: string[] };
+  const pairs: Pair[] = [];
+  for (const g of ctx.groups) {
+    for (const it of ctx.items) {
+      const demand = prepared.demand.get(giKey(g.id, it.id)) ?? 0;
+      if (demand > 0) pairs.push({ itemId: it.id, demand, js: substituteOptions(ctx, g, it).map((o) => o.j) });
+    }
+  }
+  const supplyOfItem = new Map<string, number>();
+  for (const it of ctx.items) {
+    let n = 0;
+    for (const r of ctx.rooms) n += prepared.supply.get(rjKey(r.id, it.id)) ?? 0;
+    supplyOfItem.set(it.id, n);
+  }
+  // 点：0 = 始点、1 = 終点、2.. = 需要の組、その後ろ = 品目
+  const itemNode = new Map(ctx.items.map((it, k) => [it.id, 2 + pairs.length + k]));
+  const size = 2 + pairs.length + ctx.items.length;
+  type Edge = { to: number; cap: number };
+  const edges: Edge[] = [];
+  const adj: number[][] = Array.from({ length: size }, () => []);
+  const connect = (a: number, b: number, cap: number) => {
+    adj[a]!.push(edges.length);
+    edges.push({ to: b, cap });
+    adj[b]!.push(edges.length);
+    edges.push({ to: a, cap: 0 });
+  };
+  pairs.forEach((p, k) => {
+    connect(0, 2 + k, p.demand);
+    for (const j of p.js) connect(2 + k, itemNode.get(j)!, p.demand);
+  });
+  for (const it of ctx.items) connect(itemNode.get(it.id)!, 1, supplyOfItem.get(it.id)!);
+
+  // Edmonds-Karp：幅優先で増加路を探し、残りの容量の最小で流す
+  const reach = (): { parent: number[]; seen: boolean[] } => {
+    const parent = new Array<number>(size).fill(-1);
+    const seen = new Array<boolean>(size).fill(false);
+    seen[0] = true;
+    const queue = [0];
+    for (let q = 0; q < queue.length; q++) {
+      const v = queue[q]!;
+      for (const e of adj[v]!) {
+        const t = edges[e]!.to;
+        if (seen[t] || edges[e]!.cap <= 0) continue;
+        seen[t] = true;
+        parent[t] = e;
+        queue.push(t);
+      }
+    }
+    return { parent, seen };
+  };
+  for (;;) {
+    const { parent, seen } = reach();
+    if (!seen[1]) break;
+    let f = Infinity;
+    for (let v = 1; v !== 0; v = edges[parent[v]! ^ 1]!.to) f = Math.min(f, edges[parent[v]!]!.cap);
+    for (let v = 1; v !== 0; v = edges[parent[v]! ^ 1]!.to) {
+      edges[parent[v]!]!.cap -= f;
+      edges[parent[v]! ^ 1]!.cap += f;
+    }
+  }
+  const { seen } = reach();
+  const reached = pairs.filter((_, k) => seen[2 + k]);
+  if (reached.length === 0) return [];
+  const demand = reached.reduce((a, p) => a + p.demand, 0);
+  const js = new Set(reached.flatMap((p) => p.js));
+  const supply = [...js].reduce((a, j) => a + supplyOfItem.get(j)!, 0);
+  if (demand <= supply) return [];
+  return ctx.items.filter((it) => reached.some((p) => p.itemId === it.id)).map((it) => ({ requestedItemId: it.id, groupId: null, demand, supply }));
+}
+
+/**
  * @param found 前処理7で見つけた団体つきの不足（LP が Infeasible のときは []）
  * @returns shortages は品目全体の不足 → found（団体つき）の順。解き直しは同じ solver で続けて行う
  */
-export function diagnose(input: AllocateInput, solver: LpSolver, found: readonly Shortage[]): Diagnosis {
+export function diagnose(input: AllocateInput, solver: LpSolver, found: readonly Shortage[], opts: BuildModelOptions = {}): Diagnosis {
+  const disabled = opts.disabledRuleCodes ?? [];
   const full = asFull(input);
-  const base: Model = buildModel(full);
+  const base: Model = buildModel(full, { disabledRuleCodes: disabled });
   if (base.stage === 'invalid_input' || base.stage === 'precheck') return { shortages: [...found], causes: [] };
   const { ctx, prepared } = base;
 
   const itemWide = itemShortages(ctx, prepared);
-  const shortages = [...itemWide, ...found];
+  let shortages = [...itemWide, ...found];
 
   const causes: Cause[] = [];
   for (const rule of ctx.rules) {
     if (rule.kind === 'substitute') continue;
-    if (solvesWithout(full, solver, rule.code)) causes.push(causeOf(ctx, prepared, rule));
+    if (solvesWithout(full, solver, disabled, rule.code)) causes.push(causeOf(ctx, prepared, rule));
   }
-  if (causes.length === 0 && itemWide.length === 0) causes.push(combinationCause(ctx, prepared));
+  if (causes.length === 0 && itemWide.length === 0) {
+    if (ctx.rules.some((r) => r.kind === 'source_restrict')) {
+      causes.push(combinationCause(ctx, prepared));
+    } else {
+      // 運び元の制限がなければ、解けないのは代替先を含めても在庫が足りないとき。LP だけが Infeasible のときは、共有する在庫の不足を示す
+      if (found.length === 0) shortages = sharedStockShortages(ctx, prepared);
+      causes.push({ ruleCode: null, message: STOCK_SHORT_MESSAGE, details: [] });
+    }
+  }
   return { shortages, causes };
 }

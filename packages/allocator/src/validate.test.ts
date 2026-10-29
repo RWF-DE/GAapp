@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AllocationRow, Issue, IssueCode, StoredAllocationRow } from '@gaapp/shared';
-import { FixtureBuilder, RULES } from '@gaapp/shared/testing';
+import { FixtureBuilder, RULES, type FixtureRule } from '@gaapp/shared/testing';
 import { validate } from './validate';
 
 type B = FixtureBuilder;
@@ -180,6 +180,32 @@ describe('W102', () => {
   it('置き換えがなければ出ない', () => {
     const m = mk(b());
     expect(m.run([]).some((i) => i.code === 'W102')).toBe(false);
+  });
+  const consentRule = (code: string, categories: ('stall' | 'company')[]): FixtureRule => ({
+    code,
+    kind: 'substitute',
+    enabled: true,
+    memo: null,
+    params: { from: 'desk', to: 'caster_desk', categories, cost: 3, needsConsent: true },
+  });
+  it('同じ (from, to) で区分の違うルールがあっても、団体に当てはまるルールだけで1件（同じ団体・品目の組では1件にまとめる）', () => {
+    const x = base().group('M', 'stall', 'X').stock('X', { caster_desk: 6 }).rule(consentRule('S05', ['company']), RULES.S07());
+    const is = w(x);
+    expect(is).toHaveLength(1);
+    expect(is[0]!.refs.ruleCode).toBe('S07');
+  });
+  it('団体の区分に当てはまらないルールでは出さない：当てはまるルールがなければ W102 でなく E004', () => {
+    const only = base().group('M', 'stall', 'X').stock('X', { caster_desk: 6 }).rule(consentRule('S11', ['company']));
+    const m = mk(only);
+    const is = m.run([m.row('X', 'M', 'caster_desk', 4, { i: 'desk' })]);
+    expect(has(is, 'W102')).toBe(false);
+    expect(has(is, 'E004')).toBe(true);
+  });
+  it('屋内だけのルールは、屋外が使用場所の団体には当てはまらず W102 を出さない', () => {
+    const x = base().room('Out', { kind: 'outdoor' }).group('M', 'stall', 'Out').stock('X', { caster_desk: 6 }).rule(RULES.S07());
+    const m = mk(x);
+    const is = m.run([m.row('X', 'M', 'caster_desk', 4, { i: 'desk' })]);
+    expect(has(is, 'W102')).toBe(false);
   });
 });
 

@@ -74,7 +74,7 @@ export function allocate(input: AllocateInput, solver: LpSolver, opts: BuildMode
     case 'precheck':
       return fail('precheck', t0, { issues: m.prepared.issues, stats: statsOf(m, buildMs) });
     case 'shortage': {
-      const d = diagnose(m.ctx.input, solver, m.cands.shortages);
+      const d = diagnose(m.ctx.input, solver, m.cands.shortages, opts);
       return fail('infeasible', t0, { shortages: d.shortages, causes: d.causes, stats: statsOf(m, buildMs) });
     }
     case 'scale_error':
@@ -94,7 +94,7 @@ export function allocate(input: AllocateInput, solver: LpSolver, opts: BuildMode
   const out = runSolver(solver, m.lp, m.names);
   const solveMs = now() - t1;
   if (out.status === 'infeasible') {
-    const d = diagnose(m.ctx.input, solver, []);
+    const d = diagnose(m.ctx.input, solver, [], opts);
     return fail('infeasible', t0, {
       shortages: d.shortages,
       causes: d.causes,

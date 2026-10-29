@@ -1,7 +1,7 @@
 // 検証（03「検証コード一覧」、設計 13.1）。YearData と、その年度の全行（固定・手動・自動・残す）から Issue を作る
 import { buildDemand, giKey, type AllocationRow, type Issue, type StoredAllocationRow, type YearData } from '@gaapp/shared';
 import { consentKey, rewriteRowRequestedItem, rjKey, type Ctx } from './context';
-import { allowedSources } from './rules';
+import { allowedSources, substituteOptions } from './rules';
 import { contextFor, findW107 } from './w107';
 
 type AnyRow = AllocationRow | StoredAllocationRow;
@@ -156,18 +156,24 @@ export function validate(data: YearData, rows: readonly AnyRow[]): Issue[] {
     });
   }
 
-  // W102：了承が要る置き換え
+  // W102：了承が要る置き換え。団体に当てはまるルール（区分・屋内。了承しなかった団体は E004）だけを見て、団体・品目の組ごとに1件
+  const consentPairs = new Map<string, { from: string; to: string }>();
   for (const rule of ctx.rules) {
     if (rule.kind !== 'substitute' || !rule.params.needsConsent) continue;
     const from = ctx.itemIdByCode.get(rule.params.from)!;
     const to = ctx.itemIdByCode.get(rule.params.to)!;
+    consentPairs.set(`${from}|${to}`, { from, to });
+  }
+  for (const { from, to } of consentPairs.values()) {
     for (const g of ctx.groups) {
       const mine = rs.filter((r) => r.groupId === g.id && r.requestedItemId === from && r.itemId === to);
       const n = mine.reduce((a, r) => a + r.count, 0);
       if (n === 0) continue;
+      const applied = substituteOptions(ctx, g, item(from)).find((o) => o.j === to);
+      const rule = ctx.rules.find((x) => x.code === applied?.ruleCode);
+      if (rule?.kind !== 'substitute' || !rule.params.needsConsent) continue; // 当てはまるルールがない（E004）か、了承が要らない
       const status = ctx.consentStatus.get(consentKey(g.id, from, to));
       const c = data.consents.find((x) => x.groupId === g.id && x.fromItemId === from && x.toItemId === to);
-      if (status === 'declined') continue; // E004
       const refs = { groupId: g.id, requestedItemId: from, itemId: to, ruleCode: rule.code, ...rowIds(mine) };
       const label = `${g.name}：${item(from).name}${n} → ${item(to).name}`;
       if (status !== 'accepted') {

@@ -252,7 +252,7 @@ create view v_remaining with (security_invoker = true) as
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
-- 残すは allocations の is_keep = true の行。「運び元＝団体の使用場所」は CHECK ではなくトリガーで確かめる（他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。検証 E005 でも確かめる
+- 残すは allocations の is_keep = true の行。is_keep は「運び元＝団体の使用場所」と一致させる（残す ⇔ 運び元が使用場所）。保存時に DB が決め直す（CHECK ではなくトリガー。他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。確定では両方向の不一致（残すなのに運び元が使用場所でない／使用場所からの行が残すでない）を E005 として確かめる
 - 使用不可の部屋は allocations を作らず、Excel 出力で「残す／使用不可」の行として出す
 - 理由が要る書き込み（締切後の申請修正、手での振り分け変更、確定と確定解除）と、複数の表をまとめて変える書き込み（自動振り分けの保存、年度の複製、了承の記録）は、すべて DB 関数（RPC）で行う。関数の中で権限を確かめ、`set_config('app.reason', reason, true)` で理由を置いてから同じトランザクションで書き込む。PostgREST は1リクエストを1トランザクションで処理するので、別の呼び出しで置いた理由は届かない
 - audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles のトリガーで書く。トリガーは `current_setting('app.reason', true)` で理由を読む
@@ -303,4 +303,4 @@ stateDiagram-v2
   confirmed --> closed: 祭の後
 ```
 
-図にない遷移はエラーにする。confirmed へは、DB の中で在庫超過（E001）・使用不可からの振り分け（E002）・残すの不整合（E005）がないことを確かめてから進める。確定を解除すると理由が必須で、団体への公開も止まる。
+図にない遷移はエラーにする。confirmed へは、DB の中で在庫超過（E001）・使用不可からの振り分け（E002）・is_keep と「運び元＝使用場所」の不一致（E005。両方向）がないことを確かめてから進める。確定を解除すると理由が必須で、団体への公開も止まる。
