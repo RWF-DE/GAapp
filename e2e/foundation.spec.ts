@@ -15,7 +15,6 @@ const TICKET: Record<string, string> = {
   '/stocks/': 'T10',
   '/stocks/qr/': 'T10',
   '/requests/': 'T11',
-  '/rules/': 'T12',
   '/allocation/': 'T13',
   '/swaps/': 'T13',
   '/history/': 'T14',
@@ -42,7 +41,8 @@ const OPENS: Record<StoredUser, string[]> = {
 };
 
 async function expectPlaceholder(page: Page, path: string): Promise<void> {
-  if (!TICKET[path]) throw new Error(`TICKET にないパス：${path}`);
+  // 雛形を中身に置き換えた画面は TICKET から外す（T09a.md「T09〜T13 への申し送り」）。その画面の確かめは各チケットの spec
+  if (!TICKET[path]) return;
   await expect(page.getByText(`この画面は準備中です（${TICKET[path]}）`)).toBeVisible();
   await expect(page.getByText('権限がありません')).toHaveCount(0);
 }
