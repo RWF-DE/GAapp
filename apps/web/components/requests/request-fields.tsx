@@ -1,9 +1,10 @@
 'use client';
 
 import { CountStepper } from '@/components/common/count-stepper';
+import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { countOf, extraRowNote, type ExtraRequestRow, type RequestField } from '@/lib/data/requests';
+import { countOf, extraRowNote, type ExtraRequestRow, type GroupChanges, type RequestField } from '@/lib/data/requests';
 import { NOTE_MAX } from '@/lib/schemas/common';
 import { cn } from '@/lib/utils';
 
@@ -92,6 +93,42 @@ export function RequestFields({
           </p>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * 編集した後に裏で届いた、ほかの人の変更の知らせ（R1。入力は置き換えない）。/request と代理入力で使う。
+ * 「ほかの人の値を読み込む」で、変わった品目と備考を届いた値にする（ほかの入れた数は残す）。
+ */
+export function RemoteChangeNotice({
+  changes,
+  items,
+  disabled,
+  onAdopt,
+  testId = 'request-remote-change',
+  verb = '提出',
+  children,
+}: {
+  changes: GroupChanges;
+  items: readonly { id: string; name: string }[];
+  disabled?: boolean;
+  onAdopt: () => void;
+  testId?: string;
+  /** 送る操作の名前（「…するときに、上書きするか見直すかを選べます」） */
+  verb?: '提出' | '保存';
+  children: React.ReactNode;
+}) {
+  const name = (id: string) => items.find((i) => i.id === id)?.name ?? '（不明な品目）';
+  const list = [...changes.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), ...(changes.submission ? ['提出日時・備考'] : [])];
+  return (
+    <div role="status" data-testid={testId} className="mb-3 space-y-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+      <p>
+        {children}。変わったもの：{list.join('、')}。入力はそのまま残しています。{verb}するときに、上書きするか見直すかを選べます。
+      </p>
+      <Button size="sm" variant="outline" disabled={disabled} onClick={onAdopt}>
+        ほかの人の値を読み込む
+      </Button>
     </div>
   );
 }

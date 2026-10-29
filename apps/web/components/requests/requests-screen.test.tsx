@@ -1155,4 +1155,66 @@ describe('保存の応答が届かなかったとき（数を絶対値で書く�
     expect(within(ask).getByTestId('proxy-conflicts').textContent).toContain('机(木)（3 → 4）');
     expect(submits()).toBe(0);
   });
+
+  it('代理入力：触った後に裏で届いた行は、入力を置き換えず知らせる。「ほかの人の値を読み込む」で変わった品目だけを取り、入れた数は残す（R1）', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler();
+    const sheet = await openProxy(user);
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    await lastClient!.invalidateQueries();
+    const notice = await within(sheet).findByTestId('proxy-remote-change');
+    expect(notice.textContent).toContain('机(木)（3 → 4）');
+    expect(value('desk')).toBe('3');
+    expect(value('chair')).toBe('1');
+
+    await user.click(within(notice).getByRole('button', { name: 'ほかの人の値を読み込む' }));
+    expect(within(sheet).queryByTestId('proxy-remote-change')).toBeNull();
+    expect(value('desk')).toBe('4');
+    expect(value('chair')).toBe('1');
+    // 読み込んだ後の提出は確かめずに送る
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(submits()).toBe(1));
+    const args = opArgs(state.calls.find((c) => c.table === 'rpc:submit_requests')!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+    expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(4);
+    expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(1);
+  });
+
+  it('代理入力：触る前に裏で届いた行は、そのままシートに出す（知らせは出さない）', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler();
+    renderScreen();
+    await screen.findByTestId('requests-table');
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const sheet = await screen.findByRole('dialog');
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    await lastClient!.invalidateQueries();
+    await waitFor(() => expect(value('desk')).toBe('4'));
+    expect(within(sheet).queryByTestId('proxy-remote-change')).toBeNull();
+    // そのまま提出すると、届いた行と比べるので確かめない
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(submits()).toBe(1));
+  });
+
+  it('申請一覧：未保存のセルの行が裏で変わったら、入力を置き換えず知らせる。「変わったセルを読み直した値に戻す」で戻して印をつける（R1）', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler();
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await typeCell(user, '部門Aの椅子(木)', '2');
+    expect(screen.queryByTestId('requests-remote-change')).toBeNull();
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    await lastClient!.invalidateQueries();
+    const notice = await screen.findByTestId('requests-remote-change');
+    expect(notice.textContent).toContain('模擬店Aの机(木)：3 → 4（入れた数 5）');
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5');
+    expect(saveButton(2)).toBeTruthy();
+
+    await user.click(within(notice).getByRole('button', { name: '変わったセルを読み直した値に戻す' }));
+    expect(screen.queryByTestId('requests-remote-change')).toBeNull();
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '4');
+    expect(cellOf('模擬店A:desk').getAttribute('data-mark')).toBe('conflict');
+    expect(screen.getByLabelText('部門Aの椅子(木)')).toHaveProperty('value', '2');
+    expect(saveButton(1)).toBeTruthy();
+    expect(writes()).toHaveLength(0);
+  });
 });

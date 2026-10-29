@@ -591,6 +591,104 @@ describe('申請 /request', () => {
       await waitFor(() => expect(document.getElementById('request-chair')).toHaveProperty('value', '3'));
       expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
     });
+
+    describe('裏で届いた行（R1：触った後は入力を置き換えず、知らせだけを出す）', () => {
+      /** ほかの人が椅子を 3 にして提出し直したことにして、画面のクエリを裏で読み直す */
+      async function otherSubmitsInBackground(rows: RequestDbRow[]) {
+        rows.push({ group_id: STALL, item_id: itemId('chair'), count: 3, updated_at: T1 });
+        state.submission = { group_id: STALL, submitted_at: T1, note: '電源', updated_at: T1, updated_by: OTHER_USER };
+        const reads = state.calls.filter((c) => c.table === 'requests').length;
+        await lastClient!.invalidateQueries();
+        await waitFor(() => expect(state.calls.filter((c) => c.table === 'requests').length).toBeGreaterThan(reads));
+      }
+
+      it('編集した後に届いた行は入力も「提出」の欄も置き換えず、知らせを出す。「ほかの人の値を読み込む」で変わった品目と備考だけを取る', async () => {
+        const user = userEvent.setup();
+        const rows: RequestDbRow[] = [];
+        state.handler = makeHandler({ requests: rows });
+        renderScreen();
+        await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+        await otherSubmitsInBackground(rows);
+
+        const notice = await screen.findByTestId('request-remote-change');
+        expect(notice.textContent).toContain('椅子(木)（0 → 3）');
+        expect(notice.textContent).toContain('提出日時・備考');
+        // 欄と「提出」は、入力の元（編集を始めたとき）のまま。画面の値と入力の元が同じ時点
+        expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
+        expect(document.getElementById('request-chair')).toHaveProperty('value', '0');
+        expect(screen.getByTestId('request-submitted').textContent).toBe('未提出');
+        expect(screen.getByRole('button', { name: '提出' })).toBeTruthy();
+
+        await user.click(within(notice).getByRole('button', { name: 'ほかの人の値を読み込む' }));
+        expect(screen.queryByTestId('request-remote-change')).toBeNull();
+        expect(document.getElementById('request-chair')).toHaveProperty('value', '3');
+        expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
+        expect(screen.getByTestId('request-submitted').textContent).toMatch(/^提出済み/);
+        expect(document.getElementById('request-note')).toHaveProperty('value', '電源');
+
+        // 読み込んだ後の提出は、確かめずに送る（入力の元が届いた行になった）
+        await submitDesk(user, false);
+        await waitFor(() => expect(submitCalls()).toHaveLength(1));
+        const args = opArgs(submitCalls()[0]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+        expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(3);
+        expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(1);
+      });
+
+      it('編集せずに「提出」を押したら、送る前の読み直しの間に届いた行で欄を変えない（確かめる値・送る値と画面の値が同じ時点）', async () => {
+        const user = userEvent.setup();
+        const rows: RequestDbRow[] = [{ group_id: STALL, item_id: itemId('desk'), count: 1, updated_at: T0 }];
+        const base = makeHandler({ requests: rows });
+        let hold: (() => void) | null = null;
+        let armed = false;
+        state.handler = ((call: FakeCall) => {
+          if (armed && call.table === 'requests') {
+            armed = false;
+            return new Promise<void>((r) => (hold = r)).then(() => base(call));
+          }
+          return base(call);
+        }) as never;
+        renderScreen();
+        await screen.findByRole('button', { name: '机(木)の数を1増やす' });
+        armed = true;
+        await submitDesk(user, false);
+        await waitFor(() => expect(hold).not.toBeNull());
+        // 読み直しの間に、ほかの人が椅子を 3 にした行が裏で届く
+        await otherSubmitsInBackground(rows);
+        expect(document.getElementById('request-chair')).toHaveProperty('value', '0');
+        expect(screen.getByTestId('request-submitted').textContent).toBe('未提出');
+        (hold as unknown as () => void)();
+        // 提出の記録は先に読んでいたので、変わったのは椅子の行だけ
+        const ask = await screen.findByRole('alertdialog', { name: 'ほかの人がこの団体の申請を変えました。上書きしますか' });
+        expect(within(ask).getByTestId('request-conflicts').textContent).toBe('椅子(木)（0 → 3）');
+        expect(submitCalls()).toHaveLength(0);
+      });
+
+      it('編集していなければ、届いた行をそのまま出す（知らせは出さない）', async () => {
+        const rows: RequestDbRow[] = [];
+        state.handler = makeHandler({ requests: rows });
+        renderScreen();
+        await screen.findByRole('button', { name: '机(木)の数を1増やす' });
+        await otherSubmitsInBackground(rows);
+        await waitFor(() => expect(document.getElementById('request-chair')).toHaveProperty('value', '3'));
+        expect(screen.getByTestId('request-submitted').textContent).toMatch(/^提出済み/);
+        expect(screen.queryByTestId('request-remote-change')).toBeNull();
+      });
+
+      it('下書きを戻した後に、離れていた間のほかの人の変更があれば知らせる（入力は戻した下書きのまま）', async () => {
+        const user = userEvent.setup();
+        const rows: RequestDbRow[] = [];
+        state.handler = makeHandler({ requests: rows });
+        renderScreen();
+        await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+        cleanup();
+        rows.push({ group_id: STALL, item_id: itemId('chair'), count: 3, updated_at: T1 });
+        renderScreen();
+        await user.click(await screen.findByRole('button', { name: '戻す' }));
+        const notice = await screen.findByTestId('request-remote-change');
+        expect(notice.textContent).toContain('椅子(木)（0 → 3）');
+        expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
+        expect(document.getElementById('request-chair')).toHaveProperty('value', '0');
+      });
+    });
   });
 });
-

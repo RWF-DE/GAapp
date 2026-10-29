@@ -750,6 +750,47 @@ export function stateChangesSince(base: GroupRequestState, fresh: GroupRequestSt
   return { items, submission: rewritten && !(b && b.updated_by === userId) };
 }
 
+/**
+ * 裏で届いた団体の申請と提出の記録（latest：画面のクエリ・表の行）にある、入力の元より新しいほかの人の変更（R1 の知らせに出す）。
+ * stateChangesSince のうち、latest の方が新しいもの（入力の元になかった行・updated_at が入力の元より後の行、updated_at が後の
+ * 提出の記録）だけを挙げる。届いた行が入力の元より古い（送る前に読み直した行を入力の元にした後に、表がまだ読み直されていない）
+ * ときは挙げない。自分の書いたものは stateChangesSince と同じく挙げない。
+ */
+export function newerChangesSince(base: GroupRequestState, latest: GroupRequestState, userId: string): GroupChanges {
+  const c = stateChangesSince(base, latest, userId);
+  const baseBy = new Map(base.requests.map((r) => [r.item_id, r]));
+  const latestBy = new Map(latest.requests.map((r) => [r.item_id, r]));
+  const newer = (was: string | null | undefined, now: string | null | undefined) => {
+    const n = ms(now ?? null);
+    if (n === null) return false;
+    const w = ms(was ?? null);
+    return w === null || n > w;
+  };
+  return {
+    items: c.items.filter((i) => newer(baseBy.get(i.itemId)?.updated_at, latestBy.get(i.itemId)?.updated_at)),
+    submission: c.submission && newer(base.submission?.updated_at, latest.submission?.updated_at),
+  };
+}
+
+/** 知らせに出す変更があるか */
+export const hasGroupChanges = (c: GroupChanges): boolean => c.items.length > 0 || c.submission;
+
+/**
+ * 知らせの「ほかの人の値を読み込む」：入力の元を届いた記録（latest）にし、ほかの人が変えた品目と（提出の記録が変わっていれば）
+ * 備考は届いた値にする。ほかの入れた数は残す（rebaseRequestInput。ほかの人が変えていない品目は入力の元と同じ数なので、意味は変わらない）。
+ */
+export function adoptGroupChanges(
+  items: readonly ItemRow[],
+  category: GroupCategory,
+  latest: GroupRequestState,
+  changes: GroupChanges,
+  input: { edits: Readonly<Record<string, number>>; note: string | null },
+): { edits: Record<string, number>; note: string | null } {
+  const next = rebaseRequestInput(items, category, latest, input);
+  for (const c of changes.items) delete next.edits[c.itemId];
+  return { edits: next.edits, note: changes.submission ? null : next.note };
+}
+
 /** 表の行を、読み直した団体の申請・提出の記録と同じ形にする（代理入力の入力の元） */
 export function groupStateOf(row: Pick<MatrixRow, 'group' | 'cells' | 'submission'>): GroupRequestState {
   return {

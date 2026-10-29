@@ -164,6 +164,11 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
    */
   const unsaved = Object.keys(pending).length;
   const totals = useMemo(() => (matrix ? columnTotals(matrix, pending) : {}), [matrix, pending]);
+  /**
+   * 未保存のセルのうち、編集した後に裏で届いた表で数が変わったもの（入力の元とも入れた数とも違う。保存の判定と同じ judgePendingCells）。
+   * 入力は置き換えず、知らせだけを出す（R1。置き換えるのは、保存が決まったとき・知らせかダイアログの「読み直す」・取り消すときだけ）
+   */
+  const remoteCells = useMemo(() => (tables ? judgePendingCells(pending, tables).conflicts : []), [pending, tables]);
   const names: NameLookup = useMemo(
     () => ({
       item: (id) => tables?.items.find((i) => i.id === id)?.name,
@@ -486,12 +491,8 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     if ((await runSave(ask.reason)) === 'changed') throw new Error('changed_again');
   };
 
-  /** 読み直す（ダイアログを閉じたときも）：編集した後に変わったセルを読み直した値に戻して印をつける */
-  const revertConflicts = () => {
-    const ask = conflictAskRef.current;
-    if (!ask) return;
-    setConflictAsk(null);
-    const keys = ask.cells.map((c) => c.key);
+  /** 編集した後に変わったセルを、今の表の値に戻して印をつける（ダイアログの「読み直す」・知らせの「…読み直した値に戻す」） */
+  const revertCells = (keys: readonly string[]) => {
     applyPending((p) => {
       const next = { ...p };
       for (const k of keys) delete next[k];
@@ -499,6 +500,14 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     });
     applyMarks(Object.fromEntries(keys.map((k) => [k, 'conflict' as const])));
     toast.info(`${keys.length} 件のセルを読み直した値に戻しました`);
+  };
+
+  /** 読み直す（ダイアログを閉じたときも）：編集した後に変わったセルを読み直した値に戻して印をつける */
+  const revertConflicts = () => {
+    const ask = conflictAskRef.current;
+    if (!ask) return;
+    setConflictAsk(null);
+    revertCells(ask.cells.map((c) => c.key));
   };
 
   const onSave = () => {
@@ -608,6 +617,27 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
             <p role="alert" data-testid="save-error" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               {saveError}
             </p>
+          ) : null}
+          {editable && remoteCells.length > 0 && !saving && !conflictAsk ? (
+            <div
+              role="status"
+              data-testid="requests-remote-change"
+              className="space-y-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
+            >
+              <p>
+                編集した後に、表を読み直したら数が変わったセルがあります（ほかの人の変更のほか、前に送って応答が届かなかった自分の保存のこともあります）。入れた数はそのまま残しています。保存するときに、上書きするか読み直すかを選べます。
+              </p>
+              <ul className="max-h-40 space-y-1 overflow-auto">
+                {remoteCells.map((c) => (
+                  <li key={c.key}>
+                    {names.group?.(c.groupId) ?? ''}の{names.item?.(c.itemId) ?? ''}：{c.base} → {c.fresh}（入れた数 {c.value}）
+                  </li>
+                ))}
+              </ul>
+              <Button size="sm" variant="outline" onClick={() => revertCells(remoteCells.map((c) => c.key))}>
+                変わったセルを読み直した値に戻す
+              </Button>
+            </div>
           ) : null}
           {saveInfo ? (
             <p role="status" data-testid="save-info" className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100">
