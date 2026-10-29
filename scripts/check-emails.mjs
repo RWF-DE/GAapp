@@ -3,6 +3,10 @@
 // RFC 2606 / 6761 の予約ドメインは許可する。公開リポジトリへの個人情報の誤コミットを防ぐ。
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // TLD は英字のみ（pnpm@10.28.0 や lockfile の pkg@1.2.3 を除く）
 const EMAIL = /[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})(?![A-Za-z0-9-])/g;
@@ -25,21 +29,39 @@ export function findEmails(text) {
   return found;
 }
 
+// UTF-16 の BOM があれば utf16le（BE は上下のバイトを入れ替えて）でデコードする。なければ null。
+export function decodeUtf16(buf) {
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) return buf.subarray(2).toString('utf16le');
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) return Buffer.from(buf.subarray(2)).swap16().toString('utf16le');
+  return null;
+}
+
 function main() {
-  const files = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8', maxBuffer: 1 << 28 })
+  // cwd に関係なく、リポジトリのルートで追跡ファイル全体を調べる
+  const files = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 1 << 28 })
     .split('\0')
     .filter(Boolean);
   let bad = 0;
   for (const file of files) {
     let buf;
     try {
-      buf = readFileSync(file);
+      buf = readFileSync(path.join(ROOT, file));
     } catch {
       continue; // 削除済み・ワークツリー上にないファイル
     }
-    if (buf.includes(0)) continue; // バイナリ
-    const lines = buf.toString('utf8').split('\n');
-    lines.forEach((line, i) => {
+    let text = decodeUtf16(buf);
+    if (text === null) {
+      if (buf.includes(0)) {
+        // xlsx（zip）など、中身を検査できないバイナリ。fixtures/ では CSV / JSON などのテキストだけを許す
+        if (file.startsWith('fixtures/')) {
+          bad++;
+          console.error(`${file}: 検査できないバイナリです。fixtures/ にはテキスト（UTF-8 の CSV・JSON など）だけを置いてください。`);
+        }
+        continue;
+      }
+      text = buf.toString('utf8');
+    }
+    text.split('\n').forEach((line, i) => {
       for (const email of findEmails(line)) {
         bad++;
         // 値そのものはログに出さない（ログへの転記を避ける）
@@ -54,4 +76,4 @@ function main() {
   console.log(`OK: ${files.length} ファイルにメールアドレスはありません。`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) main();

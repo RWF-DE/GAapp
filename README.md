@@ -55,7 +55,7 @@ GAapp/
 
 ### 0. リポジトリの公開範囲
 
-GitHub Pages と保護ブランチ（ブランチ保護ルール）は、**公開リポジトリか、有料プラン（Team 以上）でないと private リポジトリでは使えない**。無料の組織で private のままだと、次の 1・3 はできない（`deploy.yml` を作っても公開されない）。公開にするかどうかは管理者が決める。公開にする前に、個人情報（メールアドレス、学生・企業の個人名、R8 の元データ）が履歴を含めて入っていないことを確かめる。
+GitHub Pages と保護ブランチ（ブランチ保護ルール）は、**公開リポジトリか、有料プラン（Team 以上）でないと private リポジトリでは使えない**。無料の組織で private のままだと、次の 1・3 はできない（`deploy.yml` を作っても公開されない）。Environments（環境の secrets・Required reviewers・Deployment branches）も使えないので、**`migrate.yml` は使わない**（DB の資格情報をリポジトリ全体の secrets に置かず、5 のマイグレーション適用は管理者が手元から `supabase db push` で行う）。公開にするかどうかは管理者が決める。公開にする前に、個人情報（メールアドレス、学生・企業の個人名、R8 の元データ）が履歴を含めて入っていないことを確かめる。
 
 private のままでも Actions は動くが、無料プランは月 2,000 分の上限がある。ci.yml は pnpm のキャッシュと DB だけの起動で、無駄な時間を減らしてある。
 
@@ -72,7 +72,12 @@ Settings → Pages → Build and deployment → Source を **GitHub Actions** �
 | 変数 | `SUPABASE_PROJECT_REF` | Environments → production → Variables | migrate.yml が使う |
 | secret | `SUPABASE_ACCESS_TOKEN`、`SUPABASE_DB_PASSWORD` | Environments → production → Secrets | migrate.yml が本番 DB にマイグレーションを適用するときだけ |
 
-Settings → Environments で `production` を作る（Required reviewers を付けると、実行前に承認が要る）。`github-pages` は初回の deploy で自動で作られる。
+Settings → Environments で `production` を作り、次の 2 つを**必須**で設定する。`github-pages` は初回の deploy で自動で作られる。
+
+- Deployment branches and tags を **Selected branches and tags** にして、`main` だけを許可する。これがないと、`workflow_dispatch` で未マージの feat ブランチを選んで Run workflow を押すだけで、そのブランチの `migrate.yml` と未レビューのマイグレーションが本番 DB に適用できてしまう（ワークフローはブランチ側のものが使われるため、`migrate.yml` 内の `if:` は防御にならない）。
+- Required reviewers を付ける（実行前に承認が要る）。承認するときは、対象が `main` であることを確かめる。
+
+`SUPABASE_ACCESS_TOKEN` と `SUPABASE_DB_PASSWORD` は、リポジトリ全体の secrets（Settings → Secrets and variables → Actions → Repository secrets）には**置かない**。どのブランチのワークフローからでも読み出せてしまう。
 
 ### 3. 保護ブランチ
 
@@ -88,7 +93,7 @@ Settings → Branches（または Rulesets）で main に次を設定する。
 
 ### 5. 本番 DB への適用
 
-マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で手動実行する。
+マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で、**ブランチに `main` を選んで**手動実行する（2 の設定が済んでいる場合だけ。private（無料）で Environments が使えないときは、管理者が main のチェックアウトから `supabase link` → `supabase db push` を手元で実行する）。
 
 ## 個人情報
 
