@@ -464,10 +464,12 @@ function AllocationLoaded({
     }
   };
 
-  // precheck の E002：運び元の変更と削除だけ（固定を外すは出さない。部屋がすでに使用不可なので E002 で拒否されるため）
-  const lineActions = (line: FailureLine) => {
-    const issue = line.issue;
-    if (!editApi || !issue || issue.code !== 'E002') return null;
+  // E002（使用不可の部屋からの行）：運び元の変更と削除だけ（固定を外すは出さない。部屋がすでに使用不可なので、
+  // save_allocation_rows が固定だけの update も E002 で拒否するため）。検証の一覧と precheck の項目に添える。
+  // allocate の precheck の E002 は残すのルールの部屋だけ（固定・手動の行の E002 では止めず、validate が示す。03・D-25）なので、
+  // 行の操作が要るのは主に検証の一覧の E002。
+  const e002Actions = (issue: Issue) => {
+    if (!editApi || issue.code !== 'E002') return null;
     const ids = issue.refs.rowIds ?? [];
     return (
       <div className="ml-6 mt-1 space-y-1" data-testid="e002-actions">
@@ -492,7 +494,7 @@ function AllocationLoaded({
             </div>
           );
         })}
-        {issue.refs.roomId ? (
+        {issue.refs.roomId && ids.length > 0 ? (
           <p className="text-muted-foreground">
             固定を外して最小変更に任せたいときは、部屋を使用可に戻し、固定を外して保存してから使用不可にし直します（
             <button type="button" className="underline underline-offset-2" onClick={() => goTo({ destination: { kind: 'room', roomId: issue.refs.roomId!, tab: null }, rule: null })}>
@@ -504,6 +506,7 @@ function AllocationLoaded({
       </div>
     );
   };
+  const lineActions = (line: FailureLine) => (line.issue ? e002Actions(line.issue) : null);
 
   const errorsAfter = auto.state.outcome?.kind === 'saved' ? validation.issues.filter((i) => i.severity === 'error').length : 0;
   const hasRows = stored.length > 0;
@@ -640,7 +643,13 @@ function AllocationLoaded({
         {full ? (
           <aside className="min-w-0">
             {validation.status === 'skipped' ? null : (
-              <IssuesPanel validation={validation} targetOf={targetOf} onSelect={(_, t) => goTo(t)} ruleText={ruleText} />
+              <IssuesPanel
+                validation={validation}
+                targetOf={targetOf}
+                onSelect={(_, t) => goTo(t)}
+                ruleText={ruleText}
+                {...(editApi ? { issueActions: e002Actions } : {})}
+              />
             )}
             {validation.status === 'skipped' && problems.length > 0 ? <ProblemsList problems={problems} ruleText={ruleText} /> : null}
           </aside>

@@ -61,11 +61,14 @@ export function IssuesPanel({
   targetOf,
   onSelect,
   ruleText,
+  issueActions,
 }: {
   validation: ValidationResult;
   targetOf: (issue: Issue) => IssueTarget;
   onSelect: (issue: Issue, target: IssueTarget) => void;
   ruleText: (code: string) => string | undefined;
+  /** 項目の下に出す操作（E002 の「運び元を変える」「行を削除」。段 2） */
+  issueActions?: (issue: Issue) => React.ReactNode;
 }) {
   const [code, setCode] = useState<string | null>(null);
   const [openRule, setOpenRule] = useState<number | null>(null);
@@ -142,6 +145,7 @@ export function IssuesPanel({
                         <span>{issue.message}</span>
                       )}
                     </div>
+                    {issueActions ? issueActions(issue) : null}
                     {t.rule ? (
                       <div className="ml-12 text-xs">
                         {t.rule.href ? (
