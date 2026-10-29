@@ -1,7 +1,7 @@
 // T11 のスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T11` で notes/T11/ に撮る（CI では流さない）。
 // 申請（スマホ）と申請一覧（PC）、取り込みのダイアログ（PC）。読み込み中は page.route で応答を止めてから撮る。
 import { fileURLToPath } from 'node:url';
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
 import { SMALL } from '../support/datasets';
@@ -69,6 +69,27 @@ test.describe('T11 団体代表', () => {
       await page.getByRole('alertdialog').getByRole('button', { name: '提出する' }).click();
       await expect(page.getByTestId('submit-error')).toBeVisible();
       await shoot(page, 'T11', 'request-clock-skew-mobile');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 申請（スマホ）：提出の応答が届かないとき', async ({ page }) => {
+    const s = await createScenario({ repGroup: SMALL.groups.stall });
+    try {
+      await pinYear(page, SEED_USER_IDS.rep, s.yearId);
+      await page.setViewportSize(MOBILE);
+      await page.goto('/request/');
+      await page.getByRole('button', { name: '机(木)の数を1増やす' }).click();
+      await page.route('**/rest/v1/rpc/submit_requests*', async (route: Route) => {
+        await route.fetch();
+        await route.abort('failed');
+      });
+      await page.getByRole('button', { name: '修正して再提出' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'この年度に提出する' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '提出する' }).click();
+      await expect(page.getByTestId('submit-error')).toContainText('提出できたか分かりません');
+      await shoot(page, 'T11', 'request-unknown-mobile');
     } finally {
       await s.cleanup();
     }
@@ -146,7 +167,7 @@ test.describe('T11 管理者', () => {
     }
   });
 
-  test('T11 申請一覧（PC）：保存の応答が届かず、読み直しもできないとき（確かめる）', async ({ page }) => {
+  test('T11 申請一覧（PC）：保存の応答が届かないとき（もう一度押すと読み直して決める）', async ({ page }) => {
     test.setTimeout(120_000);
     const s = await createScenario({ roles: { admin: true } });
     try {
@@ -155,11 +176,12 @@ test.describe('T11 管理者', () => {
       const cell = page.getByTestId('requests-table').getByRole('textbox').first();
       await cell.fill('7');
       await cell.press('Enter');
-      // 書き込みは DB に届くが応答を落とし、その後の表の読み直しも落とす
-      let down = true;
+      // 送る前の読み直しは通し、書き込みは DB に届くが応答を落とし、その後の表の読み直しも落とす
+      let down = false;
       await page.route('**/rest/v1/requests*', async (route: Route) => {
         const req = route.request();
         if (req.method() === 'POST' || req.method() === 'PATCH') {
+          down = true;
           await route.fetch();
           await route.abort('failed');
           return;
@@ -172,10 +194,10 @@ test.describe('T11 管理者', () => {
       });
       await page.getByRole('button', { name: '保存（1件）' }).click();
       // 読み直しは supabase-js（GET を 3 回まで送り直す）と TanStack Query（1 回）が送り直してから失敗になるので、待ちを長くする
-      await expect(page.getByTestId('save-error')).toContainText('保存できたか確かめられません', { timeout: 60_000 });
-      await shoot(page, 'T11', 'requests-unverified-pc');
+      await expect(page.getByTestId('save-error')).toContainText('保存できたか分かりません', { timeout: 60_000 });
+      await shoot(page, 'T11', 'requests-unknown-pc');
       down = false;
-      await page.getByRole('button', { name: '確かめる' }).click();
+      await page.getByRole('button', { name: '保存（1件）' }).click();
       await expect(page.getByTestId('save-info')).toContainText('保存されていました');
       await shoot(page, 'T11', 'requests-saved-after-unknown-pc');
     } finally {
@@ -183,8 +205,25 @@ test.describe('T11 管理者', () => {
     }
   });
 
-  test('T11 申請一覧（PC）：代理入力の提出の応答が届かず、読み直しもできないとき（確かめる）', async ({ page }) => {
-    test.setTimeout(120_000);
+  test('T11 申請一覧（PC）：送る前の読み直しでほかの人が先に変えたセルが見つかったとき', async ({ page }) => {
+    const s = await createScenario({ roles: { admin: true } });
+    try {
+      const stall = s.ids.groups[SMALL.groups.stall]!;
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/');
+      const c = page.getByRole('textbox', { name: `${SMALL.groups.stall}の机(木)`, exact: true });
+      await c.fill('5');
+      await c.press('Enter');
+      await sql("update public.requests set count = 4 where group_id = $1 and item_id = (select id from public.items where code = 'desk')", [stall]);
+      await page.getByRole('button', { name: '保存（1件）' }).click();
+      await expect(page.getByRole('alertdialog').getByTestId('cell-conflicts')).toBeVisible();
+      await shoot(page, 'T11', 'requests-cell-conflict-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 申請一覧（PC）：代理入力の提出の応答が届かないとき（閉じる前の確かめ・もう一度押す）', async ({ page }) => {
     const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
     try {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
@@ -193,118 +232,26 @@ test.describe('T11 管理者', () => {
       const sheet = page.getByRole('dialog');
       await expect(sheet.getByRole('heading', { name: '代理入力：E2E休憩所' })).toBeVisible();
       await sheet.getByRole('button', { name: '机(木)の数を1増やす' }).click();
-      // 提出は DB に届くが応答を落とし、その後の団体の読み直しも落とす
-      let down = false;
+      // 提出は DB に届くが応答を落とす
       await page.route('**/rest/v1/rpc/submit_requests*', async (route: Route) => {
         await route.fetch();
-        down = true;
         await route.abort('failed');
-      });
-      await page.route('**/rest/v1/requests*', async (route: Route) => {
-        if (down && route.request().url().includes('group_id=eq.')) {
-          await route.abort('failed');
-          return;
-        }
-        await route.continue();
       });
       await sheet.getByRole('button', { name: '提出する' }).click();
-      // 読み直しは supabase-js が GET を送り直してから失敗になるので、待ちを長くする
-      await expect(sheet.getByRole('alert')).toContainText('保存できたか確かめられません', { timeout: 60_000 });
-      await expect(sheet.getByRole('button', { name: '確かめる' })).toBeVisible();
-      await shoot(page, 'T11', 'requests-proxy-unverified-pc');
-      down = false;
-      await sheet.getByRole('button', { name: '確かめる' }).click();
-      await expect(page.getByText('通信が途切れましたが、E2E休憩所の申請は保存されていました')).toBeVisible();
-      await expect(page.getByRole('dialog')).toHaveCount(0);
-      await shoot(page, 'T11', 'requests-proxy-saved-after-unknown-pc');
-    } finally {
-      await s.cleanup();
-    }
-  });
-
-  /**
-   * 代理入力で机(木) を 1 増やして提出し、応答と団体の読み直しを落とす（未確定にする）。arrive なら提出は DB に届ける（false なら届けない）。
-   * down を戻す関数を返す
-   */
-  async function proxyUnverified(page: Page, groupName: string, arrive = true) {
-    await page.locator(`tr[data-group-name="${groupName}"]`).getByRole('button', { name: '代理入力' }).click();
-    const sheet = page.getByRole('dialog');
-    await expect(sheet.getByRole('heading', { name: `代理入力：${groupName}` })).toBeVisible();
-    await sheet.getByRole('button', { name: '机(木)の数を1増やす' }).click();
-    let down = false;
-    await page.route('**/rest/v1/rpc/submit_requests*', async (route: Route) => {
-      if (arrive) await route.fetch();
-      down = true;
-      await route.abort('failed');
-    });
-    await page.route('**/rest/v1/requests*', async (route: Route) => {
-      if (down && route.request().url().includes('group_id=eq.')) {
-        await route.abort('failed');
-        return;
-      }
-      await route.continue();
-    });
-    await sheet.getByRole('button', { name: '提出する' }).click();
-    await expect(sheet.getByRole('alert')).toContainText('保存できたか確かめられません', { timeout: 60_000 });
-    return { sheet, restore: () => (down = false) };
-  }
-
-  test('T11 申請一覧（PC）：代理入力の未確定の間に入力を変え、確かめたら前の送信が届いていた（rebased）', async ({ page }) => {
-    test.setTimeout(120_000);
-    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
-    try {
-      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/requests/?category=rest_area');
-      const { sheet, restore } = await proxyUnverified(page, 'E2E休憩所');
-      await sheet.getByRole('button', { name: '椅子(木)の数を1増やす' }).click();
-      restore();
-      await sheet.getByRole('button', { name: '確かめる' }).click();
-      await expect(sheet.getByRole('status')).toContainText('前に送った値は保存されていました。その後に変えた値はまだ保存していません');
-      await expect(sheet.getByRole('button', { name: '提出する' })).toBeEnabled();
-      await shoot(page, 'T11', 'requests-proxy-rebased-pc');
-    } finally {
-      await s.cleanup();
-    }
-  });
-
-  test('T11 申請一覧（PC）：代理入力の未確定の間に閉じる（保存されたか分からない）', async ({ page }) => {
-    test.setTimeout(120_000);
-    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
-    try {
-      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/requests/?category=rest_area');
-      await proxyUnverified(page, 'E2E休憩所');
+      await expect(sheet.getByRole('alert')).toContainText('提出できたか分かりません');
+      await shoot(page, 'T11', 'requests-proxy-unknown-pc');
+      // 閉じようとすると確かめる（閉じると入力は消え、表を読み直す）
       await page.keyboard.press('Escape');
       const ask = page.getByRole('alertdialog');
-      await expect(ask).toContainText('保存されたか分からないまま閉じますか');
-      await shoot(page, 'T11', 'requests-proxy-close-unverified-pc');
-      // 閉じると表を読み直して確かめる（表の読み直しは落としていない。提出は届いていた）
-      await ask.getByRole('button', { name: '閉じる' }).click();
-      await expect(page.getByTestId('proxy-notice')).toContainText('E2E休憩所の代理入力は保存されていました');
-      await shoot(page, 'T11', 'requests-proxy-notice-pc');
-    } finally {
-      await s.cleanup();
-    }
-  });
-
-  test('T11 申請一覧（PC）：代理入力の未確定の間に閉じ、保存されていなかった（開き直すと送った入力が戻る）', async ({ page }) => {
-    test.setTimeout(120_000);
-    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
-    try {
-      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/requests/?category=rest_area');
-      const { restore } = await proxyUnverified(page, 'E2E休憩所', false);
-      await page.keyboard.press('Escape');
-      await page.getByRole('alertdialog').getByRole('button', { name: '閉じる' }).click();
-      await expect(page.getByTestId('proxy-notice')).toContainText('E2E休憩所の代理入力は保存されていませんでした');
-      await expect(page.getByTestId('proxy-notice')).toContainText('代理入力を開くと送った入力が戻ります');
-      await shoot(page, 'T11', 'requests-proxy-notice-not-saved-pc');
-      restore();
-      await page.locator('tr[data-group-name="E2E休憩所"]').getByRole('button', { name: '代理入力' }).click();
-      const sheet = page.getByRole('dialog');
-      await expect(sheet.getByRole('alert')).toContainText('送った入力を戻しました');
-      await expect(sheet.getByRole('button', { name: '提出する' })).toBeEnabled();
-      await shoot(page, 'T11', 'requests-proxy-reopen-not-saved-pc');
+      await expect(ask).toContainText('保存できたか分かりません。閉じると入力は消えます（表を読み直します）');
+      await shoot(page, 'T11', 'requests-proxy-close-unknown-pc');
+      await ask.getByRole('button', { name: 'シートに戻る' }).click();
+      await expect(ask).toHaveCount(0);
+      // もう一度押すと読み直し、提出が入っていたので送らずに閉じる
+      await sheet.getByRole('button', { name: '提出する' }).click();
+      await expect(page.getByText('E2E休憩所の申請は保存されていました')).toBeVisible();
+      await expect(page.getByRole('heading', { name: '代理入力：E2E休憩所' })).toHaveCount(0);
+      await shoot(page, 'T11', 'requests-proxy-saved-after-unknown-pc');
     } finally {
       await s.cleanup();
     }

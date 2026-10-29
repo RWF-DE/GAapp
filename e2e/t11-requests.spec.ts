@@ -1,5 +1,5 @@
 // T11 申請一覧 /requests（総務。PC）の E2E（画面の設計 3.6・7.2）。シナリオの年度で閉じる。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from './support/auth';
 import { createScenario, sql } from './support/db';
 import { SMALL } from './support/datasets';
@@ -25,7 +25,7 @@ async function typeCell(page: Page, group: string, item: string, value: string) 
 test.describe('T11 申請一覧（管理者）', () => {
   test.use({ storageState: storageStateFor('admin') });
 
-  test('T11 申請一覧：締切前はセルを直接保存し、ほかの人が先に変えたセルは読み直した値に戻して印をつける', async ({ page }) => {
+  test('T11 申請一覧：締切前はセルを直接保存し、送る前の読み直しでほかの人が先に変えたセルが見つかれば確かめ、読み直すと読み直した値に戻して印をつける', async ({ page }) => {
     const s = await createScenario({ roles: { admin: true } });
     try {
       const stall = s.ids.groups[SMALL.groups.stall]!;
@@ -44,13 +44,18 @@ test.describe('T11 申請一覧（管理者）', () => {
         [dept],
       );
       await page.getByRole('button', { name: '保存（3件）' }).click();
-      await expect(page.getByTestId('save-error')).toContainText('2 件を保存しました。1 件は保存できませんでした');
+      // 送る前の読み直しで見つかる（まだ何も送っていない）
+      const ask = page.getByRole('alertdialog');
+      await expect(ask.getByTestId('cell-conflicts')).toHaveText(`${SMALL.groups.department}の机(木)：3 → 4（入れた数 8）`);
+      expect(await countOf(stall, 'desk')).toBe(3);
+      await ask.getByRole('button', { name: '読み直す' }).click();
+      await expect(cell(page, SMALL.groups.department, '机(木)')).toHaveValue('4');
+      await expect(page.locator(`[data-cell="${SMALL.groups.department}:desk"]`)).toHaveAttribute('data-mark', 'conflict');
+      await page.getByRole('button', { name: '保存（2件）' }).click();
+      await expect(page.getByRole('button', { name: '保存（0件）' })).toBeDisabled();
       expect(await countOf(stall, 'desk')).toBe(5);
       expect(await countOf(dept, 'lectern')).toBe(1);
       expect(await countOf(dept, 'desk')).toBe(4);
-      await expect(cell(page, SMALL.groups.department, '机(木)')).toHaveValue('4');
-      await expect(page.locator(`[data-cell="${SMALL.groups.department}:desk"]`)).toHaveAttribute('data-mark', 'conflict');
-      await expect(page.getByRole('button', { name: '保存（0件）' })).toBeDisabled();
 
       // 編集した後にほかの人が同じセルを変え、「読み直す」→ 読み直した値に戻して印をつける（古い値で上書きしない）
       await typeCell(page, SMALL.groups.stall, '机(木)', '7');
@@ -179,6 +184,81 @@ test.describe('T11 申請一覧（管理者）', () => {
       const sub = await sql<{ submitted_at: Date | null }>('select submitted_at from public.request_submissions where group_id = $1', [rest]);
       expect(sub[0]?.submitted_at).toBeTruthy();
       await expect(page.getByText('未提出に戻す')).toHaveCount(0);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 申請一覧：保存の応答が届かなければ入力を残して知らせ、もう一度押すと読み直して、DB に入っていれば送らずに「保存されていました」', async ({ page }) => {
+    test.setTimeout(120_000);
+    const s = await createScenario({ roles: { admin: true } });
+    try {
+      const stall = s.ids.groups[SMALL.groups.stall]!;
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/');
+      await typeCell(page, SMALL.groups.stall, '机(木)', '7');
+      // 送る前の読み直しは通し、書き込みは DB に届くが応答を落とし、その後の表の読み直しも落とす
+      let writes = 0;
+      let down = false;
+      await page.route('**/rest/v1/requests*', async (route: Route) => {
+        const req = route.request();
+        if (req.method() === 'POST' || req.method() === 'PATCH') {
+          down = true;
+          writes++;
+          await route.fetch();
+          await route.abort('failed');
+          return;
+        }
+        if (down && req.url().includes('groups.year_id')) {
+          await route.abort('failed');
+          return;
+        }
+        await route.continue();
+      });
+      await page.getByRole('button', { name: '保存（1件）' }).click();
+      // 読み直しは supabase-js（GET を 3 回まで送り直す）と TanStack Query が送り直してから失敗になるので、待ちを長くする
+      await expect(page.getByTestId('save-error')).toContainText('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります', {
+        timeout: 60_000,
+      });
+      await expect(cell(page, SMALL.groups.stall, '机(木)')).toHaveValue('7');
+      await expect(page.getByRole('button', { name: '確かめる' })).toHaveCount(0);
+      expect(await countOf(stall, 'desk')).toBe(7);
+
+      down = false;
+      await page.getByRole('button', { name: '保存（1件）' }).click();
+      await expect(page.getByTestId('save-info')).toContainText('保存されていました');
+      await expect(page.getByRole('button', { name: '保存（0件）' })).toBeDisabled();
+      expect(writes).toBe(1);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 申請一覧：代理入力の提出の応答が届かなければ入力を残し、もう一度押すと読み直して、自分の提出が入っていれば送らずに閉じる', async ({ page }) => {
+    const s = await createScenario({ roles: { admin: true }, extraGroups: [{ name: 'E2E休憩所', category: 'rest_area' }] });
+    try {
+      const rest = s.ids.groups['E2E休憩所']!;
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/?category=rest_area');
+      await page.locator('tr[data-group-name="E2E休憩所"]').getByRole('button', { name: '代理入力' }).click();
+      const sheet = page.getByRole('dialog');
+      await sheet.getByRole('button', { name: '机(木)の数を1増やす' }).click();
+      // 提出は DB に届くが応答を落とす
+      let submits = 0;
+      await page.route('**/rest/v1/rpc/submit_requests*', async (route: Route) => {
+        submits++;
+        await route.fetch();
+        await route.abort('failed');
+      });
+      await sheet.getByRole('button', { name: '提出する' }).click();
+      await expect(sheet.getByRole('alert')).toHaveText('提出できたか分かりません。もう一度「提出」を押すと、確かめてから送ります');
+      await expect(page.locator(`[id="proxy-${rest}-desk"]`)).toHaveValue('1');
+      expect(await countOf(rest, 'desk')).toBe(1);
+
+      await sheet.getByRole('button', { name: '提出する' }).click();
+      await expect(page.getByText('E2E休憩所の申請は保存されていました')).toBeVisible();
+      await expect(page.getByRole('heading', { name: '代理入力：E2E休憩所' })).toHaveCount(0);
+      expect(submits).toBe(1);
     } finally {
       await s.cleanup();
     }

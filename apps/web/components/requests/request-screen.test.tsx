@@ -12,6 +12,10 @@ const state = vi.hoisted(() => ({
   handler: null as null | ((call: FakeCall) => FakeResult),
   calls: [] as { table: string; ops: { op: string; args: unknown[] }[] }[],
   search: '',
+  /** 模擬店A の提出の記録（null なら未提出。ほかの人・自分の提出をまねるときに差し替える） */
+  submission: null as null | { group_id: string; submitted_at: string | null; note: string | null; updated_at: string; updated_by: string | null },
+  /** 申請と提出の記録の読み込みを通信の失敗にする */
+  down: false,
 }));
 
 vi.mock('@/lib/supabase/client', async () => {
@@ -53,6 +57,9 @@ vi.mock('@/lib/auth/auth-provider', () => {
     }),
   };
 });
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
+const { toast } = await import('sonner');
 
 vi.mock('next/navigation', () => ({
   useSearchParams: () => new URLSearchParams(state.search),
@@ -115,9 +122,11 @@ function makeHandler(opts: { requests?: RequestDbRow[]; submit?: FakeResult } = 
       case 'items':
         return { data: ITEMS };
       case 'requests':
+        if (state.down) return NETWORK;
         return { data: (opts.requests ?? []).filter((r) => r.group_id === eqValue(call, 'group_id')) };
       case 'request_submissions':
-        return { data: null };
+        if (state.down) return NETWORK;
+        return { data: eqValue(call, 'group_id') === STALL ? state.submission : null };
       case 'rpc:submit_requests':
         return opts.submit ?? { data: { group_id: STALL, submitted_at: new Date().toISOString(), note: null, updated_at: T0 } };
       default:
@@ -125,6 +134,9 @@ function makeHandler(opts: { requests?: RequestDbRow[]; submit?: FakeResult } = 
     }
   };
 }
+
+/** 通信の失敗（supabase-js は code が空で message が TypeError…、status 0 で返す） */
+const NETWORK: FakeResult = { error: { code: '', message: 'TypeError: Failed to fetch' }, status: 0 };
 
 function renderScreen() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -138,6 +150,9 @@ function renderScreen() {
 beforeEach(() => {
   state.calls = [];
   state.search = '';
+  state.submission = null;
+  state.down = false;
+  vi.mocked(toast.success).mockClear();
   try {
     localStorage.clear();
   } catch {
@@ -232,4 +247,83 @@ describe('申請 /request', () => {
     expect((await screen.findByTestId('submit-error')).textContent).toBe('年度が「振り分け中」のため、この操作はできません');
     expect((await screen.findByTestId('read-only-notice')).textContent).toBe('締切を過ぎました。変更は総務へ');
   });
+
+  describe('提出の応答が届かなかったとき（設計 2.6 の (A)）', () => {
+    const UNKNOWN = '提出できたか分かりません。もう一度「提出」を押すと、確かめてから送ります';
+    const T1 = '2026-10-29T02:00:00.654321+00:00';
+    const OTHER_USER = '00000000-0000-4000-8000-000000000004';
+
+    /** 机(木) を 1 にして提出する（確認のダイアログまで） */
+    async function submitDesk(user: ReturnType<typeof userEvent.setup>, first = true) {
+      if (first) await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+      await user.click(screen.getByRole('button', { name: /^(提出|修正して再提出)$/ }));
+      await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '提出する' }));
+    }
+
+    it('応答が落ちたら入力を残して知らせる。もう一度押すと読み直し、自分の提出が DB に入っていれば送らずに「提出されていました」', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      const base = makeHandler({ requests: rows, submit: NETWORK });
+      state.handler = (call) => {
+        if (call.table === 'rpc:submit_requests') {
+          // 届いたが応答が返らなかった（表示した品目すべてが書かれ、提出の記録は自分が書いた）
+          for (const i of ITEMS) rows.push({ group_id: STALL, item_id: i.id, count: i.code === 'desk' ? 1 : 0, updated_at: T1 });
+          state.submission = { group_id: STALL, submitted_at: T1, note: null, updated_at: T1, updated_by: USER };
+        }
+        return base(call);
+      };
+      renderScreen();
+      await submitDesk(user);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
+      expect((screen.getByRole('button', { name: '提出' }) as HTMLButtonElement).disabled).toBe(false);
+
+      await submitDesk(user, false);
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('提出されていました'));
+      expect(submitCalls()).toHaveLength(1);
+      expect(screen.queryByTestId('submit-error')).toBeNull();
+    });
+
+    it('応答が落ち、DB に入っていなければ、もう一度押すと送る', async () => {
+      const user = userEvent.setup();
+      let n = 0;
+      const base = makeHandler();
+      state.handler = (call) => (call.table === 'rpc:submit_requests' && n++ === 0 ? NETWORK : base(call));
+      renderScreen();
+      await submitDesk(user);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+      await submitDesk(user, false);
+      await waitFor(() => expect(submitCalls()).toHaveLength(2));
+      await waitFor(() => expect(vi.mocked(toast.success).mock.calls.some(([m]) => String(m).startsWith('提出しました（'))).toBe(true));
+      expect(screen.queryByTestId('submit-error')).toBeNull();
+    });
+
+    it('送る前の読み直しが通信できなければ、送らずに知らせて入力を残す', async () => {
+      const user = userEvent.setup();
+      state.handler = makeHandler();
+      renderScreen();
+      await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+      state.down = true;
+      await submitDesk(user, false);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+      expect(submitCalls()).toHaveLength(0);
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
+    });
+
+    it('ほかの人の提出（updated_by が自分でない）が見つかれば送らずに確かめ、上書きすると送る。自分の提出なら確かめない', async () => {
+      const user = userEvent.setup();
+      state.handler = makeHandler();
+      renderScreen();
+      await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+      state.submission = { group_id: STALL, submitted_at: T1, note: null, updated_at: T1, updated_by: OTHER_USER };
+      await submitDesk(user, false);
+      const ask = await screen.findByRole('alertdialog', { name: /ほかの人が提出しています。上書きしますか/ });
+      expect(submitCalls()).toHaveLength(0);
+      await user.click(within(ask).getByRole('button', { name: '上書きして提出する' }));
+      await waitFor(() => expect(submitCalls()).toHaveLength(1));
+      const args = opArgs(submitCalls()[0]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+      expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(1);
+    });
+  });
 });
+

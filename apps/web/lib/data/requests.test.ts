@@ -1,7 +1,7 @@
 import { INITIAL_ITEMS } from '@gaapp/shared';
 import { describe, expect, it, vi } from 'vitest';
 import type { GroupRow, ItemRow, RequestDbRow, SubmissionRow, YearRow } from '@/lib/db/types';
-import { AppError, appError, toAppError } from '@/lib/errors';
+import { AppError, appError } from '@/lib/errors';
 import { createFakeSupabase, opArgs, type FakeCall } from '@/lib/testing/fake-supabase';
 import {
   adminWriteMode,
@@ -9,19 +9,17 @@ import {
   buildRequestMatrix,
   cellKey,
   columnTotals,
+  decideGroupSave,
   extraRowNote,
-  groupChangesSince,
   groupDeadlineRows,
+  groupStateOf,
   hasCountChanges,
-  isUnknownOutcome,
-  proxySavedAfterUnknown,
-  judgeProxyAfterUnknown,
-  sameProxyInput,
   saveSummary,
-  hasGroupChanges,
   hasNoRequests,
   isOutsideFlagActive,
   isPastDeadline,
+  judgePendingCells,
+  markSubmittedAfterDeadline,
   markSubmittedDirect,
   judgeDirectFailure,
   judgeSubmitFailure,
@@ -36,11 +34,10 @@ import {
   remainingText,
   requestWindowOf,
   saveCellsDirect,
-  savedAfterUnknown,
   saveGroupsAfterDeadline,
   setPendingCell,
   sortGroups,
-  submittedByOthers,
+  stateChangesSince,
   toDeadlineRows,
   toSubmitRows,
   type RequestsTables,
@@ -191,27 +188,20 @@ describe('受付期間（端末の時計）と DB が判断した印', () => {
     expect(remainingText(null, NOW)).toBeNull();
   });
 
-  it('読み込んだ後にほかの代表者が提出したか', () => {
-    expect(submittedByOthers(null, null)).toBe(false);
-    expect(submittedByOthers(null, { submitted_at: T0 })).toBe(true);
-    expect(submittedByOthers({ submitted_at: T0 }, { submitted_at: T0 })).toBe(false);
-    expect(submittedByOthers({ submitted_at: T0 }, { submitted_at: T1 })).toBe(true);
-    expect(submittedByOthers({ submitted_at: T1 }, { submitted_at: T0 })).toBe(false);
-  });
 });
 
-describe('groupChangesSince（代理入力の提出の直前の読み直し）', () => {
+describe('stateChangesSince（ほかの人の保存のダイアログに出す変更）', () => {
   const a = group(10, '模擬店A', 'stall');
   const row = buildRequestMatrix({ groups: [a], items: ITEMS, requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submissions: [sub(a, T0, '電源')] }).rows[0]!;
+  const base = groupStateOf(row);
 
   it('同じなら変更なし（時刻の書き方の違いは同じ時刻として扱う）', () => {
-    const c = groupChangesSince(row, { requests: [req(a, 'desk', 3, '2026-10-29T10:02:03.123456+09:00'), req(a, 'chair', 2)], submission: sub(a, T0, '電源') });
+    const c = stateChangesSince(base, { requests: [req(a, 'desk', 3, '2026-10-29T10:02:03.123456+09:00'), req(a, 'chair', 2)], submission: sub(a, T0, '電源') });
     expect(c).toEqual({ items: [], submission: false });
-    expect(hasGroupChanges(c)).toBe(false);
   });
 
-  it('updated_at が変わった・行が増えた・消えた品目と、提出日時・備考の変更を挙げる', () => {
-    const c = groupChangesSince(row, { requests: [req(a, 'desk', 4, T1), req(a, 'lectern', 1, T1)], submission: sub(a, T0, '電源を2つ') });
+  it('updated_at が変わった・行が増えた・消えた品目と、提出の記録の変更（提出日時・備考・updated_at）を挙げる', () => {
+    const c = stateChangesSince(base, { requests: [req(a, 'desk', 4, T1), req(a, 'lectern', 1, T1)], submission: sub(a, T0, '電源を2つ') });
     expect(c.items).toEqual(
       expect.arrayContaining([
         { itemId: item('desk').id, from: 3, to: 4 },
@@ -221,8 +211,57 @@ describe('groupChangesSince（代理入力の提出の直前の読み直し）',
     );
     expect(c.items).toHaveLength(3);
     expect(c.submission).toBe(true);
-    expect(groupChangesSince(row, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: sub(a, T1, '電源') }).submission).toBe(true);
-    expect(hasGroupChanges(groupChangesSince(row, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: null }))).toBe(true);
+    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: sub(a, T1, '電源') }).submission).toBe(true);
+    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: null }).submission).toBe(true);
+    // 同じ内容での出し直し（updated_at だけが進んだ）も変わったとする
+    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: { ...sub(a, T0, '電源'), updated_at: T1 } }).submission).toBe(true);
+  });
+});
+
+describe('decideGroupSave（申請・代理入力の送る前の判定。2.6 の (A)）', () => {
+  const g = group(10, '模擬店A', 'stall');
+  const ME = uuid(900);
+  const OTHER = uuid(901);
+  const s = (updated_at: string, note: string | null, updated_by: string | null, submitted_at: string | null = T0) => ({
+    group_id: g.id,
+    submitted_at,
+    note,
+    updated_at,
+    updated_by,
+  });
+  /** 入力の元：机 3・椅子なし、提出済み（備考「電源」） */
+  const base = { requests: [req(g, 'desk', 3, T0)], submission: s(T0, '電源', OTHER) };
+  /** 入力：机 3・椅子 2、備考「電源」 */
+  const input = { counts: { [item('desk').id]: 3, [item('chair').id]: 2 }, note: '電源' };
+
+  it('誰も変えていなければ送る（同じ内容での再提出も送る）', () => {
+    expect(decideGroupSave(base, base, input, ME)).toBe('send');
+    expect(decideGroupSave(base, base, { counts: { [item('desk').id]: 3 }, note: '電源' }, ME)).toBe('send');
+  });
+
+  it('前に送って応答が届かなかった保存が通っていた（DB が入力と同じ）なら saved（送らない）', () => {
+    const fresh = { requests: [req(g, 'desk', 3, T1), req(g, 'chair', 2, T1)], submission: s(T1, '電源', ME, T1) };
+    expect(decideGroupSave(base, fresh, input, ME)).toBe('saved');
+  });
+
+  it('自分の書いた提出の記録（updated_by が自分）はほかの人の変更として扱わない：DB が入力と違えば送る', () => {
+    // 前に送った備考「電源を2つ」が通っていたが、その後に備考を「電源」に戻した
+    const fresh = { requests: [req(g, 'desk', 3, T0)], submission: s(T1, '電源を2つ', ME, T1) };
+    expect(decideGroupSave(base, fresh, { counts: { [item('desk').id]: 3 }, note: '電源' }, ME)).toBe('send');
+  });
+
+  it('提出の記録がほかの人に変えられていれば（updated_by が自分でない・null）conflict', () => {
+    const fresh = { requests: [req(g, 'desk', 3, T0)], submission: s(T1, '電源', OTHER, T1) };
+    expect(decideGroupSave(base, fresh, input, ME)).toBe('conflict');
+    expect(decideGroupSave(base, { ...fresh, submission: s(T1, '電源', null, T1) }, input, ME)).toBe('conflict');
+  });
+
+  it('申請の行は、数が入力の元とも入力とも違えばほかの人の変更（conflict）。どちらかと同じなら送る', () => {
+    const other = { requests: [req(g, 'desk', 5, T1)], submission: base.submission };
+    expect(decideGroupSave(base, other, input, ME)).toBe('conflict');
+    // 椅子を入力と同じ 2 にした行ができていた（ほかは誰も変えていない）→ 送る（机・提出の記録は入力と違うので saved ではない）
+    const same = { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: s(T0, '電源', OTHER) };
+    expect(decideGroupSave(base, same, { ...input, note: '電源を2つ' }, ME)).toBe('send');
   });
 });
 
@@ -437,162 +476,6 @@ describe('saveGroupsAfterDeadline（締切後の団体ごとの保存）', () =>
   });
 });
 
-describe('savedAfterUnknown（通信の失敗の後に、読み直した表で保存されていたかを確かめる。2.6）', () => {
-  const g = group(10, '模擬店A', 'stall');
-  const t = (requests: RequestDbRow[]): RequestsTables => ({ groups: [g], items: ITEMS, requests, submissions: [] });
-  const upd = { groupId: g.id, itemId: item('desk').id, count: 5, updatedAt: T0 };
-  const ins = { groupId: g.id, itemId: item('chair').id, count: 2, updatedAt: null };
-
-  it('行が送った数になり、updated_at が基準から進んでいれば保存されていた', () => {
-    const saved = savedAfterUnknown([upd, ins], t([req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)]));
-    expect([...saved].sort()).toEqual([cellKey(g.id, item('desk').id), cellKey(g.id, item('chair').id)].sort());
-  });
-
-  it('行が基準のまま・行がない・ほかの数なら保存されていない', () => {
-    expect(savedAfterUnknown([upd, ins], t([req(g, 'desk', 3, T0)])).size).toBe(0);
-    expect(savedAfterUnknown([upd], t([req(g, 'desk', 4, T1)])).size).toBe(0);
-  });
-
-  it('団体ごと（締切後の RPC は団体の全部か何もないか）：団体のセルがすべて保存されていたときだけ', () => {
-    const both = savedAfterUnknown([upd, ins], t([req(g, 'desk', 5, T1)]), 'group');
-    expect(both.size).toBe(0);
-    const all = savedAfterUnknown([upd, ins], t([req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)]), 'group');
-    expect(all.size).toBe(2);
-  });
-});
-
-describe('isUnknownOutcome（応答が届かず、保存されたか分からない失敗か。2.6）', () => {
-  it('通信の失敗（fetch の TypeError・status 0・AbortError）は分からない', () => {
-    expect(isUnknownOutcome(new TypeError('Failed to fetch'))).toBe(true);
-    expect(isUnknownOutcome(toAppError({ code: '', message: 'TypeError: Failed to fetch' }, 0))).toBe(true);
-    expect(isUnknownOutcome(Object.assign(new Error('aborted'), { name: 'AbortError' }))).toBe(true);
-  });
-
-  it('ゲートウェイのタイムアウトなど、コードのない応答（502・503・504・408）は分からない', () => {
-    expect(isUnknownOutcome(toAppError({ message: 'Gateway Timeout' }, 504))).toBe(true);
-    expect(isUnknownOutcome(toAppError({ message: 'Bad Gateway' }, 502))).toBe(true);
-    expect(isUnknownOutcome(toAppError({ message: 'Request Timeout' }, 408))).toBe(true);
-  });
-
-  it('DB・PostgREST からコードつきで返ったエラーは、classifyError が知らないコードでも届いた失敗', () => {
-    // 文のタイムアウト（57014）はトランザクションごと戻るので、保存されていない
-    const timeout = toAppError({ code: '57014', message: 'canceling statement due to statement timeout' }, 500);
-    expect(timeout.info.kind).toBe('unknown');
-    expect(isUnknownOutcome(timeout)).toBe(false);
-    expect(isUnknownOutcome(toAppError({ code: 'XX000', message: 'internal' }, 500))).toBe(false);
-    expect(isUnknownOutcome(toAppError({ code: 'PGRST000', message: 'could not connect' }, 503))).toBe(false);
-    expect(isUnknownOutcome(toAppError({ code: 'P0001', message: 'something_new' }, 400))).toBe(false);
-  });
-
-  it('コードのない 4xx（408 を除く。PostgREST の前で断られた）は届いた失敗。ほかの種類（conflict など）も届いた失敗', () => {
-    expect(isUnknownOutcome(toAppError({ message: 'Too Many Requests' }, 429))).toBe(false);
-    expect(isUnknownOutcome(toAppError({ message: 'Payload Too Large' }, 413))).toBe(false);
-    expect(isUnknownOutcome(toAppError({ code: 'P0001', message: 'conflict', details: '{"item_id":"x"}' }, 400))).toBe(false);
-    expect(isUnknownOutcome(toAppError({ code: '42501', message: 'denied' }, 403))).toBe(false);
-  });
-});
-
-describe('proxySavedAfterUnknown（代理入力の送信が途切れた後に、読み直した記録で保存されていたかを確かめる。2.6）', () => {
-  const g = group(10, '模擬店A', 'stall');
-  const subAt = (updated_at: string, note: string | null = null, submitted_at: string | null = T1): SubmissionRow => ({
-    group_id: g.id,
-    submitted_at,
-    note,
-    updated_at,
-  });
-
-  describe('締切前（submit_requests：送った品目の数・備考に置き換え、提出の記録を必ず書き直す）', () => {
-    const sent = {
-      rows: [
-        { itemId: item('desk').id, count: 3 },
-        { itemId: item('chair').id, count: 2 },
-      ],
-      note: '電源',
-      submissionUpdatedAt: T0,
-      checkRowVersions: false,
-    };
-    it('数・備考が送ったもので、提出の記録が送る前から書き直されていれば保存されていた（数の変わらない行の updated_at は問わない）', () => {
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: subAt(T1, '電源') })).toBe(true);
-    });
-    it('提出の記録が送る前のまま（届いていない）なら保存されていない', () => {
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: subAt(T0, '電源') })).toBe(false);
-    });
-    it('数か備考が違う・提出の記録がない・未提出なら保存されていない', () => {
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0)], submission: subAt(T1, '電源') })).toBe(false);
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: subAt(T1, null) })).toBe(false);
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: null })).toBe(false);
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: subAt(T1, '電源', null) })).toBe(false);
-    });
-    it('送る前に提出の記録がなかった団体：記録ができていれば保存されていた', () => {
-      expect(
-        proxySavedAfterUnknown({ ...sent, submissionUpdatedAt: null }, { requests: [req(g, 'desk', 3, T1), req(g, 'chair', 2, T1)], submission: subAt(T1, '電源') }),
-      ).toBe(true);
-    });
-  });
-
-  describe('締切後（update_requests_after_deadline：変えた品目だけ。備考は変えたときだけ）', () => {
-    const sent = {
-      rows: [
-        { itemId: item('desk').id, count: 5, updatedAt: T0 },
-        { itemId: item('chair').id, count: 2 },
-      ],
-      submissionUpdatedAt: T0,
-      checkRowVersions: true,
-    };
-    it('行が送った数で updated_at が送った値から進み、提出の記録も書き直されていれば保存されていた（備考は送っていないので問わない）', () => {
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)], submission: subAt(T1, 'ほかの人の備考') })).toBe(true);
-    });
-    it('行の updated_at が送った値のまま・数が違うなら保存されていない', () => {
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 5, T0), req(g, 'chair', 2, T1)], submission: subAt(T1) })).toBe(false);
-      expect(proxySavedAfterUnknown(sent, { requests: [req(g, 'desk', 4, T1), req(g, 'chair', 2, T1)], submission: subAt(T1) })).toBe(false);
-    });
-    it('品目を変えず提出済みにしただけ：提出の記録が書き直され、送った備考になっていれば保存されていた', () => {
-      const only = { rows: [], note: '紙で提出', submissionUpdatedAt: T0, checkRowVersions: true };
-      expect(proxySavedAfterUnknown(only, { requests: [], submission: subAt(T1, '紙で提出') })).toBe(true);
-      expect(proxySavedAfterUnknown(only, { requests: [], submission: subAt(T0, '紙で提出') })).toBe(false);
-    });
-  });
-});
-
-describe('judgeProxyAfterUnknown（代理入力の未確定の送信を、読み直した記録で確かめる。2.6）', () => {
-  const g = group(10, '模擬店A', 'stall');
-  const sub = (updated_at: string, note: string | null = null, submitted_at: string | null = T0): SubmissionRow => ({
-    group_id: g.id,
-    submitted_at,
-    note,
-    updated_at,
-  });
-  const before = { requests: [req(g, 'desk', 3, T0)], submission: sub(T0, '電源') };
-  const sent = { rows: [{ itemId: item('desk').id, count: 5 }], note: '電源', submissionUpdatedAt: T0, checkRowVersions: false };
-  it('送った値が入っていれば saved', () => {
-    const r = judgeProxyAfterUnknown({ sent, before }, { requests: [req(g, 'desk', 5, T1)], submission: sub(T1, '電源', T1) });
-    expect(r.verdict).toBe('saved');
-  });
-  it('入っておらず、送る直前に読んだ記録から何も変わっていなければ not_saved', () => {
-    const r = judgeProxyAfterUnknown({ sent, before }, before);
-    expect(r.verdict).toBe('not_saved');
-    expect(r.changes).toEqual({ items: [], submission: false });
-  });
-  it('入っておらず、ほかの人が行か提出の記録を変えていれば others（保存されていないと言い切らない）', () => {
-    const items = judgeProxyAfterUnknown({ sent, before }, { requests: [req(g, 'desk', 4, T1)], submission: sub(T0, '電源') });
-    expect(items.verdict).toBe('others');
-    expect(items.changes.items).toEqual([{ itemId: item('desk').id, from: 3, to: 4 }]);
-    // 提出日時も備考も同じで updated_at だけが進んだ（締切後の保存など）も、ほかの人の保存
-    const touched = judgeProxyAfterUnknown({ sent, before }, { requests: [req(g, 'desk', 3, T0)], submission: sub(T1, '電源') });
-    expect(touched.verdict).toBe('others');
-    expect(touched.changes.submission).toBe(true);
-  });
-});
-
-describe('sameProxyInput（代理入力の入力が同じか）', () => {
-  it('数と、前後の空白を除いた備考で比べる', () => {
-    expect(sameProxyInput({ counts: { a: 1, b: 0 }, note: '電源 ' }, { counts: { a: 1, b: 0 }, note: '電源' })).toBe(true);
-    expect(sameProxyInput({ counts: { a: 1, b: 0 }, note: '電源' }, { counts: { a: 2, b: 0 }, note: '電源' })).toBe(false);
-    expect(sameProxyInput({ counts: { a: 1 }, note: '' }, { counts: { a: 1, b: 0 }, note: '' })).toBe(false);
-    expect(sameProxyInput({ counts: { a: 1 }, note: '' }, { counts: { a: 1 }, note: 'x' })).toBe(false);
-  });
-});
-
 describe('saveSummary（申請一覧の保存の結果の文）', () => {
   it('「保存できなかった」と「保存できたか分からない」の両方があれば、句点で区切る', () => {
     expect(saveSummary('件', { saved: 2, failed: 1, uncertain: 2, notSent: 0 })).toBe(
@@ -650,5 +533,50 @@ describe('markSubmittedDirect（締切前の「提出済みにする」）', () 
       return { data: reads === 1 ? null : sub(g, T1) };
     });
     expect(await markSubmittedDirect(g.id, client)).toEqual({ row: sub(g, T1), already: true });
+  });
+});
+
+describe('judgePendingCells（申請一覧の送る前の判定。2.6 の (A)）', () => {
+  const g = group(10, '模擬店A', 'stall');
+  const t = (requests: RequestDbRow[]) => ({ requests });
+  const desk = cellKey(g.id, item('desk').id);
+  const chair = cellKey(g.id, item('chair').id);
+  const pending = {
+    [desk]: { value: 5, baseCount: 3, baseUpdatedAt: T0 },
+    [chair]: { value: 2, baseCount: 0, baseUpdatedAt: null },
+  };
+
+  it('誰も変えていなければどれも送る（saved・conflicts は空）', () => {
+    expect(judgePendingCells(pending, t([req(g, 'desk', 3, T0)]))).toEqual({ saved: [], conflicts: [] });
+  });
+
+  it('DB がすでに入れた数（前に送って応答が届かなかった保存が通っていた）なら saved', () => {
+    expect(judgePendingCells(pending, t([req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)])).saved.sort()).toEqual([desk, chair].sort());
+  });
+
+  it('数が入力の元とも入れた数とも違えば conflicts（ほかの人の変更）。入力の元と同じ数への書き直しは送る', () => {
+    const r = judgePendingCells(pending, t([req(g, 'desk', 4, T1), req(g, 'chair', 0, T1)]));
+    expect(r.saved).toEqual([]);
+    expect(r.conflicts).toEqual([{ key: desk, groupId: g.id, itemId: item('desk').id, base: 3, fresh: 4, value: 5 }]);
+  });
+});
+
+describe('markSubmittedAfterDeadline（締切後の「提出済みにする」）', () => {
+  const g = group(10, '模擬店A', 'stall');
+
+  it('送る前に提出の記録を読み直し、すでに提出済みなら送らずにその記録を返す。未提出なら理由つきで送る', async () => {
+    vi.mocked(callRpc).mockReset();
+    const submitted = createFakeSupabase(() => ({ data: { ...sub(g, T0), updated_by: null } }));
+    expect(await markSubmittedAfterDeadline(g.id, '紙で提出済み', submitted.client)).toEqual({ ...sub(g, T0), updated_by: null });
+    expect(callRpc).not.toHaveBeenCalled();
+
+    const none = createFakeSupabase(() => ({ data: { ...sub(g, null), updated_by: null } }));
+    expect(await markSubmittedAfterDeadline(g.id, '紙で提出済み', none.client)).toBeNull();
+    expect(callRpc).toHaveBeenCalledWith('update_requests_after_deadline', {
+      p_group_id: g.id,
+      p_rows: [],
+      p_reason: '紙で提出済み',
+      p_submission: { submitted: true },
+    });
   });
 });

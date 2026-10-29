@@ -16,7 +16,8 @@ import { useAuth } from '@/lib/auth/auth-provider';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
 import type { GroupSummary } from '@/lib/auth/membership';
 import {
-  fetchSubmission,
+  decideGroupSave,
+  fetchGroupRequestState,
   hasCountChanges,
   isOutsideFlagActive,
   judgeSubmitFailure,
@@ -24,11 +25,12 @@ import {
   outsideFlagOf,
   remainingText,
   requestWindowOf,
+  stateChangesSince,
   submitRequests,
-  submittedByOthers,
   toSubmitRows,
   useRepRequest,
   buildRequestForm,
+  type GroupRequestState,
   type OutsideFlag,
   type RepRequestData,
   type RequestWindow,
@@ -36,7 +38,7 @@ import {
 import { useYearRow, type YearRow } from '@/lib/data/year';
 import { formatDateTime, formatShortDateTime } from '@/lib/datetime';
 import { createDraftWriter, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
-import { classifyError, effectOf, messageFor, type NameLookup } from '@/lib/errors';
+import { classifyError, effectOf, isUnknownOutcome, messageFor, unknownOutcomeMessage, type NameLookup } from '@/lib/errors';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
 import { NOTE_MAX } from '@/lib/schemas/common';
@@ -52,6 +54,9 @@ interface RequestDraft {
 
 /**
  * 申請 /request（団体代表。スマホ。画面の設計 3.5。T11）。
+ * 提出は毎回、送る前に自団体の申請と提出の記録を読み直して決める（設計 2.6 の (A)。decideGroupSave）：DB がすでに入力と同じなら
+ * 送らずに「提出されていました」、ほかの人の変更があれば上書きしてよいか確かめ、ほかは送る。応答が届かず提出できたか分からない
+ * ときは入力を残して知らせるだけで、確かめるための状態は持たない（もう一度押すと、上の読み直しで決まる）。
  * 団体は `?group=<id>`（自分が代表する団体にない id は無視して最初の団体）。団体・年度を変えると作り直す（入力は団体ごとの下書きに残る）。
  */
 export function RequestScreen() {
@@ -104,7 +109,8 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
   const [noteEdit, setNoteEdit] = useState<string | null>(null);
   const [outside, setOutside] = useState<OutsideFlag | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [overwriteAt, setOverwriteAt] = useState<string | null>(null);
+  /** 送る前の読み直しで見つかった、ほかの人の変更（上書きしてよいか確かめる。2.6） */
+  const [overwrite, setOverwrite] = useState<{ submittedAt: string | null; items: string[] } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const draftKeyValue: DraftKey = useMemo(() => ({ userId, yearId, screen: 'request', target: group.id }), [userId, yearId, group.id]);
@@ -182,24 +188,67 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     if (effect.reload === 'data') void q.refetch();
   };
 
-  const doSubmit = async () => {
+  const queryKey = queryKeys.yearPart(yearId, 'request', group.id);
+
+  /** 入力の元（読み込んだ申請と提出の記録）を読み直したものにする。入れていない欄は読み直した値になり、入れた数と書き換えた備考は残る */
+  const rebaseTo = (fresh: GroupRequestState) => {
+    setNoteEdit((n) => (n === savedNote ? null : n));
+    queryClient.setQueryData<RepRequestData>(queryKey, (old) => (old ? { ...old, requests: fresh.requests, submission: fresh.submission } : old));
+  };
+
+  const done = (message: string) => {
+    toast.success(message);
+    writer.clear();
+    setDraft(null);
+    setEdits({});
+    setNoteEdit(null);
+    void queryClient.invalidateQueries({ queryKey });
+  };
+
+  /**
+   * 提出。送る前に申請と提出の記録を読み直して決める。'changed' はほかの人の変更があって送らなかった（上書きの確かめを出した）。
+   */
+  const submitNow = async (): Promise<'done' | 'changed' | 'error'> => {
     setSubmitError(null);
     const rows = toSubmitRows(model.fields, edits);
     const parsed = requestFormSchema.safeParse({ counts: Object.fromEntries(rows.map((r) => [r.itemId, r.count])), note });
     if (!parsed.success) {
       setSubmitError(parsed.error.issues[0]?.message ?? '入力の形が違います');
-      return;
+      return 'error';
+    }
+    let fresh: GroupRequestState;
+    try {
+      fresh = await fetchGroupRequestState(group.id);
+    } catch (e) {
+      if (isUnknownOutcome(e)) setSubmitError(unknownOutcomeMessage('提出'));
+      else await handleError(e);
+      return 'error';
+    }
+    const base: GroupRequestState = { requests: data.requests, submission: data.submission };
+    const decision = decideGroupSave(base, fresh, { counts: parsed.data.counts, note: parsed.data.note }, userId);
+    if (decision === 'saved') {
+      done('提出されていました');
+      return 'done';
+    }
+    rebaseTo(fresh);
+    if (decision === 'conflict') {
+      const changed = stateChangesSince(base, fresh);
+      const name = (id: string) => data.items.find((i) => i.id === id)?.name ?? '（不明な品目）';
+      setOverwrite({
+        submittedAt: changed.submission ? (fresh.submission?.submitted_at ?? null) : null,
+        items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`),
+      });
+      return 'changed';
     }
     try {
       const res = await submit.mutateAsync({ rows, note: parsed.data.note });
-      toast.success(`提出しました（${formatShortDateTime(res.submitted_at)}）`);
-      writer.clear();
-      setDraft(null);
-      setEdits({});
-      setNoteEdit(null);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.yearPart(yearId, 'request', group.id) });
+      done(`提出しました（${formatShortDateTime(res.submitted_at)}）`);
+      return 'done';
     } catch (e) {
-      await handleError(e);
+      // 応答が届かなかった：自動では送り直さない。入力を残し、もう一度押すと読み直して決める
+      if (isUnknownOutcome(e)) setSubmitError(unknownOutcomeMessage('提出'));
+      else await handleError(e);
+      return 'error';
     }
   };
 
@@ -207,21 +256,6 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     if (!writable || noteTooLong || submit.isPending) return;
     if (!(await notLatest.confirmBeforeWrite())) return;
     setConfirmOpen(true);
-  };
-
-  const onConfirmSummary = async () => {
-    // 提出の直前に提出の記録を読み直し、読み込んだ後にほかの代表者が提出していれば確かめる
-    let fresh: Awaited<ReturnType<typeof fetchSubmission>> | undefined;
-    try {
-      fresh = await fetchSubmission(group.id);
-    } catch {
-      fresh = undefined; // 読めなければ確かめずに送る（送信の失敗として扱う）
-    }
-    if (fresh !== undefined && submittedByOthers(data.submission, fresh) && fresh?.submitted_at) {
-      setOverwriteAt(fresh.submitted_at);
-      return;
-    }
-    await doSubmit();
   };
 
   return (
@@ -306,7 +340,9 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
         confirmLabel="提出する"
         pendingLabel="送信中…"
         pending={submit.isPending}
-        onConfirm={onConfirmSummary}
+        onConfirm={async () => {
+          await submitNow();
+        }}
       >
         {summary.length > 0 ? (
           <ul className="max-h-60 space-y-1 overflow-auto text-sm" data-testid="submit-summary">
@@ -320,17 +356,33 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
         ) : null}
       </ConfirmDialog>
       <ConfirmDialog
-        open={overwriteAt !== null}
+        open={overwrite !== null}
         onOpenChange={(o) => {
-          if (!o) setOverwriteAt(null);
+          if (!o) setOverwrite(null);
         }}
-        title={`${formatShortDateTime(overwriteAt)} にほかの代表者が提出しています。上書きしますか`}
-        description="上書きすると、ほかの代表者が提出した数はこの画面の数に置き換わります。"
+        title={
+          overwrite?.submittedAt
+            ? `${formatShortDateTime(overwrite.submittedAt)} にほかの人が提出しています。上書きしますか`
+            : 'ほかの人がこの団体の申請を変えました。上書きしますか'
+        }
+        description="画面は読み直した値にしました（入れた数と書き換えた備考は残しています）。上書きすると、画面の数と備考で置き換わります。"
         confirmLabel="上書きして提出する"
+        cancelLabel="提出しないで見直す"
         pendingLabel="送信中…"
         pending={submit.isPending}
-        onConfirm={doSubmit}
-      />
+        onConfirm={async () => {
+          // もう一度読み直してから送る。その間にまた変わっていれば、送らずに最新の値で確かめ直す（ダイアログは開いたまま）
+          if ((await submitNow()) === 'changed') throw new Error('changed_again');
+        }}
+      >
+        {overwrite && overwrite.items.length > 0 ? (
+          <ul className="max-h-60 space-y-1 overflow-auto text-sm" data-testid="request-conflicts">
+            {overwrite.items.map((t) => (
+              <li key={t}>{t}</li>
+            ))}
+          </ul>
+        ) : null}
+      </ConfirmDialog>
       {notLatest.dialog}
     </div>
   );

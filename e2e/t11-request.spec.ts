@@ -1,5 +1,5 @@
 // T11 申請 /request（団体代表。スマホ）の E2E（画面の設計 3.5・7.2）。シナリオの年度で閉じる。
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from './support/auth';
 import { createScenario, sql } from './support/db';
 import { SMALL } from './support/datasets';
@@ -129,6 +129,37 @@ test('T11 申請：端末の時計が遅れていて DB が締切後と判断し
     await expect(page.getByTestId('read-only-notice')).toContainText('端末の時計がずれている可能性があります。変更は総務へ');
     await expect(page.getByRole('button', { name: /提出/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '机(木)の数を1増やす' })).toBeDisabled();
+    expect(submits).toBe(1);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('T11 申請：提出の応答が届かなければ入力を残して知らせ、もう一度押すと読み直して、自分の提出が入っていれば送らずに「提出されていました」', async ({ page }) => {
+  const s = await createScenario({ repGroup: SMALL.groups.stall });
+  try {
+    const gid = s.ids.groups[SMALL.groups.stall]!;
+    await pinYear(page, SEED_USER_IDS.rep, s.yearId);
+    await page.setViewportSize(MOBILE);
+    await page.goto('/request/');
+    await page.getByRole('button', { name: '机(木)の数を1増やす' }).click();
+    // 提出は DB に届くが応答を落とす
+    let submits = 0;
+    await page.route('**/rest/v1/rpc/submit_requests*', async (route: Route) => {
+      submits++;
+      await route.fetch();
+      await route.abort('failed');
+    });
+    await submit(page, '修正して再提出');
+    await expect(page.getByTestId('submit-error')).toHaveText('提出できたか分かりません。もう一度「提出」を押すと、確かめてから送ります');
+    await expect(page.locator('#request-desk')).toHaveValue('4');
+    expect(await countOf(gid, 'desk')).toBe(4);
+
+    await page.getByRole('button', { name: '修正して再提出' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'この年度に提出する' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: '提出する' }).click();
+    await expect(page.getByText('提出されていました')).toBeVisible();
+    await expect(page.getByTestId('submit-error')).toHaveCount(0);
     expect(submits).toBe(1);
   } finally {
     await s.cleanup();

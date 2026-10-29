@@ -14,6 +14,7 @@ import {
   type YearRow,
   type YearStatus,
 } from '@/lib/db/types';
+import { decideAbsoluteSave, type AbsoluteSaveDecision, type AbsoluteSaveEntry } from '@/lib/data/absolute-save';
 import { AppError, appError, classifyError, toAppError } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
 import { callRpc } from '@/lib/rpc';
@@ -452,6 +453,42 @@ export function rebaseKeysTo(pending: PendingCells, keys: Iterable<string>, t: R
   return next;
 }
 
+/** 送る前の読み直しで見つかった、ほかの人が先に変えたセル（上書きするか読み直すかを確かめる） */
+export interface CellConflict {
+  key: string;
+  groupId: string;
+  itemId: string;
+  /** 入力の元（編集したときの行）の数 */
+  base: number;
+  /** 読み直した数 */
+  fresh: number;
+  /** 入れた数 */
+  value: number;
+}
+
+/**
+ * 送る前に読み直した表で、未保存のセルをセルごとに決める（設計 2.6 の (A)。decideAbsoluteSave）。
+ * saved：DB がすでに入れた数（前に送って応答が届かなかった保存が通っていた）。conflicts：入力の元から行が変わり、
+ * 数が入力の元とも入れた数とも違う（ほかの人の変更。requests は書いた人を持たないので数で見る）。ほかは送る。
+ */
+export function judgePendingCells(pending: PendingCells, t: Pick<RequestsTables, 'requests'>): { saved: string[]; conflicts: CellConflict[] } {
+  const reqs = requestIndex(t);
+  const saved: string[] = [];
+  const conflicts: CellConflict[] = [];
+  for (const [key, cell] of Object.entries(pending)) {
+    const row = reqs.get(key);
+    const fresh = row?.count ?? 0;
+    const d = decideAbsoluteSave([
+      { input: cell.value, base: cell.baseCount, fresh, changed: (row?.updated_at ?? null) !== cell.baseUpdatedAt },
+    ]);
+    if (d === 'saved') saved.push(key);
+    if (d !== 'conflict') continue;
+    const [groupId, itemId] = key.split(':') as [string, string];
+    conflicts.push({ key, groupId, itemId, base: cell.baseCount, fresh, value: cell.value });
+  }
+  return { saved, conflicts: conflicts.sort((a, b) => compareStrings(a.key, b.key)) };
+}
+
 /** 下書きから読んだ値を未保存のセルにする（形の違う値・範囲の外の数は捨てる。古い形の下書きを読んでも壊れない） */
 export function normalizePending(value: unknown): PendingCells {
   const out: Record<string, PendingCell> = {};
@@ -486,44 +523,6 @@ export function columnTotals(matrix: RequestMatrix, pending: PendingCells): Reco
     totals[item.id] = matrix.rows.reduce((s, r) => s + shownCount(pending, r, item.id), 0);
   }
   return totals;
-}
-
-/**
- * 通信の失敗（network・unknown）で応答が届かなかったセルが、保存されていたかを読み直した表で確かめる（2.6）。
- * 行が送った数になっていて、updated_at が基準（送った updatedAt。行がなかったら null）から変わっていれば保存されていた。
- * unit が 'group' なら団体ごと（update_requests_after_deadline は団体の全部か何もないか）：団体の送ったセルがすべて
- * 保存されていたときだけ、その団体のセルを返す。返すのはセルの鍵。
- */
-export function savedAfterUnknown(changes: readonly CellChange[], t: Pick<RequestsTables, 'requests'>, unit: 'cell' | 'group' = 'cell'): Set<string> {
-  const reqs = requestIndex(t);
-  const isSaved = (c: CellChange) => {
-    const row = reqs.get(cellKey(c.groupId, c.itemId));
-    return (row?.count ?? 0) === c.count && (row?.updated_at ?? null) !== c.updatedAt;
-  };
-  const out = new Set<string>();
-  if (unit === 'cell') {
-    for (const c of changes) if (isSaved(c)) out.add(cellKey(c.groupId, c.itemId));
-    return out;
-  }
-  const byGroup = new Map<string, CellChange[]>();
-  for (const c of changes) byGroup.set(c.groupId, [...(byGroup.get(c.groupId) ?? []), c]);
-  for (const list of byGroup.values()) {
-    if (list.every(isSaved)) for (const c of list) out.add(cellKey(c.groupId, c.itemId));
-  }
-  return out;
-}
-
-/**
- * 応答が届かず、保存されたか分からない失敗か（2.6）。通信の失敗（network：fetch の失敗・中止・status 0）と、コードのない応答の
- * うちタイムアウトやゲートウェイの失敗（408・5xx など。PostgREST の応答が届いていない）だけを「分からない」にする。
- * DB・PostgREST からコードつきで返ったエラーは、classifyError が知らないコード（kind が unknown。57014 の文のタイムアウトなど）でも
- * 届いた失敗（1リクエスト＝1トランザクションなので保存されていない）。コードのない 4xx（408 を除く）は PostgREST の前で断られた失敗。
- */
-export function isUnknownOutcome(error: unknown): boolean {
-  const c = classifyError(error);
-  if (c.kind === 'network') return true;
-  if (c.kind !== 'unknown' || c.code !== null) return false;
-  return c.status === null || c.status === 408 || c.status >= 500;
 }
 
 /** 申請一覧の保存の結果の文の頭（「N 件を保存しました。M 件は保存できませんでした。K 件は保存できたか分かりません（L 件は送っていません）」） */
@@ -617,27 +616,27 @@ export async function fetchRepRequest(groupId: string, client: AppSupabaseClient
   };
 }
 
-/** 提出の記録だけを読み直す（提出の直前に、ほかの代表者の提出を確かめる） */
-export async function fetchSubmission(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<SubmissionRow | null> {
-  const res = await client.from('request_submissions').select(COLUMNS.request_submissions).eq('group_id', groupId).maybeSingle();
+/** 提出の記録（読み直したもの。updated_by で自分の書き込みかを見分ける。表の行から作ったものは updated_by を持たない） */
+export type SubmissionState = SubmissionRow & { updated_by?: string | null };
+
+/** 提出の記録だけを読み直す（updated_by も読む。送る前の読み直し・「提出済みにする」・取り込み） */
+export async function fetchSubmission(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<SubmissionState | null> {
+  const res = await client
+    .from('request_submissions')
+    .select(`${COLUMNS.request_submissions}, updated_by`)
+    .eq('group_id', groupId)
+    .maybeSingle();
   if (res.error) throw toAppError(res.error, res.status);
-  return (res.data ?? null) as unknown as SubmissionRow | null;
+  return (res.data ?? null) as unknown as SubmissionState | null;
 }
 
-/** 読み込んだ後にほかの代表者が提出したか（submitted_at が読み込んだときより新しい） */
-export function submittedByOthers(loaded: Pick<SubmissionRow, 'submitted_at'> | null, fresh: Pick<SubmissionRow, 'submitted_at'> | null): boolean {
-  const a = ms(loaded?.submitted_at ?? null);
-  const b = ms(fresh?.submitted_at ?? null);
-  return b !== null && (a === null || b > a);
-}
-
-/** 1団体の申請と提出の記録（代理入力の提出の直前に読み直す） */
+/** 1団体の申請と提出の記録（送る前に読み直す。入力の元〔base〕にもこの形を使う） */
 export interface GroupRequestState {
   requests: RequestDbRow[];
-  submission: SubmissionRow | null;
+  submission: SubmissionState | null;
 }
 
-/** 1団体の申請と提出の記録を読み直す（代理入力の締切前の提出の直前。submit_requests は楽観ロックを取らないので、送る前に確かめる） */
+/** 1団体の申請と提出の記録を読み直す（申請・代理入力の送る前。2.6） */
 export async function fetchGroupRequestState(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<GroupRequestState> {
   const [r, submission] = await Promise.all([
     client.from('requests').select(COLUMNS.requests).eq('group_id', groupId).order('item_id'),
@@ -648,118 +647,54 @@ export async function fetchGroupRequestState(groupId: string, client: AppSupabas
   return { requests, submission };
 }
 
-/** 代理入力で送ったもの（応答が届かなかったときに、読み直した記録と突き合わせる。2.6） */
-export interface ProxySent {
-  /** 送った品目の数。updatedAt は締切後に付けた楽観ロックの値（行がなかった品目と締切前は付けない） */
-  rows: { itemId: string; count: number; updatedAt?: string }[];
-  /** 送った備考（undefined なら送っていない。締切後に備考を変えなかったとき） */
-  note?: string | null;
-  /** 送る直前の提出の記録の updated_at（記録がなければ null） */
-  submissionUpdatedAt: string | null;
-  /** 行の updated_at が送った値から進んだことも確かめる（締切後。送るのは変えた品目だけで、届けば必ず書き直される） */
-  checkRowVersions: boolean;
+/** 送る入力（入力欄の品目すべての数と、送る備考。締切後に備考を送らないときは入力の元の備考） */
+export interface GroupSaveInput {
+  counts: Readonly<Record<string, number>>;
+  note: string | null;
 }
 
+const normalizedNote = (n: string | null | undefined): string | null => {
+  const t = (n ?? '').trim();
+  return t === '' ? null : t;
+};
+
 /**
- * 代理入力の送信（submit_requests・update_requests_after_deadline）の応答が届かなかったとき、読み直した団体の申請と提出の記録で
- * 保存されていたかを確かめる（2.6）。どちらの RPC も提出の記録を必ず書き直す（updated_at が進む）ので、それを届いた印にし、
- * 送った品目の数・備考が自分の入れたものになっていて、提出済みなら保存されていた。どちらの RPC も全部か何もないかなので、
- * 一部だけを保存されていたとはしない。
+ * 申請・代理入力の送る前の判定（設計 2.6 の (A)。decideAbsoluteSave に品目ごとと提出の記録を渡す）。
+ * - 品目：数で比べ、行の updated_at（行の有無を含む）が入力の元から変わったかを見る。requests は書いた人を持たないので、
+ *   読み直した数が入力の元とも入力とも違えば、ほかの人の変更とする。
+ * - 提出の記録：「提出済みか・備考」で比べ、updated_at が変わったかを見る。ほかの人の変更かは updated_by（自分でなければ。null も）。
+ * 'saved' は DB がすでに入力と同じ（前に送って応答が届かなかった保存が通っていた）、'conflict' はほかの人の変更がある、'send' は送る。
  */
-export function proxySavedAfterUnknown(sent: ProxySent, latest: GroupRequestState): boolean {
-  const s = latest.submission;
-  if (!s || s.submitted_at === null) return false;
-  if (ms(s.updated_at) === ms(sent.submissionUpdatedAt)) return false;
-  if (sent.note !== undefined && (s.note ?? null) !== sent.note) return false;
-  const rows = new Map(latest.requests.map((r) => [r.item_id, r]));
-  return sent.rows.every((r) => {
-    const row = rows.get(r.itemId);
-    if ((row?.count ?? 0) !== r.count) return false;
-    return !sent.checkRowVersions || ms(row?.updated_at ?? null) !== ms(r.updatedAt ?? null);
+export function decideGroupSave(base: GroupRequestState, fresh: GroupRequestState, input: GroupSaveInput, userId: string): AbsoluteSaveDecision {
+  const baseBy = new Map(base.requests.map((r) => [r.item_id, r]));
+  const freshBy = new Map(fresh.requests.map((r) => [r.item_id, r]));
+  const entries: AbsoluteSaveEntry<number | string>[] = Object.entries(input.counts).map(([itemId, count]) => {
+    const b = baseBy.get(itemId);
+    const f = freshBy.get(itemId);
+    return { input: count, base: b?.count ?? 0, fresh: f?.count ?? 0, changed: ms(b?.updated_at ?? null) !== ms(f?.updated_at ?? null) };
   });
+  const sub = (s: SubmissionState | null) => JSON.stringify([!!s?.submitted_at, normalizedNote(s?.note)]);
+  const bs = base.submission;
+  const fs = fresh.submission;
+  entries.push({
+    input: JSON.stringify([true, normalizedNote(input.note)]),
+    base: sub(bs),
+    fresh: sub(fs),
+    changed: ms(bs?.updated_at ?? null) !== ms(fs?.updated_at ?? null),
+    byOther: !!fs && fs.updated_by !== userId,
+  });
+  return decideAbsoluteSave(entries);
 }
 
-/** 代理入力の入力（入力欄の品目すべての数と、備考の文字列） */
-export interface ProxyInput {
-  counts: Record<string, number>;
-  note: string;
-}
-
-/**
- * 代理入力の未確定の送信（応答が届かず、保存されたか分からない。2.6）。団体ごとに申請一覧の画面が持つ（シートを閉じても消さず、
- * 確かめるまで同じ団体の送り直しを止める）。
- */
-export interface ProxyUnverified {
-  sent: ProxySent;
-  /** 送る直前に読んだ団体の申請と提出の記録（締切前は提出の直前の読み直し、締切後はシートの基準）。ほかの人の保存を見分ける */
-  before: GroupRequestState;
-  /** 送ったときの入力。シートを開き直したときに戻し、その後に入力を変えたかを比べる */
-  input: ProxyInput;
-}
-
-/**
- * シートを閉じた後の確かめ（表の読み直し）で、送った値が入っていなかった（not_saved）か、ほかの人の保存があって自分の保存と
- * 決められなかった（others）送信（2.6。notes/T11.md の 12 の 6）。団体ごとに申請一覧の画面が持ち、開き直したシートが送った入力を
- * 戻すのに使う（not_saved は送り直せる状態、others は上書きするかのダイアログ）。latest は確かめに使った記録、changes はその変更。
- */
-export interface ProxyLeftover {
-  u: ProxyUnverified;
-  verdict: 'not_saved' | 'others';
-  latest: GroupRequestState;
-  changes: GroupChanges;
-}
-
-/** 未確定の送信を読み直した記録で確かめた結果。saved：送った値が入った、not_saved：入っておらずほかの人の保存もない、others：ほかの人の保存があり、自分の保存と決められない */
-export interface ProxyJudgement {
-  verdict: 'saved' | 'not_saved' | 'others';
-  /** 送る直前に読んだ記録からの変更（others のときにダイアログに出す。提出の記録は updated_at が進んだだけでも変更にする） */
-  changes: GroupChanges;
-}
-
-/**
- * 未確定の送信を、読み直した団体の申請と提出の記録で確かめる（2.6。「確かめる」・裏の読み直し・閉じた後の読み直しのどれでも同じ）。
- * 送った値が入っていれば saved（proxySavedAfterUnknown）。入っておらず、送る直前に読んだ記録から何も変わっていなければ（行と提出の
- * 記録の updated_at・提出日時・備考）not_saved。変わっていれば、ほかの人の保存があって自分の保存と決められないので others
- * （「保存されていませんでした」と言い切らない）。
- */
-export function judgeProxyAfterUnknown(u: Pick<ProxyUnverified, 'sent' | 'before'>, latest: GroupRequestState): ProxyJudgement {
-  const changed = stateChangesSince(u.before, latest);
-  const changes: GroupChanges = {
-    items: changed.items,
-    submission: changed.submission || ms(u.before.submission?.updated_at ?? null) !== ms(latest.submission?.updated_at ?? null),
-  };
-  if (proxySavedAfterUnknown(u.sent, latest)) return { verdict: 'saved', changes };
-  return { verdict: hasGroupChanges(changes) ? 'others' : 'not_saved', changes };
-}
-
-/** 代理入力の入力が同じか（品目ごとの数と、前後の空白を除いた備考） */
-export function sameProxyInput(a: ProxyInput, b: ProxyInput): boolean {
-  if (a.note.trim() !== b.note.trim()) return false;
-  const ids = new Set([...Object.keys(a.counts), ...Object.keys(b.counts)]);
-  for (const id of ids) if (a.counts[id] !== b.counts[id]) return false;
-  return true;
-}
-
-/** 読み込んだ表の行から、ほかの人が変えたもの（品目ごとの数・提出の記録） */
+/** 入力の元から変わったもの（ほかの人の保存のダイアログに出す。品目ごとの数・提出の記録） */
 export interface GroupChanges {
-  /** updated_at が変わった（行が増えた・消えたを含む）品目。from は読み込んだときの数、to は読み直した数 */
+  /** updated_at が変わった（行が増えた・消えたを含む）品目。from は入力の元の数、to は読み直した数 */
   items: { itemId: string; from: number; to: number }[];
-  /** 提出日時か備考が変わった */
+  /** 提出の記録が変わった（提出日時・備考、または updated_at） */
   submission: boolean;
 }
 
-/** 表の行（読み込んだとき）と読み直した団体の申請・提出の記録を比べる（updated_at・submitted_at・備考） */
-export function groupChangesSince(row: Pick<MatrixRow, 'cells' | 'submission'>, fresh: GroupRequestState): GroupChanges {
-  const base: GroupRequestState = {
-    requests: Object.values(row.cells)
-      .filter((c) => c.updatedAt !== null)
-      .map((c) => ({ group_id: '', item_id: c.itemId, count: c.count, updated_at: c.updatedAt! })),
-    submission: row.submission,
-  };
-  return stateChangesSince(base, fresh);
-}
-
-/** 二つの団体の申請・提出の記録を比べる（base は前に読んだもの、fresh は読み直したもの） */
+/** 二つの団体の申請・提出の記録を比べる（base は入力の元、fresh は読み直したもの） */
 export function stateChangesSince(base: GroupRequestState, fresh: GroupRequestState): GroupChanges {
   const baseBy = new Map(base.requests.map((r) => [r.item_id, r]));
   const freshBy = new Map(fresh.requests.map((r) => [r.item_id, r]));
@@ -772,11 +707,15 @@ export function stateChangesSince(base: GroupRequestState, fresh: GroupRequestSt
   }
   const a = base.submission;
   const b = fresh.submission;
-  const submission = ms(a?.submitted_at ?? null) !== ms(b?.submitted_at ?? null) || (a?.note ?? null) !== (b?.note ?? null);
+  // 提出日時・備考が同じでも、記録が書き直されていれば（同じ内容での出し直しなど）変わったとする
+  const submission =
+    ms(a?.submitted_at ?? null) !== ms(b?.submitted_at ?? null) ||
+    (a?.note ?? null) !== (b?.note ?? null) ||
+    ms(a?.updated_at ?? null) !== ms(b?.updated_at ?? null);
   return { items, submission };
 }
 
-/** 表の行を、読み直した団体の申請・提出の記録と同じ形にする（代理入力が比べる基準） */
+/** 表の行を、読み直した団体の申請・提出の記録と同じ形にする（代理入力の入力の元） */
 export function groupStateOf(row: Pick<MatrixRow, 'group' | 'cells' | 'submission'>): GroupRequestState {
   return {
     requests: Object.values(row.cells)
@@ -784,11 +723,6 @@ export function groupStateOf(row: Pick<MatrixRow, 'group' | 'cells' | 'submissio
       .map((c) => ({ group_id: row.group.id, item_id: c.itemId, count: c.count, updated_at: c.updatedAt! })),
     submission: row.submission,
   };
-}
-
-/** ほかの人の変更があるか */
-export function hasGroupChanges(c: GroupChanges): boolean {
-  return c.items.length > 0 || c.submission;
 }
 
 export function useRepRequest(yearId: string | null | undefined, groupId: string | null) {
@@ -986,12 +920,23 @@ export async function markSubmittedDirect(groupId: string, client: AppSupabaseCl
   return { row: res.data as unknown as SubmissionRow, already: false };
 }
 
-/** 締切後に「提出済みにする」：update_requests_after_deadline の p_submission（rows は空。理由は必須） */
-export async function markSubmittedAfterDeadline(groupId: string, reason: string): Promise<void> {
+/**
+ * 締切後に「提出済みにする」：update_requests_after_deadline の p_submission（rows は空。理由は必須）。
+ * 送る前に提出の記録を読み直し、すでに提出済みなら送らずにその記録を返す（送ったら null。応答が届かなかった後の押し直しも、
+ * これで決まる。2.6）。
+ */
+export async function markSubmittedAfterDeadline(
+  groupId: string,
+  reason: string,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<SubmissionState | null> {
+  const current = await fetchSubmission(groupId, client);
+  if (current?.submitted_at) return current;
   await callRpc('update_requests_after_deadline', {
     p_group_id: groupId,
     p_rows: [],
     p_reason: reason,
     p_submission: { submitted: true },
   });
+  return null;
 }
