@@ -42,7 +42,7 @@ const OPENS: Record<StoredUser, string[]> = {
 };
 
 /** 雛形を中身に置き換えたページ（置き換えたチケットが足す。開けて「権限がありません」が出ないことだけを確かめる） */
-const REPLACED = new Set<string>(['/allocation/']);
+const REPLACED = new Set<string>(['/allocation/', '/swaps/', '/my/']);
 
 async function expectPlaceholder(page: Page, path: string): Promise<void> {
   if (!TICKET[path]) throw new Error(`TICKET にないパス：${path}`);
