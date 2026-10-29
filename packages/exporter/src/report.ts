@@ -223,7 +223,8 @@ function buildItemSheet(
   const names = codes.map((c) => ctx.items.get(c)!.name);
   const sheetName = names[0]!;
 
-  const header: Cell[] = ['運び元', '運び先', '使用用途', ...names, '備考'];
+  // 1列のシートの D は「個数」（03 の列の表）。2列のシートは机(木)・不可机のように品目名
+  const header: Cell[] = ['運び元', '運び先', '使用用途', ...(k === 1 ? ['個数'] : names), '備考'];
   header.push(`在庫(${yearLabel}数え)`);
   if (k === 2) header.push(`${names[1]}在庫(${yearLabel}数え)`);
   const rows: Cell[][] = [header];

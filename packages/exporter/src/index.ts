@@ -4,7 +4,18 @@ import { buildAllocationSheets, buildSwapsSheet } from './report';
 import type { ReportInput } from './types';
 import { writeWorkbook } from './xlsx';
 
-export type { ExportRow, ReportInput, YearExport, YearExportRow } from './types';
+export type {
+  ExportConsent,
+  ExportGroup,
+  ExportItem,
+  ExportRoom,
+  ExportRow,
+  ExportRule,
+  ExportSubmission,
+  ReportInput,
+  YearExport,
+  YearExportRow,
+} from './types';
 export type { Cell, FormulaCell, SheetModel } from './report';
 export {
   allocationXlsxFileName,

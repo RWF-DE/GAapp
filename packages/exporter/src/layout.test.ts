@@ -2,6 +2,7 @@
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { describe, expect, it, vi } from 'vitest';
+import type { YearData } from '@gaapp/shared';
 import { FixtureBuilder, toFixedRow } from '@gaapp/shared/testing';
 import { scenario } from './testing/scenario';
 import {
@@ -12,6 +13,8 @@ import {
   exportSwapsXlsx,
   exportYearJson,
   type ExportRow,
+  type YearExport,
+  type YearExportRow,
   type SheetModel,
 } from './index';
 import { EMAIL_REDACTED } from './json';
@@ -64,6 +67,15 @@ describe('品目シート', () => {
     expect(t[3]).toEqual([null, null, '(計)', 4, '', 4]);
     expect((s.rows[2]![3] as { formula: string }).formula).toBe('F4-SUM(D2:D2)');
     expect((s.rows[3]![4] as { formula: string }).formula).toBe('IF(D3<0,"在庫超過",IF(D4=F4,"","要確認"))');
+  });
+
+  it('見出しの行：1列のシートは D が「個数」、2列のシートは品目名', () => {
+    const header = (name: string) => text(sheet(sheets, name))[0];
+    for (const name of ['キャスター机', '椅子(青)', '長机(3人掛)', '長机(2人掛)', '教卓']) {
+      expect(header(name), name).toEqual(['運び元', '運び先', '使用用途', '個数', '備考', '在庫(R8数え)']);
+    }
+    expect(header('机(木)')).toEqual(['運び元', '運び先', '使用用途', '机(木)', '不可机', '備考', '在庫(R8数え)', '不可机在庫(R8数え)']);
+    expect(header('椅子(木)')).toEqual(['運び元', '運び先', '使用用途', '椅子(木)', '不可椅子', '備考', '在庫(R8数え)', '不可椅子在庫(R8数え)']);
   });
 
   it('在庫が無くても振り分けのある場所は出す。手で書いた備考が優先。使用不可は不可椅子が無ければ空', () => {
@@ -189,12 +201,32 @@ describe('キャスター机交換依頼一覧', () => {
 });
 
 describe('年度データ（JSON）', () => {
+  const MAIL = 'someone@example.test';
+  const omitSubmittedAt = (g: YearData['groups'][number]) => Object.fromEntries(Object.entries(g).filter(([k]) => k !== 'submittedAt')) as Omit<typeof g, 'submittedAt'>;
+  /** YearData と行から、DB の行に近い入力を作る（別名・メモ・備考などの追加分は引数で渡す） */
+  function yearExport(rows: YearExportRow[], extra: Partial<YearExport> = {}): YearExport {
+    const { data } = scenario();
+    return {
+      yearLabel: 'R8',
+      items: data.items.map((i) => ({ ...i, aliases: [] })),
+      rooms: data.rooms.map((r) => ({ ...r, aliases: [] })),
+      groups: data.groups.map((g) => ({ ...omitSubmittedAt(g), aliases: [], isFood: false })),
+      stocks: data.stocks,
+      requests: data.requests,
+      submissions: data.groups.map((g) => ({ groupId: g.id, submittedAt: g.submittedAt, note: null })),
+      rules: data.rules.map((r) => ({ ...r, enabled: true, memo: null })),
+      consents: data.consents.map((c) => ({ ...c, note: null })),
+      distanceOverrides: data.distanceOverrides,
+      rows,
+      ...extra,
+    };
+  }
+
   it('メールアドレスを含めない（余計な項目は落とし、自由記述に混じったものは伏せる）', () => {
-    const { data, rows } = scenario();
-    const dirty = structuredClone(data) as unknown as { groups: Record<string, unknown>[] };
-    dirty.groups[0]!.contactEmail = 'someone@example.test';
-    const stored = [{ ...toFixedRow(rows[0]!, 1), note: '連絡は taro@example.test まで' }, ...rows.slice(1)];
-    const json = exportYearJson({ yearLabel: 'R8', data: dirty as unknown as typeof data, rows: stored });
+    const { rows } = scenario();
+    const input = yearExport([{ ...toFixedRow(rows[0]!, 1), note: '連絡は taro@example.test まで' }, ...rows.slice(1)]);
+    (input.groups[0] as Record<string, unknown>).contactEmail = MAIL;
+    const json = exportYearJson(input);
     expect(json).not.toMatch(/@/);
     expect(json).not.toContain('contactEmail');
     const doc = JSON.parse(json);
@@ -203,15 +235,15 @@ describe('年度データ（JSON）', () => {
     expect(doc.allocations[0]).toMatchObject({ origin: 'auto', pinned: true });
     expect(doc.allocations[0].note).toBe(`連絡は ${EMAIL_REDACTED} まで`);
     expect(Object.keys(doc)).toEqual([
-      'schemaVersion', 'yearLabel', 'items', 'rooms', 'groups', 'stocks', 'requests', 'rules', 'consents', 'distanceOverrides', 'allocations',
+      'schemaVersion', 'yearLabel', 'items', 'rooms', 'groups', 'stocks', 'requests', 'submissions', 'rules', 'consents', 'distanceOverrides', 'allocations',
     ]);
   });
 
   it('改行・タブ・制御文字の直後にメールアドレスがあっても、JSON として読め、@ を含まない', () => {
-    const { data, rows } = scenario();
+    const { rows } = scenario();
     const notes = ['連絡先:\ntaro@example.test', '連絡先:\ttaro@example.test', '連絡先:\rtaro@example.test', '連絡先:\u0001taro@example.test'];
     const stored = notes.map((note, i) => ({ ...toFixedRow(rows[0]!, i + 1), note }));
-    const json = exportYearJson({ yearLabel: 'R8', data, rows: stored });
+    const json = exportYearJson(yearExport(stored));
     expect(json).not.toMatch(/@/);
     const doc = JSON.parse(json);
     expect(doc.allocations.map((a: { note: string }) => a.note)).toEqual([
@@ -220,5 +252,31 @@ describe('年度データ（JSON）', () => {
       `連絡先:\r${EMAIL_REDACTED}`,
       `連絡先:\u0001${EMAIL_REDACTED}`,
     ]);
+  });
+
+  it('DB の行にある項目を落とさない：無効なルール・ルールのメモ・食品か・団体と場所と品目の別名・申請の備考・了承の備考', () => {
+    const { rows } = scenario();
+    const base = yearExport(rows);
+    const rule = base.rules[0]!;
+    const input = yearExport(rows, {
+      items: base.items.map((i, k) => (k === 0 ? { ...i, aliases: ['机(フォーム表記)'] } : i)),
+      rooms: base.rooms.map((r, k) => (k === 0 ? { ...r, aliases: ['第A教室'] } : r)),
+      groups: base.groups.map((g, k) => (k === 0 ? { ...g, aliases: ['展示(1-1)'], isFood: true } : g)),
+      submissions: base.submissions.map((s, k) => (k === 0 ? { ...s, note: `連絡は ${MAIL} へ` } : s)),
+      rules: [{ ...rule, enabled: false, memo: '去年だけ無効' }, ...base.rules.slice(1)],
+      consents: base.consents.map((c) => ({ ...c, note: '電話で了承' })),
+    });
+    const doc = JSON.parse(exportYearJson(input));
+    expect(doc.rules[0]).toMatchObject({ id: rule.id, code: rule.code, kind: rule.kind, enabled: false, memo: '去年だけ無効' });
+    expect(doc.rules[0].params).toEqual(rule.params);
+    expect(doc.rules.slice(1).every((r: { enabled: boolean; memo: unknown }) => r.enabled === true && r.memo === null)).toBe(true);
+    expect(doc.items[0].aliases).toEqual(['机(フォーム表記)']);
+    expect(doc.rooms[0].aliases).toEqual(['第A教室']);
+    expect(doc.groups[0]).toMatchObject({ aliases: ['展示(1-1)'], isFood: true });
+    expect(doc.groups[1]).toMatchObject({ aliases: [], isFood: false });
+    expect(doc.submissions[0].note).toBe(`連絡は ${EMAIL_REDACTED} へ`);
+    expect(doc.submissions).toHaveLength(base.groups.length);
+    expect(doc.consents[0].note).toBe('電話で了承');
+    expect(JSON.stringify(doc)).not.toMatch(/@/);
   });
 });

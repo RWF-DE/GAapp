@@ -12,21 +12,21 @@ const pick = <T extends object>(o: T, keys: readonly (keyof T)[]) => {
   return out;
 };
 
-export function exportYearJson(input: YearExport): string {
-  const d = input.data;
+export function exportYearJson(d: YearExport): string {
   const doc = {
     schemaVersion: EXPORT_SCHEMA_VERSION,
-    yearLabel: input.yearLabel,
-    ...(input.exportedAt ? { exportedAt: input.exportedAt } : {}),
-    items: d.items.map((i) => pick(i, ['id', 'code', 'name', 'requestableCategories', 'sortOrder'])),
-    rooms: d.rooms.map((r) => pick(r, ['id', 'name', 'kind', 'building', 'floor', 'extraCost', 'isStorage', 'usable', 'sortOrder'])),
-    groups: d.groups.map((g) => pick(g, ['id', 'name', 'displayName', 'category', 'locationRoomId', 'sortOrder', 'submittedAt'])),
+    yearLabel: d.yearLabel,
+    ...(d.exportedAt ? { exportedAt: d.exportedAt } : {}),
+    items: d.items.map((i) => pick(i, ['id', 'code', 'name', 'aliases', 'requestableCategories', 'sortOrder'])),
+    rooms: d.rooms.map((r) => pick(r, ['id', 'name', 'aliases', 'kind', 'building', 'floor', 'extraCost', 'isStorage', 'usable', 'sortOrder'])),
+    groups: d.groups.map((g) => pick(g, ['id', 'name', 'displayName', 'aliases', 'category', 'isFood', 'locationRoomId', 'sortOrder'])),
     stocks: d.stocks.map((s) => pick(s, ['roomId', 'itemId', 'count'])),
     requests: d.requests.map((s) => pick(s, ['groupId', 'itemId', 'count'])),
-    rules: d.rules.map((r) => ({ id: r.id, code: r.code, kind: r.kind, params: r.params })),
-    consents: d.consents.map((c) => pick(c, ['groupId', 'fromItemId', 'toItemId', 'status', 'count'])),
+    submissions: d.submissions.map((s) => pick(s, ['groupId', 'submittedAt', 'note'])),
+    rules: d.rules.map((r) => ({ id: r.id, code: r.code, kind: r.kind, params: r.params, enabled: r.enabled, memo: r.memo ?? null })),
+    consents: d.consents.map((c) => pick(c, ['groupId', 'fromItemId', 'toItemId', 'status', 'count', 'note'])),
     distanceOverrides: d.distanceOverrides.map((o) => pick(o, ['buildingA', 'buildingB', 'cost'])),
-    allocations: input.rows.map((r) => ({
+    allocations: d.rows.map((r) => ({
       ...(r.id !== undefined ? { id: r.id } : {}),
       ...pick(r, ['sourceRoomId', 'groupId', 'itemId', 'requestedItemId', 'count', 'isKeep']),
       ...(r.origin !== undefined ? { origin: r.origin } : {}),
