@@ -9,6 +9,8 @@ const nextConfig: NextConfig = {
   trailingSlash: true,
   images: { unoptimized: true },
   basePath,
+  // next dev が apps/web/AGENTS.md を自動生成しないようにする（生成物をコミットしない）。
+  agentRules: false,
   transpilePackages: [
     '@gaapp/allocator',
     '@gaapp/exporter',

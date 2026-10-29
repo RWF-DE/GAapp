@@ -17,11 +17,18 @@ supabase/.temp/
 supabase/.branches/
 
 # 元データの誤コミット防止（表計算・PDF は追跡しない。fixtures/ に置けるのは UTF-8 の CSV・JSON などのテキストだけ）
-*.xlsx
-*.xls
-*.pdf
-*.csv
-!fixtures/**/*.csv
+# 大文字の拡張子も除くため、文字クラスで書く。
+*.[xX][lL][sS][xX]
+*.[xX][lL][sS]
+*.[oO][dD][sS]
+*.[nN][uU][mM][bB][eE][rR][sS]
+*.[pP][dD][fF]
+*.[dD][oO][cC][xX]
+*.[zZ][iI][pP]
+*.[cC][sS][vV]
+*.[tT][sS][vV]
+!fixtures/**/*.[cC][sS][vV]
+!fixtures/**/*.[tT][sS][vV]
 !supabase/seed*.csv
 
 .DS_Store
