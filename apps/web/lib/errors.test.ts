@@ -4,11 +4,13 @@ import {
   appError,
   classifyError,
   effectOf,
+  isUnknownOutcome,
   issueMessages,
   messageFor,
   normalizeIssues,
   parseDetails,
   toAppError,
+  unknownOutcomeMessage,
   type MessageContext,
 } from './errors';
 
@@ -305,6 +307,32 @@ describe('補助', () => {
     const e = appError('unknown', 'unexpected_response');
     expect(messageFor(e.info)).toBe('予期しない応答を受け取りました。読み直してください');
     expect(effectOf(e.info).reload).toBe('data');
+  });
+  it('isUnknownOutcome：保存できたか分からないのは通信の失敗とタイムアウトだけ（2.6）', () => {
+    // 通信の失敗：fetch の TypeError・中止・supabase-js の status 0
+    expect(isUnknownOutcome(new TypeError('Failed to fetch'))).toBe(true);
+    expect(isUnknownOutcome(Object.assign(new Error('aborted'), { name: 'AbortError' }))).toBe(true);
+    expect(isUnknownOutcome({ code: '', message: 'TypeError: Failed to fetch' }, 0)).toBe(true);
+    // コードのない応答：status が null・408・5xx（ゲートウェイのタイムアウトなど）、lib/rpc の予期しない応答
+    expect(isUnknownOutcome({ message: 'oops' })).toBe(true);
+    expect(isUnknownOutcome({ message: '' }, 408)).toBe(true);
+    expect(isUnknownOutcome({ message: 'Bad gateway' }, 502)).toBe(true);
+    expect(isUnknownOutcome({ message: 'Gateway Timeout', status: 504 })).toBe(true);
+    expect(isUnknownOutcome(appError('unknown', 'unexpected_response'))).toBe(true);
+    // 届いた失敗：コードつき（kind が unknown でも）、コードのない 4xx（408 を除く）、ほかの種類
+    expect(isUnknownOutcome(pg('57014', 'canceling statement due to statement timeout'), 500)).toBe(false);
+    expect(isUnknownOutcome(pg('XX000'), 500)).toBe(false);
+    expect(isUnknownOutcome(pg('PGRST000'), 503)).toBe(false);
+    expect(isUnknownOutcome(p0001('something_new'), 400)).toBe(false);
+    expect(isUnknownOutcome({ message: 'Payload Too Large' }, 413)).toBe(false);
+    expect(isUnknownOutcome(p0001('conflict'), 400)).toBe(false);
+    expect(isUnknownOutcome(pg('40P01'), 500)).toBe(false);
+    expect(isUnknownOutcome(pg('PGRST303'), 401)).toBe(false);
+  });
+  it('unknownOutcomeMessage：既定は「保存」、ボタンの名前を渡せる', () => {
+    expect(unknownOutcomeMessage()).toBe('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります');
+    expect(unknownOutcomeMessage('提出')).toBe('提出できたか分かりません。もう一度「提出」を押すと、確かめてから送ります');
+    expect(unknownOutcomeMessage('  ')).toBe(unknownOutcomeMessage());
   });
   it('楽観ロックの 0 行（lib/db）：消えていた', () => {
     expect(messageFor(appError('not_found', 'lock_missing').info)).toBe(
