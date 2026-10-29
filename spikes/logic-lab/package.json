@@ -1,0 +1,15 @@
+{
+  "name": "spike-logic-lab",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "dependencies": {
+    "highs": "1.15.4",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}

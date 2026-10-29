@@ -1,0 +1,32 @@
+== 1 base full
+status Optimal ms 119.8 vars 5630 K 170 P 2 dmax 7 A 513 B 171 W 639711 maxCoef 1922212 obj 188492679 maxFrac 0
+summary new {"desk->caster_desk":97,"chair->chair_ng":37,"desk->desk_ng":41,"long_desk_3->long_desk_2":2} old {"desk->caster_desk":97,"chair->chair_ng":37,"desk->desk_ng":41,"long_desk_3->long_desk_2":2}
+distance new 2068 old(T00 int) 2068
+check issues new 3
+w107 new {"orig":0,"refined":0,"details":[]}
+repeat same 5 /5
+shuffled LP identical 5 /5
+== 2 seeds 100..129
+{"subsEq":26,"distEq":30,"w107o":16,"w107r":0,"nonOpt":0,"frac":0,"issues":0,"maxCoef":1922212,"msMedian":"42.7","msMax":"49.0"}
+refined W107 details 
+== 3 minimal change: MER unusable
+seed 20261029 lostItems=chair(slack),caster_desk(slack),desk(tight),chair_blue(slack),long_desk_2(slack)
+   unit: changed=56/283 unrelated=16 unrelatedSlackItems=9 maxCoef=3841852 ms=41.6 frac=0 dist=2282 subs={"desk->caster_desk":117,"chair->chair_ng":37,"desk->desk_ng":41,"long_desk_3->long_desk_2":2}
+   lex: changed=54/281 unrelated=15 unrelatedSlackItems=8 maxCoef=328174822 ms=44.4 frac=0 dist=2282 subs={"desk->caster_desk":117,"chair->chair_ng":37,"desk->desk_ng":41,"long_desk_3->long_desk_2":2}
+   full-resolve: changed=244 dist=2262
+seed 100 lostItems=caster_desk(slack),desk(tight),chair(slack),chair_blue(slack),lectern(slack),long_desk_3(tight),long_desk_2(slack),chair_ng(slack)
+   unit: changed=43/291 unrelated=14 unrelatedSlackItems=8 maxCoef=3841852 ms=55.5 frac=0 dist=1969 subs={"desk->caster_desk":117,"chair->chair_ng":31,"desk->desk_ng":41,"long_desk_3->long_desk_2":3}
+   lex: changed=45/291 unrelated=15 unrelatedSlackItems=8 maxCoef=328174822 ms=57.7 frac=0 dist=1969 subs={"desk->caster_desk":117,"chair->chair_ng":31,"desk->desk_ng":41,"long_desk_3->long_desk_2":3}
+   full-resolve: changed=259 dist=1960
+seed 101 lostItems=caster_desk(slack),chair(slack),desk(tight),chair_blue(slack),lectern(slack),long_desk_2(slack)
+   unit: changed=52/297 unrelated=15 unrelatedSlackItems=9 maxCoef=3841852 ms=39.1 frac=0 dist=2440 subs={"desk->desk_ng":41,"desk->caster_desk":117,"chair->chair_ng":34,"long_desk_3->long_desk_2":2}
+   lex: changed=51/296 unrelated=14 unrelatedSlackItems=8 maxCoef=328174822 ms=39.8 frac=0 dist=2440 subs={"desk->desk_ng":41,"desk->caster_desk":117,"chair->chair_ng":34,"long_desk_3->long_desk_2":2}
+   full-resolve: changed=262 dist=2405
+seed 102 lostItems=caster_desk(slack),desk(tight),desk_ng(tight),chair(slack),chair_blue(slack),long_desk_2(slack),long_desk_3(tight)
+   unit: changed=55/289 unrelated=9 unrelatedSlackItems=4 maxCoef=3841852 ms=45.4 frac=0 dist=2273 subs={"desk->caster_desk":123,"chair->chair_ng":40,"desk->desk_ng":35,"long_desk_3->long_desk_2":3}
+   lex: changed=58/291 unrelated=13 unrelatedSlackItems=6 maxCoef=328174822 ms=45.2 frac=0 dist=2273 subs={"desk->caster_desk":123,"chair->chair_ng":40,"desk->desk_ng":35,"long_desk_3->long_desk_2":3}
+   full-resolve: changed=228 dist=2231
+seed 103 lostItems=chair_blue(slack),chair(slack),desk(tight),caster_desk(slack),long_desk_2(slack),chair_ng(tight)
+   unit: changed=43/293 unrelated=14 unrelatedSlackItems=8 maxCoef=3840826 ms=41.8 frac=0 dist=2326 subs={"desk->caster_desk":117,"desk->desk_ng":41,"chair->chair_ng":37,"long_desk_3->long_desk_2":2}
+   lex: changed=44/294 unrelated=15 unrelatedSlackItems=9 maxCoef=328173796 ms=39.7 frac=0 dist=2326 subs={"desk->caster_desk":117,"desk->desk_ng":41,"chair->chair_ng":37,"long_desk_3->long_desk_2":2}
+   full-resolve: changed=290 dist=2305
