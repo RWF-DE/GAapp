@@ -25,9 +25,21 @@ export interface CountStepperProps {
   disabled?: boolean;
   /** 読み上げの名前（「長机の数」など） */
   label: string;
+  /**
+   * 大きさ。既定 'default'（ボタンは 36px）。'lg' はボタンと欄の高さを 44px にする
+   * （スマホで数える画面。画面の設計 3.3「ボタンは 44px 以上」。在庫入力など）
+   */
+  size?: CountStepperSize;
   className?: string;
   id?: string;
 }
+
+export type CountStepperSize = 'default' | 'lg';
+
+const SIZES: Record<CountStepperSize, { button: string | undefined; input: string }> = {
+  default: { button: undefined, input: 'w-20' },
+  lg: { button: 'size-11', input: 'h-11 w-20 text-lg md:text-lg' },
+};
 
 /**
  * ＋－ボタンと数字の入力（画面の設計 1.4。T09a）。整数だけ、min〜max に収める。`inputMode="numeric"`、
@@ -36,8 +48,20 @@ export interface CountStepperProps {
  * @example
  * <CountStepper label={`${item.name}の数`} value={counts[item.id]} onChange={(v) => set(item.id, v)} />
  * <CountStepper label="台数" min={1} value={row.count} onChange={…} />   // 振り分けの行
+ * <CountStepper size="lg" label={`${item.name}の数`} value={…} onChange={…} />   // スマホで数える（44px）
  */
-export function CountStepper({ value, onChange, min = 0, max = COUNT_STEPPER_MAX, disabled = false, label, className, id }: CountStepperProps) {
+export function CountStepper({
+  value,
+  onChange,
+  min = 0,
+  max = COUNT_STEPPER_MAX,
+  disabled = false,
+  label,
+  size = 'default',
+  className,
+  id,
+}: CountStepperProps) {
+  const sizes = SIZES[size];
   const [text, setText] = useState<string | null>(null); // 入力中だけ文字を持つ
   const commit = () => {
     if (text === null) return;
@@ -50,11 +74,12 @@ export function CountStepper({ value, onChange, min = 0, max = COUNT_STEPPER_MAX
     if (n !== value) onChange(n);
   };
   return (
-    <div className={cn('inline-flex items-center gap-1', className)} role="group" aria-label={label}>
+    <div className={cn('inline-flex items-center gap-1', className)} role="group" aria-label={label} data-size={size}>
       <Button
         type="button"
         variant="outline"
         size="icon"
+        className={sizes.button}
         aria-label={`${label}を1減らす`}
         disabled={disabled || value <= min}
         onClick={() => step(-1)}
@@ -64,7 +89,7 @@ export function CountStepper({ value, onChange, min = 0, max = COUNT_STEPPER_MAX
       <Input
         id={id}
         aria-label={label}
-        className="w-20 text-center tabular-nums"
+        className={cn('text-center tabular-nums', sizes.input)}
         inputMode="numeric"
         pattern="[0-9]*"
         autoComplete="off"
@@ -86,6 +111,7 @@ export function CountStepper({ value, onChange, min = 0, max = COUNT_STEPPER_MAX
         type="button"
         variant="outline"
         size="icon"
+        className={sizes.button}
         aria-label={`${label}を1増やす`}
         disabled={disabled || value >= max}
         onClick={() => step(1)}

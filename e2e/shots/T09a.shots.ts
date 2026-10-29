@@ -1,19 +1,32 @@
 // T09a のスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T09a` で notes/T09a/ に撮る（CI では流さない）。
 // 雛形のページ・年度の切り替え・3状態（読み込み中・空・権限なし）とエラーの状態。読み込み中は page.route で応答を止めてから撮る。
 // エラーの帯（ErrorBanner）と下書きを戻す表示（DraftNotice）は、まだ使う画面がないので、一時的な画面で撮って消した（notes/T09a.md）。
-import { expect, test, type Route } from '@playwright/test';
+// 雛形を撮るものは、そのページが各チケットの画面に置き換わった後は飛ばす（test.skip。前に撮った画像は残る）。ほかの撮影は
+// ページの中身に頼らない（h1・ヘッダー・権限なし・エラーの状態だけを待つ）ので、後のチケットが入っても落ちない。
+import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario } from '../support/db';
 import { MOBILE, PC, shoot } from '../support/shots';
 import { SEED_USER_IDS } from '../support/users';
 import { pinYear } from '../support/year';
 
+/**
+ * 雛形のページ（「この画面は準備中です（T10）」）か。h1 が出るまで待ってから見る（雛形は h1 と同じ描画で文言を出す）。
+ * 各チケットの画面に置き換わった後は偽（雛形の撮影は飛ばし、前に撮った画像を残す）。
+ */
+async function isPlaceholder(page: Page): Promise<boolean> {
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  return (await page.getByText(/^この画面は準備中です（T\d+[a-z]?）$/).count()) > 0;
+}
+
+const REPLACED = '雛形が画面に置き換わったので撮らない（前に撮った画像を残す）';
+
 test.describe('T09a 管理者', () => {
   test.use({ storageState: storageStateFor('admin'), viewport: PC });
 
   test('T09a 雛形のページ（PC）', async ({ page }) => {
     await page.goto('/settings/');
-    await expect(page.getByText('この画面は準備中です（T09）')).toBeVisible();
+    test.skip(!(await isPlaceholder(page)), REPLACED);
     await shoot(page, 'T09a', 'placeholder-pc');
   });
 
@@ -28,7 +41,9 @@ test.describe('T09a 管理者', () => {
     await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
     await shoot(page, 'T09a', 'state-loading-pc');
     release();
-    await expect(page.getByText('この画面は準備中です（T10）')).toBeVisible();
+    // 読み終えたら開ける（雛形でも T10 の画面でもよい）
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(page.getByText('権限がありません', { exact: true })).toHaveCount(0);
   });
 
   test('T09a 立場を読めないとき（エラーの状態と「もう一度読み込む」）', async ({ page }) => {
@@ -48,8 +63,14 @@ test.describe('T09a 部員', () => {
   test('T09a 雛形のページ（スマホ）・空の状態', async ({ page }) => {
     await page.setViewportSize(MOBILE);
     await page.goto('/stock/');
-    await expect(page.getByText('この画面は準備中です（T10）')).toBeVisible();
+    test.skip(!(await isPlaceholder(page)), REPLACED);
     await shoot(page, 'T09a', 'placeholder-mobile');
+  });
+
+  test('T09a 部員のナビ（スマホ。メニューを開く）', async ({ page }) => {
+    await page.setViewportSize(MOBILE);
+    await page.goto('/stock/');
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     await page.getByRole('button', { name: 'メニューを開く' }).click();
     await expect(page.locator('#app-mobile-nav')).toBeVisible();
     await shoot(page, 'T09a', 'nav-staff-mobile');
@@ -101,7 +122,8 @@ test.describe('T09a 閲覧のみ', () => {
     try {
       await pinYear(page, SEED_USER_IDS.viewer, s.yearId);
       await page.goto('/allocation/');
-      await expect(page.getByText('この画面は準備中です（T13）')).toBeVisible();
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・確定`);
+      test.skip(!(await isPlaceholder(page)), REPLACED);
       await shoot(page, 'T09a', 'viewer-confirmed-allocation-pc');
     } finally {
       await s.cleanup();
