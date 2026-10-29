@@ -15,6 +15,14 @@ export function supabaseConfigError(): string | null {
 }
 
 /**
+ * セッションを localStorage に置くキー（supabase-js の既定と同じ `sb-<URL のホストの最初の部分>-auth-token`）。
+ * 明示して createClient に渡し、ログアウトに失敗したときに同じキーを消せるようにする（auth-provider の signOut）。
+ */
+export function authStorageKey(): string {
+  return `sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`;
+}
+
+/**
  * ブラウザの Supabase クライアント（1つだけ作る）。publishable キーと PKCE フローを使う。
  * セッションは localStorage に保存し、トークンは自動で更新する（ログイン状態の保持）。
  * 静的書き出しのプリレンダーでは呼ばない（useEffect やイベントの中だけで呼ぶ）。
@@ -27,6 +35,7 @@ export function getSupabase(): AppSupabaseClient {
     auth: {
       flowType: 'pkce',
       persistSession: true,
+      storageKey: authStorageKey(),
       autoRefreshToken: true,
       // コードの交換は /auth/callback/ で明示的に行う（二重に交換しないように）
       detectSessionInUrl: false,

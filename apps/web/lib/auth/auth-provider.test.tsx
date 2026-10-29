@@ -3,7 +3,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { draftKey, saveDraft } from '@/lib/drafts';
+import { DRAFT_TTL_MS, draftKey, saveDraft } from '@/lib/drafts';
 import { fakeAuth, sourceOf } from '@/lib/testing/fake-auth';
 import { TestProviders } from '@/lib/testing/providers';
 import { useAuth, type AuthContextValue } from './auth-provider';
@@ -98,5 +98,95 @@ describe('AuthProvider：ログアウトと利用者の切り替えで消すも�
     await expect(act(() => ctx().reauthenticate())).resolves.toBe(false);
     expect(fakeAuth.signOut).toHaveBeenCalledWith({ scope: 'local' });
     expect(window.localStorage.getItem(draftKey(draftOf('u1')))).not.toBeNull();
+  });
+
+  it('(a)(b) ログアウトの後に同じ人がまたログインすると、前に選んだ年度ではなく最新の年度で開く（メモリの選択も消す）', async () => {
+    const twoYears = sourceOf({
+      years: [
+        { id: 'y9', label: 'R9', status: 'requesting', festival_start: '2027-10-16' },
+        { id: Y, label: 'R8', status: 'closed', festival_start: '2026-10-17' },
+      ],
+      roles: [
+        { year_id: 'y9', role: 'admin' },
+        { year_id: Y, role: 'admin' },
+      ],
+    });
+    for (const kind of ['manual', 'forced'] as const) {
+      cleanup();
+      fakeAuth.reset();
+      window.sessionStorage.clear();
+      fakeAuth.session = { user: { id: 'u1' } };
+      fakeAuth.sources.u1 = twoYears;
+      render(
+        <TestProviders>
+          <Probe />
+        </TestProviders>,
+      );
+      await vi.waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+      act(() => ctx().setYear(Y));
+      await vi.waitFor(() => expect(ctx().membership).toMatchObject({ membership: { year: { id: Y } } }));
+      await act(() => ctx().signOut(kind));
+      expect(screen.getByTestId('status').textContent).toBe('idle');
+      act(() => fakeAuth.setUser('u1'));
+      await vi.waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+      expect(ctx().membership).toMatchObject({ membership: { year: { id: 'y9' } } });
+    }
+  });
+
+  it('signOut が error を返しセッションを消さなかったら（トークンの更新の通信の失敗）、もう一度試し、だめならその端末のセッションを消してログアウトの状態にする', async () => {
+    await setup('u1');
+    window.localStorage.setItem('sb-test-auth-token', '{"access_token":"x"}');
+    window.localStorage.setItem('sb-test-auth-token-code-verifier', 'v');
+    window.localStorage.setItem('sb-test-auth-token-user', '{"id":"u1"}');
+    window.localStorage.setItem('other-key', 'keep');
+    // auth-js は、セッションの読み込み（期限切れのトークンの更新）が通信の失敗になると、セッションを消さずに error を返す
+    const failed = async () => ({ error: { name: 'AuthRetryableFetchError', message: 'Failed to fetch' } as unknown as null });
+    fakeAuth.signOut.mockImplementationOnce(failed).mockImplementationOnce(failed);
+    await act(() => ctx().signOut('manual'));
+    expect(fakeAuth.signOut).toHaveBeenCalledTimes(2);
+    expect(fakeAuth.signOut).toHaveBeenNthCalledWith(2, { scope: 'local' });
+    expect(window.localStorage.getItem('sb-test-auth-token')).toBeNull();
+    expect(window.localStorage.getItem('sb-test-auth-token-code-verifier')).toBeNull();
+    expect(window.localStorage.getItem('sb-test-auth-token-user')).toBeNull();
+    expect(window.localStorage.getItem('other-key')).toBe('keep');
+    expect(screen.getByTestId('status').textContent).toBe('idle');
+    expect(ctx().session.status).toBe('signedOut');
+  });
+
+  it('signOut が例外を投げても、その端末のセッションを消してログアウトの状態にする', async () => {
+    await setup('u1');
+    window.localStorage.setItem('sb-test-auth-token', '{"access_token":"x"}');
+    fakeAuth.signOut
+      .mockImplementationOnce(async () => {
+        throw new Error('network');
+      })
+      .mockImplementationOnce(async () => {
+        throw new Error('network');
+      });
+    await act(() => ctx().signOut('forced'));
+    expect(window.localStorage.getItem('sb-test-auth-token')).toBeNull();
+    expect(ctx().session.status).toBe('signedOut');
+  });
+
+  it('2回目の signOut が通れば、それに任せる（自分でストレージを消さない）', async () => {
+    await setup('u1');
+    window.localStorage.setItem('sb-test-auth-token', '{"access_token":"x"}');
+    fakeAuth.signOut.mockImplementationOnce(async () => ({ error: { message: 'Failed to fetch' } as unknown as null }));
+    await act(() => ctx().signOut('manual'));
+    expect(fakeAuth.signOut).toHaveBeenCalledTimes(2);
+    expect(window.localStorage.getItem('sb-test-auth-token')).toBe('{"access_token":"x"}');
+    expect(screen.getByTestId('status').textContent).toBe('idle');
+  });
+});
+
+describe('AuthProvider：アプリを開いたとき', () => {
+  it('ログインしている人が決まったら、期限の切れた下書きを捨てる（期限内は残す）', async () => {
+    const old = { ...draftOf('u1'), target: 'old' };
+    const fresh = { ...draftOf('u1'), target: 'fresh' };
+    saveDraft(old, { a: 1 }, { now: Date.now() - DRAFT_TTL_MS - 60_000 });
+    saveDraft(fresh, { a: 2 });
+    await setup('u1');
+    expect(window.localStorage.getItem(draftKey(old))).toBeNull();
+    expect(window.localStorage.getItem(draftKey(fresh))).not.toBeNull();
   });
 });

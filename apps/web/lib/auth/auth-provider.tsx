@@ -4,8 +4,8 @@ import type { Session } from '@supabase/supabase-js';
 import { useQueryClient } from '@tanstack/react-query';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { draftsOnSignIn, draftsOnSignOut, type SignOutKind } from '@/lib/drafts';
-import { getSupabase, supabaseConfigError } from '@/lib/supabase/client';
+import { draftsOnSignIn, draftsOnSignOut, pruneExpiredDrafts, type SignOutKind } from '@/lib/drafts';
+import { authStorageKey, getSupabase, supabaseConfigError, type AppSupabaseClient } from '@/lib/supabase/client';
 import { loadMembershipSource } from './load-membership';
 import { buildMembership, myYears, type Membership, type MembershipSource } from './membership';
 import { clearSelectedYear, readSelectedYear, writeSelectedYear } from './selected-year';
@@ -40,7 +40,9 @@ export interface AuthContextValue {
    */
   setYear: (yearId: string) => void;
   /**
-   * ログアウト（その端末のセッションだけ。scope: 'local'）。キャッシュと選んだ年度は必ず消す。
+   * ログアウト（その端末のセッションだけ。scope: 'local'）。キャッシュと選んだ年度（sessionStorage とメモリ）は必ず消す。
+   * auth-js が error を返してセッションを消さなかったときは、もう一度試し、だめなら localStorage のセッションを消して
+   * ログアウトの状態にする（共用 PC でセッションを残さない）。
    * manual（ヘッダーのボタン。確かめは呼ぶ側＝useGuardedSignOut）はその人の下書きも消し、forced（401 など）は下書きを残す（D-33）。
    */
   signOut: (kind?: SignOutKind) => Promise<void>;
@@ -113,7 +115,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       queryClient.clear();
       clearSelectedYear(prev);
     }
-    if (userId) draftsOnSignIn(userId); // (c)：自分以外の下書きを消す
+    if (userId) {
+      draftsOnSignIn(userId); // (c)：自分以外の下書きを消す
+      pruneExpiredDrafts(); // 24 時間を過ぎた下書きを捨てる（アプリを開いたとき・ログインしたときに1回）
+    }
   }, [userId, queryClient]);
 
   // そのタブで選んだ年度（setYear で置いた値。まだなければ sessionStorage から読む）
@@ -190,7 +195,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         draftsOnSignOut(kind, userId);
         clearSelectedYear(userId);
       }
-      await getSupabase().auth.signOut({ scope: 'local' });
+      // メモリの選択も消す（同じ文書で同じ人がまたログインしたときに、前に選んだ年度で開かないように）
+      setSelected(null);
+      const supabase = getSupabase();
+      // auth-js は、セッションの読み込み（期限切れのトークンの更新）が通信の失敗になると、セッションを消さずに error を返す。
+      // 共用 PC でログアウトしたつもりで残らないように、もう一度試し、それでもだめならその端末のセッションを自分で消す
+      if (!(await signOutLocal(supabase)) && !(await signOutLocal(supabase))) {
+        removeStoredSession();
+        setSession({ status: 'signedOut' });
+      }
     },
     [queryClient, userId],
   );
@@ -211,6 +224,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [session, membership, isRefreshing, reloadMembership, setYear, signOut, reauthenticate],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+/** その端末のセッションだけを消す（scope: 'local'）。error が返るか例外なら false */
+async function signOutLocal(supabase: AppSupabaseClient): Promise<boolean> {
+  try {
+    const { error } = await supabase.auth.signOut({ scope: 'local' });
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/** localStorage のセッション（とコードの検証子・利用者）を消す。auth-js の signOut が消せなかったときだけ使う */
+function removeStoredSession(): void {
+  try {
+    const key = authStorageKey();
+    for (const k of [key, `${key}-code-verifier`, `${key}-user`]) window.localStorage.removeItem(k);
+  } catch {
+    // 使えない Storage（セッションも置かれていない）
+  }
 }
 
 export function useAuth(): AuthContextValue {
