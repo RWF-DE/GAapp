@@ -79,10 +79,21 @@ create trigger on_auth_identity_created after insert on auth.identities
 -- プロバイダーを見るのは、本番でメールログインを無効にし忘れたときに、学校のドメインのメールでのサインアップを止めるため。
 -- E2E のテストユーザー（@example.test）は seed で auth.users に直接入れるので、このフックを通らない（D-02）。
 -- 表を読まないので SECURITY DEFINER にしない（supabase_auth_admin として動く）。
+
+-- 学校の Google ドメイン（D-04。教員と学生で同じ。2026-10-29 に決定）。許可するドメインの正はここ1か所。
+-- フックから切り出してあるのは、pgTAP がトランザクションの中でこの関数だけを予約済みのドメインを返すものに置き換えて、
+-- 実在のドメインのメールアドレスを書かずにフックの判定を確かめるため（030_auth）。
+-- 変えるときは、本番に 0007 を適用する前ならこの関数の値を、適用した後なら同じ関数を create or replace する
+-- マイグレーションを足す（README「4. ログイン」）。
+create function private.school_domain()
+returns text language sql stable set search_path = '' as $$
+  select 'g.kumamoto-nct.ac.jp'::text
+$$;
+
 create function private.hook_before_user_created(event jsonb)
 returns jsonb language plpgsql stable set search_path = '' as $$
 declare
-  c_domain constant text := 'school.example';          -- D-04：学校の Google ドメイン（仮。決まったらこの1行を直す）
+  c_domain constant text := private.school_domain();   -- D-04：学校の Google ドメイン
   v_provider text := event -> 'user' -> 'app_metadata' ->> 'provider';
   v_hd text := lower(event -> 'user' -> 'user_metadata' -> 'custom_claims' ->> 'hd');
   v_email text := lower(btrim(event -> 'user' ->> 'email'));
@@ -103,11 +114,14 @@ end $$;
 -- 権限
 ------------------------------------------------------------------------
 -- トリガー関数は誰にも execute を与えない（トリガーは関数の持ち主の postgres の権限で動く）。
--- フックは supabase_auth_admin だけが実行できる。supabase_auth_admin が実行できる関数はフックだけ（010 で確かめる）。
+-- フックは supabase_auth_admin だけが実行できる。supabase_auth_admin が実行できる関数は、フックと、フックが呼ぶ
+-- school_domain だけ（010 で確かめる。フックは SECURITY DEFINER でないので、呼ぶ関数にも supabase_auth_admin の execute が要る）。
 revoke all on function private.accept_invitations_of(uuid, text) from public, anon, authenticated;
 revoke all on function private.handle_new_user() from public, anon, authenticated;
 revoke all on function private.handle_user_confirmed() from public, anon, authenticated;
 revoke all on function private.handle_identity_created() from public, anon, authenticated;
 revoke all on function private.hook_before_user_created(jsonb) from public, anon, authenticated;
+revoke all on function private.school_domain() from public, anon, authenticated;
 grant usage on schema private to supabase_auth_admin;
 grant execute on function private.hook_before_user_created(jsonb) to supabase_auth_admin;
+grant execute on function private.school_domain() to supabase_auth_admin;

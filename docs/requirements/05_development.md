@@ -29,7 +29,7 @@ GAapp/
 | NEXT_PUBLIC_SUPABASE_URL | GitHub Actions の変数、.env.local | クライアント接続 |
 | NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY | GitHub Actions の変数、.env.local | クライアント接続（公開してよい鍵） |
 | NEXT_PUBLIC_BASE_PATH | deploy.yml（リポジトリ名から作る） | GitHub Pages の basePath。ローカルと E2E は空 |
-| NEXT_PUBLIC_GOOGLE_HD_HINT | GitHub Actions の変数（任意） | Google のアカウント選択を学校のドメインに絞るヒント。拒否は DB のフック |
+| NEXT_PUBLIC_GOOGLE_HD_HINT | GitHub Actions の変数（任意） | Google のアカウント選択を学校のドメインに絞るヒント。値は `g.kumamoto-nct.ac.jp`（D-04）。拒否は DB のフック |
 | NEXT_PUBLIC_ENABLE_TEST_LOGIN | .env.local、E2E のビルド（pnpm build:e2e） | ローカル専用のメール＋パスワードのテスト用ログイン。本番のビルドには設定しない（設定しても Supabase がローカルでなければ出ない） |
 | SUPABASE_ACCESS_TOKEN、SUPABASE_DB_PASSWORD | GitHub Actions の secrets | migrate.yml で本番 DB にマイグレーションを適用するときだけ |
 
