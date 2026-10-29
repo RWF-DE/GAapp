@@ -301,7 +301,8 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
       const name = (id: string) => data.items.find((i) => i.id === id)?.name ?? '（不明な品目）';
       setOverwrite({
         submittedAt: changed.submission ? (fresh.submission?.submitted_at ?? null) : null,
-        items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`),
+        // 提出の記録のうち備考が変わっていれば、それも出す（提出日時は題名に出す）
+        items: [...changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), ...(changed.note ? ['備考'] : [])],
       });
       return 'changed';
     }

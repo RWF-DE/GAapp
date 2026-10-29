@@ -107,6 +107,14 @@ const yearRow = (): YearRow => ({
   updated_at: T0,
 });
 
+/** 本物の PostgREST と同じく、select に挙げた列（join は表の名前）だけを返す（提出の記録の updated_by は select に入れたときだけ） */
+function selected<T extends Record<string, unknown>>(call: FakeCall, row: T): Partial<T> {
+  const cols = String(opArgs(call, 'select')[0]?.[0] ?? '*');
+  if (cols === '*') return row;
+  const names = new Set(cols.split(/,(?![^(]*\))/).map((c) => c.trim().replace(/[!(].*$/, '')));
+  return Object.fromEntries(Object.entries(row).filter(([k]) => names.has(k))) as Partial<T>;
+}
+
 function makeHandler(over: (call: FakeCall) => FakeResult | undefined = () => undefined) {
   return (call: FakeCall): FakeResult => {
     const o = over(call);
@@ -130,12 +138,12 @@ function makeHandler(over: (call: FakeCall) => FakeResult | undefined = () => un
         ];
         if (call.ops.some((x) => x.op === 'maybeSingle')) {
           const id = opArgs(call, 'eq').find((a) => a[0] === 'group_id')?.[1];
-          if (id === DEPT && state.deptSubmittedAt) return { data: { group_id: DEPT, submitted_at: state.deptSubmittedAt, note: null, updated_at: T1, updated_by: OTHER_USER } };
+          if (id === DEPT && state.deptSubmittedAt) return { data: selected(call, { group_id: DEPT, submitted_at: state.deptSubmittedAt, note: null, updated_at: T1, updated_by: OTHER_USER }) };
           const { groups: _g, ...row } = rows.find((r) => r.group_id === id) ?? { groups: null };
           void _g;
-          return { data: 'group_id' in row ? row : null };
+          return { data: 'group_id' in row ? selected(call, row) : null };
         }
-        return { data: rows };
+        return { data: rows.map((r) => selected(call, r)) };
       }
       case 'rpc:update_requests_after_deadline':
         return { data: null };
@@ -972,7 +980,7 @@ describe('保存の応答が届かなかったとき（数を絶対値で書く�
     state.stallSubUpdatedAt = T1;
     await user.click(within(sheet).getByRole('button', { name: '提出する' }));
     const ask = await screen.findByRole('alertdialog');
-    expect(within(ask).getByTestId('proxy-conflicts').textContent).toContain('提出日時・備考');
+    expect(within(ask).getByTestId('proxy-conflicts').textContent).toBe('提出の記録');
     expect(submits()).toBe(0);
     await user.click(within(ask).getByRole('button', { name: '提出しないで見直す' }));
     await user.click(within(sheet).getByRole('button', { name: 'やめる' }));
@@ -1052,7 +1060,8 @@ describe('保存の応答が届かなかったとき（数を絶対値で書く�
     const ask = await screen.findByRole('alertdialog');
     const text = within(ask).getByTestId('proxy-conflicts').textContent!;
     expect(text).toContain('机(木)（3 → 4）');
-    expect(text).not.toContain('提出日時・備考');
+    expect(text).not.toContain('提出');
+    expect(text).not.toContain('備考');
     expect(text).not.toContain('椅子(木)');
     expect(submits()).toBe(1);
   });
@@ -1177,6 +1186,27 @@ describe('保存の応答が届かなかったとき（数を絶対値で書く�
     const args = opArgs(state.calls.find((c) => c.table === 'rpc:submit_requests')!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
     expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(4);
     expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(1);
+  });
+
+  it('代理入力：応答が落ちた自分の提出が表の読み直しで届いても、ほかの人の変更として知らせない', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler((call) => {
+      if (call.table === 'rpc:submit_requests') {
+        arriveMySubmit();
+        return NETWORK;
+      }
+      return undefined;
+    });
+    const sheet = await openProxy(user);
+    await user.click(within(sheet).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toBe(UNKNOWN_SUBMIT));
+    await user.click(within(sheet).getByRole('button', { name: '椅子(木)の数を1増やす' }));
+    const reads = tableReads();
+    await lastClient!.invalidateQueries();
+    await waitFor(() => expect(tableReads()).toBeGreaterThan(reads));
+    await waitFor(() => expect(lastClient!.isFetching()).toBe(0));
+    expect(within(sheet).queryByTestId('proxy-remote-change')).toBeNull();
+    expect(value('chair')).toBe('2');
   });
 
   it('代理入力：触る前に裏で届いた行は、そのままシートに出す（知らせは出さない）', async () => {

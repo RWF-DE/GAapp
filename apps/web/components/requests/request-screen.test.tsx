@@ -112,6 +112,15 @@ function eqValue(call: FakeCall, col: string): unknown {
   return opArgs(call, 'eq').find((a) => a[0] === col)?.[1];
 }
 
+/** 本物の PostgREST と同じく、select に挙げた列だけを返す（提出の記録の updated_by は select に入れたときだけ） */
+function selected<T extends Record<string, unknown>>(call: FakeCall, row: T | null): Partial<T> | null {
+  if (!row) return row;
+  const cols = String(opArgs(call, 'select')[0]?.[0] ?? '*');
+  if (cols === '*') return row;
+  const names = new Set(cols.split(',').map((c) => c.trim()));
+  return Object.fromEntries(Object.entries(row).filter(([k]) => names.has(k))) as Partial<T>;
+}
+
 function makeHandler(opts: { requests?: RequestDbRow[]; submit?: FakeResult } = {}) {
   return (call: FakeCall): FakeResult => {
     switch (call.table) {
@@ -126,7 +135,7 @@ function makeHandler(opts: { requests?: RequestDbRow[]; submit?: FakeResult } = 
         return { data: (opts.requests ?? []).filter((r) => r.group_id === eqValue(call, 'group_id')) };
       case 'request_submissions':
         if (state.down) return NETWORK;
-        return { data: eqValue(call, 'group_id') === STALL ? state.submission : null };
+        return { data: eqValue(call, 'group_id') === STALL ? selected(call, state.submission) : null };
       case 'rpc:submit_requests':
         return opts.submit ?? { data: { group_id: STALL, submitted_at: new Date().toISOString(), note: null, updated_at: T0 } };
       default:
@@ -612,7 +621,7 @@ describe('申請 /request', () => {
 
         const notice = await screen.findByTestId('request-remote-change');
         expect(notice.textContent).toContain('椅子(木)（0 → 3）');
-        expect(notice.textContent).toContain('提出日時・備考');
+        expect(notice.textContent).toContain('提出日時、備考');
         // 欄と「提出」は、入力の元（編集を始めたとき）のまま。画面の値と入力の元が同じ時点
         expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
         expect(document.getElementById('request-chair')).toHaveProperty('value', '0');
@@ -632,6 +641,85 @@ describe('申請 /request', () => {
         const args = opArgs(submitCalls()[0]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
         expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(3);
         expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(1);
+      });
+
+      it('ほかの人の初めての提出で数が変わらない品目に 0 の行が入っても、知らせに挙げず、「ほかの人の値を読み込む」でも入れた数を残す', async () => {
+        const user = userEvent.setup();
+        const rows: RequestDbRow[] = [];
+        state.handler = makeHandler({ requests: rows });
+        renderScreen();
+        await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+        await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+        // ほかの人が椅子 3（ほかは 0）で初めて提出した：全品目の行が入る
+        for (const i of ITEMS) rows.push({ group_id: STALL, item_id: i.id, count: i.code === 'chair' ? 3 : 0, updated_at: T1 });
+        state.submission = { group_id: STALL, submitted_at: T1, note: null, updated_at: T1, updated_by: OTHER_USER };
+        await lastClient!.invalidateQueries();
+        const notice = await screen.findByTestId('request-remote-change');
+        expect(notice.textContent).toContain('椅子(木)（0 → 3）');
+        expect(notice.textContent).not.toContain('机(木)');
+        expect(notice.textContent).not.toContain('（0 → 0）');
+        expect(notice.textContent).not.toContain('備考');
+
+        await user.click(within(notice).getByRole('button', { name: 'ほかの人の値を読み込む' }));
+        expect(document.getElementById('request-desk')).toHaveProperty('value', '2');
+        expect(document.getElementById('request-chair')).toHaveProperty('value', '3');
+      });
+
+      it('ほかの人が備考を変えずに出し直したら、知らせは「提出日時」だけで、「ほかの人の値を読み込む」でも書き換えた備考を残す', async () => {
+        const user = userEvent.setup();
+        const rows: RequestDbRow[] = [];
+        state.submission = { group_id: STALL, submitted_at: T0, note: '電源', updated_at: T0, updated_by: OTHER_USER };
+        state.handler = makeHandler({ requests: rows });
+        renderScreen();
+        const noteBox = (await screen.findByLabelText(/備考/)) as HTMLTextAreaElement;
+        await waitFor(() => expect(noteBox.value).toBe('電源'));
+        await user.clear(noteBox);
+        await user.type(noteBox, '電源2口・延長コード');
+        // ほかの人が椅子だけを 3 にして出し直した（備考は「電源」のまま）
+        rows.push({ group_id: STALL, item_id: itemId('chair'), count: 3, updated_at: T1 });
+        state.submission = { group_id: STALL, submitted_at: T1, note: '電源', updated_at: T1, updated_by: OTHER_USER };
+        await lastClient!.invalidateQueries();
+        const notice = await screen.findByTestId('request-remote-change');
+        expect(notice.textContent).toContain('椅子(木)（0 → 3）、提出日時。');
+        expect(notice.textContent).not.toContain('備考');
+
+        await user.click(within(notice).getByRole('button', { name: 'ほかの人の値を読み込む' }));
+        expect(document.getElementById('request-chair')).toHaveProperty('value', '3');
+        expect(document.getElementById('request-note')).toHaveProperty('value', '電源2口・延長コード');
+      });
+
+      it('応答が落ちた自分の提出が裏の読み直しや下書きを戻した後に届いても、ほかの人の変更として知らせない', async () => {
+        const user = userEvent.setup();
+        const rows: RequestDbRow[] = [];
+        const base = makeHandler({ requests: rows });
+        state.handler = (call) => {
+          if (call.table === 'rpc:submit_requests') {
+            // 届いたが応答が返らなかった（全品目の行と、自分が書いた提出の記録）
+            for (const i of ITEMS) rows.push({ group_id: STALL, item_id: i.id, count: i.code === 'desk' ? 1 : 0, updated_at: T1 });
+            state.submission = { group_id: STALL, submitted_at: T1, note: null, updated_at: T1, updated_by: USER };
+            return NETWORK;
+          }
+          return base(call);
+        };
+        renderScreen();
+        await submitDesk(user);
+        expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+        await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+        // 通信が戻り、画面のクエリが裏で読み直される
+        const reads = state.calls.filter((c) => c.table === 'request_submissions').length;
+        await lastClient!.invalidateQueries();
+        await waitFor(() => expect(state.calls.filter((c) => c.table === 'request_submissions').length).toBeGreaterThan(reads));
+        await waitFor(() => expect(lastClient!.isFetching()).toBe(0));
+        expect(screen.queryByTestId('request-remote-change')).toBeNull();
+        expect(document.getElementById('request-desk')).toHaveProperty('value', '2');
+
+        // 画面を離れて戻り、下書きを戻しても知らせない
+        cleanup();
+        renderScreen();
+        await user.click(await screen.findByRole('button', { name: '戻す' }));
+        expect(document.getElementById('request-desk')).toHaveProperty('value', '2');
+        await waitFor(() => expect(lastClient!.isFetching()).toBe(0));
+        expect(screen.queryByTestId('request-remote-change')).toBeNull();
       });
 
       it('編集せずに「提出」を押したら、送る前の読み直しの間に届いた行で欄を変えない（確かめる値・送る値と画面の値が同じ時点）', async () => {

@@ -24,6 +24,7 @@ import {
   previousCountsFor,
   rebaseRequestInput,
   stateChangesSince,
+  submissionChangeLabels,
   submitAfterDeadline,
   submitRequests,
   toDeadlineRows,
@@ -155,7 +156,8 @@ interface FormState {
 /** 上書きするかのダイアログに出すもの。reason は締切後に入れた理由（上書きするときにもう一度入れさせない） */
 interface OverwriteAsk {
   items: string[];
-  submission: boolean;
+  /** 提出の記録の変わったもの（提出日時・備考を分けて。submissionChangeLabels） */
+  submission: string[];
   reason: string | null;
 }
 
@@ -293,7 +295,7 @@ function ProxyForm({
     const changed: GroupChanges = stateChangesSince(from, fresh, userId);
     const name = (id: string) => items.find((i) => i.id === id)?.name ?? '（不明な品目）';
     rebaseTo(fresh);
-    setOverwrite({ items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), submission: changed.submission, reason });
+    setOverwrite({ items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), submission: submissionChangeLabels(changed), reason });
     void onReload().catch(() => undefined);
   };
 
@@ -436,7 +438,9 @@ function ProxyForm({
           {overwrite?.items.map((t) => (
             <li key={t}>{t}</li>
           ))}
-          {overwrite?.submission ? <li>提出日時・備考</li> : null}
+          {overwrite?.submission.map((t) => (
+            <li key={t}>{t}</li>
+          ))}
         </ul>
       </ConfirmDialog>
       <ReasonDialog

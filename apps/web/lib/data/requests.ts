@@ -271,7 +271,7 @@ export interface MatrixCell {
 export interface MatrixRow {
   group: GroupRow;
   cells: Record<string, MatrixCell>;
-  submission: SubmissionRow | null;
+  submission: SubmissionState | null;
   /** 提出済みか（submitted_at がある） */
   submitted: boolean;
   /** 備考（空白だけなら null） */
@@ -293,7 +293,7 @@ export interface RequestsTables {
   groups: GroupRow[];
   items: ItemRow[];
   requests: RequestDbRow[];
-  submissions: SubmissionRow[];
+  submissions: SubmissionState[];
 }
 
 /** 申請一覧の表を作る（行は団体の並び順、列は品目の並び順。区分 → 未提出だけ・備考ありだけの順に絞る） */
@@ -592,7 +592,8 @@ export interface RepRequestData {
   /** 使用場所の名前（なければ null＝校内に分散） */
   locationName: string | null;
   requests: RequestDbRow[];
-  submission: SubmissionRow | null;
+  /** 提出の記録（updated_by も読む。裏で届いた行の知らせで、自分の提出をほかの人の変更にしないため） */
+  submission: SubmissionState | null;
   loadedAt: string;
 }
 
@@ -602,7 +603,7 @@ export async function fetchRepRequest(groupId: string, client: AppSupabaseClient
     client.from('groups').select(COLUMNS.groups).eq('id', groupId).maybeSingle(),
     client.from('items').select(COLUMNS.items).order('sort_order').order('id'),
     client.from('requests').select(COLUMNS.requests).eq('group_id', groupId).order('item_id'),
-    client.from('request_submissions').select(COLUMNS.request_submissions).eq('group_id', groupId).maybeSingle(),
+    client.from('request_submissions').select(SUBMISSION_STATE_COLUMNS).eq('group_id', groupId).maybeSingle(),
   ]);
   for (const res of [g, i, r, s]) if (res.error) throw toAppError(res.error, res.status);
   const group = g.data as unknown as GroupRow | null;
@@ -618,19 +619,28 @@ export async function fetchRepRequest(groupId: string, client: AppSupabaseClient
     items: (i.data ?? []) as unknown as ItemRow[],
     locationName,
     requests: (r.data ?? []) as unknown as RequestDbRow[],
-    submission: (s.data ?? null) as unknown as SubmissionRow | null,
+    submission: (s.data ?? null) as unknown as SubmissionState | null,
     loadedAt: new Date().toISOString(),
   };
 }
 
-/** 提出の記録（読み直したもの。updated_by で自分の書き込みかを見分ける。表の行から作ったものは updated_by を持たない） */
+/**
+ * 提出の記録（updated_by で自分の書き込みかを見分ける）。画面のクエリ・申請一覧の表・送る前の読み直しはどれも updated_by を読む
+ * （SUBMISSION_STATE_COLUMNS）。updated_by のない記録（キーがない）は、書いた人が分からないものとして扱う。
+ */
 export type SubmissionState = SubmissionRow & { updated_by?: string | null };
+
+/**
+ * 提出の記録を読む列（COLUMNS.request_submissions に updated_by を足したもの。COLUMNS は T09a のファイルなので、T11 の select で足す。
+ * notes/T11.md の「T09a への申し送り」）
+ */
+const SUBMISSION_STATE_COLUMNS = `${COLUMNS.request_submissions}, updated_by`;
 
 /** 提出の記録だけを読み直す（updated_by も読む。送る前の読み直し・「提出済みにする」・取り込み） */
 export async function fetchSubmission(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<SubmissionState | null> {
   const res = await client
     .from('request_submissions')
-    .select(`${COLUMNS.request_submissions}, updated_by`)
+    .select(SUBMISSION_STATE_COLUMNS)
     .eq('group_id', groupId)
     .maybeSingle();
   if (res.error) throw toAppError(res.error, res.status);
@@ -718,10 +728,17 @@ export function decideGroupSave(base: GroupRequestState, fresh: GroupRequestStat
 
 /** 入力の元から、ほかの人が変えたもの（ほかの人の保存のダイアログに出す。品目ごとの数・提出の記録） */
 export interface GroupChanges {
-  /** updated_at が変わった（行が増えた・消えたを含む）品目。自分の提出で書かれた行は除く。from は入力の元の数、to は読み直した数 */
+  /**
+   * 数が変わった品目（from は入力の元の数、to は読み直した数。行がなければ 0）。行が書き直されても数が同じ品目（ほかの人の
+   * 初めての提出で count 0 の行が入った品目・同じ数での出し直し）は挙げない。自分の提出で書かれた行は除く。
+   */
   items: { itemId: string; from: number; to: number }[];
-  /** ほかの人（updated_by が自分でない）が提出の記録を変えた（提出日時・備考、または updated_at） */
+  /** ほかの人（updated_by が自分でない）が提出の記録を書き直した（提出日時・備考、または updated_at だけ） */
   submission: boolean;
+  /** submission のうち、提出日時が変わった */
+  submittedAt: boolean;
+  /** submission のうち、備考が変わった（前後の空白を除き、空は null として比べる） */
+  note: boolean;
 }
 
 /**
@@ -738,16 +755,27 @@ export function stateChangesSince(base: GroupRequestState, fresh: GroupRequestSt
     const was = baseBy.get(itemId);
     const now = freshBy.get(itemId);
     if (writtenByOwnSubmit(now, own)) continue;
-    if (ms(was?.updated_at ?? null) !== ms(now?.updated_at ?? null)) items.push({ itemId, from: was?.count ?? 0, to: now?.count ?? 0 });
+    const from = was?.count ?? 0;
+    const to = now?.count ?? 0;
+    if (from !== to && ms(was?.updated_at ?? null) !== ms(now?.updated_at ?? null)) items.push({ itemId, from, to });
   }
   const a = base.submission;
   const b = fresh.submission;
+  const submittedAt = ms(a?.submitted_at ?? null) !== ms(b?.submitted_at ?? null);
+  const note = normalizedNote(a?.note) !== normalizedNote(b?.note);
   // 提出日時・備考が同じでも、記録が書き直されていれば（同じ内容での出し直しなど）変わったとする。自分が書き直したものは除く
-  const rewritten =
-    ms(a?.submitted_at ?? null) !== ms(b?.submitted_at ?? null) ||
-    (a?.note ?? null) !== (b?.note ?? null) ||
-    ms(a?.updated_at ?? null) !== ms(b?.updated_at ?? null);
-  return { items, submission: rewritten && !(b && b.updated_by === userId) };
+  const rewritten = submittedAt || (a?.note ?? null) !== (b?.note ?? null) || ms(a?.updated_at ?? null) !== ms(b?.updated_at ?? null);
+  const submission = rewritten && !(b && b.updated_by === userId);
+  return { items, submission, submittedAt: submission && submittedAt, note: submission && note };
+}
+
+/** 提出の記録の変更を、知らせ・確かめのダイアログに出す名前にする（変わったものだけ。どちらも同じなら「提出の記録」） */
+export function submissionChangeLabels(c: Pick<GroupChanges, 'submission' | 'submittedAt' | 'note'>): string[] {
+  if (!c.submission) return [];
+  const out: string[] = [];
+  if (c.submittedAt) out.push('提出日時');
+  if (c.note) out.push('備考');
+  return out.length > 0 ? out : ['提出の記録'];
 }
 
 /**
@@ -757,7 +785,11 @@ export function stateChangesSince(base: GroupRequestState, fresh: GroupRequestSt
  * ときは挙げない。自分の書いたものは stateChangesSince と同じく挙げない。
  */
 export function newerChangesSince(base: GroupRequestState, latest: GroupRequestState, userId: string): GroupChanges {
-  const c = stateChangesSince(base, latest, userId);
+  // 届いた提出の記録に書いた人がない（updated_by のキーがない）ときは、自分の提出かもしれないので、その記録とその提出で
+  // 書かれた行はほかの人の変更と言い切らない（自分の書いたものとして扱う）
+  const ls = latest.submission;
+  const known = ls && ls.updated_by === undefined ? { ...latest, submission: { ...ls, updated_by: userId } } : latest;
+  const c = stateChangesSince(base, known, userId);
   const baseBy = new Map(base.requests.map((r) => [r.item_id, r]));
   const latestBy = new Map(latest.requests.map((r) => [r.item_id, r]));
   const newer = (was: string | null | undefined, now: string | null | undefined) => {
@@ -766,9 +798,12 @@ export function newerChangesSince(base: GroupRequestState, latest: GroupRequestS
     const w = ms(was ?? null);
     return w === null || n > w;
   };
+  const submission = c.submission && newer(base.submission?.updated_at, latest.submission?.updated_at);
   return {
     items: c.items.filter((i) => newer(baseBy.get(i.itemId)?.updated_at, latestBy.get(i.itemId)?.updated_at)),
-    submission: c.submission && newer(base.submission?.updated_at, latest.submission?.updated_at),
+    submission,
+    submittedAt: submission && c.submittedAt,
+    note: submission && c.note,
   };
 }
 
@@ -776,8 +811,9 @@ export function newerChangesSince(base: GroupRequestState, latest: GroupRequestS
 export const hasGroupChanges = (c: GroupChanges): boolean => c.items.length > 0 || c.submission;
 
 /**
- * 知らせの「ほかの人の値を読み込む」：入力の元を届いた記録（latest）にし、ほかの人が変えた品目と（提出の記録が変わっていれば）
- * 備考は届いた値にする。ほかの入れた数は残す（rebaseRequestInput。ほかの人が変えていない品目は入力の元と同じ数なので、意味は変わらない）。
+ * 知らせの「ほかの人の値を読み込む」：入力の元を届いた記録（latest）にし、ほかの人が数を変えた品目と（ほかの人が備考を変えていれば）
+ * 備考は届いた値にする。ほかの入れた数と書き換えた備考は残す（rebaseRequestInput。ほかの人が変えていない品目・備考は入力の元と
+ * 同じ値なので、意味は変わらない。数を変えずに行だけが書き直された品目・備考を変えない出し直しでも、入力は捨てない）。
  */
 export function adoptGroupChanges(
   items: readonly ItemRow[],
@@ -788,7 +824,7 @@ export function adoptGroupChanges(
 ): { edits: Record<string, number>; note: string | null } {
   const next = rebaseRequestInput(items, category, latest, input);
   for (const c of changes.items) delete next.edits[c.itemId];
-  return { edits: next.edits, note: changes.submission ? null : next.note };
+  return { edits: next.edits, note: changes.note ? null : next.note };
 }
 
 /** 表の行を、読み直した団体の申請・提出の記録と同じ形にする（代理入力の入力の元） */
@@ -861,7 +897,7 @@ export async function fetchRequestsTables(yearId: string, client: AppSupabaseCli
   const items = client.from('items').select(COLUMNS.items).order('sort_order').order('id');
   const submissions = client
     .from('request_submissions')
-    .select(`${COLUMNS.request_submissions}, groups!inner(year_id)`)
+    .select(`${SUBMISSION_STATE_COLUMNS}, groups!inner(year_id)`)
     .eq('groups.year_id', yearId)
     .order('group_id');
   const requests = fetchAll((from, to) =>
@@ -878,7 +914,7 @@ export async function fetchRequestsTables(yearId: string, client: AppSupabaseCli
   return {
     groups: (g.data ?? []) as unknown as GroupRow[],
     items: (i.data ?? []) as unknown as ItemRow[],
-    submissions: dropJoin<SubmissionRow>((s.data ?? []) as unknown as Record<string, unknown>[]),
+    submissions: dropJoin<SubmissionState>((s.data ?? []) as unknown as Record<string, unknown>[]),
     requests: dropJoin<RequestDbRow>(r as unknown as Record<string, unknown>[]),
     loadedAt: new Date().toISOString(),
   };
