@@ -48,6 +48,7 @@ import { CATEGORY_LABELS } from '@/lib/labels';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
 import { parseCategoryParam, parseFilterParam, type RequestsFilter } from '@/lib/schemas/requests';
+import { ImportDialog } from './import-dialog';
 import { ProxySheet } from './proxy-sheet';
 import { RequestsTable, type CellMark } from './requests-table';
 import { useNow } from './use-now';
@@ -110,6 +111,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   const [saveError, setSaveError] = useState<string | null>(null);
   const [proxyGroupId, setProxyGroupId] = useState<string | null>(null);
   const [markRow, setMarkRow] = useState<MatrixRow | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const draftKeyValue: DraftKey = useMemo(() => ({ userId, yearId, screen: 'requests' }), [userId, yearId]);
   const writer = useMemo(() => createDraftWriter<PendingCells>(draftKeyValue), [draftKeyValue]);
@@ -323,6 +325,13 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           void reloadTables();
         }}
         reloading={q.isFetching}
+        actions={
+          editable ? (
+            <Button variant="outline" onClick={() => setImportOpen(true)}>
+              Googleフォームの回答を取り込む
+            </Button>
+          ) : null
+        }
         description={
           mode === 'deadline' || (year.status !== 'preparing' && year.status !== 'requesting') || flagged ? (
             <span data-testid="deadline-text">締切後（変更には理由が要ります）</span>
@@ -458,6 +467,17 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           onConfirm={() => (markRow ? onMarkSubmitted(markRow, null) : undefined)}
         />
       )}
+      {editable ? (
+        <ImportDialog
+          open={importOpen}
+          onOpenChange={setImportOpen}
+          tables={tables}
+          onImported={async () => {
+            await queryClient.invalidateQueries({ queryKey: queryKeys.yearPart(yearId, 'requests') });
+          }}
+          onError={(e, groupId) => handleWriteError(e, 'update_requests_after_deadline', groupId)}
+        />
+      ) : null}
       <ProxySheet
         open={proxyRow !== null}
         onOpenChange={(o) => {

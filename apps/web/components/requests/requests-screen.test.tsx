@@ -149,6 +149,8 @@ describe('申請一覧 /requests', () => {
     expect(table.querySelector('[data-cell="部門A:long_desk_3"]')!.textContent).toBe('—');
     expect(screen.getByTestId('unsubmitted').textContent).toContain('部門A');
     expect(table.querySelector('[data-total="desk"]')!.textContent).toBe('3');
+    // 管理者には取り込みのボタンが出る
+    expect(screen.getByRole('button', { name: 'Googleフォームの回答を取り込む' })).toBeTruthy();
   });
 
   it('部員は読み取りだけ（入力欄・保存がない）', async () => {
@@ -158,6 +160,7 @@ describe('申請一覧 /requests', () => {
     const table = await screen.findByTestId('requests-table');
     expect(within(table).queryByLabelText('模擬店Aの机(木)')).toBeNull();
     expect(screen.queryByRole('button', { name: /保存/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Googleフォームの回答を取り込む' })).toBeNull();
     expect(screen.getByTestId('read-only-notice').textContent).toContain('部員は申請一覧を見るだけです');
   });
 
