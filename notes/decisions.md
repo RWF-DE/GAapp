@@ -314,6 +314,19 @@
 - **チケット**：T05（T06〜T08 の R8 の分も同じ扱い）。
 - **状態**：要件定義に反映済み（T05 の PR）。
 
+## D-41 main の保護と、公開リポジトリの設定（2026-10-29）
+
+- **決定**：リポジトリを公開する（ユーザーの決定）。main は GitHub のルールセット 2 つで守る。
+  - 「main: PR と CI を必須」：迂回なし（管理者も迂回できない）。削除と force push の禁止、PR を必須（承認 0）、必須のチェック `lint / typecheck / test / build`・`supabase test db`・`e2e (Playwright)`・`メールアドレスのチェック`。Require branches to be up to date は付けない（積み上げの PR を毎回 main に追いつかせないため）。
+  - 「main: 1 人の承認」：PR を必須（承認 1、新しい push で承認を外す）。迂回のリストに Repository admin を「For pull requests only」で入れる。PR の作者がユーザー本人だけで自分では承認できないため、管理者が PR の中で承認だけを迂回できる。迂回はこのルールセットにしか効かないので、CI は迂回できない。ほかの人が加わったら、その人が承認する。
+  - `xlsx の再計算 (LibreOffice)` は、T08 が main に入った後に必須のチェックに足す（それより前のブランチの ci.yml にはないので、先に足すと PR がチェックを待ち続ける）。
+  - 公開の直後に、Secret scanning と Push protection、Private vulnerability reporting（SECURITY.md）、Dependabot alerts（version updates は入れない。pnpm の minimumReleaseAge と合わないため）、外部の人の PR のワークフローの承認、Actions の権限を読み取りだけにする設定、環境 production・github-pages の Deployment branches を main だけにする設定を行う（手順は README「手作業が要る設定」の 0・2・3）。
+  - 公開の操作と GitHub の設定は、この環境の GitHub への経路では行えないので、ユーザーが GitHub の画面で行う。
+- **理由**：無料の組織でも Pages・ルールセット・Environments を使えるようにするため。承認できる人がほかにいない間も、CI の通過は必ず守るため。
+- **反映先**：README（「手作業が要る設定」の 0・2・3）、05_development.md（「ブランチ・レビュー・CI」の保護ブランチの文）、SECURITY.md。
+- **チケット**：T01（README・05・SECURITY.md・ワークフロー）。
+- **状態**：README と 05 に反映済み（T01 の PR）。GitHub の設定はユーザーが行う。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。
@@ -325,4 +338,4 @@
 - 1〜3年生（18歳未満の指定がある人）が外部アプリにログインできるか（情報担当に確認）。
 - Google Cloud の OAuth クライアントを、学校の Workspace の中に作れるか、誰の持ち物にするか（K-11。00 の未決事項に足す）。
 - Supabase 無料プランの一時停止からの再開期限（90日か1年か）を管理画面で確かめる（K-09）。
-- 学生会・教員の承認、GitHub と Supabase のオーナー、引き継ぐ後輩、申請の一本化、建物・階と距離の値、校内分散の団体の運び先（00 のとおり）。
+- 学生会・教員の承認、GitHub と Supabase のオーナー、引き継ぐ後輩、申請の一本化、建物・階と距離の値（注：R8 の元データは使わないので〔D-40〕、合成データで結果を見て決めるか、決め方はユーザーが決める）、校内分散の団体の運び先（00 のとおり）。
