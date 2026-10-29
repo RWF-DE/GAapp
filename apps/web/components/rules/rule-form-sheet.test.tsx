@@ -112,10 +112,12 @@ describe('RuleFormSheet：conflict の後', () => {
   it('読み直した行と違う入力は、開いたときの値と同じでも、読み直した行の版で送る', async () => {
     const user = userEvent.setup();
     const original = s05.memo ?? '';
-    // 1回目：メモを変えて保存すると conflict（ほかの人がメモを直していた）
+    const reloadedAt = '2026-10-29T01:00:00.000000+00:00';
+    const other: RuleDbRow = { ...s05, memo: 'ほかの人のメモ', updated_at: reloadedAt };
+    // 1回目：メモを変えて保存すると conflict（ほかの人がメモを直していた。runRuleWrite が読み直した行は rebase）
     const onUpdate = vi
       .fn<RuleFormSheetProps['onUpdate']>()
-      .mockResolvedValueOnce({ ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }) })
+      .mockResolvedValueOnce({ ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }), rebase: other })
       .mockResolvedValue({ ok: true });
     const { view, props } = setup({ onUpdate });
     await user.clear(memoBox());
@@ -124,9 +126,8 @@ describe('RuleFormSheet：conflict の後', () => {
     await waitFor(() => expect(screen.getByTestId('error-banner')).toBeTruthy());
     expect(onUpdate).toHaveBeenCalledTimes(1);
 
-    // 読み直した一覧が来る：ほかの人のメモと新しい版
-    const reloadedAt = '2026-10-29T01:00:00.000000+00:00';
-    const reloaded = data(base.rules.map((r) => (r.id === s05.id ? { ...r, memo: 'ほかの人のメモ', updated_at: reloadedAt } : r)));
+    // 読み直した一覧も来る：ほかの人のメモと新しい版
+    const reloaded = data(base.rules.map((r) => (r.id === s05.id ? other : r)));
     view.rerender(<RuleFormSheet {...props} data={reloaded} />);
 
     // 入力を開いたときの値に戻す（読み直した行の「ほかの人のメモ」とは違う）→ 送る（黙って閉じない）
@@ -140,7 +141,7 @@ describe('RuleFormSheet：conflict の後', () => {
     expect(toast.info).not.toHaveBeenCalled();
   });
 
-  it('conflict の後、読み直した行がまだ来ない（読み直しの失敗も）間は、開いたときの値に戻した入力も送る（黙って閉じない）', async () => {
+  it('conflict の後、読み直した行を入力の元にしていない（rebase がない）間は、一覧が読み直されなくても、開いたときの値に戻した入力を送る（黙って閉じない）', async () => {
     const user = userEvent.setup();
     const original = s05.memo ?? '';
     const onUpdate = vi
@@ -168,9 +169,11 @@ describe('RuleFormSheet：conflict の後', () => {
 
   it('conflict の後、入力が読み直した行と同じなら送らずに閉じる', async () => {
     const user = userEvent.setup();
+    const reloadedAt = '2026-10-29T01:00:00.000000+00:00';
+    const other: RuleDbRow = { ...s05, memo: 'ほかの人のメモ', updated_at: reloadedAt };
     const onUpdate = vi
       .fn<RuleFormSheetProps['onUpdate']>()
-      .mockResolvedValueOnce({ ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }) })
+      .mockResolvedValueOnce({ ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }), rebase: other })
       .mockResolvedValue({ ok: true });
     const { view, props, onClose } = setup({ onUpdate });
     await user.clear(memoBox());
@@ -178,8 +181,7 @@ describe('RuleFormSheet：conflict の後', () => {
     await user.click(saveButton());
     await waitFor(() => expect(screen.getByTestId('error-banner')).toBeTruthy());
 
-    const reloadedAt = '2026-10-29T01:00:00.000000+00:00';
-    const reloaded = data(base.rules.map((r) => (r.id === s05.id ? { ...r, memo: 'ほかの人のメモ', updated_at: reloadedAt } : r)));
+    const reloaded = data(base.rules.map((r) => (r.id === s05.id ? other : r)));
     view.rerender(<RuleFormSheet {...props} data={reloaded} />);
     await user.click(saveButton());
     expect(onUpdate).toHaveBeenCalledTimes(1);
@@ -341,5 +343,117 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     await user.click(saveButton());
     await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
     expect(toast.info).not.toHaveBeenCalled();
+  });
+
+  it('止められた後に読み直せなかった（unread）ときは、一覧が新しい版を持っていても版を進めない。次の保存も開いたときの版で送る（DB が conflict で止め、読み直して決める）', async () => {
+    const user = userEvent.setup();
+    const reloadedAt = '2026-10-29T01:00:00.000000+00:00';
+    const other: RuleDbRow = { ...s05, memo: 'ほかの人のメモ', updated_at: reloadedAt };
+    const reloaded = data(base.rules.map((r) => (r.id === s05.id ? other : r)));
+    const unread: SaveOutcome = {
+      ok: false,
+      error: appError('conflict', 'lock_conflict', { table: 'rules' }),
+      notice: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした',
+      showReload: true,
+    };
+    const onUpdate = vi
+      .fn<RuleFormSheetProps['onUpdate']>()
+      .mockResolvedValueOnce(unread)
+      .mockResolvedValueOnce(unread)
+      .mockResolvedValueOnce({ ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }), rebase: other })
+      .mockResolvedValue({ ok: true });
+    const { view, props } = setup({ onUpdate });
+    // シートを開いた後に、裏の読み直しで一覧がほかの人の変更（新しい版）を持った（入力の元は開いたときの版のまま）
+    view.rerender(<RuleFormSheet {...props} data={reloaded} />);
+    await user.clear(memoBox());
+    await user.type(memoBox(), 'わたしのメモ');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+
+    // unread の後：一覧の行（利用者が見ていない版）に進めず、開いたときの版で送る
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    expect(onUpdate.mock.calls[1]![0].updated_at).toBe(s05.updated_at);
+
+    // 「読み直す」で一覧が来ても同じ（版を進めるのは、保存の結果が changed で読み直した行があるときだけ）
+    await screen.findByTestId('unknown-outcome');
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    view.rerender(<RuleFormSheet {...props} data={data(base.rules.map((r) => (r.id === s05.id ? other : r)))} />);
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(3));
+    expect(onUpdate.mock.calls[2]![0].updated_at).toBe(s05.updated_at);
+
+    // changed（読み直した行あり）の後は、その行の版で送る（ほかの人の変更を見た後の意図した上書き）
+    await waitFor(() => expect(screen.getByTestId('error-banner')).toBeTruthy());
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(4));
+    expect(onUpdate.mock.calls[3]![0].updated_at).toBe(reloadedAt);
+    expect(onUpdate.mock.calls[3]![1].memo).toBe('わたしのメモ');
+  });
+
+  it('止められた後に読み直せなかった後、欄のエラーで一度止まっても、開いたときの値に戻した保存は送る', async () => {
+    const user = userEvent.setup();
+    const original = s05.memo ?? '';
+    const onUpdate = vi
+      .fn<RuleFormSheetProps['onUpdate']>()
+      .mockResolvedValueOnce({
+        ok: false,
+        error: appError('conflict', 'lock_conflict', { table: 'rules' }),
+        notice: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした',
+        showReload: true,
+      })
+      .mockResolvedValue({ ok: true });
+    const { onClose } = setup({ onUpdate });
+    await user.clear(memoBox());
+    await user.type(memoBox(), 'わたしのメモ');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+
+    const codeBox = screen.getByLabelText('コード');
+    await user.clear(codeBox);
+    await user.click(saveButton());
+    await waitFor(() => expect(codeBox.getAttribute('aria-invalid')).toBe('true'));
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
+    await user.type(codeBox, s05.code);
+    await user.clear(memoBox());
+    if (original) await user.type(memoBox(), original);
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    expect(onUpdate.mock.calls[1]![0].updated_at).toBe(s05.updated_at);
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('conflict（読み直した行あり）の後、欄のエラーで一度止まっても、開いたときの値に戻した保存は読み直した行の版で送る', async () => {
+    const user = userEvent.setup();
+    const original = s05.memo ?? '';
+    const reloadedAt = '2026-10-29T01:00:00.000000+00:00';
+    const other: RuleDbRow = { ...s05, memo: 'ほかの人のメモ', updated_at: reloadedAt };
+    const onUpdate = vi
+      .fn<RuleFormSheetProps['onUpdate']>()
+      .mockResolvedValueOnce({ ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }), rebase: other })
+      .mockResolvedValue({ ok: true });
+    const { onClose } = setup({ onUpdate });
+    await user.clear(memoBox());
+    await user.type(memoBox(), 'わたしのメモ');
+    await user.click(saveButton());
+    await waitFor(() => expect(screen.getByTestId('error-banner')).toBeTruthy());
+
+    const codeBox = screen.getByLabelText('コード');
+    await user.clear(codeBox);
+    await user.click(saveButton());
+    await waitFor(() => expect(codeBox.getAttribute('aria-invalid')).toBe('true'));
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
+    await user.type(codeBox, s05.code);
+    await user.clear(memoBox());
+    if (original) await user.type(memoBox(), original);
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    expect(onUpdate.mock.calls[1]![0].updated_at).toBe(reloadedAt);
+    expect(onUpdate.mock.calls[1]![1].memo).toBe(original === '' ? null : original);
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

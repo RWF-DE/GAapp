@@ -34,6 +34,14 @@ export interface RuleWriteRequest {
   baseVersion: string | null;
   /** 成功したときの toast */
   okMessage: string;
+  /** 保存できたか分からない・止められた後に読み直せなかったときの文言（操作に合わせる。省くとシートの「保存」の文言） */
+  notices?: RuleWriteNotices;
+}
+
+/** 保存できたか分からない（unknownOutcome）・止められた後に読み直せなかった（rereadFailed）ときの文言 */
+export interface RuleWriteNotices {
+  unknownOutcome: string;
+  rereadFailed: string;
 }
 
 export interface RuleWriteDeps {
@@ -54,12 +62,28 @@ export const DUPLICATE_CODE_MESSAGE = '同じコードのルールがありま�
 /** conflict・not_found・23505 で止められた後に、対象の行を読み直せなかったとき（「読み直しました」とは言わない） */
 export const REREAD_FAILED_MESSAGE = 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度保存してください';
 
+/** シートの「保存」（既定） */
+export const SAVE_NOTICES: RuleWriteNotices = { unknownOutcome: unknownOutcomeMessage(), rereadFailed: REREAD_FAILED_MESSAGE };
+/**
+ * 一覧の有効・無効の切り替え（Switch）。「保存」のボタンはないので、切り替えの操作に合わせる
+ * （lib/errors.ts の unknownOutcomeMessage は動詞が「〜できたか」「「〜」を押すと」の形なので、ここで作る）
+ */
+export const TOGGLE_NOTICES: RuleWriteNotices = {
+  unknownOutcome: '切り替えられたか分かりません。もう一度切り替えると、確かめてから送ります',
+  rereadFailed: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度切り替えてください',
+};
+/** 「無効にする」のダイアログ */
+export const DISABLE_NOTICES: RuleWriteNotices = {
+  unknownOutcome: '無効にできたか分かりません。もう一度「無効にする」を押すと、確かめてから送ります',
+  rereadFailed: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度「無効にする」を押してください',
+};
+
 /**
  * 書き込みを送り、エラーを分ける（2.5・2.6 の (B1)）。401 は1回だけセッションを更新して送り直す。
  * - 応答が届かなかった（isUnknownOutcome）・conflict・not_found・23505（isLockRejection）：対象の行を読み直して settleLockedWrite で決める。
  *   saved → 「保存されていました」（成功と同じ）。
- *   応答が届かなかった後の not-saved・unread → unknownOutcomeMessage()（保存のボタンは押せるまま。次の保存はふつうに送る）。
- *   止められた後の unread → REREAD_FAILED_MESSAGE と「読み直す」。
+ *   応答が届かなかった後の not-saved・unread → notices.unknownOutcome（既定は unknownOutcomeMessage()。保存のボタンは押せるまま。次の保存はふつうに送る）。
+ *   止められた後の unread → notices.rereadFailed（既定は REREAD_FAILED_MESSAGE）と「読み直す」。
  *   changed（と、止められた後の not-saved）→ 一覧を読み直し、insert と 23505 は DUPLICATE_CODE_MESSAGE、
  *   update は conflict（応答が届かなかった後は conflict・not_found の AppError を作る）と読み直した行（rebase）。
  * - それ以外：effectOf のとおり読み直し、入力を残す。
@@ -100,8 +124,9 @@ export async function runRuleWrite(w: RuleWriteRequest, deps: RuleWriteDeps): Pr
       versionOf: (row) => row.updated_at,
     });
     if (outcome === 'saved') return succeed(SAVED_BEFORE_MESSAGE);
-    if (unknown && (outcome === 'not-saved' || outcome === 'unread')) return { ok: false, error, notice: unknownOutcomeMessage() };
-    if (outcome === 'unread') return { ok: false, error, notice: REREAD_FAILED_MESSAGE, showReload: true };
+    const notices = w.notices ?? SAVE_NOTICES;
+    if (unknown && (outcome === 'not-saved' || outcome === 'unread')) return { ok: false, error, notice: notices.unknownOutcome };
+    if (outcome === 'unread') return { ok: false, error, notice: notices.rereadFailed, showReload: true };
     // changed（と、止められた後の not-saved）：今までの conflict の扱い。一覧を読み直し、入力を残す
     deps.onReload();
     if (w.mode === 'insert' || classifyError(error).code === '23505') {
