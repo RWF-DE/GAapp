@@ -1,4 +1,5 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from './helpers';
 import { storageStateFor } from './support/auth';
 import { createScenario, createUser, sql, type TestUser } from './support/db';
 import { SMALL } from './support/datasets';
@@ -109,17 +110,18 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await expect(other.getByTestId('dashboard-validation-counts')).toContainText('0error');
       const before = await versionOf(s.yearId);
 
-      // 開いた後に在庫を1つ増やす。このブランチには在庫入力の画面（T10）がないので、DB に直接（超ユーザーの SQL で）書く
-      // （stocks の更新のトリガーで版が進む）。どちらの画面も読み直していないので、見張りが気づく前に確定を押す
+      // 開いた後に、もう1つの画面（other）で在庫を1つ増やす。在庫入力の画面は T10 なので、other のブラウザのログインのセッションで
+      // REST API を呼ぶ（画面の書き込みと同じ RLS・トリガーを通り、版が進む）。page は読み直していないので、見張りが気づく前に確定を押す
       const [st] = await sql<{ room_id: string; item_id: string; count: number }>(
         'select room_id, item_id, count from public.stocks where year_id = $1 order by room_id, item_id limit 1',
         [s.yearId],
       );
-      const changed = await sql<{ count: number }>(
-        'update public.stocks set count = count + 1 where year_id = $1 and room_id = $2 and item_id = $3 returning count',
+      await updateStockFrom(other, { yearId: s.yearId, roomId: st!.room_id, itemId: st!.item_id, count: st!.count + 1 });
+      const [{ count: after }] = (await sql<{ count: number }>(
+        'select count from public.stocks where year_id = $1 and room_id = $2 and item_id = $3',
         [s.yearId, st!.room_id, st!.item_id],
-      );
-      expect(changed).toEqual([{ count: st!.count + 1 }]);
+      )) as [{ count: number }];
+      expect(after).toBe(st!.count + 1);
       expect(await versionOf(s.yearId)).toBeGreaterThan(before);
 
       const confirm = actions(page).getByRole('button', { name: '確定', exact: true });
@@ -250,6 +252,32 @@ async function openSecondAdmin(browser: Browser, yearId: string): Promise<Page> 
   const p = await ctx.newPage();
   await pinYear(p, SEED_USER_IDS.admin, yearId);
   return p;
+}
+
+/**
+ * そのページ（ブラウザのコンテキスト）のログインのセッションで、そのページから在庫の行の数を REST API で変える（在庫入力の画面〔T10〕の代わり。
+ * 書き込みは画面と同じ RLS・トリガーを通る）。
+ */
+async function updateStockFrom(p: Page, row: { yearId: string; roomId: string; itemId: string; count: number }): Promise<void> {
+  // そのコンテキストで supabase-js が localStorage に保存しているセッション（画面を開いた後なので、期限切れなら更新済み）
+  const state = await p.context().storageState();
+  const entry = state.origins.flatMap((o) => o.localStorage).find((e) => /^sb-.+-auth-token$/.test(e.name));
+  const token = entry ? (JSON.parse(entry.value) as { access_token?: string }).access_token : undefined;
+  expect(token, '2つ目の画面のログインのセッション').toBeTruthy();
+  const result = await p.evaluate(
+    async ({ url, key, token, row }) => {
+      const q = `year_id=eq.${row.yearId}&room_id=eq.${row.roomId}&item_id=eq.${row.itemId}`;
+      const res = await fetch(`${url}/rest/v1/stocks?${q}`, {
+        method: 'PATCH',
+        headers: { apikey: key, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
+        body: JSON.stringify({ count: row.count }),
+      });
+      const body: unknown = await res.json();
+      return { status: res.status, rows: Array.isArray(body) ? body.length : 0 };
+    },
+    { url: SUPABASE_URL, key: SUPABASE_PUBLISHABLE_KEY, token: token!, row },
+  );
+  expect(result).toEqual({ status: 200, rows: 1 });
 }
 
 /** 確定のダイアログ：理由を入れ、warning があれば確認のチェックを入れて押す */
