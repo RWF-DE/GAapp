@@ -57,9 +57,20 @@ GAapp/
 
 ### 0. リポジトリの公開範囲
 
-GitHub Pages と保護ブランチ（ブランチ保護ルール）は、**公開リポジトリか、有料プラン（Team 以上）でないと private リポジトリでは使えない**。無料の組織で private のままだと、次の 1・3 はできない（`deploy.yml` を作っても公開されない）。Environments（環境の secrets・Required reviewers・Deployment branches）も使えないので、**`migrate.yml` は使わない**（DB の資格情報をリポジトリ全体の secrets に置かず、5 のマイグレーション適用は管理者が手元から `supabase db push` で行う）。公開にするかどうかは管理者が決める。公開にする前に、個人情報（メールアドレス、学生・企業の個人名、R8 の元データ）が履歴を含めて入っていないことを確かめる。
+**公開する**（ユーザーの決定、2026-10-29）。公開の前に、全ブランチの履歴・PR・Actions を点検し、個人情報（メールアドレス、学生・企業の個人名）・秘密の鍵・R8 の元データはなかった。テストの仮のアドレスは予約済みのドメインに直したが、履歴には前の値が残る。公開の操作（Settings → General → Danger Zone → Change repository visibility）は管理者が GitHub の画面で行う。
 
-private のままでも Actions は動くが、無料プランは月 2,000 分の上限がある。ci.yml は pnpm のキャッシュと DB だけの起動で、無駄な時間を減らしてある。
+公開リポジトリなので、無料の組織でも GitHub Pages（1）、Environments（環境の secrets・Required reviewers・Deployment branches。2）、ルールセット（3）が使え、本番 DB へのマイグレーションは `migrate.yml` で適用する（5）。GitHub が用意するランナーの Actions の分数も数えられない。公開した後も、個人情報と R8 の元データは入れない（「個人情報」の節）。
+
+#### 公開した直後に設定するもの
+
+- Settings → Code security（Advanced Security）で、次を有効にする。
+  - **Secret scanning** と **Push protection**（鍵やトークンの push を止める）
+  - **Private vulnerability reporting**（脆弱性を公開の issue ではなく非公開で受け取る。[SECURITY.md](SECURITY.md)）
+  - **Dependabot alerts**。Dependabot の version updates（`.github/dependabot.yml`）は入れない（リリースから 7 日たたない版を入れない pnpm の `minimumReleaseAge` と合わないため）。
+- Settings → Actions → General で、次にする。
+  - Fork pull request workflows from outside collaborators を **Require approval for all external contributors** にする（外の人の PR のワークフローは、管理者が承認してから動く）。
+  - Workflow permissions を **Read repository contents and packages permissions** にし、**Allow GitHub Actions to create and approve pull requests** を外す。
+- 2 の環境（`production`・`github-pages`）と 3 のルールセットを、まだなら設定する。
 
 ### 1. GitHub Pages の有効化
 
@@ -71,23 +82,38 @@ Settings → Pages → Build and deployment → Source を **GitHub Actions** �
 | --- | --- | --- | --- |
 | 変数 | `NEXT_PUBLIC_SUPABASE_URL` | Settings → Secrets and variables → Actions → Variables | ビルドに埋め込む接続先 |
 | 変数 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | 同上 | 公開してよい publishable キー。secret（service_role）キーは入れない |
+| 変数（任意） | `NEXT_PUBLIC_GOOGLE_HD_HINT` | 同上 | 学校のドメイン `g.kumamoto-nct.ac.jp`（D-04）。Google のアカウント選択を学校のドメインに絞るヒント（T04 のログインで使う。見た目だけで、拒否は DB のフックが行う） |
 | 変数 | `SUPABASE_PROJECT_REF` | Environments → production → Variables | migrate.yml が使う |
 | secret | `SUPABASE_ACCESS_TOKEN`、`SUPABASE_DB_PASSWORD` | Environments → production → Secrets | migrate.yml が本番 DB にマイグレーションを適用するときだけ |
 
-Settings → Environments で `production` を作り、次の 2 つを**必須**で設定する。`github-pages` は初回の deploy で自動で作られる。
+Settings → Environments で `production` を作り、次の 2 つを**必須**で設定する。
 
 - Deployment branches and tags を **Selected branches and tags** にして、`main` だけを許可する。これがないと、`workflow_dispatch` で未マージの feat ブランチを選んで Run workflow を押すだけで、そのブランチの `migrate.yml` と未レビューのマイグレーションが本番 DB に適用できてしまう（ワークフローはブランチ側のものが使われるため、`migrate.yml` 内の `if:` は防御にならない）。
 - Required reviewers を付ける（実行前に承認が要る）。承認するときは、対象が `main` であることを確かめる。
 
+`github-pages`（1 で Source を GitHub Actions にしたときか、初回の deploy で作られる）も、Settings → Environments → github-pages の Deployment branches and tags を **Selected branches and tags** にして `main` だけを許可する。`deploy.yml` は `workflow_dispatch` でどのブランチからでも動かせるので、これがないと未マージのブランチを本番の Pages に出せてしまう。
+
 `SUPABASE_ACCESS_TOKEN` と `SUPABASE_DB_PASSWORD` は、リポジトリ全体の secrets（Settings → Secrets and variables → Actions → Repository secrets）には**置かない**。どのブランチのワークフローからでも読み出せてしまう。
 
-### 3. 保護ブランチ
+### 3. 保護ブランチ（ルールセット）
 
-Settings → Branches（または Rulesets）で main に次を設定する。
+main を 2 つのルールセットで守る。迂回（Bypass list）はルールセットごとにしか効かないので、CI と PR は誰も迂回できないルールセットに、承認だけを管理者が迂回できるルールセットに分ける。
 
-- Require a pull request before merging（承認 1 人）
-- Require status checks to pass：`lint / typecheck / test / build`、`supabase test db`、`e2e (Playwright)`、`メールアドレスのチェック`（ジョブ名は ci.yml の `name`）
-- main への直接 push を禁止
+Settings → Rules → Rulesets → New ruleset → **New branch ruleset** で、次の 2 つを作る。どちらも Enforcement status を **Active**、Target branches → Add target → **Include default branch**（main）にする。
+
+1. Ruleset name「**main: PR と CI を必須**」
+   - Bypass list：**空のまま**（管理者も迂回できない）
+   - **Restrict deletions**：オン
+   - **Block force pushes**：オン
+   - **Require a pull request before merging**：オン。Required approvals は **0**（承認は 2 つ目のルールセットで求める）
+   - **Require status checks to pass**：オン。Add checks で `lint / typecheck / test / build`、`supabase test db`、`e2e (Playwright)`、`メールアドレスのチェック` を足す（ジョブ名は ci.yml の `name`。一度 CI が動いた後なら候補に出る。出所は GitHub Actions を選ぶ）。
+     - `xlsx の再計算 (LibreOffice)` は、T08 が main に入ってから足す。それより前のブランチの ci.yml にはこのジョブがないので、先に足すとその PR はチェックを待ち続ける。
+     - **Require branches to be up to date before merging は付けない**（積み上げの PR を、マージのたびに main に追いつかせなくてよいように）。
+2. Ruleset name「**main: 1 人の承認**」
+   - **Require a pull request before merging**：オン。Required approvals を **1**、**Dismiss stale pull request approvals when new commits are pushed** をオン（新しい push で承認を外す）
+   - Bypass list：Add bypass → **Repository admin** を足し、**For pull requests only** にする。
+     - 今は PR の作者が管理者本人だけで、GitHub では自分の PR を承認できない。管理者は PR の画面で、このルールセットの承認だけを迂回してマージする（Merge without waiting for requirements to be met (bypass rules)）。迂回はこのルールセットにしか効かないので、1 つ目の CI と PR は迂回できない。
+     - ほかの人が加わったら、その人が承認する（迂回は使わない）。
 
 ### 4. Supabase Auth のリダイレクト URL
 
@@ -95,8 +121,8 @@ Settings → Branches（または Rulesets）で main に次を設定する。
 
 ### 5. 本番 DB への適用
 
-マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で、**ブランチに `main` を選んで**手動実行する（2 の設定が済んでいる場合だけ。private（無料）で Environments が使えないときは、管理者が main のチェックアウトから `supabase link` → `supabase db push` を手元で実行する）。
+マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で、**ブランチに `main` を選んで**手動実行する（先に 2 の環境 `production` を設定しておく。Required reviewers の承認の後に動く）。
 
 ## 個人情報
 
-このリポジトリは公開前提。メールアドレスや個人名を、コード・fixtures・ログ・コミットに入れない（テスト用は `example.test` などの予約ドメインだけ）。CI の `pnpm check:emails` が、追跡ファイルに予約ドメイン以外のメールアドレスがあると失敗する。R8 の元データは `R8_SOURCE_DIR` の非公開フォルダから読む。
+このリポジトリは公開する（0）。メールアドレスや個人名を、コード・fixtures・ログ・コミットに入れない（テスト用は `example.test` などの予約ドメインだけ）。CI の `pnpm check:emails` が、追跡ファイルに予約ドメイン以外のメールアドレスがあると失敗する。R8 の元データは `R8_SOURCE_DIR` の非公開フォルダから読む。
