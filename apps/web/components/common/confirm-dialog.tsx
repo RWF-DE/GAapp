@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -58,6 +58,14 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const [running, setRunning] = useState(false);
   const busy = pending || running;
+  // 開いた元の要素（閉じたらそこへフォーカスを戻す）。AlertDialogTrigger を使わないので、Radix は戻し先を知らず body に落とす。
+  // レイアウトの effect で覚える（Radix がダイアログの中へフォーカスを移すのは、その後の effect）
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const active = document.activeElement;
+    returnFocusRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  }, [open]);
 
   const confirm = async () => {
     if (busy) return;
@@ -74,7 +82,15 @@ export function ConfirmDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={(o) => (busy ? undefined : onOpenChange(o))}>
-      <AlertDialogContent>
+      <AlertDialogContent
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          const el = returnFocusRef.current;
+          returnFocusRef.current = null;
+          // 開いた元がもうなければ（メニューの項目など）戻さない
+          if (el?.isConnected) el.focus();
+        }}
+      >
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description ? <AlertDialogDescription>{description}</AlertDialogDescription> : null}

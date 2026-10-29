@@ -31,4 +31,28 @@ describe('TokyoTime', () => {
     render(<TokyoTime value={null} format="date" empty="未設定" />);
     expect(screen.getByText('未設定')).toBeTruthy();
   });
+
+  it('読めない値（不正な Date・読めない文字列）は、どの形でも落ちずに empty', () => {
+    for (const format of ['datetime', 'short', 'time', 'date'] as const) {
+      for (const value of [new Date('x'), 'garbage']) {
+        cleanup();
+        const { container } = render(<TokyoTime value={value} format={format} empty="不明" />);
+        expect(container.textContent).toBe('不明');
+        expect(container.querySelector('time')).toBeNull();
+      }
+    }
+  });
+
+  it('既定の形でも、読めない値は既定の empty（—）', () => {
+    for (const value of [new Date('x'), 'garbage']) {
+      cleanup();
+      const { container } = render(<TokyoTime value={value} />);
+      expect(container.textContent).toBe('—');
+    }
+  });
+
+  it('dateTime 属性は読めた Date から作る（ISO 8601 の UTC）', () => {
+    render(<TokyoTime value="2026-10-05T18:01:09+09:00" />);
+    expect(screen.getByText('2026/10/05 18:01').getAttribute('datetime')).toBe('2026-10-05T09:01:09.000Z');
+  });
 });

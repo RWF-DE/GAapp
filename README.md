@@ -17,8 +17,11 @@ pnpm lint
 pnpm typecheck
 pnpm test           # Vitest（packages/* と apps/web と scripts と e2e/support の純粋な部分）
 pnpm build          # apps/web/out に静的ファイルを出す（本番と同じ。テスト用ログインは入らない）
+pnpm check:no-test-login   # out にテスト用ログインが入っていないか（CI の check と同じ）
 pnpm check:emails   # 追跡ファイルにメールアドレスが入っていないか
 ```
+
+`pnpm build:e2e` は同じ apps/web/out を E2E 用のビルドで上書きするので、`pnpm check:no-test-login` は `pnpm build` の直後に流す（`pnpm build:e2e` の後に流すと、テスト用ログインが入っているので落ちる）。
 
 ### ローカルの Supabase
 
@@ -27,7 +30,7 @@ pnpm check:emails   # 追跡ファイルにメールアドレスが入ってい�
 ```bash
 supabase start        # 全部起動（Docker が必要）。初回はマイグレーションと seed も流れる
 supabase db reset     # マイグレーションと seed を流し直す（マイグレーションを変えた後・データを初期に戻すとき）
-supabase test db      # pgTAP
+supabase test db      # pgTAP。E2E などでデータが残った DB では、supabase db reset してから流す（表全体の件数を数えるテストが落ちる）
 
 # DB が要るもの（Supabase を起動したまま）
 pnpm dev              # http://localhost:3100（先に下の「ログインとテストユーザー」の apps/web/.env.local を作る）

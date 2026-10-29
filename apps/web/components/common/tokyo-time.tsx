@@ -36,10 +36,12 @@ export function TokyoTime({
       </time>
     );
   }
-  const iso = typeof value === 'string' ? value : value.toISOString();
+  // 読めない値（不正な Date・読めない文字列）は empty。toISOString は不正な Date で RangeError を投げるので、先に確かめる
+  const d = typeof value === 'string' ? new Date(value) : value;
+  if (Number.isNaN(d.getTime())) return <span className={className}>{empty}</span>;
   return (
-    <time dateTime={iso} title={formatDateTimeSeconds(value)} className={className}>
-      {FORMATS[format](value)}
+    <time dateTime={d.toISOString()} title={formatDateTimeSeconds(d)} className={className}>
+      {FORMATS[format](d)}
     </time>
   );
 }
