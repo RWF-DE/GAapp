@@ -82,29 +82,23 @@ const optionalIntText = (min: number, max: number, label: string) => {
  * 受付開始 < 締切、requesting の間は締切を空にできない（3.2）。1日目の範囲は DB の CHECK と同じ（D-18）。
  */
 export function yearEditSchema(status: string) {
+  // 欄ごとの誤りをまとめて出すため、文字のまま受けて transform の中で確かめる（object の欄の誤りがあると transform が走らないため）
   return z
-    .object({
-      label: yearLabelSchema,
-      festival_start: festivalStartSchema,
-      request_open_at: z.string(),
-      request_close_at: z.string(),
-    })
+    .object({ label: z.string(), festival_start: z.string(), request_open_at: z.string(), request_close_at: z.string() })
     .transform((v, ctx) => {
+      const issue = (path: string, message: string) => ctx.addIssue({ code: 'custom', path: [path], message });
+      const label = yearLabelSchema.safeParse(v.label);
+      if (!label.success) issue('label', label.error.issues[0]?.message ?? '年度名が正しくありません');
+      const festival = festivalStartSchema.safeParse(v.festival_start);
+      if (!festival.success) issue('festival_start', festival.error.issues[0]?.message ?? '日付が正しくありません');
       const open = fromDateTimeLocal(v.request_open_at);
       const close = fromDateTimeLocal(v.request_close_at);
-      if (v.request_open_at.trim() !== '' && open === null) {
-        ctx.addIssue({ code: 'custom', path: ['request_open_at'], message: '日時の形が正しくありません' });
-      }
-      if (v.request_close_at.trim() !== '' && close === null) {
-        ctx.addIssue({ code: 'custom', path: ['request_close_at'], message: '日時の形が正しくありません' });
-      }
-      if (status === 'requesting' && close === null) {
-        ctx.addIssue({ code: 'custom', path: ['request_close_at'], message: '申請の受付中は締切を空にできません' });
-      }
-      if (open && close && Date.parse(open) >= Date.parse(close)) {
-        ctx.addIssue({ code: 'custom', path: ['request_close_at'], message: '締切は受付開始より後にしてください' });
-      }
-      return { label: v.label, festival_start: v.festival_start, request_open_at: open, request_close_at: close };
+      if (v.request_open_at.trim() !== '' && open === null) issue('request_open_at', '日時の形が正しくありません');
+      if (v.request_close_at.trim() !== '' && close === null) issue('request_close_at', '日時の形が正しくありません');
+      if (status === 'requesting' && close === null) issue('request_close_at', '申請の受付中は締切を空にできません');
+      if (open && close && Date.parse(open) >= Date.parse(close)) issue('request_close_at', '締切は受付開始より後にしてください');
+      if (!label.success || !festival.success) return z.NEVER;
+      return { label: label.data, festival_start: festival.data, request_open_at: open, request_close_at: close };
     });
 }
 export type YearEditInput = z.input<ReturnType<typeof yearEditSchema>>;

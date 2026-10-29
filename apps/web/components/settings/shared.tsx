@@ -148,14 +148,17 @@ export function FormSheet({
   busy?: boolean;
   children: React.ReactNode;
 }) {
+  // 閉じたら外す（閉じる動きの途中に次のシートを開くと、前のシートがフォーカスを戻して新しいシートが閉じてしまうため。
+  // 開くたびに新しいシートにする）
+  if (!open) return null;
   return (
-    <Sheet open={open} onOpenChange={(o) => (busy ? undefined : onOpenChange(o))}>
+    <Sheet open onOpenChange={(o) => (busy ? undefined : onOpenChange(o))}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
         <SheetHeader>
           <SheetTitle>{title}</SheetTitle>
           {description ? <SheetDescription>{description}</SheetDescription> : null}
         </SheetHeader>
-        <div className="px-4 pb-6">{open ? children : null}</div>
+        <div className="px-4 pb-6">{children}</div>
       </SheetContent>
     </Sheet>
   );

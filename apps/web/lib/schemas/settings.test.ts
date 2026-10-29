@@ -122,6 +122,14 @@ describe('年度', () => {
       request_open_at: null,
       request_close_at: null,
     });
+    // 欄ごとの誤りはまとめて出す（1日目の誤りがあっても締切の誤りも出る）
+    const both = yearEditSchema('preparing').safeParse({
+      label: '',
+      festival_start: '2201-01-01',
+      request_open_at: '2027-07-10T18:00',
+      request_close_at: '2027-07-01T09:00',
+    });
+    expect(both.error?.issues.map((i) => i.path.join('.'))).toEqual(['label', 'festival_start', 'request_close_at']);
     const range = yearEditSchema('preparing').safeParse({ label: 'R9', festival_start: '2201-01-01', request_open_at: '', request_close_at: '' });
     expect(range.error?.issues[0]).toMatchObject({ path: ['festival_start'], message: '2000年1月1日〜2200年12月31日の日付にしてください' });
   });
