@@ -4,8 +4,10 @@
 // 読み込み中とロックは page.route で応答を止めてから撮る。
 // 段 2：行の編集（未保存の変更のバー・備考・運び元・理由のダイアログ）、使用不可にする前の一覧、使用不可にした後、
 // 下書きを戻す表示、ほかの人の変更とぶつかって外した変更、検証の一覧の E002 の操作。
+// 段 3：キャスター机交換（読み込み中・一覧・操作のダイアログ・エラーの帯・確定中の読み取り・置き換えなし・部員の権限なし）、
+// 自団体の振り分け（スマホ。読み込み中・確定前の依頼・回答の後・待ってください・確定後・団体の切り替え・申請なし・管理者の権限なし）。
 import { expect, test, type Page } from '@playwright/test';
-import { storageStateFor } from '../support/auth';
+import { accessToken, rpc, storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
 import { MOBILE, PC, shoot } from '../support/shots';
 import { SEED_USER_IDS } from '../support/users';
@@ -256,6 +258,193 @@ test.describe('T13 閲覧のみ', () => {
       await shoot(page, 'T13', 'allocation-viewer-confirmed-pc');
       await page.setViewportSize(MOBILE);
       await shoot(page, 'T13', 'allocation-viewer-confirmed-mobile');
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+/** シナリオの年度は最新の年度より前なので、書く前の「最新でない年度に保存します」を確かめる */
+async function confirmNotLatest(page: Page): Promise<void> {
+  const d = page.getByRole('alertdialog').filter({ hasText: '最新でない年度' });
+  await d.getByRole('button', { name: 'この年度に保存する' }).click();
+  await expect(d).toBeHidden();
+}
+
+const SUBS = `requested_item_id = (select id from public.items where code = 'desk')
+  and item_id = (select id from public.items where code = 'caster_desk')`;
+
+test.describe('T13 キャスター机交換', () => {
+  test.use({ storageState: storageStateFor('admin'), viewport: PC });
+
+  test('T13 キャスター机交換：読み込み中・一覧・操作のダイアログ・エラーの帯', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      // 拒否なのに置き換えが残っている団体（注意の列）
+      await sql(
+        `update public.substitution_consents set status = 'declined' where group_id = $1
+           and from_item_id = (select id from public.items where code = 'desk')`,
+        [s.ids.groups['模擬店02']],
+      );
+      const release = await hold(page, '**/rest/v1/allocations*');
+      await page.goto('/swaps/');
+      await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
+      await shoot(page, 'T13', 'swaps-loading-pc');
+      release();
+      const row10 = page.locator('[data-row-id]').filter({ has: page.getByText('模擬店10', { exact: true }) });
+      await expect(row10).toBeVisible();
+      await page.unroute('**/rest/v1/allocations*');
+      await shoot(page, 'T13', 'swaps-pc');
+      await shoot(page, 'T13', 'swaps-full-pc', { fullPage: true });
+
+      await row10.getByRole('button', { name: '依頼済みにする' }).click();
+      await confirmNotLatest(page);
+      await expect(page.getByRole('alertdialog')).toBeVisible();
+      await shoot(page, 'T13', 'swaps-op-dialog-pc');
+      await page.getByRole('alertdialog').getByRole('button', { name: 'やめる' }).click();
+
+      // 置き換えの行を消してから依頼する（画面は古い）→ no_rows のエラーの帯
+      await sql(`delete from public.allocations where year_id = $1 and group_id = $2 and ${SUBS}`, [s.yearId, s.ids.groups['模擬店10']]);
+      await row10.getByRole('button', { name: '依頼済みにする' }).click();
+      await confirmNotLatest(page);
+      await page.getByRole('alertdialog').getByRole('button', { name: '依頼済みにする' }).click();
+      await expect(page.getByTestId('error-banner')).toBeVisible();
+      await shoot(page, 'T13', 'swaps-error-banner-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T13 キャスター机交換：確定中の読み取り・置き換えなし', async ({ page }) => {
+    const confirmed = await createScenario({ dataset: 'synthetic', status: 'confirmed', allocations: 'reference', roles: { admin: true } });
+    const empty = await createScenario({ dataset: 'small', status: 'allocating', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, confirmed.yearId);
+      await page.goto('/swaps/');
+      await expect(page.getByTestId('read-only-notice')).toBeVisible();
+      await expect(page.locator('[data-row-id]').first()).toBeVisible();
+      await shoot(page, 'T13', 'swaps-confirmed-pc');
+      await pinYear(page, SEED_USER_IDS.admin, empty.yearId);
+      await page.goto('/swaps/');
+      await expect(page.getByText('キャスター机への置き換えはありません')).toBeVisible();
+      await shoot(page, 'T13', 'swaps-empty-pc');
+    } finally {
+      await confirmed.cleanup();
+      await empty.cleanup();
+    }
+  });
+});
+
+test.describe('T13 キャスター机交換（部員）', () => {
+  test.use({ storageState: storageStateFor('staff'), viewport: PC });
+
+  test('T13 キャスター机交換：部員は権限なし', async ({ page }) => {
+    const s = await createScenario({ dataset: 'small', status: 'allocating', roles: { staff: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.staff, s.yearId);
+      await page.goto('/swaps/');
+      await expect(page.getByRole('alert').filter({ hasText: '権限がありません' })).toBeVisible();
+      await shoot(page, 'T13', 'swaps-forbidden-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+test.describe('T13 自団体の振り分け', () => {
+  test.use({ storageState: storageStateFor('rep'), viewport: MOBILE });
+
+  test('T13 自団体の振り分け：読み込み中・確定前の依頼・回答の後・待ってください', async ({ page, request }) => {
+    const s = await createScenario({
+      dataset: 'synthetic',
+      status: 'allocating',
+      allocations: 'reference',
+      roles: { admin: true },
+      repGroup: '模擬店10',
+    });
+    try {
+      const g = s.ids.groups['模擬店10']!;
+      const [ids] = await sql<{ desk: string; caster: string }>(
+        `select (select id from public.items where code = 'desk') as desk, (select id from public.items where code = 'caster_desk') as caster`,
+      );
+      const admin = await accessToken(request, 'admin');
+      const ask = () => rpc(request, admin, 'set_consent', { p_group_id: g, p_from_item: ids!.desk, p_to_item: ids!.caster, p_status: 'asked' });
+      expect((await ask()).error).toBeNull();
+      await pinYear(page, SEED_USER_IDS.rep, s.yearId);
+      const release = await hold(page, '**/rest/v1/substitution_consents*');
+      await page.goto('/my/');
+      await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
+      await shoot(page, 'T13', 'my-loading-mobile');
+      release();
+      const card = page.getByTestId('my-consent');
+      await expect(card).toBeVisible();
+      await page.unroute('**/rest/v1/substitution_consents*');
+      await shoot(page, 'T13', 'my-before-mobile');
+      await shoot(page, 'T13', 'my-before-full-mobile', { fullPage: true });
+
+      await card.getByRole('button', { name: '了承する' }).click();
+      await expect(page.getByRole('alertdialog')).toBeVisible();
+      await shoot(page, 'T13', 'my-not-latest-confirm-mobile');
+      await confirmNotLatest(page);
+      await expect(card).toHaveAttribute('data-status', 'accepted');
+      await shoot(page, 'T13', 'my-answered-mobile');
+      await card.getByRole('button', { name: '回答を変える' }).click();
+      await shoot(page, 'T13', 'my-change-answer-mobile');
+
+      // 依頼し直した後に置き換えが増えた → 了承は記録できない
+      expect((await ask()).error).toBeNull();
+      await sql(
+        `update public.allocations set count = count + 1 where id = (
+           select id from public.allocations where year_id = $1 and group_id = $2 and ${SUBS} order by id limit 1)`,
+        [s.yearId, g],
+      );
+      await page.reload();
+      await card.getByRole('button', { name: '了承する' }).click();
+      await confirmNotLatest(page);
+      await expect(card.getByTestId('my-consent-wait')).toBeVisible();
+      await shoot(page, 'T13', 'my-wait-reask-mobile');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T13 自団体の振り分け：確定後・団体の切り替え・申請なし', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'confirmed', allocations: 'reference', repGroup: '模擬店07' });
+    const empty = await createScenario({ dataset: 'small', status: 'allocating', repGroup: 'E2E模擬店1' });
+    try {
+      await sql('insert into public.group_members (group_id, user_id) values ($1, $2)', [s.ids.groups['模擬店08'], SEED_USER_IDS.rep]);
+      await pinYear(page, SEED_USER_IDS.rep, s.yearId);
+      await page.goto('/my/');
+      await expect(page.getByTestId('my-allocations')).toBeVisible();
+      await shoot(page, 'T13', 'my-final-mobile');
+      await shoot(page, 'T13', 'my-final-full-mobile', { fullPage: true });
+      await page.getByTestId('my-group-select').selectOption(s.ids.groups['模擬店08']!);
+      await expect(page.getByTestId('my-group')).toHaveText(/模擬店08/);
+      await shoot(page, 'T13', 'my-group-switch-mobile');
+
+      await sql('delete from public.requests where group_id = $1', [empty.ids.groups['E2E模擬店1']]);
+      await pinYear(page, SEED_USER_IDS.rep, empty.yearId);
+      await page.goto('/my/');
+      await expect(page.getByText('申請している品目はありません')).toBeVisible();
+      await shoot(page, 'T13', 'my-empty-mobile');
+    } finally {
+      await s.cleanup();
+      await empty.cleanup();
+    }
+  });
+});
+
+test.describe('T13 自団体の振り分け（管理者）', () => {
+  test.use({ storageState: storageStateFor('admin'), viewport: MOBILE });
+
+  test('T13 自団体の振り分け：団体代表でなければ権限なし', async ({ page }) => {
+    const s = await createScenario({ dataset: 'small', status: 'allocating', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/my/');
+      await expect(page.getByRole('alert').filter({ hasText: '権限がありません' })).toBeVisible();
+      await shoot(page, 'T13', 'my-forbidden-mobile');
     } finally {
       await s.cleanup();
     }
