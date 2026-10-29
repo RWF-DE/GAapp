@@ -1,0 +1,453 @@
+// マスタ設定（/settings）のデータの読み書き（画面の設計 2.1・2.3・3.2。T09）。
+// 読む：年度の行・rooms・room_years・items・groups・distance_overrides・rules（参照の確かめ）・メンバー（year_roles・group_members・
+// invitations・profiles）。書く：rooms・room_years・items・groups・distance_overrides は直接（RLS の範囲）、年度・招待・ロールは RPC。
+// 削除はすべて deleteChecked（0 行なら「削除しました」と出さない。2.3）。
+import { checkGroupNames, type GroupCategory, type Json, type RuleKind, type TablesInsert, type TablesUpdate } from '@gaapp/shared';
+import { fetchAll } from '@/lib/db/fetch-all';
+import { deleteChecked } from '@/lib/db/delete-checked';
+import {
+  COLUMNS,
+  type DistanceOverrideRow,
+  type GroupRow,
+  type ItemRow,
+  type RoomRow,
+  type RoomYearRow,
+  type RuleDbRow,
+  type YearRow,
+} from '@/lib/db/types';
+import { updateWithLock } from '@/lib/db/update-with-lock';
+import { appError, toAppError } from '@/lib/errors';
+import { RULE_KIND_LABELS } from '@/lib/labels';
+import { callRpc } from '@/lib/rpc';
+import type { AppRole } from '@/lib/auth/membership';
+import type { GroupCsvRow } from '@/lib/schemas/settings';
+import { nameKey } from '@/lib/schemas/settings';
+import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
+
+// ---- タブ ----
+
+export const SETTINGS_TABS = ['years', 'rooms', 'items', 'groups', 'distance', 'users', 'export'] as const;
+export type SettingsTab = (typeof SETTINGS_TABS)[number];
+
+export const SETTINGS_TAB_LABELS: Record<SettingsTab, string> = {
+  years: '年度',
+  rooms: '場所',
+  items: '品目',
+  groups: '団体',
+  distance: '距離',
+  users: 'ユーザー',
+  export: '書き出し',
+};
+
+/** クエリの tab（合わない値は既定の years。1.1） */
+export function parseSettingsTab(v: string | null | undefined): SettingsTab {
+  return (SETTINGS_TABS as readonly string[]).includes(v ?? '') ? (v as SettingsTab) : 'years';
+}
+
+// ---- 並び（sort_order → 名前 → id。CLAUDE.md の約束） ----
+
+const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+export function bySortOrder<T extends { sort_order: number; name: string; id: string }>(a: T, b: T): number {
+  return a.sort_order - b.sort_order || a.name.localeCompare(b.name, 'ja') || cmp(a.id, b.id);
+}
+
+// ---- ルールの参照（団体・場所の削除の前。2.7・3.2） ----
+
+/** 参照を探すルールの行（DB の行。params は壊れていてもよい） */
+export type RuleRefSource = Pick<RuleDbRow, 'id' | 'code' | 'kind' | 'params' | 'enabled'>;
+
+export interface RuleRef {
+  id: string;
+  code: string;
+  kind: RuleKind;
+  enabled: boolean;
+  /** 内容の文（「運び元の制限：この場所を運び元に含む」など） */
+  summary: string;
+}
+
+export interface RuleRefs {
+  /** 参照している有効なルール（あれば削除を押せなくする） */
+  enabled: RuleRef[];
+  /** 参照している無効なルール（削除は止めず、件数を添える） */
+  disabled: RuleRef[];
+}
+
+const asRecord = (v: Json | unknown): Record<string, unknown> | null =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+
+/** その団体を参照する所（params.group と、DB の付け替えも見る params.groups） */
+function refersGroup(params: Record<string, unknown>, groupId: string): boolean {
+  return params.group === groupId || strings(params.groups).includes(groupId);
+}
+
+/** その場所を参照する所（source_restrict の rooms、keep の room） */
+function refersRoom(params: Record<string, unknown>, roomId: string): boolean {
+  return params.room === roomId || strings(params.rooms).includes(roomId);
+}
+
+function summaryOf(kind: RuleKind, target: 'group' | 'room', params: Record<string, unknown>): string {
+  const label = RULE_KIND_LABELS[kind] ?? kind;
+  if (target === 'group') {
+    if (kind === 'fixed_request' && typeof params.item === 'string') return `${label}：この団体の ${params.item} を固定`;
+    if (kind === 'keep') return `${label}：この団体の使用場所の備品を残す`;
+    if (kind === 'source_restrict') return `${label}：この団体の運び元を制限`;
+    return `${label}：この団体を対象にする`;
+  }
+  if (kind === 'keep') return `${label}：この場所の備品を残す`;
+  if (kind === 'source_restrict') return `${label}：この場所を運び元に含む`;
+  return `${label}：この場所を参照する`;
+}
+
+/**
+ * 団体か場所を参照するルール（rules.params の group・groups・room・rooms。jsonb で外部キーがないので、消すと参照の切れたルールが残り
+ * validate が例外になる。2.7）。有効と無効に分け、コードの順に返す。params が壊れていても読める所だけで判定する。純粋関数。
+ *
+ * @example
+ * const refs = rulesReferencing(rules, { groupId: g.id });
+ * const blocked = refs.enabled.length > 0;   // 削除のボタンを押せなくする
+ */
+export function rulesReferencing(
+  rules: readonly RuleRefSource[],
+  target: { groupId: string } | { roomId: string },
+): RuleRefs {
+  const out: RuleRefs = { enabled: [], disabled: [] };
+  const sorted = [...rules].sort((a, b) => cmp(a.code, b.code) || cmp(a.id, b.id));
+  for (const r of sorted) {
+    const params = asRecord(r.params);
+    if (!params) continue;
+    const isGroup = 'groupId' in target;
+    const hit = isGroup ? refersGroup(params, target.groupId) : refersRoom(params, target.roomId);
+    if (!hit) continue;
+    const ref: RuleRef = { id: r.id, code: r.code, kind: r.kind, enabled: r.enabled, summary: summaryOf(r.kind, isGroup ? 'group' : 'room', params) };
+    (r.enabled ? out.enabled : out.disabled).push(ref);
+  }
+  return out;
+}
+
+// ---- 年度 ----
+
+/** 年度の変更の patch（変えたキーだけ。日時は同じ時刻なら変えていない扱い） */
+export function yearPatch(
+  year: Pick<YearRow, 'label' | 'festival_start' | 'request_open_at' | 'request_close_at'>,
+  next: { label: string; festival_start: string; request_open_at: string | null; request_close_at: string | null },
+): Partial<typeof next> {
+  const sameTime = (a: string | null, b: string | null) =>
+    a === null || b === null ? a === b : Date.parse(a) === Date.parse(b);
+  const patch: Partial<typeof next> = {};
+  if (next.label !== year.label) patch.label = next.label;
+  if (next.festival_start !== year.festival_start) patch.festival_start = next.festival_start;
+  if (!sameTime(next.request_open_at, year.request_open_at)) patch.request_open_at = next.request_open_at;
+  if (!sameTime(next.request_close_at, year.request_close_at)) patch.request_close_at = next.request_close_at;
+  return patch;
+}
+
+/**
+ * 新しい年度を作る（create_year_from。複製元は開いている年度）。作った後に、複製元で有効だったのに新しい年度で無効になったルール
+ * （付け替えられなかったもの。memo に理由が入る）を数える。
+ */
+export async function createYearFrom(
+  prev: Pick<YearRow, 'id'>,
+  label: string,
+  festivalStart: string,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<{ year: YearRow; disabledRuleCodes: string[] }> {
+  const created = await callRpc('create_year_from', { p_prev_year_id: prev.id, p_label: label, p_festival_start: festivalStart }, client);
+  const year = created as unknown as YearRow;
+  const [before, after] = await Promise.all([
+    client.from('rules').select('code, enabled').eq('year_id', prev.id),
+    client.from('rules').select('code, enabled').eq('year_id', year.id),
+  ]);
+  if (before.error) throw toAppError(before.error, before.status);
+  if (after.error) throw toAppError(after.error, after.status);
+  const wasEnabled = new Set((before.data ?? []).filter((r) => r.enabled).map((r) => r.code));
+  const disabledRuleCodes = (after.data ?? [])
+    .filter((r) => !r.enabled && wasEnabled.has(r.code))
+    .map((r) => r.code)
+    .sort(cmp);
+  return { year, disabledRuleCodes };
+}
+
+// ---- 読む ----
+
+export async function fetchRooms(client: AppSupabaseClient = getSupabase()): Promise<RoomRow[]> {
+  const res = await client.from('rooms').select(COLUMNS.rooms).order('sort_order').order('id');
+  if (res.error) throw toAppError(res.error, res.status);
+  return ((res.data ?? []) as unknown as RoomRow[]).sort(bySortOrder);
+}
+
+export async function fetchRoomYears(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<RoomYearRow[]> {
+  const res = await client.from('room_years').select(COLUMNS.room_years).eq('year_id', yearId).order('room_id');
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data ?? []) as unknown as RoomYearRow[];
+}
+
+export async function fetchItems(client: AppSupabaseClient = getSupabase()): Promise<ItemRow[]> {
+  const res = await client.from('items').select(COLUMNS.items).order('sort_order').order('id');
+  if (res.error) throw toAppError(res.error, res.status);
+  return ((res.data ?? []) as unknown as ItemRow[]).sort(
+    (a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name, 'ja') || cmp(a.id, b.id),
+  );
+}
+
+export async function fetchGroups(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<GroupRow[]> {
+  const res = await client.from('groups').select(COLUMNS.groups).eq('year_id', yearId).order('sort_order').order('id');
+  if (res.error) throw toAppError(res.error, res.status);
+  return ((res.data ?? []) as unknown as GroupRow[]).sort(bySortOrder);
+}
+
+export async function fetchDistanceOverrides(client: AppSupabaseClient = getSupabase()): Promise<DistanceOverrideRow[]> {
+  const res = await client.from('distance_overrides').select(COLUMNS.distance_overrides).order('building_a').order('building_b');
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data ?? []) as unknown as DistanceOverrideRow[];
+}
+
+/** 年度のルール（無効を含む。団体・場所の削除の前の参照の確かめに使う） */
+export async function fetchRules(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<RuleDbRow[]> {
+  const res = await client.from('rules').select(COLUMNS.rules).eq('year_id', yearId).order('code').order('id');
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data ?? []) as unknown as RuleDbRow[];
+}
+
+/** 振り分けの行の運び元（使用不可にする前の確かめ。3.2・3.9）：場所ごとの全行の数と、固定・手動の行の数 */
+export interface AllocationSources {
+  all: Map<string, number>;
+  fixed: Map<string, number>;
+}
+
+export async function fetchAllocationSources(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<AllocationSources> {
+  const rows = await fetchAll((from, to) =>
+    client.from('allocations').select('id, source_room_id, origin, pinned').eq('year_id', yearId).order('id').range(from, to),
+  );
+  const all = new Map<string, number>();
+  const fixed = new Map<string, number>();
+  for (const r of rows) {
+    all.set(r.source_room_id, (all.get(r.source_room_id) ?? 0) + 1);
+    if (r.pinned || r.origin === 'manual') fixed.set(r.source_room_id, (fixed.get(r.source_room_id) ?? 0) + 1);
+  }
+  return { all, fixed };
+}
+
+// ---- メンバー（ユーザーのタブ） ----
+
+export interface MemberRow {
+  userId: string;
+  /** profiles の表示名。読めなければ null（「名前を表示できません」） */
+  displayName: string | null;
+  role: AppRole | null;
+  roleUpdatedAt: string | null;
+  /** 代表する団体（この年度） */
+  groups: { id: string; name: string }[];
+}
+
+export interface InvitationRow {
+  id: string;
+  email: string;
+  role: AppRole | null;
+  groupId: string | null;
+  usedAt: string | null;
+  createdAt: string;
+}
+
+export interface Members {
+  members: MemberRow[];
+  invitations: InvitationRow[];
+  /** 団体ごとの代表者の数 */
+  repCount: Map<string, number>;
+}
+
+const ROLE_ORDER: Record<AppRole, number> = { admin: 0, staff: 1, viewer: 2 };
+
+/** 年度のメンバー（ロールと団体代表）と招待を読む（admin だけが全部を読める） */
+export async function fetchMembers(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<Members> {
+  const [roles, reps, invs] = await Promise.all([
+    client.from('year_roles').select('user_id, role, updated_at').eq('year_id', yearId).order('user_id'),
+    client
+      .from('group_members')
+      .select('group_id, user_id, groups!inner(year_id, name)')
+      .eq('groups.year_id', yearId)
+      .order('group_id')
+      .order('user_id'),
+    client
+      .from('invitations')
+      .select('id, email, role, group_id, used_at, created_at')
+      .eq('year_id', yearId)
+      .order('created_at')
+      .order('id'),
+  ]);
+  for (const r of [roles, reps, invs]) if (r.error) throw toAppError(r.error, r.status);
+  const repRows = (reps.data ?? []) as unknown as { group_id: string; user_id: string; groups: { name: string } }[];
+  const userIds = [...new Set([...(roles.data ?? []).map((r) => r.user_id), ...repRows.map((r) => r.user_id)])];
+  const names = new Map<string, string>();
+  if (userIds.length > 0) {
+    const prof = await client.from('profiles').select('user_id, display_name').in('user_id', userIds);
+    if (prof.error) throw toAppError(prof.error, prof.status);
+    for (const p of prof.data ?? []) names.set(p.user_id, p.display_name);
+  }
+  const byUser = new Map<string, MemberRow>();
+  const memberOf = (userId: string): MemberRow => {
+    let m = byUser.get(userId);
+    if (!m) {
+      m = { userId, displayName: names.get(userId) ?? null, role: null, roleUpdatedAt: null, groups: [] };
+      byUser.set(userId, m);
+    }
+    return m;
+  };
+  for (const r of roles.data ?? []) {
+    const m = memberOf(r.user_id);
+    m.role = r.role;
+    m.roleUpdatedAt = r.updated_at;
+  }
+  const repCount = new Map<string, number>();
+  for (const r of repRows) {
+    memberOf(r.user_id).groups.push({ id: r.group_id, name: r.groups.name });
+    repCount.set(r.group_id, (repCount.get(r.group_id) ?? 0) + 1);
+  }
+  const members = [...byUser.values()].sort(
+    (a, b) =>
+      (a.role ? ROLE_ORDER[a.role] : 9) - (b.role ? ROLE_ORDER[b.role] : 9) ||
+      (a.displayName ?? '￿').localeCompare(b.displayName ?? '￿', 'ja') ||
+      cmp(a.userId, b.userId),
+  );
+  for (const m of members) m.groups.sort((a, b) => a.name.localeCompare(b.name, 'ja') || cmp(a.id, b.id));
+  const invitations = (invs.data ?? []).map((i) => ({
+    id: i.id,
+    email: i.email,
+    role: i.role,
+    groupId: i.group_id,
+    usedAt: i.used_at,
+    createdAt: i.created_at,
+  }));
+  return { members, invitations, repCount };
+}
+
+// ---- 書く（直接。RLS の範囲） ----
+
+async function insertOne<T>(
+  client: AppSupabaseClient,
+  table: 'rooms' | 'items' | 'groups' | 'distance_overrides',
+  values: unknown,
+  columns: string,
+): Promise<T> {
+  const c = client as unknown as {
+    from(t: string): { insert(v: unknown): { select(c: string): { maybeSingle(): PromiseLike<{ data: unknown; error: unknown; status?: number }> } } };
+  };
+  const res = await c.from(table).insert(values).select(columns).maybeSingle();
+  if (res.error) throw toAppError(res.error, res.status);
+  // RLS の with check で拒否された insert は 42501 になる。行が返らないのは読めない（権限が変わった）とき
+  if (!res.data) throw appError('forbidden', 'lock_unchanged', { table });
+  return res.data as T;
+}
+
+export type RoomValues = Omit<TablesInsert<'rooms'>, 'id' | 'created_at' | 'updated_at'>;
+export type ItemValues = Omit<TablesInsert<'items'>, 'id' | 'created_at' | 'updated_at'>;
+export type GroupValues = Omit<TablesInsert<'groups'>, 'id' | 'year_id' | 'created_at' | 'updated_at'>;
+
+export const insertRoom = (v: RoomValues, client: AppSupabaseClient = getSupabase()) =>
+  insertOne<RoomRow>(client, 'rooms', v, COLUMNS.rooms);
+export const updateRoom = (row: Pick<RoomRow, 'id' | 'updated_at'>, patch: TablesUpdate<'rooms'>, client: AppSupabaseClient = getSupabase()) =>
+  updateWithLock(client, 'rooms', { id: row.id }, row.updated_at, patch);
+export const deleteRoom = (row: Pick<RoomRow, 'id' | 'updated_at'>, client: AppSupabaseClient = getSupabase()) =>
+  deleteChecked(client, 'rooms', { id: row.id }, row.updated_at);
+
+export const insertItem = (v: ItemValues, client: AppSupabaseClient = getSupabase()) =>
+  insertOne<ItemRow>(client, 'items', v, COLUMNS.items);
+export const updateItem = (row: Pick<ItemRow, 'id' | 'updated_at'>, patch: TablesUpdate<'items'>, client: AppSupabaseClient = getSupabase()) =>
+  updateWithLock(client, 'items', { id: row.id }, row.updated_at, patch);
+
+export const insertGroup = (yearId: string, v: GroupValues, client: AppSupabaseClient = getSupabase()) =>
+  insertOne<GroupRow>(client, 'groups', { ...v, year_id: yearId }, COLUMNS.groups);
+export const updateGroup = (row: Pick<GroupRow, 'id' | 'updated_at'>, patch: TablesUpdate<'groups'>, client: AppSupabaseClient = getSupabase()) =>
+  updateWithLock(client, 'groups', { id: row.id }, row.updated_at, patch);
+export const deleteGroup = (row: Pick<GroupRow, 'id' | 'updated_at'>, client: AppSupabaseClient = getSupabase()) =>
+  deleteChecked(client, 'groups', { id: row.id }, row.updated_at);
+
+export const insertDistance = (v: { building_a: string; building_b: string; cost: number }, client: AppSupabaseClient = getSupabase()) =>
+  insertOne<DistanceOverrideRow>(client, 'distance_overrides', v, COLUMNS.distance_overrides);
+export const updateDistance = (row: DistanceOverrideRow, cost: number, client: AppSupabaseClient = getSupabase()) =>
+  updateWithLock(client, 'distance_overrides', { building_a: row.building_a, building_b: row.building_b }, row.updated_at, { cost });
+export const deleteDistance = (row: DistanceOverrideRow, client: AppSupabaseClient = getSupabase()) =>
+  deleteChecked(client, 'distance_overrides', { building_a: row.building_a, building_b: row.building_b }, row.updated_at);
+
+// ---- 団体の CSV の取り込み（3.2） ----
+
+export type GroupImportAction = 'add' | 'change' | 'same';
+
+export interface GroupImportLine {
+  row: GroupCsvRow;
+  action: GroupImportAction;
+  /** 変える既存の団体（change・same） */
+  existing: GroupRow | null;
+  /** 変わる項目の日本語名（change のとき） */
+  changes: string[];
+}
+
+export interface GroupImportPlan {
+  lines: GroupImportLine[];
+  counts: Record<GroupImportAction, number>;
+  /** 取り込んだ後の年度の全団体に checkGroupNames を当てた誤り（団体名つき）。あれば保存しない */
+  nameErrors: string[];
+}
+
+const sameArray = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, k) => x === b[k]);
+
+/**
+ * CSV の行を、年度の今の団体と突き合わせる（団体名が同じ団体を変える。なければ足す。削除はしない）。
+ * 取り込んだ後の全団体に checkGroupNames を当てる（大文字・小文字だけが違う名前を止める。D-27）。純粋関数。
+ */
+export function planGroupImport(rows: readonly GroupCsvRow[], groups: readonly GroupRow[]): GroupImportPlan {
+  const byName = new Map(groups.map((g) => [g.name, g] as const));
+  const counts: Record<GroupImportAction, number> = { add: 0, change: 0, same: 0 };
+  const lines: GroupImportLine[] = rows.map((row) => {
+    const existing = byName.get(row.name) ?? null;
+    if (!existing) {
+      counts.add += 1;
+      return { row, action: 'add', existing: null, changes: [] };
+    }
+    const changes: string[] = [];
+    if ((existing.display_name?.trim() || null) !== row.display_name) changes.push('表示名');
+    if (existing.category !== row.category) changes.push('区分');
+    if (existing.is_food !== row.is_food) changes.push('飲食');
+    if (existing.location_room_id !== row.location_room_id) changes.push('使用場所');
+    if (!sameArray(existing.aliases, row.aliases)) changes.push('別名');
+    if (existing.sort_order !== row.sort_order) changes.push('並び順');
+    const action: GroupImportAction = changes.length > 0 ? 'change' : 'same';
+    counts[action] += 1;
+    return { row, action, existing, changes };
+  });
+  const after = [
+    ...groups.map((g) => ({ name: g.name })),
+    ...lines.filter((l) => l.action === 'add').map((l) => ({ name: l.row.name })),
+  ];
+  const nameErrors = checkGroupNames(after).map((e) => e.message);
+  return { lines, counts, nameErrors };
+}
+
+/** 取り込みの保存：足す・変える行だけを (year_id, name) で1回の upsert にする（全部か何もしないか） */
+export async function saveGroupImport(
+  yearId: string,
+  plan: GroupImportPlan,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<number> {
+  const values: TablesInsert<'groups'>[] = plan.lines
+    .filter((l) => l.action !== 'same')
+    .map(({ row }) => ({
+      year_id: yearId,
+      name: row.name,
+      display_name: row.display_name,
+      category: row.category as GroupCategory,
+      is_food: row.is_food,
+      location_room_id: row.location_room_id,
+      aliases: row.aliases,
+      sort_order: row.sort_order,
+    }));
+  if (values.length === 0) return 0;
+  const res = await client.from('groups').upsert(values, { onConflict: 'year_id,name' }).select('id');
+  if (res.error) throw toAppError(res.error, res.status);
+  // RLS で拒否された update は行を返さない（エラーにならない）。返った数が少なければ権限か状態が変わった
+  if ((res.data ?? []).length !== values.length) throw appError('forbidden', 'lock_unchanged', { table: 'groups' });
+  return values.length;
+}
+
+/** 名前の比べ方（CSV と同じ。重複の確かめに使う） */
+export { nameKey };
