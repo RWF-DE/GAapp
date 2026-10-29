@@ -1,11 +1,14 @@
 'use client';
 
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { AppLink } from '@/components/common/app-link';
 import { isActivePath, type NavItem } from '@/lib/navigation';
 import { cn } from '@/lib/utils';
 
-/** ナビゲーション。できていない画面は「準備中」としてリンクにしない */
+/**
+ * ナビゲーション。T09a で全画面に雛形のページを置いたので、項目はすべてリンク（ready）。
+ * AppLink を使うので、未保存の入力があれば移る前に確かめる。
+ */
 export function AppNav({ items, onNavigate, className }: { items: NavItem[]; onNavigate?: () => void; className?: string }) {
   const pathname = usePathname();
   return (
@@ -17,7 +20,7 @@ export function AppNav({ items, onNavigate, className }: { items: NavItem[]; onN
           return (
             <li key={item.href}>
               {item.ready ? (
-                <Link
+                <AppLink
                   href={item.href}
                   onClick={onNavigate}
                   aria-current={active ? 'page' : undefined}
@@ -29,7 +32,7 @@ export function AppNav({ items, onNavigate, className }: { items: NavItem[]; onN
                   )}
                 >
                   {item.label}
-                </Link>
+                </AppLink>
               ) : (
                 <span aria-disabled="true" className={cn(base, 'cursor-default text-muted-foreground')}>
                   {item.label}

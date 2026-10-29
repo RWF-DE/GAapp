@@ -22,12 +22,21 @@ const NO_NODE = { group: ['node:*'], message: 'ブラウザで動くコードに
 // - @gaapp/exporter（ExcelJS 約 0.9 MB）は使う所で `await import('@gaapp/exporter')` する。型だけの import はよい。テストは例外。
 // - next/navigation の useRouter を直接使わない（push・replace が未保存の入力の確かめを通らないため）。
 //   移動は useGuardedRouter（WEB_GUARDED_ROUTER_FILES に置く）を使う。除外するのは、そのファイルと、
-//   AppShell の外にある (auth) のページ、未ログインのときの強制の移動だけをする AppShell。
+//   AppShell の外にある (auth) のページだけ（AppShell の強制の移動は useGuardedRouter の forceReplace。段 C）。
 const WEB_GUARDED_ROUTER_FILES = ['apps/web/lib/navigation.ts', 'apps/web/lib/navigation/**'];
-const WEB_ROUTER_EXEMPT = [
-  ...WEB_GUARDED_ROUTER_FILES,
-  'apps/web/app/(auth)/**',
-  'apps/web/components/layout/app-shell.tsx',
+const WEB_ROUTER_EXEMPT = [...WEB_GUARDED_ROUTER_FILES, 'apps/web/app/(auth)/**'];
+// - 年度の切り替え（AuthProvider の setYear）は、未保存の入力を確かめる useGuardedSetYear（lib/auth/guarded.ts）だけで呼ぶ。
+//   components/layout と lib/auth の外（とテスト）から setYear を直接読むことを止める（画面の設計 1.3.1。段 C）。
+const NO_DIRECT_SET_YEAR = [
+  'error',
+  {
+    selector: "ObjectPattern > Property[key.name='setYear']",
+    message: '年度の切り替えは useGuardedSetYear（lib/auth/guarded）を使う（未保存の入力を確かめるため）',
+  },
+  {
+    selector: "MemberExpression[property.name='setYear']",
+    message: '年度の切り替えは useGuardedSetYear（lib/auth/guarded）を使う（未保存の入力を確かめるため）',
+  },
 ];
 // apps/web/lib/testing/ はテスト専用の補助（偽の Supabase・合成データの DB の行）。テストと同じ扱いにし、アプリからは読ませない
 const WEB_TESTS = ['apps/web/**/*.test.{ts,tsx}', 'apps/web/lib/testing/**'];
@@ -152,4 +161,9 @@ export default tseslint.config(
     rules: { '@typescript-eslint/no-restricted-imports': webImports({ highs: false, exporter: false, testing: false }) },
   },
   { files: WEB_ROUTER_EXEMPT, rules: { '@typescript-eslint/no-restricted-imports': webImports({ router: false }) } },
+  {
+    files: ['apps/web/**/*.{ts,tsx}'],
+    ignores: ['apps/web/components/layout/**', 'apps/web/lib/auth/**', ...WEB_TESTS],
+    rules: { 'no-restricted-syntax': NO_DIRECT_SET_YEAR },
+  },
 );
