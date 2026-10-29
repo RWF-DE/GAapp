@@ -10,6 +10,7 @@ import { YearStatusBadge } from './year-status-badge';
 /**
  * 画面の題名、開いている年度とその状態、最終読み込み日時と「読み直す」（画面の設計 1.4・2.6。T09a）。
  * データの多い画面（ダッシュボード・在庫一覧・申請一覧・振り分け・キャスター机交換・履歴）は loadedAt と onReload を渡す。
+ * スマホ（md 未満）では題名の段が全幅になり、最終読み込み・読み直す・actions はその下の行に並ぶ（呼ぶ側で className を足さなくてよい）。
  *
  * @example
  * <PageHeader title="在庫一覧" loadedAt={q.dataUpdatedAt ? new Date(q.dataUpdatedAt) : null}
@@ -39,7 +40,9 @@ export function PageHeader({
   const year = membership.status === 'ready' ? membership.membership.year : null;
   return (
     <header className={cn('mb-4 flex flex-wrap items-start gap-x-4 gap-y-2', className)}>
-      <div className="min-w-0 flex-1 space-y-1">
+      {/* md 未満は題名の段を全幅にし、最終読み込み・読み直す・操作を次の行に送る（390px で題名と年度名が数文字ずつで折れないように）。
+          md 以上は今までどおり（flex-1 と同じ grow・basis-0）で横に並べる */}
+      <div className="min-w-0 grow basis-full space-y-1 md:basis-0">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-xl font-bold md:text-2xl">{title}</h1>
           {showYear && year ? (
