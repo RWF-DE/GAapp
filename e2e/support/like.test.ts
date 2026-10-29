@@ -4,15 +4,14 @@ import { escapeLike, likePrefix } from './like';
 
 /** Postgres の `x like pattern escape '\'` と同じ判定（テスト用の小さな実装） */
 function pgLike(value: string, pattern: string): boolean {
+  const lit = (c: string) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   let re = '';
   for (let i = 0; i < pattern.length; i++) {
-    const ch = pattern[i];
-    if (ch === '\\') {
-      i++;
-      re += (pattern[i] ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    } else if (ch === '%') re += '[\\s\\S]*';
+    const ch = pattern.charAt(i);
+    if (ch === '\\') re += lit(pattern.charAt(++i));
+    else if (ch === '%') re += '[\\s\\S]*';
     else if (ch === '_') re += '[\\s\\S]';
-    else re += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    else re += lit(ch);
   }
   return new RegExp(`^${re}$`, 'u').test(value);
 }
