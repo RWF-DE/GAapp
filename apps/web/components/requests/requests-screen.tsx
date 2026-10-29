@@ -3,7 +3,7 @@
 import { GROUP_CATEGORIES, type GroupCategory } from '@gaapp/shared';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { DraftNotice } from '@/components/common/draft-notice';
@@ -27,17 +27,22 @@ import {
   judgeSubmitFailure,
   markSubmittedAfterDeadline,
   markSubmittedDirect,
+  normalizePending,
   outsideFlagOf,
   pendingChanges,
-  prunePending,
+  rebaseKeysTo,
+  rebasePending,
   remainingText,
+  samePending,
   saveCellsDirect,
   saveGroupsAfterDeadline,
   setPendingCell,
   useRequestsTables,
   type AdminWriteMode,
+  type CellChange,
   type MatrixRow,
   type OutsideFlag,
+  type PendingCell,
   type PendingCells,
   type RequestsTables,
 } from '@/lib/data/requests';
@@ -115,8 +120,20 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
 
   const draftKeyValue: DraftKey = useMemo(() => ({ userId, yearId, screen: 'requests' }), [userId, yearId]);
   const writer = useMemo(() => createDraftWriter<PendingCells>(draftKeyValue), [draftKeyValue]);
-  const [draft, setDraft] = useState(() => (admin ? loadDraft<PendingCells>(draftKeyValue) : null));
+  const [draft, setDraft] = useState(() => {
+    // 下書きは未保存のセル（入れた数と、編集したときの行）。形の違う値（古い形の下書きなど）は捨てる
+    const d = admin ? loadDraft<unknown>(draftKeyValue) : null;
+    const value = d ? normalizePending(d.value) : {};
+    return d && Object.keys(value).length > 0 ? { value, savedAt: d.savedAt } : null;
+  });
   useEffect(() => () => writer.flush(), [writer]);
+
+  /** 今の未保存のセル（保存の途中の await の後でも最新を読む。pending と同じものを持つ） */
+  const pendingRef = useRef<PendingCells>({});
+  /** 保存中か（保存中に届いた表は、保存の後にまとめて当て直す） */
+  const savingRef = useRef(false);
+  /** 未保存のセルを当て直した表（同じ表で2回当て直さない） */
+  const rebasedRef = useRef<RequestsTables | null>(null);
 
   const tables = q.data;
   const matrix = useMemo(() => (tables ? buildRequestMatrix(tables, { category, filter }) : null), [tables, category, filter]);
@@ -131,11 +148,56 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     [tables],
   );
 
-  const updatePending = (next: PendingCells) => {
+  /** 未保存のセルを最新の値から変える（下書きにも写す。変わらなければ何もしない） */
+  const applyPending = (fn: (p: PendingCells) => PendingCells) => {
+    const prev = pendingRef.current;
+    const next = fn(prev);
+    if (samePending(prev, next)) return;
+    pendingRef.current = next;
     setPending(next);
     if (Object.keys(next).length === 0) writer.clear();
     else writer.write(next);
   };
+
+  /** セルに印をつける（null は外す） */
+  const applyMarks = (updates: Readonly<Record<string, CellMark | null>>) => {
+    if (Object.keys(updates).length === 0) return;
+    setMarks((m) => {
+      const next = { ...m };
+      for (const [k, v] of Object.entries(updates)) {
+        if (v) next[k] = v;
+        else delete next[k];
+      }
+      return next;
+    });
+  };
+
+  /**
+   * 表（読み直した表・戻した下書きの相手）に未保存のセルを当て直す。編集したときの行からほかの人が変えたセルは、読み直した値に
+   * 戻して印をつける（3.6。黙って上書きしない）。戻したセルの数を返す。
+   */
+  const rebaseOnto = (t: RequestsTables, prepare: (p: PendingCells) => PendingCells = (p) => p): number => {
+    let conflicts: string[] = [];
+    applyPending((p) => {
+      const r = rebasePending(prepare(p), t);
+      conflicts = r.conflicts;
+      return r.pending;
+    });
+    rebasedRef.current = t;
+    applyMarks(Object.fromEntries(conflicts.map((k) => [k, 'conflict' as const])));
+    return conflicts.length;
+  };
+
+  /** 表が届いたら当て直す（読み直す・代理入力や取り込みの後の invalidate・ほかの書き込みの後の読み直し）。保存中は保存が行う */
+  const rebaseIfNew = (t: RequestsTables) => {
+    if (savingRef.current || rebasedRef.current === t) return;
+    const n = rebaseOnto(t);
+    if (n > 0) toast.info(`${n} 件のセルは、ほかの人が先に変えたので読み直した値に戻しました`);
+  };
+  const onTablesLoaded = useEffectEvent((t: RequestsTables) => rebaseIfNew(t));
+  useEffect(() => {
+    if (q.data) onTablesLoaded(q.data);
+  }, [q.data]);
 
   if (yearQ.isError || q.isError) {
     return (
@@ -167,10 +229,10 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   const left = remainingText(year.request_close_at, now);
   const proxyRow = proxyGroupId ? (allRows.rows.find((r) => r.group.id === proxyGroupId) ?? null) : null;
 
-  /** 書き込みの後に読み直す（表と年度。未保存のセルは DB と同じになったものを外す） */
+  /** 書き込みの後に読み直す（未保存のセルは当て直す。保存中は保存が当て直す） */
   const reloadTables = async (): Promise<RequestsTables | undefined> => {
     const res = await q.refetch();
-    if (res.data) setPending((p) => prunePending(p, res.data));
+    if (res.data) rebaseIfNew(res.data);
     return res.data;
   };
 
@@ -202,40 +264,77 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     });
   };
 
-  const saveDirect = async () => {
+  /** 保存を始める・終える（保存中はセルを編集できず、届いた表の当て直しは保存の後にまとめて行う） */
+  const beginSaving = () => {
+    savingRef.current = true;
     setSaving(true);
     setSaveError(null);
+  };
+  const endSaving = () => {
+    savingRef.current = false;
+    setSaving(false);
+  };
+
+  /**
+   * 保存の結果を未保存のセルに当てる（最新の未保存のセルに対して）。
+   * - saved：保存したセル。送った値のままなら外す。送った後に入れ直していれば、基準を保存した行に付け替えて残す。
+   * - revert：読み直した値に戻すセル。keep：値を残して基準を今の行に付け替えるセル（締切後の conflict。2.5）。
+   * その後で、読み直した表に残りを当て直す。
+   */
+  const applySaveResults = (
+    data: RequestsTables | undefined,
+    sent: readonly CellChange[],
+    { saved, revert, keep }: { saved: ReadonlySet<string>; revert: ReadonlySet<string>; keep: ReadonlySet<string> },
+  ) => {
+    const sentCount = new Map(sent.map((c) => [cellKey(c.groupId, c.itemId), c.count]));
+    const moved: string[] = [...keep];
+    const prepare = (p: PendingCells): PendingCells => {
+      const next: Record<string, PendingCell> = { ...p };
+      for (const k of saved) {
+        if (next[k]?.value === sentCount.get(k)) delete next[k];
+        else if (next[k]) moved.push(k);
+      }
+      for (const k of revert) delete next[k];
+      return data ? rebaseKeysTo(next, moved, data) : next;
+    };
+    if (data) rebaseOnto(data, prepare);
+    else applyPending(prepare);
+  };
+
+  const saveDirect = async () => {
+    const sent = changes;
+    beginSaving();
     try {
-      const results = await saveCellsDirect(changes);
-      const nextMarks = { ...marks };
-      let next: Record<string, number> = { ...pending };
+      const results = await saveCellsDirect(sent);
+      const markUpdates: Record<string, CellMark | null> = {};
+      const saved = new Set<string>();
+      const revert = new Set<string>();
       let okCount = 0;
       let firstError: AppError | null = null;
       for (const r of results) {
         const key = cellKey(r.change.groupId, r.change.itemId);
         if (r.ok) {
           okCount++;
-          delete next[key];
-          delete nextMarks[key];
+          saved.add(key);
+          markUpdates[key] = null;
           continue;
         }
         const kind = r.error.info.kind;
         if (kind === 'conflict' || kind === 'not_found') {
           // ほかの人が先に変えた：読み直した値に戻して印をつける
-          delete next[key];
-          nextMarks[key] = 'conflict';
+          revert.add(key);
+          markUpdates[key] = 'conflict';
         } else {
-          nextMarks[key] = 'error';
+          markUpdates[key] = 'error';
         }
         firstError ??= r.error;
       }
-      setMarks(nextMarks);
-      const data = await reloadTables();
-      if (data) next = prunePending(next, data);
-      updatePending(next);
+      applyMarks(markUpdates);
+      const data = (await q.refetch()).data;
+      applySaveResults(data, sent, { saved, revert, keep: new Set() });
       if (firstError) {
         const msg = await handleWriteError(firstError, 'direct', undefined);
-        const notSent = changes.length - results.length;
+        const notSent = sent.length - results.length;
         const head = `${okCount} 件を保存しました。${results.length - okCount} 件は保存できませんでした${notSent > 0 ? `（${notSent} 件は送っていません）` : ''}`;
         setSaveError(`${head}：${msg}`);
         toast.error(msg);
@@ -243,18 +342,19 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         toast.success(`${okCount} 件を保存しました`);
       }
     } finally {
-      setSaving(false);
+      endSaving();
     }
   };
 
   const saveDeadline = async (reason: string) => {
-    setSaving(true);
-    setSaveError(null);
+    const sent = changes;
+    beginSaving();
     try {
-      const byGroup = groupDeadlineRows(changes);
+      const byGroup = groupDeadlineRows(sent);
       const results = await saveGroupsAfterDeadline(byGroup, reason);
-      const nextMarks = { ...marks };
-      let next: Record<string, number> = { ...pending };
+      const markUpdates: Record<string, CellMark | null> = {};
+      const saved = new Set<string>();
+      const keep = new Set<string>();
       const messages: string[] = [];
       let reasonError: unknown = null;
       for (const r of results) {
@@ -262,11 +362,14 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         for (const row of rows) {
           const key = cellKey(r.groupId, row.itemId);
           if (r.ok) {
-            delete next[key];
-            delete nextMarks[key];
+            saved.add(key);
+            markUpdates[key] = null;
+          } else if (r.error.info.kind === 'conflict') {
+            // 締切後の conflict は、その団体を読み直し、変えたセルの値は残して印をつける（2.5）。次の保存は新しい updated_at で送る
+            keep.add(key);
+            markUpdates[key] = 'conflict';
           } else {
-            // 締切後の conflict は、その団体を読み直し、変えたセルの値は残して印をつける（2.5）
-            nextMarks[key] = r.error.info.kind === 'conflict' ? 'conflict' : 'error';
+            markUpdates[key] = 'error';
           }
         }
         if (!r.ok) {
@@ -274,10 +377,9 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           messages.push(await handleWriteError(r.error, 'update_requests_after_deadline', r.groupId));
         }
       }
-      setMarks(nextMarks);
-      const data = await reloadTables();
-      if (data) next = prunePending(next, data);
-      updatePending(next);
+      applyMarks(markUpdates);
+      const data = (await q.refetch()).data;
+      applySaveResults(data, sent, { saved, revert: new Set(), keep });
       const okGroups = results.filter((r) => r.ok).length;
       if (messages.length > 0) {
         const notSent = byGroup.size - results.length;
@@ -290,7 +392,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       }
       if (reasonError) throw reasonError;
     } finally {
-      setSaving(false);
+      endSaving();
     }
   };
 
@@ -327,7 +429,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         reloading={q.isFetching}
         actions={
           editable ? (
-            <Button variant="outline" onClick={() => setImportOpen(true)}>
+            <Button variant="outline" disabled={saving} onClick={() => setImportOpen(true)}>
               Googleフォームの回答を取り込む
             </Button>
           ) : null
@@ -350,8 +452,10 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         <DraftNotice
           savedAt={draft.savedAt}
           onRestore={() => {
-            setPending(draft.value ?? {});
+            // 編集したときの行と今の行を比べて当て直す（ほかの人が先に変えたセルは読み直した値に戻して印をつける）
+            const n = rebaseOnto(tables, () => draft.value);
             setDraft(null);
+            if (n > 0) toast.info(`${n} 件のセルは、ほかの人が先に変えたので読み直した値に戻しました`);
           }}
           onDiscard={() => {
             writer.cancel();
@@ -401,15 +505,14 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
               marks={marks}
               totals={totals}
               editable={editable}
+              busy={saving}
               admin={admin}
               onCellChange={(row, itemId, value) => {
-                const key = cellKey(row.group.id, itemId);
-                if (marks[key]) {
-                  const m = { ...marks };
-                  delete m[key];
-                  setMarks(m);
-                }
-                updatePending(setPendingCell(pending, row.group.id, itemId, value, row.cells[itemId]?.count ?? 0));
+                if (saving) return;
+                const cell = row.cells[itemId];
+                if (!cell) return;
+                applyMarks({ [cellKey(row.group.id, itemId)]: null });
+                applyPending((p) => setPendingCell(p, row.group.id, itemId, value, cell));
               }}
               onProxy={(row) => setProxyGroupId(row.group.id)}
               onMarkSubmitted={(row) => setMarkRow(row)}
@@ -423,7 +526,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
               <Button disabled={changes.length === 0 || saving} aria-busy={saving || undefined} onClick={onSave}>
                 {saving ? '保存中…' : `保存（${changes.length}件）`}
               </Button>
-              <Button variant="outline" disabled={changes.length === 0 || saving} onClick={() => updatePending({})}>
+              <Button variant="outline" disabled={changes.length === 0 || saving} onClick={() => applyPending(() => ({}))}>
                 変更を取り消す
               </Button>
               {mode === 'deadline' ? <span className="text-xs text-muted-foreground">締切後なので、保存には理由が要ります</span> : null}

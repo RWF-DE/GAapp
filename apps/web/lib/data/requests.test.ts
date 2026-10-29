@@ -21,7 +21,10 @@ import {
   outsideFlagOf,
   pendingChanges,
   previousCountsFor,
-  prunePending,
+  normalizePending,
+  rebaseKeysTo,
+  rebasePending,
+  samePending,
   remainingText,
   requestWindowOf,
   saveCellsDirect,
@@ -222,12 +225,21 @@ describe('申請一覧の表', () => {
     expect(m.unsubmitted).toEqual([]);
   });
 
-  it('未保存のセル：DB の数と同じなら外す。変更の一覧は今の行の updated_at を付け、申請できない品目は 0 だけ通す', () => {
-    let p = setPendingCell({}, a.id, item('desk').id, 5, 3);
-    p = setPendingCell(p, b.id, item('chair').id, 2, 0);
-    p = setPendingCell(p, a.id, item('long_desk_3').id, 0, 2);
-    p = setPendingCell(p, b.id, item('long_desk_3').id, 1, 0);
-    expect(setPendingCell(p, a.id, item('desk').id, 3, 3)).not.toHaveProperty(cellKey(a.id, item('desk').id));
+  const cellOfT = (g: GroupRow, code: string, t: RequestsTables = tables) =>
+    buildRequestMatrix(t).rows.find((r) => r.group.id === g.id)!.cells[item(code).id]!;
+  const key = (g: GroupRow, code: string) => cellKey(g.id, item(code).id);
+
+  it('未保存のセル：基準（最初に編集したときの行）の数と同じなら外す。変更の一覧は基準の updated_at を付け、申請できない品目は 0 だけ通す', () => {
+    let p = setPendingCell({}, a.id, item('desk').id, 5, cellOfT(a, 'desk'));
+    p = setPendingCell(p, b.id, item('chair').id, 2, cellOfT(b, 'chair'));
+    p = setPendingCell(p, a.id, item('long_desk_3').id, 0, cellOfT(a, 'long_desk_3'));
+    p = setPendingCell(p, b.id, item('long_desk_3').id, 1, cellOfT(b, 'long_desk_3'));
+    expect(p[key(a, 'desk')]).toEqual({ value: 5, baseCount: 3, baseUpdatedAt: T0 });
+    expect(p[key(b, 'chair')]).toEqual({ value: 2, baseCount: 0, baseUpdatedAt: null });
+    // 2回目の編集は基準を変えない（今の行が変わっていても、最初に編集したときの行のまま）
+    const later = { count: 4, updatedAt: T1 };
+    expect(setPendingCell(p, a.id, item('desk').id, 6, later)[key(a, 'desk')]).toEqual({ value: 6, baseCount: 3, baseUpdatedAt: T0 });
+    expect(setPendingCell(p, a.id, item('desk').id, 3, later)).not.toHaveProperty(key(a, 'desk'));
     const changes = pendingChanges(p, tables);
     expect(changes).toEqual(
       [
@@ -244,15 +256,65 @@ describe('申請一覧の表', () => {
     expect(byGroup.get(b.id)).toEqual([{ itemId: item('chair').id, count: 2 }]);
   });
 
-  it('読み直した後は、DB と同じになったセルを未保存から外す', () => {
-    const p = { [cellKey(a.id, item('desk').id)]: 5, [cellKey(b.id, item('desk').id)]: 7 };
-    const after = { ...tables, requests: [req(a, 'desk', 5, T1), req(b, 'desk', 1)] };
-    expect(prunePending(p, after)).toEqual({ [cellKey(b.id, item('desk').id)]: 7 });
+  it('編集 → ほかの人の変更を読み直す → 保存：送る updatedAt は編集したときの行のもの（DB が conflict を返す）', () => {
+    const p = setPendingCell({}, a.id, item('desk').id, 5, cellOfT(a, 'desk'));
+    const after = { ...tables, requests: [req(a, 'desk', 4, T1), ...tables.requests.slice(1)] };
+    expect(pendingChanges(p, after)).toEqual([{ groupId: a.id, itemId: item('desk').id, count: 5, updatedAt: T0 }]);
+    // 行のなかったセルに、ほかの人が行を足した：updatedAt を付けずに送る（DB は行があれば conflict）
+    const q = setPendingCell({}, b.id, item('chair').id, 2, cellOfT(b, 'chair'));
+    const added = { ...tables, requests: [...tables.requests, req(b, 'chair', 7, T1)] };
+    expect(pendingChanges(q, added)).toEqual([{ groupId: b.id, itemId: item('chair').id, count: 2, updatedAt: null }]);
+  });
+
+  it('当て直し：DB と同じになったセルは外し、基準から行が変わったセルは読み直した値に戻して conflicts に入れる', () => {
+    let p = setPendingCell({}, a.id, item('desk').id, 5, cellOfT(a, 'desk'));
+    p = setPendingCell(p, b.id, item('desk').id, 7, cellOfT(b, 'desk'));
+    p = setPendingCell(p, b.id, item('chair').id, 2, cellOfT(b, 'chair'));
+    p = setPendingCell(p, a.id, item('lectern').id, 1, cellOfT(a, 'lectern'));
+    // 変わらなければ同じものを返す
+    expect(rebasePending(p, tables).pending).toBe(p);
+    // a の机：自分の数（5）になった → 外す。b の机：ほかの人が 9 にした → 戻して印。b の椅子：ほかの人が行を足した → 戻して印
+    const after = {
+      ...tables,
+      requests: [req(a, 'desk', 5, T1), req(a, 'long_desk_3', 2), req(b, 'desk', 9, T1), req(b, 'chair', 3, T1), req(c, 'long_desk_3', 4)],
+    };
+    const r = rebasePending(p, after);
+    expect(r.pending).toEqual({ [key(a, 'lectern')]: { value: 1, baseCount: 0, baseUpdatedAt: null } });
+    expect(r.conflicts.sort()).toEqual([key(b, 'desk'), key(b, 'chair')].sort());
+    // 行が消えた（not_found）も戻す
+    const removed = { ...tables, requests: tables.requests.filter((x) => !(x.group_id === b.id && x.item_id === item('desk').id)) };
+    expect(rebasePending(setPendingCell({}, b.id, item('desk').id, 7, cellOfT(b, 'desk')), removed).conflicts).toEqual([key(b, 'desk')]);
+    // なくなった団体のセルは黙って外す
+    expect(rebasePending(p, { ...tables, groups: [a, c, d] }).pending).not.toHaveProperty(key(b, 'desk'));
+  });
+
+  it('基準を今の行に付け替える（値は残す。同じ数になれば外す）', () => {
+    const p = setPendingCell({}, a.id, item('desk').id, 5, cellOfT(a, 'desk'));
+    const after = { ...tables, requests: [req(a, 'desk', 4, T1)] };
+    expect(rebaseKeysTo(p, [key(a, 'desk')], after)).toEqual({ [key(a, 'desk')]: { value: 5, baseCount: 4, baseUpdatedAt: T1 } });
+    expect(rebaseKeysTo(p, [key(a, 'desk')], { ...tables, requests: [req(a, 'desk', 5, T1)] })).toEqual({});
+  });
+
+  it('下書きの値：形の違うもの・範囲の外の数は捨てる。比べる', () => {
+    const good = { value: 5, baseCount: 3, baseUpdatedAt: T0 };
+    const p = normalizePending({
+      [key(a, 'desk')]: good,
+      [key(a, 'chair')]: 9,
+      [key(b, 'desk')]: { value: -1, baseCount: 0, baseUpdatedAt: null },
+      [key(b, 'chair')]: { value: 2, baseCount: 0 },
+      nokey: good,
+    });
+    expect(p).toEqual({ [key(a, 'desk')]: good });
+    expect(normalizePending(null)).toEqual({});
+    expect(normalizePending([1])).toEqual({});
+    expect(samePending(p, { [key(a, 'desk')]: { ...good } })).toBe(true);
+    expect(samePending(p, { [key(a, 'desk')]: { ...good, baseUpdatedAt: T1 } })).toBe(false);
+    expect(samePending({}, {})).toBe(true);
   });
 
   it('品目ごとの合計は、表示している行に未保存の値を当てた数', () => {
     const m = buildRequestMatrix(tables, { category: 'stall' });
-    const totals = columnTotals(m, { [cellKey(b.id, item('desk').id)]: 10 });
+    const totals = columnTotals(m, { [cellKey(b.id, item('desk').id)]: { value: 10, baseCount: 1, baseUpdatedAt: T0 } });
     expect(totals[item('desk').id]).toBe(13);
     expect(totals[item('long_desk_3').id]).toBe(2);
   });

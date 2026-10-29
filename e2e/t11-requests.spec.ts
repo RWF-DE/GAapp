@@ -51,6 +51,18 @@ test.describe('T11 申請一覧（管理者）', () => {
       await expect(cell(page, SMALL.groups.department, '机(木)')).toHaveValue('4');
       await expect(page.locator(`[data-cell="${SMALL.groups.department}:desk"]`)).toHaveAttribute('data-mark', 'conflict');
       await expect(page.getByRole('button', { name: '保存（0件）' })).toBeDisabled();
+
+      // 編集した後にほかの人が同じセルを変え、「読み直す」→ 読み直した値に戻して印をつける（古い値で上書きしない）
+      await typeCell(page, SMALL.groups.stall, '机(木)', '7');
+      await sql(
+        "update public.requests set count = 9 where group_id = $1 and item_id = (select id from public.items where code = 'desk')",
+        [stall],
+      );
+      await page.getByRole('button', { name: '読み直す' }).click();
+      await expect(cell(page, SMALL.groups.stall, '机(木)')).toHaveValue('9');
+      await expect(page.locator(`[data-cell="${SMALL.groups.stall}:desk"]`)).toHaveAttribute('data-mark', 'conflict');
+      await expect(page.getByRole('button', { name: '保存（0件）' })).toBeDisabled();
+      expect(await countOf(stall, 'desk')).toBe(9);
     } finally {
       await s.cleanup();
     }

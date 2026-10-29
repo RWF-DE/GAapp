@@ -8,9 +8,11 @@ import type { GroupRow, ItemRow, RequestDbRow, YearRow } from '@/lib/db/types';
 import { opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 
 const state = vi.hoisted(() => ({
-  handler: null as null | ((call: FakeCall) => FakeResult),
+  handler: null as null | ((call: FakeCall) => FakeResult | PromiseLike<FakeResult>),
   calls: [] as FakeCall[],
   role: 'admin' as 'admin' | 'staff',
+  /** 申請の行（null なら REQUESTS。ほかの人の変更をまねるときに差し替える） */
+  requests: null as null | { group_id: string; item_id: string; count: number; updated_at: string }[],
 }));
 
 vi.mock('@/lib/supabase/client', async () => {
@@ -104,7 +106,7 @@ function makeHandler(over: (call: FakeCall) => FakeResult | undefined = () => un
       case 'requests':
         if (call.ops.some((x) => x.op === 'update')) return { data: null };
         if (call.ops.some((x) => x.op === 'select') && opArgs(call, 'select')[0]?.[0] === 'updated_at') return { data: { updated_at: T0 } };
-        return { data: REQUESTS.map((r) => ({ ...r, groups: { year_id: YEAR } })) };
+        return { data: (state.requests ?? REQUESTS).map((r) => ({ ...r, groups: { year_id: YEAR } })) };
       case 'request_submissions':
         return { data: [{ group_id: STALL, submitted_at: T0, note: '電源がほしい', updated_at: T0, groups: { year_id: YEAR } }] };
       case 'rpc:update_requests_after_deadline':
@@ -127,6 +129,7 @@ function renderScreen() {
 beforeEach(() => {
   state.calls = [];
   state.role = 'admin';
+  state.requests = null;
   try {
     localStorage.clear();
   } catch {
@@ -134,6 +137,15 @@ beforeEach(() => {
   }
 });
 afterEach(() => cleanup());
+
+const T1 = '2026-10-29T02:00:00.654321+00:00';
+const cellOf = (name: string) => document.querySelector(`[data-cell="${name}"]`)!;
+
+async function typeCell(user: ReturnType<typeof userEvent.setup>, label: string, value: string) {
+  const input = await screen.findByLabelText(label);
+  await user.clear(input);
+  await user.type(input, `${value}{Enter}`);
+}
 
 const writes = () => state.calls.filter((c) => c.table === 'requests' && c.ops.some((o) => o.op === 'update' || o.op === 'insert'));
 
@@ -192,5 +204,89 @@ describe('申請一覧 /requests', () => {
       p_rows: [{ itemId: itemId('desk'), count: 5, updatedAt: T0 }],
       p_reason: '団体の希望',
     });
+  });
+  it('未保存のセルの後に、ほかの人が同じセルを変えて読み直すと、読み直した値に戻して印をつけ、上書きしない（楽観ロックの基準は編集したときの行）', async () => {
+    const user = userEvent.setup();
+    state.handler = makeHandler();
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await typeCell(user, '部門Aの椅子(木)', '2');
+    expect(screen.getByRole('button', { name: '保存（2件）' })).toBeTruthy();
+
+    // ほかの人が模擬店Aの机(木)を 4 にした（updated_at が進む）→ 読み直す
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '4'));
+    expect(cellOf('模擬店A:desk').getAttribute('data-mark')).toBe('conflict');
+    expect(cellOf('模擬店A:desk').hasAttribute('data-pending')).toBe(false);
+    // ほかの人が変えていないセルの入力は残る
+    expect(screen.getByLabelText('部門Aの椅子(木)')).toHaveProperty('value', '2');
+    expect(cellOf('部門A:chair').getAttribute('data-pending')).toBe('true');
+
+    await user.click(screen.getByRole('button', { name: '保存（1件）' }));
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    // 模擬店Aの机(木)は送らない（新しい updated_at で 5 を書かない）
+    expect(writes()[0]!.ops.find((o) => o.op === 'insert')?.args[0]).toEqual({ group_id: DEPT, item_id: itemId('chair'), count: 2 });
+  });
+
+  it('戻した下書きは、編集したときの行と今の行を比べ、ほかの人が変えたセルは読み直した値に戻して印をつける', async () => {
+    const user = userEvent.setup();
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    const key = (g: string, code: string) => `${g}:${itemId(code)}`;
+    localStorage.setItem(
+      `gaapp:draft:${USER}:${YEAR}:requests`,
+      JSON.stringify({
+        savedAt: Date.now() - 60_000,
+        value: {
+          [key(STALL, 'desk')]: { value: 5, baseCount: 3, baseUpdatedAt: T0 },
+          [key(STALL, 'long_desk_3')]: { value: 0, baseCount: 2, baseUpdatedAt: T0 },
+          [key(DEPT, 'chair')]: 9, // 形の違う古い下書きの値は捨てる
+        },
+      }),
+    );
+    state.handler = makeHandler();
+    renderScreen();
+    await user.click(await screen.findByRole('button', { name: '戻す' }));
+    await waitFor(() => expect(cellOf('模擬店A:desk').getAttribute('data-mark')).toBe('conflict'));
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '4');
+    expect(cellOf('模擬店A:long_desk_3').getAttribute('data-pending')).toBe('true');
+    expect(screen.getByLabelText('部門Aの椅子(木)')).toHaveProperty('value', '0');
+    expect(screen.getByRole('button', { name: '保存（1件）' })).toBeTruthy();
+  });
+
+  it('締切前の保存中はセルを編集できず、保存の後に入力が古い写しで戻らない', async () => {
+    const user = userEvent.setup();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    state.handler = makeHandler((call) => {
+      if (call.table !== 'requests') return undefined;
+      if (call.ops.some((o) => o.op === 'insert')) {
+        const row = opArgs(call, 'insert')[0]![0] as { group_id: string; item_id: string; count: number };
+        return { data: { ...row, updated_at: T1 } };
+      }
+      return undefined;
+    });
+    const base = state.handler;
+    state.handler = (call) => {
+      if (call.table === 'requests' && call.ops.some((o) => o.op === 'update')) {
+        return gate.then(() => ({ data: { ...REQUESTS[0]!, count: 5, updated_at: T1 } }));
+      }
+      return base(call);
+    };
+    renderScreen();
+    await typeCell(user, '模擬店Aの机(木)', '5');
+    await typeCell(user, '部門Aの椅子(木)', '2');
+    await user.click(screen.getByRole('button', { name: '保存（2件）' }));
+    await screen.findByRole('button', { name: '保存中…' });
+    // 保存中はセルを編集できない（代理入力・提出済みにするも押せない）
+    const lectern = screen.getByLabelText('部門Aの教卓') as HTMLInputElement;
+    expect(lectern.readOnly).toBe(true);
+    expect(screen.getAllByRole('button', { name: '代理入力' }).every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+    state.requests = [{ ...REQUESTS[0]!, count: 5, updated_at: T1 }, REQUESTS[1]!, { group_id: DEPT, item_id: itemId('chair'), count: 2, updated_at: T1 }];
+    release();
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存（0件）' })).toBeTruthy());
+    // 自分の保存で updated_at が進んだセルは、ほかの人の変更として扱わない
+    expect(cellOf('模擬店A:desk').hasAttribute('data-mark')).toBe(false);
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '5');
   });
 });

@@ -30,6 +30,7 @@ export function RequestsTable({
   marks,
   totals,
   editable,
+  busy = false,
   admin,
   onCellChange,
   onProxy,
@@ -41,6 +42,8 @@ export function RequestsTable({
   totals: Readonly<Record<string, number>>;
   /** セルを編集できる（管理者で、確定中・終了でない） */
   editable: boolean;
+  /** 保存中（セルを読み取り専用にし、代理入力・提出済みにする・0にするを押せなくする。列は隠さない） */
+  busy?: boolean;
   admin: boolean;
   onCellChange: (row: MatrixRow, itemId: string, value: number) => void;
   onProxy: (row: MatrixRow) => void;
@@ -105,6 +108,7 @@ export function RequestsTable({
                         <CellInput
                           label={`${row.group.name}の${item.name}`}
                           value={value}
+                          readOnly={busy}
                           onCommit={(v) => onCellChange(row, item.id, v)}
                         />
                       ) : (
@@ -115,6 +119,7 @@ export function RequestsTable({
                         value={value}
                         note={rewriteTargetOf(item, matrix.items) ? `${rewriteTargetOf(item, matrix.items)!.name}として扱う` : '申請できない品目（E006）'}
                         canZero={editable && value > 0}
+                        disabled={busy}
                         onZero={() => onCellChange(row, item.id, 0)}
                       />
                     ) : (
@@ -147,11 +152,11 @@ export function RequestsTable({
               {admin && editable ? (
                 <td className="border-b px-2 py-1 whitespace-nowrap">
                   <div className="flex gap-1">
-                    <Button size="xs" variant="outline" onClick={() => onProxy(row)}>
+                    <Button size="xs" variant="outline" disabled={busy} onClick={() => onProxy(row)}>
                       代理入力
                     </Button>
                     {!row.submitted ? (
-                      <Button size="xs" variant="outline" onClick={() => onMarkSubmitted(row)}>
+                      <Button size="xs" variant="outline" disabled={busy} onClick={() => onMarkSubmitted(row)}>
                         提出済みにする
                       </Button>
                     ) : null}
@@ -180,7 +185,19 @@ export function RequestsTable({
 }
 
 /** 申請できない品目に残っている数（灰色と印。印の説明は title と読み上げに。管理者は 0 にできる） */
-function NotRequestableCell({ value, note, canZero, onZero }: { value: number; note: string; canZero: boolean; onZero: () => void }) {
+function NotRequestableCell({
+  value,
+  note,
+  canZero,
+  disabled,
+  onZero,
+}: {
+  value: number;
+  note: string;
+  canZero: boolean;
+  disabled: boolean;
+  onZero: () => void;
+}) {
   return (
     <span className="inline-flex items-center justify-end gap-1 px-1 whitespace-nowrap text-muted-foreground" title={note}>
       <span>{value}</span>
@@ -189,7 +206,7 @@ function NotRequestableCell({ value, note, canZero, onZero }: { value: number; n
       </span>
       <span className="sr-only">（{note}）</span>
       {canZero ? (
-        <Button size="xs" variant="ghost" className="h-6 px-1 text-xs" onClick={onZero}>
+        <Button size="xs" variant="ghost" className="h-6 px-1 text-xs" disabled={disabled} onClick={onZero}>
           0にする
         </Button>
       ) : null}
@@ -198,10 +215,24 @@ function NotRequestableCell({ value, note, canZero, onZero }: { value: number; n
 }
 
 /** 表のセルの数の入力（入力中は文字を持ち、確定（blur・Enter）で 0〜10000 の整数にする。数字でなければ元に戻す） */
-function CellInput({ label, value, onCommit }: { label: string; value: number; onCommit: (v: number) => void }) {
+function CellInput({
+  label,
+  value,
+  readOnly,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  readOnly: boolean;
+  onCommit: (v: number) => void;
+}) {
   const [text, setText] = useState<string | null>(null);
   const commit = () => {
     if (text === null) return;
+    if (readOnly) {
+      setText(null);
+      return;
+    }
     const n = parseCount(text, 0, MAX_COUNT);
     setText(null);
     if (n !== null && n !== value) onCommit(n);
@@ -212,6 +243,7 @@ function CellInput({ label, value, onCommit }: { label: string; value: number; o
       className="h-8 w-16 px-1 text-right tabular-nums"
       inputMode="numeric"
       autoComplete="off"
+      readOnly={readOnly}
       value={text ?? String(value)}
       onFocus={(e) => e.currentTarget.select()}
       onChange={(e) => setText(e.target.value)}

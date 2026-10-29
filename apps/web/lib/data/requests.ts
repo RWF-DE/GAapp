@@ -1,7 +1,7 @@
 // 申請（/request）・申請一覧（/requests）のデータの読み書き（画面の設計 2.1・2.3・3.5・3.6。T11）。
 // 純粋関数（並べ方・入力欄の組み立て・受付期間の判断・申請一覧の表・未保存のセル）と、DB の読み書きを置く。
 // 締切前の申請一覧のセルは直接（updated_at で楽観ロック）、提出は submit_requests、締切後は update_requests_after_deadline。
-import { compareBySortOrder, compareStrings, REQUEST_REWRITES, type GroupCategory } from '@gaapp/shared';
+import { compareBySortOrder, compareStrings, MAX_COUNT, REQUEST_REWRITES, type GroupCategory } from '@gaapp/shared';
 import { useQuery } from '@tanstack/react-query';
 import { fetchAll } from '@/lib/db/fetch-all';
 import { updateWithLock } from '@/lib/db/update-with-lock';
@@ -317,22 +317,44 @@ export function cellKey(groupId: string, itemId: string): string {
   return `${groupId}:${itemId}`;
 }
 
-/** 未保存のセル（セルの鍵 → 入れた数）。DB の数と同じ値は持たない */
-export type PendingCells = Readonly<Record<string, number>>;
+/**
+ * 未保存のセル1つ。入れた数と、最初に編集したときの DB の行（基準）を持つ。
+ * 保存の楽観ロックには基準の updated_at を送る（表を読み直した後も、編集したときの行を基準にする。2.3）。
+ */
+export interface PendingCell {
+  /** 入れた数 */
+  value: number;
+  /** 最初に編集したときの DB の数（行がなければ 0） */
+  baseCount: number;
+  /** 最初に編集したときの DB の行の updated_at（行がなければ null） */
+  baseUpdatedAt: string | null;
+}
 
-/** セルに数を入れる（DB の数と同じなら未保存から外す） */
-export function setPendingCell(pending: PendingCells, groupId: string, itemId: string, value: number, saved: number): PendingCells {
+/** 未保存のセル（セルの鍵 → 入れた数と基準）。基準の数と同じ値は持たない。下書きにもこの形で置く */
+export type PendingCells = Readonly<Record<string, PendingCell>>;
+
+/** セルに数を入れる（最初の編集のときだけ基準を今の行から取る。基準の数と同じなら未保存から外す） */
+export function setPendingCell(
+  pending: PendingCells,
+  groupId: string,
+  itemId: string,
+  value: number,
+  cell: Pick<MatrixCell, 'count' | 'updatedAt'>,
+): PendingCells {
   const key = cellKey(groupId, itemId);
+  const prev = pending[key];
+  const baseCount = prev ? prev.baseCount : cell.count;
+  const baseUpdatedAt = prev ? prev.baseUpdatedAt : cell.updatedAt;
   const next = { ...pending };
-  if (value === saved) delete next[key];
-  else next[key] = value;
+  if (value === baseCount) delete next[key];
+  else next[key] = { value, baseCount, baseUpdatedAt };
   return next;
 }
 
 /** 表示する数（未保存の値があればそれ） */
 export function shownCount(pending: PendingCells, row: MatrixRow, itemId: string): number {
   const key = cellKey(row.group.id, itemId);
-  return Object.hasOwn(pending, key) ? pending[key]! : (row.cells[itemId]?.count ?? 0);
+  return Object.hasOwn(pending, key) ? pending[key]!.value : (row.cells[itemId]?.count ?? 0);
 }
 
 /** 未保存のセルの変更（読み直した後の DB の数と同じになったものは除く） */
@@ -340,40 +362,121 @@ export interface CellChange {
   groupId: string;
   itemId: string;
   count: number;
-  /** DB の行の updated_at（行がなければ null） */
+  /** 最初に編集したときの DB の行の updated_at（行がなければ null）。楽観ロックに送る */
   updatedAt: string | null;
 }
 
+const requestIndex = (t: Pick<RequestsTables, 'requests'>) => {
+  const reqs = new Map<string, RequestDbRow>();
+  for (const r of t.requests) reqs.set(cellKey(r.group_id, r.item_id), r);
+  return reqs;
+};
+
 /**
  * 未保存のセルを、今の DB の行と突き合わせて変更の一覧にする（DB にない団体・品目と、DB の数と同じになったものは捨てる）。
+ * updatedAt は今の行ではなく、編集したときの行（基準）のもの。読み直しの後にほかの人が変えていれば DB が conflict を返す。
  * 申請一覧の全団体（絞り込みの前）の行を渡す。
  */
 export function pendingChanges(pending: PendingCells, t: RequestsTables): CellChange[] {
-  const reqs = new Map<string, RequestDbRow>();
-  for (const r of t.requests) reqs.set(cellKey(r.group_id, r.item_id), r);
+  const reqs = requestIndex(t);
   const groups = new Map(t.groups.map((g) => [g.id, g]));
   const items = new Map(t.items.map((i) => [i.id, i]));
   const out: CellChange[] = [];
-  for (const [key, count] of Object.entries(pending)) {
+  for (const [key, cell] of Object.entries(pending)) {
     const [groupId, itemId] = key.split(':') as [string, string];
     const g = groups.get(groupId);
     const item = items.get(itemId);
     if (!g || !item) continue;
     const row = reqs.get(key);
-    if ((row?.count ?? 0) === count) continue;
+    if ((row?.count ?? 0) === cell.value) continue;
     // 申請できない品目は 0 にすることだけを許す（DB のトリガーも 0 でない値を E006 で止める）
-    if (!isRequestable(item, g.category) && count !== 0) continue;
-    out.push({ groupId, itemId, count, updatedAt: row?.updated_at ?? null });
+    if (!isRequestable(item, g.category) && cell.value !== 0) continue;
+    out.push({ groupId, itemId, count: cell.value, updatedAt: cell.baseUpdatedAt });
   }
   return out.sort((a, b) => compareStrings(a.groupId, b.groupId) || compareStrings(a.itemId, b.itemId));
 }
 
-/** 未保存のセルから、DB と同じになったもの・なくなった団体と品目のものを外す（読み直しの後） */
-export function prunePending(pending: PendingCells, t: RequestsTables): PendingCells {
-  const keep = new Set(pendingChanges(pending, t).map((c) => cellKey(c.groupId, c.itemId)));
-  const next: Record<string, number> = {};
-  for (const [k, v] of Object.entries(pending)) if (keep.has(k)) next[k] = v;
+/** 当て直しの結果：残す未保存のセルと、ほかの人が先に変えたので読み直した値に戻したセルの鍵 */
+export interface RebaseResult {
+  pending: PendingCells;
+  conflicts: string[];
+}
+
+/**
+ * 読み直した表・戻した下書きに、未保存のセルを当て直す（3.6）。
+ * - なくなった団体・品目のセルと、DB の数と同じになったセル（自分の保存が届いていた・ほかの人が同じ数にした）は外す。
+ * - 編集したときの行（基準）から DB の行が変わったセル（updated_at が違う・行ができた・行が消えた）は、読み直した値に戻し
+ *   （未保存から外し）、conflicts に入れる（画面が印をつける）。黙って上書きしないため。
+ * 何も変わらなければ同じ pending を返す。
+ */
+export function rebasePending(pending: PendingCells, t: RequestsTables): RebaseResult {
+  const reqs = requestIndex(t);
+  const groups = new Set(t.groups.map((g) => g.id));
+  const items = new Set(t.items.map((i) => i.id));
+  const next: Record<string, PendingCell> = {};
+  const conflicts: string[] = [];
+  let changed = false;
+  for (const [key, cell] of Object.entries(pending)) {
+    const [groupId, itemId] = key.split(':') as [string, string];
+    const row = reqs.get(key);
+    const count = row?.count ?? 0;
+    if (!groups.has(groupId) || !items.has(itemId) || count === cell.value) {
+      changed = true;
+      continue;
+    }
+    if ((row?.updated_at ?? null) !== cell.baseUpdatedAt) {
+      changed = true;
+      conflicts.push(key);
+      continue;
+    }
+    next[key] = cell;
+  }
+  return changed ? { pending: next, conflicts } : { pending, conflicts };
+}
+
+/**
+ * 基準を今の行に付け替える（値は残す）。締切後の保存の conflict（2.5：変えたセルの値は残して印をつけ、次の保存は新しい
+ * updated_at で送る）と、自分が保存したセルにその後で入れた値に使う。行の数と同じになったセルは外す。
+ */
+export function rebaseKeysTo(pending: PendingCells, keys: Iterable<string>, t: RequestsTables): PendingCells {
+  const reqs = requestIndex(t);
+  const next: Record<string, PendingCell> = { ...pending };
+  for (const key of keys) {
+    const cell = next[key];
+    if (!cell) continue;
+    const row = reqs.get(key);
+    const baseCount = row?.count ?? 0;
+    if (baseCount === cell.value) delete next[key];
+    else next[key] = { value: cell.value, baseCount, baseUpdatedAt: row?.updated_at ?? null };
+  }
   return next;
+}
+
+/** 下書きから読んだ値を未保存のセルにする（形の違う値・範囲の外の数は捨てる。古い形の下書きを読んでも壊れない） */
+export function normalizePending(value: unknown): PendingCells {
+  const out: Record<string, PendingCell> = {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return out;
+  const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX_COUNT;
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^[^:]+:[^:]+$/.test(key) || !raw || typeof raw !== 'object') continue;
+    const c = raw as Record<string, unknown>;
+    const base = c.baseUpdatedAt;
+    if (!isCount(c.value) || !isCount(c.baseCount) || !(base === null || typeof base === 'string')) continue;
+    out[key] = { value: c.value, baseCount: c.baseCount, baseUpdatedAt: base };
+  }
+  return out;
+}
+
+/** 二つの未保存のセルが同じか（下書きを書き直すかどうか） */
+export function samePending(a: PendingCells, b: PendingCells): boolean {
+  if (a === b) return true;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => {
+    const x = a[k]!;
+    const y = b[k];
+    return !!y && x.value === y.value && x.baseCount === y.baseCount && x.baseUpdatedAt === y.baseUpdatedAt;
+  });
 }
 
 /** 品目ごとの合計（表示している行の、未保存の値を当てた数） */
