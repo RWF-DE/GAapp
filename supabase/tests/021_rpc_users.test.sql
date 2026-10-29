@@ -1,9 +1,9 @@
--- 021_rpc_users：invite、set_role、revoke_invitation、remove_group_member、accept_my_invitations（T03）
+-- 021_rpc_users：invite、set_role、remove_role、revoke_invitation、remove_group_member、accept_my_invitations（T03）
 -- auth.users のトリガー（0007）は T04。ここではトリガーなしで動く部分（RPC の中での招待の受け入れ）だけを確かめる。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(57);
+select plan(65);
 
 -- ================================================================ invite
 select tests.login_anon();
@@ -94,7 +94,8 @@ select tests.logout();
 select tests.login_as('admin');
 select throws_ok($$ select public.set_role(tests.id('Y1'), gen_random_uuid(), 'staff') $$, 'P0001', 'not_found', '存在しないユーザーは not_found');
 select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('admin'), 'staff') $$, 'P0001', 'invalid_state', '最後の admin を降格できない');
-select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('admin'), null) $$, 'P0001', 'invalid_state', '最後の admin を外せない');
+select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), null) $$, 'P0001', 'invalid_input', 'set_role の role は必須（外すのは remove_role）');
+select throws_ok($$ select public.remove_role(tests.id('Y1'), tests.id('admin')) $$, 'P0001', 'invalid_state', '最後の admin を外せない');
 select throws_ok(format($$ select public.set_role(%L, %L, 'staff', %L) $$, tests.id('Y1'), tests.id('late'), repeat('x', 501)), 'P0001', 'invalid_input', '理由は 500 字まで');
 select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), 'staff', '手伝い') $$, 'ロールを変える');
 select tests.logout();
@@ -103,15 +104,25 @@ select is((select reason from public.audit_logs where table_name = 'year_roles' 
   '手伝い', 'ロールの変更の理由が監査に残る');
 select tests.login_as('admin');
 select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), 'admin') $$, '2人目の admin');
-select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), null) $$, '最後でない admin は外せる');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('late')) $$, '最後でない admin は外せる');
+select throws_ok($$ select public.remove_role(tests.id('Y1'), tests.id('late')) $$, 'P0001', 'not_found', 'ロールのない人は not_found');
+select throws_ok(format($$ select public.remove_role(%L, %L, %L) $$, tests.id('Y1'), tests.id('outsider'), repeat('x', 501)), 'P0001', 'invalid_input', '外す理由も 500 字まで');
 select tests.logout();
 select is((select count(*)::int from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('late')), 0, '外した');
+select tests.login_as('staff');
+select throws_ok($$ select public.remove_role(tests.id('Y1'), tests.id('outsider')) $$, 'P0001', 'forbidden', 'staff はロールを外せない');
+select tests.logout();
+select tests.login_as('admin2');
+select throws_ok($$ select public.remove_role(tests.id('Y1'), tests.id('outsider')) $$, 'P0001', 'forbidden', '別の年度の admin は外せない');
+select tests.logout();
 -- closed：外すのはできる、付けるのはできない
 select tests.set_scenario('closed');
 select tests.login_as('admin');
 select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('outsider'), 'staff') $$, 'P0001', 'invalid_state', 'closed ではロールを付け替えられない');
-select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('outsider'), null, '卒業') $$, 'closed でもロールは外せる');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('outsider'), '卒業') $$, 'closed でもロールは外せる');
 select tests.logout();
+select is((select reason from public.audit_logs where table_name = 'year_roles' and action = 'delete'
+           and row_pk ->> 'user_id' = tests.id('outsider')::text order by id desc limit 1), '卒業', 'ロールを外した理由が監査に残る');
 select tests.set_scenario('requesting');
 
 -- ================================================================ revoke_invitation
@@ -130,6 +141,15 @@ select throws_ok($$ select public.revoke_invitation((select id from public.invit
 select lives_ok($$ select public.revoke_invitation((select id from public.invitations where email = 'someone@pgtap.test')) $$, '未使用の招待を取り消す');
 select is((select count(*)::int from public.invitations where email = 'someone@pgtap.test'), 0, '取り消した招待は消える');
 select tests.logout();
+-- closed の年度の未使用の招待も取り消せる
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'closedinv@pgtap.test', 'viewer');
+select tests.set_scenario('closed');
+select tests.login_as('admin');
+select lives_ok($$ select public.revoke_invitation((select id from public.invitations where email = 'closedinv@pgtap.test')) $$,
+  'closed の年度でも未使用の招待を取り消せる');
+select tests.logout();
+select is((select count(*)::int from public.invitations where email = 'closedinv@pgtap.test'), 0, 'closed の年度の招待も消える');
+select tests.set_scenario('requesting');
 
 -- ================================================================ remove_group_member
 insert into public.invitations (year_id, email, group_id, used_at) values (tests.id('Y1'), 'rep2@pgtap.test', tests.id('G2'), now());

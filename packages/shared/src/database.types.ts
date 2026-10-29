@@ -984,6 +984,10 @@ export type Database = {
         Args: { p_group_id: string; p_reason?: string; p_user_id: string };
         Returns: undefined;
       };
+      remove_role: {
+        Args: { p_reason?: string; p_user_id: string; p_year_id: string };
+        Returns: undefined;
+      };
       revoke_invitation: { Args: { p_invitation_id: string }; Returns: undefined };
       save_allocation_rows: {
         Args: { p_changes: Json; p_reason: string; p_year_id: string };

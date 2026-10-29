@@ -369,18 +369,38 @@ declare
   v_rows private.request_row[];
   r private.request_row;
   v_cur public.requests;
+  v_submitted_at timestamptz;
 begin
   perform private.lock_year(v_year_id, '{preparing,requesting,allocating}', '{admin}');
   perform private.set_reason(p_reason, true);
   v_rows := private.parse_request_rows(p_rows);
-  -- p_submission：{ "submitted": true, "note": "…" }（どちらのキーも省略できる）。
+  -- p_submission：{ "submitted": true, "submittedAt": "…", "note": "…" }（どのキーも省略できる）。
   -- submitted は true だけを受け付ける（提出済みにする。提出済みなら最初の提出日時を保つ）。未提出に戻すと D-07 で需要が
-  -- fixed_request に変わって振り分けが変わるので、この RPC では戻さない（false は invalid_input）
+  -- fixed_request に変わって振り分けが変わるので、この RPC では戻さない（false は invalid_input）。
+  -- submittedAt（ISO の日時。CSV の取り込みでフォームのタイムスタンプを渡す）があれば、提出済みにして提出日時をその値にする
+  -- （提出済みでも置き換える。未来の日時は invalid_input）。admin だけが呼べるので、団体代表は日時を偽れない
   if p_submission is not null and (jsonb_typeof(p_submission) <> 'object' or length(p_submission ->> 'note') > 2000
      or (p_submission ? 'submitted' and p_submission -> 'submitted' is distinct from 'true'::jsonb)
+     or (p_submission ? 'submittedAt' and jsonb_typeof(p_submission -> 'submittedAt') is distinct from 'string')
      or (p_submission ? 'note' and jsonb_typeof(p_submission -> 'note') not in ('string', 'null'))
-     or exists (select 1 from jsonb_object_keys(p_submission) k where k not in ('submitted', 'note'))) then
+     or exists (select 1 from jsonb_object_keys(p_submission) k where k not in ('submitted', 'submittedAt', 'note'))) then
     perform private.fail('invalid_input', jsonb_build_object('field', 'submission'));
+  end if;
+  if p_submission ? 'submittedAt' then
+    -- ISO 8601 の日時でオフセットつきだけを受け付ける（'now'・'infinity' などの特別な値と、セッションのタイムゾーンで
+    -- 読まれる値を通さない。画面の zod の z.iso.datetime({ offset: true }) と同じ）
+    begin
+      if (p_submission ->> 'submittedAt')
+         !~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)$' then
+        raise exception using errcode = '22007';
+      end if;
+      v_submitted_at := (p_submission ->> 'submittedAt')::timestamptz;
+    exception when data_exception then
+      v_submitted_at := null;
+    end;
+    if v_submitted_at is null or v_submitted_at > now() then
+      perform private.fail('invalid_input', jsonb_build_object('field', 'submittedAt'));
+    end if;
   end if;
   foreach r in array v_rows loop
     select * into v_cur from public.requests where group_id = p_group_id and item_id = r.item_id for update;
@@ -397,20 +417,43 @@ begin
     end if;
   end loop;
   if p_submission is not null then
+    -- 提出日時を渡されたときだけ、提出の記録のトリガー（set_actor）が値を now() に置き換えないようにする（この文の間だけ）
+    if v_submitted_at is not null then
+      perform set_config('app.keep_submitted_at', 'on', true);
+    end if;
     insert into public.request_submissions (group_id, submitted_at, note)
     values (p_group_id,
-            case when p_submission ? 'submitted' then now() end,
+            case when v_submitted_at is not null then v_submitted_at when p_submission ? 'submitted' then now() end,
             p_submission ->> 'note')
     on conflict (group_id) do update set
-      submitted_at = case when p_submission ? 'submitted'
+      submitted_at = case when v_submitted_at is not null then v_submitted_at
+                          when p_submission ? 'submitted'
                           then coalesce(public.request_submissions.submitted_at, now())
                           else public.request_submissions.submitted_at end,
       note = case when p_submission ? 'note' then p_submission ->> 'note'
                   else public.request_submissions.note end;
+    perform set_config('app.keep_submitted_at', '', true);
   end if;
 exception
   when data_exception or check_violation then
     perform private.fail('invalid_input', jsonb_build_object('field', 'rows'));
+end $$;
+
+-- 提出の記録のトリガー（0002 の関数を置き換える）：ログイン中の書き込みでは updated_by と submitted_at を DB が入れる。
+-- 例外は update_requests_after_deadline が取り込みの提出日時を渡したときだけ（transaction-local の app.keep_submitted_at を
+-- その文の間だけ立てる。PostgREST の利用者は app.* を設定できない）。submit_requests と直接の書き込みは今までどおり now()
+create or replace function private.tg_submissions_set_actor()
+returns trigger language plpgsql set search_path = '' as $$
+begin
+  if auth.uid() is not null then
+    new.updated_by := auth.uid();
+    if new.submitted_at is not null
+       and coalesce(current_setting('app.keep_submitted_at', true), '') <> 'on'
+       and (tg_op = 'INSERT' or old.submitted_at is null or new.submitted_at is distinct from old.submitted_at) then
+      new.submitted_at := now();
+    end if;
+  end if;
+  return new;
 end $$;
 
 ------------------------------------------------------------------------

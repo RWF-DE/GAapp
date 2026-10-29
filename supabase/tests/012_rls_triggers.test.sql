@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(19);
+select plan(35);
 
 -- 在庫：staff の書き込みが監査に残る（K-16）。数えた人は DB が入れる（K-25）
 select tests.login_as('staff');
@@ -46,6 +46,57 @@ select throws_ok($$ insert into public.distance_overrides (building_a, building_
 select tests.logout();
 select is((select building_a || '/' || building_b from public.distance_overrides where cost = 3 and building_a like 'pgtap%'), 'pgtap棟X/pgtap棟Y',
   'C の照合順序で小さい方が building_a');
+
+-- 守りのトリガーと RLS：BEFORE ROW トリガーは with check より先に動く。書く権限のない人の拒否される書き込みでは、
+-- 守りのトリガーが年度の行をロックしない（admin の RPC を待たせられない）。拒否は今までどおり RLS が返す。
+-- lock_year_guard を呼び出しを数える関数に差し替えて確かめる（数はシーケンスで数える。throws_ok・try_cell の副トランザクションの
+-- 取り消しでも消えない）。このテストのトランザクションの中だけの差し替え（最後に rollback する）
+create sequence tests.guard_calls;
+alter function private.lock_year_guard(uuid) rename to lock_year_guard_orig;
+create function private.lock_year_guard(p_year_id uuid)
+returns public.year_status language plpgsql security definer set search_path = '' as $$
+begin
+  perform nextval('tests.guard_calls');
+  return private.lock_year_guard_orig(p_year_id);
+end $$;
+create function tests.guard_calls() returns bigint language sql security definer set search_path = '' as $$
+  select case when is_called then last_value else 0 end from tests.guard_calls
+$$;
+select tests.set_scenario('confirmed');
+select is(tests.try_cell(tests.sql('insert into public.room_years (year_id, room_id, usable) values (:Y1, :R4, true)'), p, 'insert'),
+          'denied', format('%s の room_years の insert は今までどおり拒否（42501）', p))
+from unnest(array['viewer', 'staff', 'rep', 'outsider']) p;
+select tests.login_as('viewer');
+select throws_ok(tests.sql('insert into public.room_years (year_id, room_id, usable) values (:Y1, :R4, true)'), '42501', null,
+  '拒否のエラーは RLS の 42501');
+select tests.logout();
+select is(tests.try_cell(tests.sql(t), 'staff', 'update'), 'denied', format('staff の %s は今までどおり0行（RLS）', split_part(t, ' ', 2)))
+from unnest(array['update public.stocks set count = 0 where year_id = :Y1',
+                  'update public.groups set location_room_id = null where year_id = :Y1',
+                  'update public.room_years set usable = false where year_id = :Y1']) t;
+select is(tests.guard_calls(), 0::bigint, '拒否される insert・update では、守りのトリガーが年度の行をロックしない');
+-- admin の書き込みでは守りが効く（確定中に E001・E002・E005 を作れない）
+select tests.login_as('admin');
+select throws_ok(tests.sql('insert into public.room_years (year_id, room_id, usable) values (:Y1, :R1, false)'),
+  'P0001', 'invalid_state', 'admin でも、確定中に振り分けのある部屋を使用不可にできない（insert でも守りが効く）');
+select throws_ok(tests.sql('update public.stocks set count = 0 where year_id = :Y1 and room_id = :R1 and item_id = :desk'), 'P0001', 'invalid_state',
+  'admin でも、確定中に振り分けより少ない在庫にできない');
+select throws_ok(tests.sql('update public.groups set location_room_id = :R2 where id = :G1'), 'P0001', 'invalid_state',
+  'admin でも、確定中に団体の使用場所を変えられない');
+select lives_ok(tests.sql('insert into public.room_years (year_id, room_id, usable) values (:Y1, :R4, true)'), 'admin は確定中も場所の状態を足せる');
+select tests.logout();
+select ok(tests.guard_calls() >= 4, 'admin の書き込みでは守りのトリガーが年度の行をロックして状態を読む');
+
+-- 変えられない列のトリガー（SECURITY DEFINER）：authenticated の書き込みでも invalid_input（42501 にならない）
+select tests.set_scenario('requesting');
+select tests.login_as('staff');
+select throws_ok(tests.sql('update public.stocks set year_id = :Y2 where year_id = :Y1 and room_id = :R1 and item_id = :desk'), 'P0001', 'invalid_input',
+  'staff が在庫の年度を変えようとすると invalid_input');
+select tests.logout();
+select tests.login_as('admin');
+select throws_ok(tests.sql('update public.groups set year_id = :Y2 where id = :G2'), 'P0001', 'invalid_input',
+  'admin が団体の年度を変えようとすると invalid_input');
+select tests.logout();
 
 -- 振り分け中に管理者が団体を消す：振り分けも連鎖で消え（版の増分も DEFINER で通る）、監査には年度が入り、別の年度の admin には見えない
 select tests.set_scenario('allocating');

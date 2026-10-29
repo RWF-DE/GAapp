@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(84);
+select plan(93);
 
 -- ================================================================ submit_requests（受付中）
 select tests.login_anon();
@@ -37,6 +37,20 @@ select is((select string_agg(i.code || '=' || r.count, ' ' order by i.sort_order
 select ok((select submitted_at = now() and updated_by = tests.id('rep') from public.request_submissions where group_id = tests.id('G1')), '提出の日時と人は DB が入れる');
 select is((select reason from public.audit_logs where table_name = 'requests' and group_id = tests.id('G1') order by id desc limit 1), null,
   '提出の監査に前の理由が残らない');
+-- 取り込みの提出日時（K-27・D-19）：admin の update_requests_after_deadline で submittedAt を渡すと、その値が残る。
+-- 団体代表の submit_requests は今までどおり now()（設定が後に残らない）
+select tests.login_as('admin');
+select lives_ok(format($$ select public.update_requests_after_deadline(%L, '[]', 'フォームの取り込み', '{"submittedAt": "2026-10-01T09:30:00+09:00"}') $$,
+  tests.id('G1')), '取り込みで提出日時（フォームのタイムスタンプ）を渡す');
+select is(current_setting('app.keep_submitted_at', true), '', '提出日時を保つ設定は RPC の中だけで、後に残らない');
+select tests.logout();
+select ok((select submitted_at = '2026-10-01T00:30:00Z'::timestamptz and updated_by = tests.id('admin')
+           from public.request_submissions where group_id = tests.id('G1')), 'admin の取り込みでは提出日時が残る（now() に置き換えない）');
+select tests.login_as('rep');
+select lives_ok(format($$ select public.submit_requests(%L, '[]') $$, tests.id('G1')), '団体代表がもう一度提出する');
+select tests.logout();
+select ok((select submitted_at = now() and updated_by = tests.id('rep') from public.request_submissions where group_id = tests.id('G1')),
+  '団体代表の submit_requests では提出日時は now()');
 select tests.login_as('rep');
 select throws_ok(format($$ select public.submit_requests(%L, %L) $$, tests.id('G1'),
   jsonb_build_array(jsonb_build_object('itemId', tests.id('desk_ng'), 'count', 1))), 'P0001', 'E006', '申請できない品目は E006');
@@ -114,8 +128,16 @@ select throws_ok(format($$ select public.update_requests_after_deadline(%L, %L, 
 -- 提出の扱い：submitted は true だけ（未提出に戻すと D-07 で需要が変わるので戻さない）
 select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '取り消し', '{"submitted": false}') $$, tests.id('G1')),
   'P0001', 'invalid_input', 'submitted: false（未提出に戻す）は invalid_input');
-select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '理由', '{"submittedAt": "2026-10-01"}') $$, tests.id('G1')),
+select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '理由', '{"submitted_at": "2026-10-01T09:00:00Z"}') $$, tests.id('G1')),
   'P0001', 'invalid_input', '知らないキーは invalid_input');
+select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '理由', '{"submittedAt": "2026-10-01"}') $$, tests.id('G1')),
+  'P0001', 'invalid_input', 'submittedAt は日時とオフセットが要る（日付だけは invalid_input）');
+select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '理由', '{"submittedAt": "now"}') $$, tests.id('G1')),
+  'P0001', 'invalid_input', 'submittedAt に特別な値（now）は使えない');
+select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '理由', '{"submittedAt": 1}') $$, tests.id('G1')),
+  'P0001', 'invalid_input', 'submittedAt は文字列');
+select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '理由', '{"submittedAt": "2999-01-01T00:00:00+09:00"}') $$, tests.id('G1')),
+  'P0001', 'invalid_input', 'submittedAt に未来の日時は使えない');
 select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '理由', %L) $$, tests.id('G1'), jsonb_build_object('note', repeat('x', 2001))),
   'P0001', 'invalid_input', '備考の上限（2000 字）');
 select lives_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '電話で提出', '{"submitted": true, "note": "電話"}') $$, tests.id('G4')),

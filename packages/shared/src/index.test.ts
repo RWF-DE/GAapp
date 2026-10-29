@@ -30,7 +30,7 @@ describe('生成された型（database.types.ts）', () => {
     expect(year.status).toBe('allocating');
   });
 
-  it('RPC は 04_screens_api.md の DB 関数の表の 16 個（型のテスト）', () => {
+  it('RPC は 04_screens_api.md の DB 関数の表の 17 個（型のテスト）', () => {
     type Rpc = keyof Database['public']['Functions'];
     const rpcs = [
       'set_year_status',
@@ -38,6 +38,7 @@ describe('生成された型（database.types.ts）', () => {
       'create_year_from',
       'invite',
       'set_role',
+      'remove_role',
       'revoke_invitation',
       'remove_group_member',
       'accept_my_invitations',
@@ -53,7 +54,7 @@ describe('生成された型（database.types.ts）', () => {
     // 表にない RPC が DB にあれば、ここで型エラーになる
     const missing: Exclude<Rpc, (typeof rpcs)[number]>[] = [];
     expect(missing).toEqual([]);
-    expect(new Set(rpcs).size).toBe(16);
+    expect(new Set(rpcs).size).toBe(17);
     const args: Database['public']['Functions']['save_auto_allocations']['Args'] = {
       p_year_id: '00000000-0000-0000-0000-000000000000',
       p_rows: [],
@@ -61,5 +62,11 @@ describe('生成された型（database.types.ts）', () => {
       p_base_version: 0,
     };
     expect(args.p_mode).toBe('full');
+    // ロールを外すのは remove_role（set_role の role は必須で null を書けない）
+    const removeArgs: Database['public']['Functions']['remove_role']['Args'] = {
+      p_year_id: '00000000-0000-0000-0000-000000000000',
+      p_user_id: '00000000-0000-0000-0000-000000000000',
+    };
+    expect(Object.keys(removeArgs)).toEqual(['p_year_id', 'p_user_id']);
   });
 });

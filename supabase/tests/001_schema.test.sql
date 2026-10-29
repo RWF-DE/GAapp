@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(136);
+select plan(140);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -126,6 +126,8 @@ select throws_ok($$ insert into public.years (label, festival_start, request_ope
                     values ('T-Y9', date '2030-01-01', now(), now()) $$, '23514', null, '受付開始は締切より前');
 select throws_ok($$ insert into public.rooms (name) values ('') $$, '23514', null, 'rooms.name が空');
 select throws_ok($$ insert into public.rooms (name, extra_cost) values ('pgtap-x', -1) $$, '23514', null, 'rooms.extra_cost は 0 以上');
+select throws_ok($$ insert into public.rooms (name, extra_cost) values ('pgtap-x', 21) $$, '23514', null, 'rooms.extra_cost は 20 まで（T03）');
+select lives_ok($$ insert into public.rooms (name, extra_cost) values ('pgtap-x20', 20) $$, 'rooms.extra_cost の 20 は入る');
 select throws_ok($$ insert into public.rooms (name, aliases) values ('pgtap-x', array_fill('a'::text, array[21])) $$, '23514', null, 'aliases は 20 個まで');
 select throws_ok($$ insert into public.rooms (name, aliases) values ('pgtap-x', array[repeat('a', 1001)]) $$, '23514', null, 'aliases は合計 1000 字まで');
 select throws_ok($$ insert into public.items (code, name, sort_order) values ('Desk', 'x', 1) $$, '23514', null, 'items.code は小文字の英数字と _');
@@ -159,6 +161,8 @@ select throws_ok(format($$ insert into public.substitution_consents (group_id, f
   tests.id('G2'), tests.id('desk'), tests.id('desk')), '23514', null, '代替の元と先は別の品目');
 select throws_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟C', 'pgtap棟C', 1) $$, '23514', null, '同じ建物どうしの距離は入れられない');
 select throws_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟C', 'pgtap棟D', -1) $$, '23514', null, '距離は 0 以上');
+select throws_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟C', 'pgtap棟D', 21) $$, '23514', null, '距離は 20 まで（T03）');
+select lives_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟C', 'pgtap棟D', 20) $$, '距離の 20 は入る');
 select throws_ok(format($$ insert into public.slots (year_id, day, starts_at, ends_at, label) values (%L, 'day1', '10:00', '09:00', 'x') $$,
   tests.id('Y1')), '23514', null, '時間枠の開始は終了より前');
 select throws_ok(format($$ update public.deliveries set team = 0 where id = %L $$, tests.id('D_G1')), '23514', null, 'team は 1 以上');

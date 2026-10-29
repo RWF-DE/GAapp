@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(69);
+select plan(76);
 
 -- ================================================================ set_year_status
 select tests.login_anon();
@@ -153,6 +153,25 @@ select is((select count(*)::int from public.room_years where year_id = tests.id(
 select is((select count(*)::int from public.stocks where year_id = tests.id('Y3')), 0, '在庫は複製しない');
 select is((select reason from public.audit_logs where table_name = 'years' and row_pk ->> 'id' = tests.id('Y3')::text), 'T-Y1改 から複製',
   '複製の理由が監査に残る');
+
+-- ================================================================ update_year の1日目（複製元より後、複製先より前）
+select tests.login_as('admin');
+select throws_ok($$ select public.update_year(tests.id('Y3'), '{"festival_start": "2027-10-16"}', null) $$, 'P0001', 'invalid_input',
+  '1日目を複製元と同じ日にできない');
+select throws_ok($$ select public.update_year(tests.id('Y3'), '{"festival_start": "2026-01-01"}', null) $$, 'P0001', 'invalid_input',
+  '1日目を複製元より前にできない');
+select lives_ok($$ select public.update_year(tests.id('Y3'), '{"festival_start": "2028-12-01"}', null) $$, '複製元より後なら変えられる');
+select tests.logout();
+select tests.set_scenario('confirmed');
+select tests.login_as('admin');
+select throws_ok($$ select public.update_year(tests.id('Y1'), '{"festival_start": "2028-12-01"}', null) $$, 'P0001', 'invalid_input',
+  '複製元の1日目を複製先と同じ日にできない');
+select throws_ok($$ select public.update_year(tests.id('Y1'), '{"festival_start": "2029-01-01"}', null) $$, 'P0001', 'invalid_input',
+  '複製元の1日目を複製先より後にできない（どの年度も最新でなくなるため）');
+select lives_ok($$ select public.update_year(tests.id('Y1'), '{"festival_start": "2027-11-01"}', null) $$, '複製先より前なら変えられる');
+select isnt((select id from public.create_year_from(tests.id('Y3'), 'T-Y4', date '2029-10-01')), null,
+  '1日目を変えた後も、最新の年度（複製先）から次の年度を作れる');
+select tests.logout();
 
 select * from finish();
 rollback;

@@ -11,10 +11,10 @@ select is_empty($$ select p.oid::regprocedure::text from pg_proc p
   'anon が実行できる public・private の関数はない');
 select set_eq($$ select p.proname::text from pg_proc p
                  where p.pronamespace = 'public'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
-  array['set_year_status','update_year','create_year_from','invite','set_role','revoke_invitation','remove_group_member',
-        'accept_my_invitations','save_auto_allocations','save_allocation_rows','set_consent','submit_requests',
+  array['set_year_status','update_year','create_year_from','invite','set_role','remove_role','revoke_invitation',
+        'remove_group_member','accept_my_invitations','save_auto_allocations','save_allocation_rows','set_consent','submit_requests',
         'update_requests_after_deadline','check_delivery','previous_year_stocks','previous_year_requests'],
-  'authenticated が実行できる public の関数は RPC 16 個だけ');
+  'authenticated が実行できる public の関数は RPC 17 個だけ');
 select set_eq($$ select p.proname::text from pg_proc p
                  where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   array['has_role','has_any_role','is_group_member','group_year_id','year_status','can_read_year','has_any_access',

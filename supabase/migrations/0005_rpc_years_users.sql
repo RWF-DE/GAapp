@@ -102,6 +102,13 @@ begin
   if v.status = 'requesting' and v.request_close_at is null then
     perform private.fail('invalid_input', jsonb_build_object('field', 'request_close_at'));
   end if;
+  -- 1日目は、複製元（prev_year_id）より後で、この年度を複製元にした年度より前（create_year_from の前提と「最新の年度」の
+  -- 判定を崩さない。崩すと、どの年度も最新でなくなり次の年度を作れなくなる）
+  if p_patch ? 'festival_start'
+     and (exists (select 1 from public.years p where p.id = v.prev_year_id and p.festival_start >= v.festival_start)
+          or exists (select 1 from public.years n where n.prev_year_id = v.id and n.festival_start <= v.festival_start)) then
+    perform private.fail('invalid_input', jsonb_build_object('field', 'festival_start'));
+  end if;
   return v;
 end $$;
 
@@ -272,25 +279,35 @@ end $$;
 create function public.set_role(p_year_id uuid, p_user_id uuid, p_role public.app_role, p_reason text default null)
 returns void language plpgsql security definer set search_path = '' as $$
 begin
-  -- 外す（p_role が null）のは closed でもできる（卒業した admin を外して、権限を残さないため）
-  perform private.lock_year(p_year_id,
-    case when p_role is null then '{preparing,requesting,allocating,confirmed,closed}'::public.year_status[]
-         else '{preparing,requesting,allocating,confirmed}'::public.year_status[] end, '{admin}');
+  perform private.lock_year(p_year_id, '{preparing,requesting,allocating,confirmed}', '{admin}');
+  if p_role is null then                           -- 外すのは remove_role
+    perform private.fail('invalid_input', jsonb_build_object('field', 'role'));
+  end if;
   if not exists (select 1 from auth.users u where u.id = p_user_id) then
     perform private.fail('not_found', jsonb_build_object('field', 'user_id'));
   end if;
-  if p_role is distinct from 'admin'
+  if p_role <> 'admin'
      and exists (select 1 from public.year_roles where year_id = p_year_id and user_id = p_user_id and role = 'admin')
      and not exists (select 1 from public.year_roles where year_id = p_year_id and role = 'admin' and user_id <> p_user_id) then
     perform private.fail('invalid_state', jsonb_build_object('reason', 'last_admin'));
   end if;
   perform private.set_reason(p_reason);
-  if p_role is null then
-    delete from public.year_roles where year_id = p_year_id and user_id = p_user_id;
-  else
-    insert into public.year_roles (year_id, user_id, role) values (p_year_id, p_user_id, p_role)
-    on conflict (year_id, user_id) do update set role = excluded.role;
+  insert into public.year_roles (year_id, user_id, role) values (p_year_id, p_user_id, p_role)
+  on conflict (year_id, user_id) do update set role = excluded.role;
+end $$;
+
+-- ロールを外す。closed の年度でもできる（卒業した admin を外して、権限を残さないため）。最後の admin は外せない
+create function public.remove_role(p_year_id uuid, p_user_id uuid, p_reason text default null)
+returns void language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.lock_year(p_year_id, '{preparing,requesting,allocating,confirmed,closed}', '{admin}');
+  if exists (select 1 from public.year_roles where year_id = p_year_id and user_id = p_user_id and role = 'admin')
+     and not exists (select 1 from public.year_roles where year_id = p_year_id and role = 'admin' and user_id <> p_user_id) then
+    perform private.fail('invalid_state', jsonb_build_object('reason', 'last_admin'));
   end if;
+  perform private.set_reason(p_reason);
+  delete from public.year_roles where year_id = p_year_id and user_id = p_user_id;
+  if not found then perform private.fail('not_found'); end if;
 end $$;
 
 create function public.revoke_invitation(p_invitation_id uuid)
@@ -298,6 +315,7 @@ returns void language plpgsql security definer set search_path = '' as $$
 declare v public.invitations;
 begin
   -- ロールを確かめてからロックする（ロールのない人に行ロックを取らせない）。見つからなければ year_id が null で forbidden
+  -- （有無を漏らさない）。closed の年度でも取り消せる（年度の状態は見ない。使用済みでない招待を残さないため）
   perform private.assert_role((select i.year_id from public.invitations i where i.id = p_invitation_id), '{admin}');
   select * into v from public.invitations where id = p_invitation_id for update;
   if not found then perform private.fail('not_found'); end if;
@@ -345,6 +363,7 @@ begin
     'public.create_year_from(uuid, text, date)',
     'public.invite(uuid, text, public.app_role, uuid)',
     'public.set_role(uuid, uuid, public.app_role, text)',
+    'public.remove_role(uuid, uuid, text)',
     'public.revoke_invitation(uuid)',
     'public.remove_group_member(uuid, uuid, text)',
     'public.accept_my_invitations()'] loop
