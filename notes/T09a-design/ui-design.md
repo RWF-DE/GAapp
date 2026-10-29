@@ -148,7 +148,7 @@ scripts/copy-highs-wasm.mjs・e2e.mjs   T09a（e2e.mjs は 7.2 の順に Playwri
 | lib/db/fetch-all.ts | `fetchAll(query, pageSize = 1000)`：主キーの順に `.range()` で分けて全部読む（Supabase の max_rows = 1000 を超えうる表のため） |
 | lib/db/update-with-lock.ts | `updateWithLock(table, match, updatedAt, patch)`（2.3） |
 | lib/db/delete-checked.ts | `deleteChecked(table, match, updatedAt?)`：`delete().match(主キー).select()` で消えた行を受け取り、0 行なら読み直して not_found・conflict・forbidden に分ける（2.3） |
-| lib/data/room-years.ts | `setRoomUsable(yearId, roomId, usable, note)`：今年の使用（room_years）の upsert。マスタ設定（T09）と振り分け画面の部屋の見出し（T13）で使う。`fixedRowsFrom(rows, roomId)`：その部屋からの固定・手動の行（使用不可にする前に直すもの。3.9） |
+| lib/data/room-years.ts | `setRoomUsable(yearId, roomId, updatedAt, usable, note)`：今年の使用（room_years）の書き込み。updatedAt は読み込んだときの updated_at（行がなければ null）で、行があれば updateWithLock、なければ insert（23505 は conflict）。黙って上書きしない（2.3）。マスタ設定（T09）と振り分け画面の部屋の見出し（T13）で使う。`fixedRowsFrom(rows, roomId)`：その部屋からの固定・手動の行（使用不可にする前に直すもの。3.9） |
 | lib/db/types.ts | `Tables<'groups'>` などの別名、列のリスト（select の文字列を1か所に） |
 | lib/rpc/index.ts | `callRpc(name, args)`：supabase-js の rpc を呼び、エラーなら AppError を投げる。jsonb の返り値は zod で確かめる（save_auto_allocations・save_allocation_rows・invite） |
 | lib/rpc/payloads.ts | jsonb の引数の型と zod（AllocationRow の配列、save_allocation_rows の changes、申請の rows、update_year の patch、p_submission） |
@@ -277,10 +277,11 @@ ESLint（T09a が足す。apps/web）：
 
 ### 2.3 直接の書き込み
 
-- 理由の要らない書き込み（在庫、締切前の申請一覧のセル、マスタ、ルール、使用不可の設定）は `supabase.from(…).insert/update/upsert/delete` で行う。
+- 理由の要らない書き込み（在庫、締切前の申請一覧のセル、マスタ、ルール、使用不可の設定）は `supabase.from(…).insert/update/upsert/delete` で行う（使用不可の設定は upsert でなく setRoomUsable。下）。
 - 既存の行の更新は `updateWithLock` を使う：`update(patch).match(主キー).eq('updated_at', 受け取った文字列).select().maybeSingle()`。updated_at は受け取った文字列をそのまま返す（Date に通すとマイクロ秒が落ちて一致しない）。0 行なら、その行の updated_at を読み直して分ける：行がない → not_found、updated_at が違う → conflict、同じ → 権限か状態が変わった（締切・年度の状態・ロール）→ forbidden として扱い、年度の行と立場を読み直す。
 - **削除も 0 行を確かめる**：RLS の USING で拒否された delete はエラーにならず、0 行で成功する（groups・rules・room_years は can_admin で closed では偽、rooms・distance_overrides は is_admin_of_open_year。団体のトリガー tg_groups_before_write も、RLS の対象で can_admin が偽なら old を返すだけでエラーにしない）。そのため削除は `deleteChecked`（`delete().match(主キー).select()`。updated_at を持っていれば `.eq('updated_at', …)` も）で消えた行を受け取り、0 行なら updateWithLock と同じく読み直して、行がない → not_found（「すでに消えていました」として一覧を読み直す）、updated_at が違う → conflict、同じ → forbidden（年度の行と立場を読み直す）に分ける。「削除しました」は消えた行が返ったときだけ出す。
 - 楽観ロックを必須にするのは requests（02 の決めごと）。マスタ・ルール・場所の状態も同じ helper で更新し、黙って上書きしない。
+- 場所の今年の使用（room_years）は upsert しない（ほかの人の変更を黙って上書きするため）。`setRoomUsable(yearId, roomId, 読み込んだときの updated_at〔行がなければ null〕, usable, note)`（lib/data/room-years.ts）で、行があれば updateWithLock（0 行は上と同じく not_found・conflict・forbidden に分ける）、行がなければ insert（23505 はほかの人が先に足したので conflict）。conflict・not_found なら room_years を読み直して「ほかの人が変えました」と知らせ、入力は残す。
 - 在庫（stocks）は部屋の全品目を1回の upsert で書く（3.3。保存の直前に読み直して、ほかの人の保存を確かめる）。
 - insert の重複（23505）は「同じものがすでにあります（ほかの人が先に足した可能性）」として読み直す。
 - 数えた人・日時（counted_by・counted_at）、更新した人（updated_by）は送らない（DB が入れる。D-10）。提出日時（submitted_at）も値としては送らない。例外は、締切前に管理者が「提出済みにする」直接の upsert（3.6）だけで、`{ group_id, submitted_at: 今の時刻の ISO }` を送る（トリガー tg_submissions_set_actor は、送られた submitted_at が null でないときだけ now() に置き換えるので、何かの値を送らないと提出済みにならない。送った値は使われない）。note は送らず、今の備考を消さない。
@@ -353,13 +354,16 @@ ESLint（T09a が足す。apps/web）：
 - conflict・not_found：その画面のデータを読み直し、知らせる（toast）。入力中の値は残す。
 - state・forbidden：年度の行と立場を読み直し、読み取り専用や権限なしに切り替える。立場の読み直しは裏で行い、画面を外さない（1.3 の AuthProvider。読み直しの間も前の立場で表示し、入力・開いているダイアログ・理由の入力を残す）。
 - deadlock：読み直さない。入力を残して「もう一度」（40P01 は何も保存されていない）。
-- **通信の失敗の後の書き込み**（network・unknown。応答が届かず、保存されたか分からない）：自動では再送しない。もう一度押す前に、保存されたかを読み直して確かめる。版や updated_at・一意のキーで分かるものは画面が自分で確かめる：
-  - save_allocation_rows：3.9 の「保存されたか分からないとき」（版を読み直し、進んでいれば突き合わせる）。insert には冪等の鍵がないので、確かめずに再送すると同じ行が二重にできる。
-  - save_auto_allocations・set_year_status（確定）：版を渡しているので、先の送信が通っていれば再送は conflict になる。再送の前に版を読み直し、進んでいれば読み直して知らせる。
-  - submit_requests・stocks の upsert・set_consent：同じ値で何度送っても結果は同じ。読み直してから送る。
-  - update_requests_after_deadline・updateWithLock：先の送信が通っていれば updated_at が変わって conflict になる。読み直して、値が自分の入れたものなら「保存されていました」とする。
-  - insert（団体・ルール・場所・品目・距離）：一意のキー（名前・コード・建物の組）で読み直し、あれば「保存されていました」。
-  - 読み直しも通信できないときは、入力を残して「保存できたか確かめられません。通信が戻ったら『確かめる』を押してください」と出し、確かめるまで送り直しを押せなくする。
+- **通信の失敗の後の書き込み**（応答が届かず、保存されたか分からない）：自動では再送しない。
+  - 「保存できたか分からない」の範囲は、**通信の失敗とタイムアウトだけ**：network（fetch の失敗・中止・status 0）と、コードのない応答のうち status が null・408・5xx のもの（ゲートウェイのタイムアウトなど。PostgREST の応答が届いていない。lib/rpc の unexpected_response もここ）。
+  - DB・PostgREST から**コードつきで返った失敗**（57014 の文のタイムアウト、XX000、PGRST000、知らない P0001 など）は、classifyError の kind が unknown でも**届いた失敗**として扱う（1リクエスト＝1トランザクションなので何も保存されていない）。ふつうの失敗の文言（「予期しないエラーが起きました（コード：…）」）を出し、入力を残す。確かめずに送り直してよい。コードのない 4xx（408 を除く）も PostgREST の前で断られた届いた失敗。T11 の決まり（notes/T11.md の isUnknownOutcome。今は apps/web/lib/data/requests.ts）で、ほかの画面もこの範囲にそろえる。
+  - 「分からない」ときは、もう一度押す前に、保存されたかを読み直して確かめる。版や updated_at・一意のキーで分かるものは画面が自分で確かめる：
+    - save_allocation_rows：3.9 の「保存されたか分からないとき」（版を読み直し、進んでいれば突き合わせる）。insert には冪等の鍵がないので、確かめずに再送すると同じ行が二重にできる。
+    - save_auto_allocations・set_year_status（確定）：版を渡しているので、先の送信が通っていれば再送は conflict になる。再送の前に版を読み直し、進んでいれば読み直して知らせる。
+    - submit_requests・stocks の upsert・set_consent：同じ値で何度送っても結果は同じ。読み直してから送る。
+    - update_requests_after_deadline・updateWithLock（setRoomUsable の更新を含む）：先の送信が通っていれば updated_at が変わって conflict になる。読み直して、値が自分の入れたものなら「保存されていました」とする。
+    - insert（団体・ルール・場所・品目・距離・行のなかった room_years）：一意のキー（名前・コード・建物の組・(year_id, room_id)）で読み直し、あれば「保存されていました」（再送すると 23505 の conflict になる）。
+    - 読み直しも通信できないときは、入力を残して「保存できたか確かめられません。通信が戻ったら『確かめる』を押してください」と出し、確かめるまで送り直しを押せなくする。
 - データの多い画面（ダッシュボード、在庫一覧、申請一覧、振り分け、キャスター机交換、履歴）は、PageHeader に「最終読み込み hh:mm」と「読み直す」を出す。
 - **版の見張り**（`useVersionWatch`。ダッシュボード・振り分け・キャスター机交換）：年度の行の allocation_version だけを 60 秒ごとと、ウィンドウにフォーカスが戻ったときに読み、持っている版より新しければ StaleBanner（「ほかの人が振り分けの入力を変えました。読み直す」）を出す。自動では読み直さない（編集中の変更を消さないため）。計算中・保存中は止める。
 
@@ -465,8 +469,10 @@ admin だけ（RequireAudience）。タブ（`?tab=years|rooms|items|groups|dist
 
 - 表（DataTable）：名前・別名・種類・建物・階・保管場所か・追加コスト（0〜20）・並び順・今年の使用（使用可／使用不可と、使用不可の理由のメモ）。行の追加・編集（シート）・削除。
 - rooms は年度をまたぐ表（開いている年度のどれかの admin が書ける。D-01）。編集のボタンは `adminOfOpenYear` で出す。「場所の変更はすべての年度に効きます」と書く。
-- 今年の使用（room_years）は年度ごとの upsert。確定中に、振り分けのある部屋を使用不可にすると invalid_state（確定中の守り）になる。振り分け中に使用不可にするときは、その部屋からの固定・手動の行があれば、ここでは押せなくして振り分け画面の部屋の見出しへ案内する（3.9 の「使用不可にする順番」。使用不可にした後では、その行の固定を外す保存が E002 で拒否されるため）。
-- 削除は、在庫・振り分け・団体の使用場所・どれかの年度の今年の使用（room_years）から使われていると 23503 になる（「使われている場所は削除できません」）。**ルールからの参照**：ルールの params（source_restrict の rooms、keep の room）は jsonb で外部キーがなく、場所を消しても参照が残って、そのルールが参照の切れたルールになる（2.7）。削除の確認のダイアログで、画面が読める年度（開いている年度）の有効なルールのうち、その場所を参照するもの（`rulesReferencing(rules, { roomId })`。lib/data/settings.ts の純粋関数。Vitest）のコードと内容の文を出し、「先にルール画面でこのルールを無効にするか、参照を直してください」と /rules?code= へのリンクを出して、削除のボタンを押せなくする（無効のルールの参照は削除を止めず、「無効のルール N 件の参照が切れます（有効にする前に直してください）」と添える）。ほかの年度のルールは読めないことがあるので確かめきれない。参照が切れたら、その年度のダッシュボードと振り分け画面の「入力の誤り」に出る（2.7）。開いている年度の admin でなくなった（年度がすべて終了した）ときは 0 行で返るので、deleteChecked で forbidden として扱う。
+- 今年の使用（room_years）は年度ごと。保存は `setRoomUsable`（2.3。読み込んだときの updated_at を渡し、upsert で黙って上書きしない）。確定中に、振り分けのある部屋を使用不可にすると invalid_state（確定中の守り）になる。振り分け中に使用不可にするときは、その部屋からの固定・手動の行があれば、ここでは押せなくして振り分け画面の部屋の見出しへ案内する（3.9 の「使用不可にする順番」。使用不可にした後では、その行の固定を外す保存が E002 で拒否されるため）。
+- 削除は、在庫・振り分け・団体の使用場所・どれかの年度の今年の使用（room_years）から使われていると 23503 になる（「使われている場所は削除できません」）。**ルールからの参照**：ルールの params（source_restrict の rooms、keep の room）は jsonb で外部キーがなく、場所を消しても参照が残って、そのルールが参照の切れたルールになる（2.7）。場所は全年度で共有なので、削除の確認のダイアログは開くたびに years と自分の year_roles を読み直し、**終了していない年度のうちルールを読める年度（admin・staff。rules の RLS）すべて**のルールを1回で読む（T09 の lib/data/settings.ts の fetchOpenYearRules・openYearsForRoomRefs・roomRefsAcrossYears。表示中の年度だけでは足りない）。どれかの年度に、その場所を参照する**有効な**ルールがあれば「削除する」を押せなくし、コードと内容の文を出して「先にルール画面でこのルールを無効にするか、参照を直してください」と添える（表示中の年度のルールは /rules?code= へのリンク、ほかの年度はコードと年度名だけで「その年度を開いて直してください」）。無効のルールの参照は削除を止めず、「無効のルール N 件の参照が切れます（有効にする前に直してください）」と添える。**ルールを読めない終了していない年度（団体代表・閲覧のみの年度）があるとき、またはルールの読み込みに失敗した・読み直している間は、消せない**（年度名を出し、「削除は、終了していないすべての年度のルールを読める管理者が行ってください」）。終了した年度のルールは見ない（参照が切れても振り分けに使わない）。参照が切れたら、その年度のダッシュボードと振り分け画面の「入力の誤り」に出る（2.7）。
+  - **DB での強制は申し送り**（今は画面の確かめだけ）：ロールのない終了していない年度（years を読めないので画面に出てこない）のルールは画面から見えず、確かめと削除の間にほかの人がルールを足すこともある。rules.params の room・rooms は jsonb で外部キーがないので、DB で守るなら rooms の before delete のトリガー（SECURITY DEFINER）で「終了していない年度の有効なルールの params.room・params.rooms がその場所を指していれば invalid_state（details に年度とルールのコード）」にする（groups の削除の params.group・groups も同じ。団体は年度ごとなので同じ年度だけ）。DB のチケットで決める（notes/T09.md の「DB への申し送り」）。
+- 開いている年度の admin でなくなった（年度がすべて終了した）ときは 0 行で返るので、deleteChecked で forbidden として扱う。
 - 建物は空欄なら null（1.6）。建物が null の部屋は、距離の表（03）で「別の建物」として扱われる（屋外は種類で決まる）ので、建物の中の部屋は建物を入れるよう入力欄に書く。
 
 **品目（items）**
