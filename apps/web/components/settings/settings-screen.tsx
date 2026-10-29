@@ -48,7 +48,8 @@ export function SettingsScreen() {
     year,
     membership: m,
     yearWritable: year.status !== 'closed',
-    globalWritable: m.adminOfOpenYear,
+    // 終了した年度では年度をまたぐ表も読み取り専用（04。ほかの開いている年度の管理者でも。その年度を開いて編集する）
+    globalWritable: m.adminOfOpenYear && year.status !== 'closed',
   };
 
   return (

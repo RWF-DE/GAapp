@@ -41,9 +41,20 @@ const OPENS: Record<StoredUser, string[]> = {
   rep: ['/request/', '/my/'],
 };
 
+/**
+ * 雛形を本物の画面に置き換えたページと、その画面の見出し（h1）。置き換えたチケットが自分のページの行を足す
+ * （notes/T09a.md の申し送り。権限なしの確かめは TICKET・OPENS のまま残す）。
+ */
+const REPLACED: Record<string, string> = {
+  '/settings/': 'マスタ設定', // T09
+};
+
+/** 開ける画面が開いた（雛形なら「準備中」、置き換えた画面なら見出し）。「権限がありません」は出ない */
 async function expectPlaceholder(page: Page, path: string): Promise<void> {
   if (!TICKET[path]) throw new Error(`TICKET にないパス：${path}`);
-  await expect(page.getByText(`この画面は準備中です（${TICKET[path]}）`)).toBeVisible();
+  const heading = REPLACED[path];
+  if (heading) await expect(page.getByRole('heading', { level: 1, name: heading })).toBeVisible();
+  else await expect(page.getByText(`この画面は準備中です（${TICKET[path]}）`)).toBeVisible();
   await expect(page.getByText('権限がありません')).toHaveCount(0);
 }
 

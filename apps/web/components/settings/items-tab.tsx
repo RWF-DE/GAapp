@@ -25,7 +25,7 @@ import { itemFormSchema, ITEM_CODE_MAX, joinAliases, type ItemFormInput, type It
 import { Field, FormSheet, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
 
 export function ItemsTab() {
-  const { globalWritable } = useSettings();
+  const { globalWritable, yearWritable } = useSettings();
   const itemsQ = useQuery({ queryKey: settingsKeys.items(), queryFn: () => fetchItems() });
   const [editing, setEditing] = useState<ItemRow | 'new' | null>(null);
   const queryClient = useQueryClient();
@@ -64,7 +64,7 @@ export function ItemsTab() {
         description={
           <>
             品目の変更はすべての年度と、Excel の様式・振り分け画面のタブに効きます。コードは作った後に変えられません。
-            {!globalWritable ? ' 開いている年度の管理者でないため、品目は編集できません。' : ''}
+            {yearWritable && !globalWritable ? ' 開いている年度の管理者でないため、品目は編集できません。' : ''}
           </>
         }
         actions={

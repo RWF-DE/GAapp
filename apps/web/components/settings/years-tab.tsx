@@ -25,14 +25,31 @@ import { FESTIVAL_START_MAX, FESTIVAL_START_MIN, REASON_MAX } from '@/lib/schema
 import { yearCreateSchema, yearEditSchema, type YearEditInput } from '@/lib/schemas/settings';
 import { Field, useSettings, useWriteErrorHandler } from './shared';
 
+type CreatedYear = { year: YearRow; disabledRuleCodes: string[] };
+
+// 作った結果。作ると新しい年度に切り替わり、画面が作り直される（AppShell の key）ので、state ではなくモジュールに置いて
+// 新しい年度の年度のタブで出す（04・設計 3.2：無効になったルールの数とルール画面へのリンク）。閉じるか再読み込みで消える。
+let lastCreated: CreatedYear | null = null;
+
 export function YearsTab() {
   const { year, membership } = useSettings();
   const canCreate = membership.role === 'admin' && membership.latestYear?.id === year.id;
+  // 作った年度で出す（切り替えが止められたときは、作る前の年度の画面にそのまま残る）
+  const [created, setCreated] = useState<CreatedYear | null>(() => (lastCreated && lastCreated.year.id === year.id ? lastCreated : null));
+  const onCreated = (r: CreatedYear) => {
+    lastCreated = r;
+    setCreated(r);
+  };
+  const dismiss = () => {
+    lastCreated = null;
+    setCreated(null);
+  };
   return (
     <div className="space-y-6">
+      {created ? <YearCreatedNotice created={created} onDismiss={dismiss} /> : null}
       <YearEditCard key={`${year.id}:${year.updated_at}`} year={year} />
       {canCreate ? (
-        <YearCreateCard year={year} />
+        <YearCreateCard year={year} onCreated={onCreated} />
       ) : (
         <p className="text-sm text-muted-foreground" data-testid="year-create-unavailable">
           新しい年度は、最新の年度（{membership.latestYear?.label ?? '—'}）を開いて、その年度の管理者が作れます。
@@ -144,7 +161,24 @@ function YearEditCard({ year }: { year: YearRow }) {
 
 type CreateForm = z.input<ReturnType<typeof yearCreateSchema>>;
 
-function YearCreateCard({ year }: { year: YearRow }) {
+function YearCreatedNotice({ created, onDismiss }: { created: CreatedYear; onDismiss: () => void }) {
+  const n = created.disabledRuleCodes.length;
+  return (
+    <div role="status" data-testid="year-created" className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 p-3 text-sm">
+      <span>
+        {created.year.label} を作りました。無効になったルール {n} 件{n > 0 ? `（${created.disabledRuleCodes.join('、')}）` : ''}。
+        <AppLink href="/rules" className="ml-1 underline">
+          ルール画面へ
+        </AppLink>
+      </span>
+      <Button size="sm" variant="ghost" className="ml-auto h-7 px-2 text-xs" onClick={onDismiss}>
+        閉じる
+      </Button>
+    </div>
+  );
+}
+
+function YearCreateCard({ year, onCreated }: { year: YearRow; onCreated: (r: CreatedYear) => void }) {
   const { reloadMembership } = useAuth();
   const setYear = useGuardedSetYear();
   const onError = useWriteErrorHandler();
@@ -156,14 +190,13 @@ function YearCreateCard({ year }: { year: YearRow }) {
   const { register, handleSubmit, formState, setError, reset } = form;
   useUnsavedChanges(formState.isDirty);
   const [saving, setSaving] = useState(false);
-  const [created, setCreated] = useState<{ year: YearRow; disabledRuleCodes: string[] } | null>(null);
 
   const onSubmit = handleSubmit(async (values) => {
     setSaving(true);
     try {
       const r = await createYearFrom(year, values.label, values.festival_start);
       reset({ label: '', festival_start: '' });
-      setCreated(r);
+      onCreated(r);
       const n = r.disabledRuleCodes.length;
       toast.success(`${r.year.label} を作りました`, {
         description:
@@ -230,15 +263,6 @@ function YearCreateCard({ year }: { year: YearRow }) {
             </Button>
           </div>
         </form>
-        {created ? (
-          <div role="status" data-testid="year-created" className="rounded-md border bg-muted/40 p-3 text-sm">
-            {created.year.label} を作りました。無効になったルール {created.disabledRuleCodes.length} 件
-            {created.disabledRuleCodes.length > 0 ? `（${created.disabledRuleCodes.join('、')}）` : ''}。
-            <AppLink href="/rules" className="ml-1 underline">
-              ルール画面へ
-            </AppLink>
-          </div>
-        ) : null}
       </CardContent>
     </Card>
   );

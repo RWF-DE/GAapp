@@ -146,7 +146,7 @@ export function RoomsTab() {
         description={
           <>
             場所の変更はすべての年度に効きます（今年の使用だけは年度ごと）。建物の中の部屋は建物を入れてください（空欄の部屋は、距離の計算で別の建物として扱われます）。
-            {!globalWritable ? ' 開いている年度の管理者でないため、場所は編集できません。' : ''}
+            {yearWritable && !globalWritable ? ' 開いている年度の管理者でないため、場所は編集できません。' : ''}
           </>
         }
         actions={

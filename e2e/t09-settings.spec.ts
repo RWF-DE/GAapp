@@ -261,6 +261,36 @@ test.describe('T09 ユーザー（使い捨てのユーザー）', () => {
   });
 });
 
+test.describe('T09 マスタ設定（開いている年度の管理者が、終了した年度を開く）', () => {
+  test.use({ storageState: storageStateFor('admin') });
+
+  test('T09 終了した年度：開いている年度（R8）の管理者でも、場所・品目・距離は読み取り専用', async ({ page }) => {
+    const s = await createScenario({ status: 'closed', dataset: 'small', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=rooms');
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・終了`);
+      await expect(page.getByTestId('read-only-notice')).toBeVisible();
+      for (const [name, heading, add] of [
+        ['rooms', '場所', 'room-add'],
+        ['items', '品目', 'item-add'],
+        ['distance', '建物どうしの距離の上書き', 'distance-add'],
+      ] as const) {
+        await tab(page, name).click();
+        await expect(page.getByRole('heading', { level: 2, name: heading })).toBeVisible();
+        if (name !== 'distance') await expect(page.getByRole('row').nth(1)).toBeVisible();
+        await expect(page.getByTestId(add)).toHaveCount(0);
+        await expect(page.getByRole('button', { name: '編集', exact: true })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: '削除', exact: true })).toHaveCount(0);
+        // 読み取り専用の理由は上の知らせ（終了した年度）。「開いている年度の管理者でない」とは言わない
+        await expect(page.getByText(/開いている年度の管理者でないため/)).toHaveCount(0);
+      }
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
 test.describe('T09 マスタ設定の権限', () => {
   for (const user of ['staff', 'viewer', 'rep'] as const) {
     test.describe(user, () => {

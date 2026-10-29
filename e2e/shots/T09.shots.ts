@@ -101,6 +101,10 @@ test.describe('T09 マスタ設定（管理者）', () => {
       await page.goto('/settings/?tab=groups');
       await expect(page.getByText('団体がありません')).toBeVisible();
       await shoot(page, 'T09', 'settings-groups-empty-closed-pc');
+      // 終了した年度では、開いている年度（R8）の管理者でも場所・品目・距離は読み取り専用
+      await page.getByTestId('settings-tab-rooms').click();
+      await expect(page.getByRole('row').nth(1)).toBeVisible();
+      await shoot(page, 'T09', 'settings-rooms-closed-pc');
     } finally {
       await s.cleanup();
     }

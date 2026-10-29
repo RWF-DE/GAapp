@@ -22,7 +22,7 @@ export interface SettingsContextValue {
   membership: Membership;
   /** 年度の表（groups・room_years・年度の変更・招待・ロールの変更）を書けるか（closed では偽） */
   yearWritable: boolean;
-  /** 年度をまたぐ表（rooms・items・distance_overrides）を書けるか（開いている年度のどれかの admin。D-01） */
+  /** 年度をまたぐ表（rooms・items・distance_overrides）を書けるか（開いている年度のどれかの admin〔D-01〕で、開いている年度が closed でない。04） */
   globalWritable: boolean;
 }
 
