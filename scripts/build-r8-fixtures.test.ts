@@ -223,6 +223,39 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
     expect(r.stderr).toContain('forms/department.csv: CSV の引用符が閉じていません');
     expect(r.stderr).not.toContain(secret);
   });
+  it('空の行（Excel の書き出しの「,,,,」）は失敗にせず、件数だけを報告する', () => {
+    const f = path.join(source, 'forms', 'stall.csv');
+    appendFileSync(f, ',,,,\n,,,,,,,,\n');
+    const r = run();
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toContain('空の行');
+    expect(r.stdout).toMatch(/stall:2件/);
+    expect(r.stdout).not.toContain('飛ばしたフォームの行');
+  });
+  it('空でない取り込めない行は、これまで通り失敗する', () => {
+    appendFileSync(path.join(source, 'forms', 'stall.csv'), ',,,,\n2026/10/05 21:00:00\n');
+    const r = run();
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('forms/stall.csv:');
+    expect(r.stderr).toContain('misaligned');
+  });
+  it('anonymize.csv の source_name が manual/groups.csv の name・aliases に入っていたら、値を出さず行番号だけを示して失敗する', () => {
+    const g = path.join(out, 'manual', 'groups.csv');
+    const original = readFileSync(g, 'utf8');
+    for (const edited of [
+      original.replace('研究室A,,department,false,,6,,form', '研究室A,,department,false,,6,研究室源,form'), // aliases
+      original.replace('研究室A,', '研究室源 ,'), // name
+    ]) {
+      expect(edited).not.toBe(original);
+      writeFileSync(g, edited);
+      const r = run();
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('anonymize.csv:2');
+      expect(r.stderr).toContain('manual/groups.csv');
+      expect(r.stderr).not.toContain('研究室源');
+      expect(existsSync(path.join(out, 'requests.csv'))).toBe(false);
+    }
+  });
   it('対応しない使用用途：名前を出さずに行番号だけを示して失敗する', () => {
     appendFileSync(path.join(source, 'allocation.csv'), `机(木),倉庫,${secret},1,\n`);
     const r = run();

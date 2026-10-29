@@ -149,6 +149,8 @@ export function parseFormCsv(
   if (itemCols.length === 0) throw new ImportFormatError('品目の列が見つかりません（見出しが items の aliases と合いません）');
   const noteCols = cols.filter((c) => c.role === 'note');
   // 見出しのない列（値があればずれた行）
+  // 読む列のいちばん右の位置。これより手前で切れた行は、足りない列を空（＝0）として取り込まず、ずれた行にする
+  const lastReadIndex = Math.max(...cols.map((c) => c.index));
   const unnamed = new Set(header.map((h, i) => (compact(h) === '' ? i : -1)).filter((i) => i >= 0));
 
   const responses: ParsedFormResponse[] = [];
@@ -159,7 +161,7 @@ export function parseFormCsv(
     if (cells.every((c) => c.trim() === '')) return reject('empty');
     // 列がずれている行：見出しより右、または見出しのない列に値がある
     const shifted = cells.some((c, i) => c.trim() !== '' && (i >= header.length || unnamed.has(i)));
-    if (shifted) return reject('misaligned');
+    if (shifted || cells.length <= lastReadIndex) return reject('misaligned');
 
     const submittedAt = parseTimestamp(cells[ts.index] ?? '');
     if (submittedAt === null) return reject('invalid_timestamp');

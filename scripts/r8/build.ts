@@ -217,6 +217,8 @@ export type BuildReport = {
   excludedFromTotals: string[];
   totalsCount: number;
   skippedFormRows: { form: FormKind; rowNumber: number; reason: string }[];
+  /** 完全に空の行（Excel の書き出しの「,,,,」）。失敗にせず、件数だけ残す */
+  emptyFormRows: { form: FormKind; count: number }[];
 };
 
 export type BuildResult = { files: Record<string, string>; report: BuildReport };
@@ -253,7 +255,12 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
   if (existsSync(src('anonymize'))) {
     const t = readTable(src('anonymize'), 'anonymize.csv');
     requireHeader(t, ['source_name', 'fixture_name'], 'anonymize.csv');
-    for (const r of t.rows) anon.set(compact(r.cells.source_name!), r.cells.fixture_name!);
+    for (const r of t.rows) {
+      // 元の名前（個人名を含みうる）が手で書いたファイルにあると、生成する groups.csv などに出てしまう。値は出さず、行番号だけ示す
+      if (groupLookup.has(compact(r.cells.source_name!)))
+        throw new BuildError(`anonymize.csv:${r.rowNumber}: source_name が manual/groups.csv の name・aliases に入っています（元の名前を fixtures に書かないでください）`);
+      anon.set(compact(r.cells.source_name!), r.cells.fixture_name!);
+    }
   }
   const anonymize = (s: string) => anon.get(compact(s)) ?? s;
 
@@ -273,6 +280,7 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
     excludedFromTotals: [],
     totalsCount: 0,
     skippedFormRows: [],
+    emptyFormRows: [],
   };
 
   // ---- フォーム回答 → 申請（importer と同じ関数） ----
@@ -311,7 +319,9 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
       if (e instanceof ImportFormatError) throw new BuildError(`${SOURCE_FILES[kind]}: ${e.message}`);
       throw e;
     }
-    for (const r of parsed.rejected) fail(kind, r.rowNumber, r.reason);
+    const empty = parsed.rejected.filter((r) => r.reason === 'empty').length;
+    if (empty > 0) report.emptyFormRows.push({ form: kind, count: empty });
+    for (const r of parsed.rejected) if (r.reason !== 'empty') fail(kind, r.rowNumber, r.reason);
     for (const r of parsed.responses) if (r.groupName !== null) r.groupName = anonymize(r.groupName);
     const manualMap: Record<number, string> = {};
     if (kind === 'company') {
@@ -588,6 +598,7 @@ export function formatReport(r: BuildReport): string {
   L.push(`申請より多く付けた分（分けた団体の最後の団体）: ${r.splitExcess.length ? r.splitExcess.map((s) => `${s.group} ${s.item} +${s.count}`).join('、') : 'なし'}`);
   L.push(`申請と手作業の requested_item が違う組: ${r.requestedItemDiffs.length} 組`);
   for (const d of r.requestedItemDiffs) L.push(`  ${d.group} ${d.item} 申請 ${d.requested} / 手作業 ${d.reference}`);
+  if (r.emptyFormRows.length) L.push(`空の行（取り込まない）: ${r.emptyFormRows.map((e) => `${e.form}:${e.count}件`).join('、')}`);
   if (r.skippedFormRows.length) L.push(`飛ばしたフォームの行: ${r.skippedFormRows.map((s) => `${s.form}:${s.rowNumber}(${s.reason})`).join('、')}`);
   return L.join('\n');
 }

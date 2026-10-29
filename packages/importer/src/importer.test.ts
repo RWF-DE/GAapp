@@ -6,6 +6,7 @@ import { fixtureIds, fixtureItems, repoRoot } from '@gaapp/shared/testing';
 import {
   containsEmail,
   parseFormCsv,
+  stripEmails,
   resolveResponses,
   type FormKind,
   type ImportGroup,
@@ -115,6 +116,34 @@ describe('parseFormCsv: 模擬店フォーム', () => {
   });
 });
 
+describe('parseFormCsv: 途中で切れた行', () => {
+  const header = 'タイムスタンプ,団体名,机(木),椅子(木),備考';
+  it('読む列の位置まで届かない行は、足りない列を 0 として取り込まず misaligned にする', () => {
+    const csv = [
+      header,
+      '2026/10/01 10:00:00,団体1,2,3,メモ', // 全部ある
+      '2026/10/01 10:01:00,団体2,2,3', // 備考の列まで届かない
+      '2026/10/01 10:02:00,団体3,2', // 椅子の列まで届かない
+      '2026/10/01 10:03:00', // 団体名の列から届かない
+      '2026/10/01 10:04:00,団体5,2,3,', // 空の備考まである
+      '',
+    ].join('\n');
+    const parsed = parseFormCsv('department', csv, itemDefs);
+    expect(parsed.responses.map((r) => r.rowNumber)).toEqual([2, 6]);
+    expect(parsed.rejected).toEqual([
+      { rowNumber: 3, reason: 'misaligned' },
+      { rowNumber: 4, reason: 'misaligned' },
+      { rowNumber: 5, reason: 'misaligned' },
+    ]);
+  });
+  it('対応表にない列（右端）が省かれていても、読む列に届いていれば取り込む', () => {
+    const csv = 'タイムスタンプ,団体名,机(木),備考,電話番号\n2026/10/01 10:00:00,団体1,2,\n';
+    const parsed = parseFormCsv('department', csv, itemDefs);
+    expect(parsed.rejected).toEqual([]);
+    expect(parsed.responses).toHaveLength(1);
+  });
+});
+
 describe('parseFormCsv: メールの扱い', () => {
   const header = 'タイムスタンプ,メール,団体名,机(木),備考';
   it('実在しうるドメインのメールも、団体名・備考・数のどこにあっても出さない', () => {
@@ -152,6 +181,61 @@ describe('parseFormCsv: メールの扱い', () => {
     } catch (e) {
       expect(String((e as Error).message)).not.toContain(at);
     }
+  });
+});
+
+describe('メールのパターン：書き方の揺れと処理時間', () => {
+  const strip = (s: string) => stripEmails(s);
+  it('@ の前後に空白がある書き方も見つけて取り除く', () => {
+    for (const s of [`taro ${at} ${'gmail'}.com`, `taro${at} ${'gmail'}.com`, `taro ${at}${'gmail'}.com`, `taro\u3000${'＠'}\u3000${'gmail'}.com`]) {
+      expect(containsEmail(s), s).toBe(true);
+      expect(strip(`連絡先 ${s} です`).text, s).toBe('連絡先  です');
+    }
+  });
+  it('ドメインの区切りが「。」「．」でも見つけて取り除く（それ以外の文は変えない）', () => {
+    for (const s of [`taro${at}${'gmail'}。com`, `taro${at}${'gmail'}．com`, `taro${at}${'gmail'}｡com`, `x.y${at}${'kumamoto-nct'}。ac。jp`]) {
+      expect(containsEmail(s), s).toBe(true);
+      expect(strip(`連絡先 ${s} 以上`).text, s).toBe('連絡先  以上');
+    }
+    // メールを含まない文は、「。」があっても書き換えない
+    expect(strip('ありがとう。よろしく。')).toEqual({ text: 'ありがとう。よろしく。', stripped: false });
+  });
+  it('メールのない文は見つけない', () => {
+    for (const s of ['机は2台', `${at}だけ`, `a ${at}`, `${at} gmail.com`, 'a@b']) expect(containsEmail(s), s).toBe(false);
+  });
+  it('5万字のセルでも十分速い（@ のない長い列・@ だらけ・空白だらけ・ドット列）', () => {
+    const N = 50_000;
+    const cells = [
+      'a'.repeat(N),
+      'ab.'.repeat(N / 3),
+      ' '.repeat(N),
+      `${'a'.repeat(N)}${at}`,
+      `${at}${'a'.repeat(N)}`,
+      `${'a'.repeat(N)}${at}${'b'.repeat(N)}`,
+      `a${at}`.repeat(N / 2),
+      `a ${at} `.repeat(N / 4),
+      `x${at}${'b'.repeat(62)}`.repeat(N / 64),
+      `x${at}${'a.'.repeat(N / 2)}`,
+      '長'.repeat(N),
+    ];
+    for (const c of cells) {
+      const t0 = performance.now();
+      stripEmails(c);
+      containsEmail(c);
+      expect(performance.now() - t0, `${c.slice(0, 8)}…`).toBeLessThan(100);
+    }
+  });
+  it('local 部が長くても、全体を取り除く（一部を残さない）', () => {
+    expect(strip(`${'a'.repeat(100)}${at}${'gmail'}.com`)).toEqual({ text: '', stripped: true });
+    // 2 つのアドレスがつながっていても、全部取り除く
+    expect(strip(`a${at}b.com${at}c.com`)).toEqual({ text: '', stripped: true });
+  });
+  it('フォームの CSV に長い備考があっても、取り込みが速い', () => {
+    const csv = `タイムスタンプ,団体名,机(木),備考\n2026/10/01 10:00:00,団体,1,${'あ'.repeat(50_000)}\n`;
+    const t0 = performance.now();
+    const parsed = parseFormCsv('department', csv, itemDefs);
+    expect(performance.now() - t0).toBeLessThan(500);
+    expect(parsed.responses).toHaveLength(1);
   });
 });
 
