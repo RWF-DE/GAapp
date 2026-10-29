@@ -119,7 +119,7 @@ export const selectClass =
 /** 各タブの見出しと説明 */
 export function TabHeading({ title, description, actions }: { title: string; description?: React.ReactNode; actions?: React.ReactNode }) {
   return (
-    <div className="mb-3 flex flex-wrap items-start gap-x-4 gap-y-2">
+    <div className="mb-3 flex flex-col gap-x-4 gap-y-2 md:flex-row md:items-start">
       <div className="min-w-0 flex-1 space-y-1">
         <h2 className="text-lg font-semibold">{title}</h2>
         {description ? <div className="text-sm text-muted-foreground">{description}</div> : null}

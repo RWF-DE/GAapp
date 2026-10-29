@@ -83,28 +83,37 @@ export function RoomsTab() {
       {
         id: 'usable',
         header: '今年の使用',
-        cell: ({ row }) =>
-          row.original.usable ? (
-            <span>使用可</span>
-          ) : (
-            <span className="space-x-1">
-              <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-900">
-                使用不可
-              </Badge>
-              {row.original.usableNote ? <span className="text-xs text-muted-foreground">{row.original.usableNote}</span> : null}
-            </span>
-          ),
+        cell: ({ row }) => (
+          <span className="inline-flex flex-wrap items-center gap-1">
+            {row.original.usable ? (
+              <span>使用可</span>
+            ) : (
+              <>
+                <Badge variant="outline" className="border-amber-300 bg-amber-50 text-amber-900">
+                  使用不可
+                </Badge>
+                {row.original.usableNote ? <span className="text-xs text-muted-foreground">{row.original.usableNote}</span> : null}
+              </>
+            )}
+            {yearWritable ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2 text-xs underline"
+                aria-label={`${row.original.name}の今年の使用を変える`}
+                onClick={() => setUsableOf(row.original)}
+              >
+                変える
+              </Button>
+            ) : null}
+          </span>
+        ),
       },
       {
         id: 'actions',
         header: '',
         cell: ({ row }) => (
           <div className="flex justify-end gap-1">
-            {yearWritable ? (
-              <Button size="sm" variant="outline" onClick={() => setUsableOf(row.original)}>
-                今年の使用
-              </Button>
-            ) : null}
             {globalWritable ? (
               <>
                 <Button size="sm" variant="outline" onClick={() => setEditing(row.original)}>
