@@ -11,7 +11,9 @@ import {
   formatAuditValue,
   formatDiffEntry,
   HISTORY_PAGE_SIZE,
-  historyConditions,
+  historyQueries,
+  atMicros,
+  compareHistoryRows,
   historyHref,
   isDateParam,
   NAME_UNKNOWN,
@@ -153,34 +155,67 @@ describe('絞り込み（URL）', () => {
   });
 });
 
-describe('historyConditions', () => {
+describe('historyQueries', () => {
   it('年度だけ（絞り込みなし）', () => {
-    expect(historyConditions(Y, EMPTY_FILTER)).toEqual([{ op: 'eq', column: 'year_id', value: Y }]);
+    expect(historyQueries(Y, EMPTY_FILTER)).toEqual([[{ op: 'eq', column: 'year_id', value: Y }]]);
   });
 
-  it('年度をまたぐ表を選ぶと year_id が null の行も含める。期間は Asia/Tokyo の 0 時で gte・lt', () => {
-    expect(historyConditions(Y, { tables: ['stocks', 'rooms'], groupId: G, from: '2026-10-01', to: '2026-10-31', user: U })).toEqual([
-      { op: 'or', expr: `year_id.eq.${Y},year_id.is.null` },
-      { op: 'in', column: 'table_name', values: ['stocks', 'rooms'] },
-      { op: 'eq', column: 'group_id', value: G },
+  it('年度の表と年度をまたぐ表を選ぶと、年度の行と year_id が null の行の2つに分ける。期間は Asia/Tokyo の 0 時で gte・lt', () => {
+    const common = [
       { op: 'gte', column: 'at', value: '2026-10-01T00:00:00+09:00' },
       { op: 'lt', column: 'at', value: '2026-11-01T00:00:00+09:00' },
       { op: 'eq', column: 'user_id', value: U },
+    ];
+    expect(historyQueries(Y, { tables: ['stocks', 'requests', 'rooms', 'items'], groupId: null, from: '2026-10-01', to: '2026-10-31', user: U })).toEqual([
+      [{ op: 'eq', column: 'year_id', value: Y }, { op: 'in', column: 'table_name', values: ['stocks', 'requests'] }, ...common],
+      [{ op: 'is', column: 'year_id', value: null }, { op: 'in', column: 'table_name', values: ['rooms', 'items'] }, ...common],
     ]);
   });
 
-  it('表が1つなら eq。アプリの外は user_id is null。続きは最後の行の at と id より前', () => {
-    expect(
-      historyConditions(Y, { ...EMPTY_FILTER, tables: ['requests'], user: 'outside' }, { at: '2026-10-05T09:01:02.123456+00:00', id: 42 }),
-    ).toEqual([
-      { op: 'eq', column: 'year_id', value: Y },
-      { op: 'eq', column: 'table_name', value: 'requests' },
-      { op: 'is', column: 'user_id', value: null },
-      {
-        op: 'or',
-        expr: 'at.lt."2026-10-05T09:01:02.123456+00:00",and(at.eq."2026-10-05T09:01:02.123456+00:00",id.lt.42)',
-      },
+  it('年度をまたぐ表だけなら year_id が null の問い合わせだけ。団体で絞ると年度をまたぐ表の問い合わせは作らない', () => {
+    expect(historyQueries(Y, { ...EMPTY_FILTER, tables: ['distance_overrides'] })).toEqual([
+      [
+        { op: 'is', column: 'year_id', value: null },
+        { op: 'eq', column: 'table_name', value: 'distance_overrides' },
+      ],
     ]);
+    expect(historyQueries(Y, { ...EMPTY_FILTER, tables: ['rooms', 'stocks'], groupId: G })).toEqual([
+      [
+        { op: 'eq', column: 'year_id', value: Y },
+        { op: 'eq', column: 'table_name', value: 'stocks' },
+        { op: 'eq', column: 'group_id', value: G },
+      ],
+    ]);
+    expect(historyQueries(Y, { ...EMPTY_FILTER, tables: ['rooms'], groupId: G })).toEqual([]);
+  });
+
+  it('アプリの外は user_id is null。続きは at <= と、最後の行の at と id より前', () => {
+    expect(historyQueries(Y, { ...EMPTY_FILTER, tables: ['requests'], user: 'outside' }, { at: '2026-10-05T09:01:02.123456+00:00', id: 42 })).toEqual([
+      [
+        { op: 'eq', column: 'year_id', value: Y },
+        { op: 'eq', column: 'table_name', value: 'requests' },
+        { op: 'is', column: 'user_id', value: null },
+        { op: 'lte', column: 'at', value: '2026-10-05T09:01:02.123456+00:00' },
+        {
+          op: 'or',
+          expr: 'at.lt."2026-10-05T09:01:02.123456+00:00",and(at.eq."2026-10-05T09:01:02.123456+00:00",id.lt.42)',
+        },
+      ],
+    ]);
+  });
+});
+
+describe('並び（at desc・id desc）', () => {
+  it('マイクロ秒まで比べる（Date のミリ秒で丸めない）。同じ at は id の大きい順', () => {
+    expect(atMicros('2026-10-05T09:01:02.123457+00:00') - atMicros('2026-10-05T09:01:02.123456+00:00')).toBe(1);
+    expect(atMicros('2026-10-05T18:01:02+09:00')).toBe(atMicros('2026-10-05T09:01:02Z'));
+    expect(atMicros('2026-10-05T09:01:02.5+00')).toBe(atMicros('2026-10-05T09:01:02.500000+00:00'));
+    const rows = [
+      { at: '2026-10-05T09:01:02.123456+00:00', id: 1 },
+      { at: '2026-10-05T09:01:02.123457+00:00', id: 2 },
+      { at: '2026-10-05T09:01:02.123456+00:00', id: 3 },
+    ];
+    expect([...rows].sort(compareHistoryRows).map((r) => r.id)).toEqual([2, 3, 1]);
   });
 });
 
@@ -202,7 +237,7 @@ describe('fetchHistoryPage', () => {
       ['id', { ascending: false }],
     ]);
     expect(opArgs(call, 'limit')).toEqual([[HISTORY_PAGE_SIZE + 1]]);
-    expect(opArgs(call, 'or')).toEqual([[`year_id.eq.${Y},year_id.is.null`]]);
+    expect(opArgs(call, 'is')).toEqual([['year_id', null]]);
     expect(opArgs(call, 'eq')).toEqual([['table_name', 'items']]);
     expect(String(opArgs(call, 'select')[0]![0])).not.toContain('count');
   });
@@ -212,6 +247,18 @@ describe('fetchHistoryPage', () => {
     const page = await fetchHistoryPage(Y, EMPTY_FILTER, { at: '2026-10-06T00:00:00+00:00', id: 9 }, fake.client);
     expect(page.next).toBeNull();
     expect(opArgs(fake.issued[0]!, 'or')).toHaveLength(1);
+  });
+
+  it('年度の行と年度のない行は別に読み、合わせて at desc・id desc の先頭 50 件にする', async () => {
+    const at = (sec: number) => `2026-10-05T09:00:${String(sec).padStart(2, '0')}+00:00`;
+    const yearRows = Array.from({ length: 51 }, (_, i) => logRow(1000 - i, at(59 - i)));
+    const nullRows = [logRow(5000, at(58)), logRow(5001, '2026-10-05T09:00:58.5+00:00')];
+    const fake = createFakeSupabase((call) => ({ data: opArgs(call, 'is').length > 0 ? nullRows : yearRows }));
+    const page = await fetchHistoryPage(Y, { ...EMPTY_FILTER, tables: ['stocks', 'rooms'] }, null, fake.client);
+    expect(fake.issued).toHaveLength(2);
+    expect(page.rows.slice(0, 4).map((r) => r.id)).toEqual([1000, 5001, 5000, 999]);
+    expect(page.rows).toHaveLength(HISTORY_PAGE_SIZE);
+    expect(page.next).toEqual({ at: page.rows[49]!.at, id: page.rows[49]!.id });
   });
 
   it('失敗は AppError にして投げる', async () => {

@@ -147,32 +147,60 @@ export type HistoryCondition =
   | { op: 'eq'; column: string; value: string }
   | { op: 'is'; column: string; value: null }
   | { op: 'in'; column: string; values: string[] }
-  | { op: 'gte' | 'lt'; column: string; value: string }
+  | { op: 'gte' | 'lt' | 'lte'; column: string; value: string }
   | { op: 'or'; expr: string };
 
 /**
- * 絞り込みと続きの読み始めから、audit_logs に付ける条件を作る。
- * - 年度：year_id = 年度。年度をまたぐ表を選んだときは `or(year_id.eq.{年度},year_id.is.null)`。
+ * 絞り込みと続きの読み始めから、audit_logs への問い合わせ（1つか2つ）の条件を作る。
+ * - 年度の行：year_id = 年度。年度をまたぐ表（場所・品目・距離）の行は year_id が null なので、それらの表を選んだときは
+ *   `year_id is null` の問い合わせを別に作る（`or(year_id.eq.{年度},year_id.is.null)` の1つにすると、索引で並べたまま読めず、
+ *   当てはまる行を全部読んで RLS の関数を行ごとに呼んでから並べ替えるため遅い。10 万行で 183 ms。notes/T14.md）。
+ *   年度をまたぐ表は団体を持たないので、団体で絞るときは作らない。
  * - 期間：from の 0 時以上、to の次の日の 0 時より前（Asia/Tokyo。画面の設計 2.8）。
- * - 続き：`or(at.lt.{at},and(at.eq.{at},id.lt.{id}))`（at desc・id desc の並びで、最後の行より後ろ）。
+ * - 続き：`at <= {at}` と `or(at.lt.{at},and(at.eq.{at},id.lt.{id}))`（at desc・id desc の並びで、最後の行より後ろ。
+ *   `at <=` は索引の範囲に使わせるため。or だけだと先頭から読み飛ばすので、深いページほど遅くなる）。
  */
-export function historyConditions(yearId: string, f: HistoryFilter, cursor: HistoryCursor | null = null): HistoryCondition[] {
-  const out: HistoryCondition[] = [];
-  const crossYear = f.tables.some((t) => CROSS_YEAR_TABLES.includes(t));
-  if (crossYear) out.push({ op: 'or', expr: `year_id.eq.${yearId},year_id.is.null` });
-  else out.push({ op: 'eq', column: 'year_id', value: yearId });
-  if (f.tables.length === 1) out.push({ op: 'eq', column: 'table_name', value: f.tables[0]! });
-  else if (f.tables.length > 1) out.push({ op: 'in', column: 'table_name', values: [...f.tables] });
-  if (f.groupId) out.push({ op: 'eq', column: 'group_id', value: f.groupId });
-  if (f.from) out.push({ op: 'gte', column: 'at', value: tokyoStartOfDay(f.from) });
-  if (f.to) out.push({ op: 'lt', column: 'at', value: tokyoStartOfNextDay(f.to) });
-  if (f.user === OUTSIDE_USER) out.push({ op: 'is', column: 'user_id', value: null });
-  else if (f.user) out.push({ op: 'eq', column: 'user_id', value: f.user });
+export function historyQueries(yearId: string, f: HistoryFilter, cursor: HistoryCursor | null = null): HistoryCondition[][] {
+  const crossTables = f.tables.filter((t) => CROSS_YEAR_TABLES.includes(t));
+  const yearTables = f.tables.filter((t) => !CROSS_YEAR_TABLES.includes(t));
+  const common: HistoryCondition[] = [];
+  if (f.groupId) common.push({ op: 'eq', column: 'group_id', value: f.groupId });
+  if (f.from) common.push({ op: 'gte', column: 'at', value: tokyoStartOfDay(f.from) });
+  if (f.to) common.push({ op: 'lt', column: 'at', value: tokyoStartOfNextDay(f.to) });
+  if (f.user === OUTSIDE_USER) common.push({ op: 'is', column: 'user_id', value: null });
+  else if (f.user) common.push({ op: 'eq', column: 'user_id', value: f.user });
   if (cursor) {
     const at = quoted(cursor.at);
-    out.push({ op: 'or', expr: `at.lt.${at},and(at.eq.${at},id.lt.${cursor.id})` });
+    common.push({ op: 'lte', column: 'at', value: cursor.at });
+    common.push({ op: 'or', expr: `at.lt.${at},and(at.eq.${at},id.lt.${cursor.id})` });
+  }
+  const tableCond = (tables: readonly AuditTable[]): HistoryCondition[] =>
+    tables.length === 0 ? [] : tables.length === 1 ? [{ op: 'eq', column: 'table_name', value: tables[0]! }] : [{ op: 'in', column: 'table_name', values: [...tables] }];
+  const out: HistoryCondition[][] = [];
+  if (f.tables.length === 0 || yearTables.length > 0) {
+    out.push([{ op: 'eq', column: 'year_id', value: yearId }, ...tableCond(yearTables), ...common]);
+  }
+  if (crossTables.length > 0 && !f.groupId) {
+    out.push([{ op: 'is', column: 'year_id', value: null }, ...tableCond(crossTables), ...common]);
   }
   return out;
+}
+
+/** at（PostgREST の timestamptz の文字列）と id の並びのキー（マイクロ秒まで。Date はミリ秒までしか持たない） */
+export function atMicros(at: string): number {
+  const m = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}(?::?\d{2})?)$/.exec(at);
+  if (!m) return Date.parse(at) * 1000;
+  let tz = m[3]!;
+  if (tz !== 'Z') {
+    const d = tz.replace(':', '');
+    tz = `${d.slice(0, 3)}:${d.slice(3, 5) || '00'}`;
+  }
+  return Date.parse(`${m[1]}${tz}`) * 1000 + Number((m[2] ?? '').padEnd(6, '0').slice(0, 6));
+}
+
+/** at desc・id desc の並び */
+export function compareHistoryRows(a: Pick<AuditLogRow, 'at' | 'id'>, b: Pick<AuditLogRow, 'at' | 'id'>): number {
+  return atMicros(b.at) - atMicros(a.at) || b.id - a.id;
 }
 
 export interface AuditLogRow {
@@ -204,20 +232,15 @@ interface LooseFilter {
   in(column: string, values: readonly unknown[]): LooseFilter;
   gte(column: string, value: unknown): LooseFilter;
   lt(column: string, value: unknown): LooseFilter;
+  lte(column: string, value: unknown): LooseFilter;
   or(expr: string): LooseFilter;
   order(column: string, opts: { ascending: boolean }): LooseFilter;
   limit(n: number): PromiseLike<{ data: unknown[] | null; error: unknown; status?: number }>;
 }
 
-/** 1ページを読む（51 件読んで、51 件目があれば続きがあるとする。件数は数えない） */
-export async function fetchHistoryPage(
-  yearId: string,
-  f: HistoryFilter,
-  cursor: HistoryCursor | null,
-  client: AppSupabaseClient = getSupabase(),
-): Promise<HistoryPage> {
+async function fetchRows(conds: readonly HistoryCondition[], client: AppSupabaseClient): Promise<AuditLogRow[]> {
   let q = client.from('audit_logs').select(AUDIT_COLS) as unknown as LooseFilter;
-  for (const c of historyConditions(yearId, f, cursor)) {
+  for (const c of conds) {
     switch (c.op) {
       case 'eq':
         q = q.eq(c.column, c.value);
@@ -234,6 +257,9 @@ export async function fetchHistoryPage(
       case 'lt':
         q = q.lt(c.column, c.value);
         break;
+      case 'lte':
+        q = q.lte(c.column, c.value);
+        break;
       case 'or':
         q = q.or(c.expr);
         break;
@@ -241,7 +267,21 @@ export async function fetchHistoryPage(
   }
   const res = await q.order('at', { ascending: false }).order('id', { ascending: false }).limit(HISTORY_PAGE_SIZE + 1);
   if (res.error) throw toAppError(res.error, res.status);
-  const all = (res.data ?? []) as AuditLogRow[];
+  return (res.data ?? []) as AuditLogRow[];
+}
+
+/**
+ * 1ページを読む（問い合わせごとに 51 件読み、合わせて at desc・id desc に並べた先頭の 50 件。51 件目があれば続きがある。
+ * 件数は数えない）。問い合わせが2つ（年度の行と年度のない行）でも、それぞれの先頭 51 件を合わせれば全体の先頭 51 件になる。
+ */
+export async function fetchHistoryPage(
+  yearId: string,
+  f: HistoryFilter,
+  cursor: HistoryCursor | null,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<HistoryPage> {
+  const parts = await Promise.all(historyQueries(yearId, f, cursor).map((conds) => fetchRows(conds, client)));
+  const all = parts.flat().sort(compareHistoryRows).slice(0, HISTORY_PAGE_SIZE + 1);
   const rows = all.slice(0, HISTORY_PAGE_SIZE);
   const last = rows[rows.length - 1];
   return { rows, next: all.length > HISTORY_PAGE_SIZE && last ? { at: last.at, id: last.id } : null };
