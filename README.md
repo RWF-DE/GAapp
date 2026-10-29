@@ -82,6 +82,8 @@ pnpm e2e:manual                 # 手での確かめ（画面の受け入れ）�
 
 `pnpm build:e2e` の引数（`pnpm build:e2e -- --base-path /GAapp` のように渡す）：`--base-path /GAapp` は basePath つきで書き出して apps/web/out-basepath/GAapp/ に置く（下の「basePath」）。`--supabase-url http://<PC の LAN の IP>:54321` はアプリが呼ぶ Supabase の URL を変える（総務の PC から同じ Wi-Fi のスマホに配って試すとき。手順は notes/T14.md の「LAN で配る手順」）。ただし、今はテスト用ログインのフォームが Supabase の URL が 127.0.0.1・localhost のときだけ出るので、LAN の IP で書き出すとスマホにフォームが出ない（扱いは未決。notes/T14.md）。
 
+**LAN で配るときの注意**：`supabase start` は API の 54321 だけでなく Postgres の 54322（既定のパスワード）なども `0.0.0.0` で待ち受け、ローカルの secret キー・JWT の秘密・seed のテストユーザーのパスワードは公開されている既定の値（同じネットワークの誰でも RLS を通らずに読み書きできる）。信頼できるネットワーク（総務の部屋の閉じた Wi-Fi など）だけで行い、ファイアウォールで 54321 と配る静的サーバーの port 以外を閉じ（Linux の Docker は ufw を素通りする）、終わったら `supabase stop` する。本番の DB・本番の鍵は使わない。詳しくは notes/T14.md の「LAN で配る手順」の注意。
+
 Claude Code のクラウドのセッションなど、Docker のデーモンが止まっている環境では、先に `dockerd` を起動してから `supabase start` する（`docker info` が失敗したら `nohup dockerd > /tmp/dockerd.log 2>&1 &`）。手元の PC では Docker Desktop などを起動しておく。ローカルの Supabase は同時に1つしか動かせない。
 
 ### basePath
