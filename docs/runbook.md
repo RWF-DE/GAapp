@@ -118,11 +118,12 @@ GitHub・Supabase・Google Cloud はどれも個人ではなく組織の持ち�
 
 | 何を | どこで | 引き継ぐこと |
 | --- | --- | --- |
-| GitHub の組織（RWF-DE）とリポジトリ | Organization → People | 後輩を Owner にする。ルールセットの迂回（Repository admin）と環境 `production` の Required reviewers に後輩を入れる |
-| Actions の secrets | Environments → production → Secrets | `SUPABASE_ACCESS_TOKEN` は作った人の個人のトークンなので、**後輩のアカウントで作り直して入れ替え**、古いトークンを Supabase の Account → Access Tokens で消す。`SUPABASE_DB_PASSWORD` を変えたら入れ替える |
-| Supabase の組織とプロジェクト | Organization → Team | 後輩を Owner にする。抜ける人を外す |
-| Google Cloud のプロジェクト（OAuth クライアント） | IAM | 後輩を Owner にする。OAuth クライアントのシークレットは Supabase にだけある（作り直したら Supabase に入れ直す） |
+| GitHub の組織（RWF-DE）とリポジトリ | Organization → People、リポジトリの Settings → Rules → Rulesets・Environments → production・Collaborators and teams | 後輩を Owner にする。ルールセットの迂回（Repository admin）と環境 `production` の Required reviewers に後輩を入れる。抜ける人は、Organization → People から外し（Owner も外れる）、環境 `production` の Required reviewers から外す。ルールセットの Bypass list に人やチームを名指しで入れていれば、そこからも外す。リポジトリの Collaborators and teams に個人で残っていれば外す |
+| Actions の secrets | Environments → production → Secrets | `SUPABASE_ACCESS_TOKEN` は作った人の個人のトークンなので、**後輩のアカウントで作り直して入れ替え**、古いトークンを Supabase の Account → Access Tokens で消す。`SUPABASE_DB_PASSWORD` は下の Supabase の行で作り直した値に入れ替える |
+| Supabase の組織とプロジェクト | Organization → Team、Project Settings → Database・API Keys | 後輩を Owner にする。抜ける人を外す。**引き継ぎのたびに DB のパスワードを作り直す**：Project Settings → Database → Reset database password で新しいパスワードを作り、Environments → production → Secrets の `SUPABASE_DB_PASSWORD` に入れ直す（[3.2](#32-開発者db-全体を保存するsupabase-db-dump) の `supabase link` で手で入れるので、抜ける人はパスワードを知っている。組織から外しても、postgres ロールで本番 DB に直接つなぐと RLS を通らずに全部の表〔招待のメールアドレスを含む〕を読み書きできる）。secret キー（`sb_secret_…`）を作ったことがあれば、Project Settings → API Keys で作り直して古いものを消す（アプリとビルドは publishable キーだけを使う） |
+| Google Cloud のプロジェクト（OAuth クライアント） | IAM | 後輩を Owner にする。抜ける人を IAM から外す。OAuth クライアントのシークレットは Supabase にだけある（作り直したら Supabase に入れ直す） |
 | アプリの管理者 | アプリのマスタ設定 → ユーザー | 最新の年度の管理者に後輩を入れる（招待）。卒業する人は自分のロールを外す。管理者がいなくなったら README の 6 の 5 |
 | 総務の共有ドライブ | 学校の Google ドライブ | 年度データ・振り分け表・DB のダンプのフォルダの共有を後輩に移す |
+| 最後に | 上の各行の画面 | **抜ける人の権限が残っていないことを確かめる**：GitHub の People・Required reviewers・Bypass list・Collaborators、Supabase の Team と Access Tokens、Google Cloud の IAM、アプリのユーザー、共有ドライブの共有に、抜ける人がいないこと。DB のパスワードを作り直した後に migrate.yml（Migrate production DB）が動くことは、次にマイグレーションを適用するときに確かめる |
 
 引き継いだら、後輩が [1](#1-7月の再開と年度の始め方) を一度通しで読み、オーナーの画面にログインできることを確かめる。
