@@ -18,11 +18,15 @@
 //   （detectOtherSave）と「前回の入力」だけを新しくする。下ろすのは、保存が決まったとき（送って成功・「保存されていました」）と、
 //   ほかの人の数を取ったとき（知らせ・ダイアログの「読み直す」）だけ（エラー・段階・ダイアログ・下書きの「捨てる」では変えない）。
 //   印は書ける間だけ効かせる。書けなくなったら（読み取り専用）印を下ろし、届いた行で作り直す（入力は下書きに残る）。
+//   そのとき、書くための状態（「保存できたか分かりません」・ほかの人の保存のダイアログ・振り分けの合計の確かめ）もすべて閉じ、
+//   送る（「保存」の続き・「上書きする」）前にも書けるかを見る（書けなければ送らない・ダイアログを出さない）。
 //   「保存していない」かは、入力の元と、届いた最新の行の両方と比べて決める（ほかの人の保存が届いた後に元の数へ戻しても未保存）。
 //   保存していない入力はいつも下書きに写す（数を変えずに未保存になったとき〔ほかの人の保存が届いた・ダイアログを出した〕も書く。
 //   戻していない下書きがあれば、「保存」を押して今の入力を選んだので、今の入力で置き換える）。
 // - R2 「保存できたか分かりません」（unknownOutcome）は、次の保存が決まる（送った・「保存されていました」・ほかの人の保存の
 //   ダイアログを出した）か、ほかの人の数を取るまで消さない。送る前の読み直しがコードつきで失敗しても残し、その失敗は toast で出す。
+//   ただし書けなくなって届いた行で作り直すときは消す（入力が DB の数になるので「入力はそのまま残しています」が事実と違う。
+//   押した数は送るときに下書きへ書いてあり、書けるときに開き直せば戻して「保存」で決められる）。
 // - R3 下書きを消すのは、保存が決まったとき・「捨てる」・戻していない下書きがある間に届いた行の記録（updated_at）が下書きの
 //   base から変わっていて、下書きを重ねても行と同じ数のとき（下書きの数が書かれた証拠がある）だけ。キャッシュに残った送る前の行
 //   （記録が下書きの base と同じ）では消さない。ほかに、入力に保存していないものがなくなったら（入力の元とも届いた最新の行とも
@@ -31,7 +35,7 @@
 // - R4 送る前の読み直し（「確かめています…」）の間に画面を離れたら、読み直しが返っても何もしない（送らない。入力は下書きにある）。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { AppLink } from '@/components/common/app-link';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
@@ -135,12 +139,12 @@ function useShortfallAsk() {
       setList(l);
     });
   }, []);
-  const answer = (ok: boolean) => {
+  const answer = useCallback((ok: boolean) => {
     const r = resolver.current;
     resolver.current = null;
     r?.(ok);
     setList(null);
-  };
+  }, []);
   return { list, ask, answer };
 }
 
@@ -165,6 +169,12 @@ export function StockInput({
   const notLatest = useNotLatestYearConfirm();
   const shortfallAsk = useShortfallAsk();
   const access = stockAccess(year.status, open.role);
+  // 送る前に見る、今書けるか（「保存」の続きは押したときの描画の access を持っているので、最新の値を ref で見る。
+  // 描き直しを確定したときに同期で入れ、読み直しが返るのが先にならないようにする）
+  const writableRef = useRef(access.writable);
+  useLayoutEffect(() => {
+    writableRef.current = access.writable;
+  }, [access.writable]);
 
   const stocksQ = useRoomStocks(yearId, roomId);
   const prevQ = usePreviousYearStocks(yearId, year.prev_year_id);
@@ -267,12 +277,22 @@ export function StockInput({
   }
   // R1：印は書ける間だけ効かせる。書けなくなったら（部員の振り分け中・終了など。保存の失敗や年度の読み直しで切り替わる）
   // 印を下ろし、届いた行で作り直す（読み取り専用の画面に DB にない数を出さない）。入力は数を変えたときに下書きへ書いているので、
-  // 書けるときに開き直せば戻せる。書けない間は数を変える・戻す・「保存」ができないので、印は立たない
-  if (held && !access.writable) {
+  // 書けるときに開き直せば戻せる。書けない間は数を変える・戻す・「保存」ができないので、印は立たない。
+  // 書くための状態も残さない：「保存できたか分かりません」（R2。入力が DB の数になるので、また書けるようになったときに出すと
+  // 「保存」で押していない数を確かめることになる）と、ほかの人の保存のダイアログ（「上書きする」は RLS が拒む）を閉じる
+  const writeStateWhileReadOnly = !access.writable && (held || unknownOutcome || conflict !== null);
+  if (writeStateWhileReadOnly) {
     setHeld(false);
+    setUnknownOutcome(false);
+    setConflict(null);
     const rows = data ?? base;
     if (rows) rebuild(rows);
   }
+  // 振り分けの合計の確かめを開いている間に書けなくなったら、「やめる」と同じく閉じる（「保存」の続きは送らずに終わる）
+  const answerShortfall = shortfallAsk.answer;
+  useEffect(() => {
+    if (!access.writable) answerShortfall(false);
+  }, [access.writable, answerShortfall]);
   // ほかの人の保存のダイアログを閉じたら「保存」へフォーカスを戻す（送信中で押せなければ、終わってから戻す）
   const saveButtonRef = useRef<HTMLButtonElement>(null);
   const refocusSave = useRef(false);
@@ -288,7 +308,7 @@ export function StockInput({
   // 置き換える（R3。古い下書きを残すと、離れた後の「戻す」で、「保存」を押した入力でなく古い数が戻る）
   // 届いた行で作り直す・書けなくなって作り直す描画（上の2つ。この描画の値は捨てられて描き直される）では見ない（作り直す前の入力の元と
   // 届いた行を比べると、未保存に見える）
-  const rebuilding = (!!data && data !== seen) || (held && !access.writable);
+  const rebuilding = (!!data && data !== seen) || writeStateWhileReadOnly;
   if (!rebuilding && unsaved && draft) setDraft(null);
   useEffect(() => {
     if (unsaved && !draft && counts && stamps) writer.write({ counts, base: stamps });
@@ -384,6 +404,11 @@ export function StockInput({
 
   /** values を送る。latest は送る前に読み直した部屋の行（入力の元にする。設計 2.6 の (A) の 4） */
   const write = async (values: StockCounts, latest: StockDbRow[], retried = false): Promise<void> => {
+    // 送る前に書けるかを見る（読み直しやダイアログの間に書けなくなっていれば送らない。入力は下書きにある）
+    if (!writableRef.current) {
+      setPhase('idle');
+      return;
+    }
     // 送ると決まったので、前の「保存できたか分かりません」は消す（この送信の結果で決まる。R2）。印は成功まで残す（R1）
     setError(null);
     setUnknownOutcome(false);
@@ -450,8 +475,9 @@ export function StockInput({
     const keepUnknown = unknownOutcome;
     setError(null);
     setPhase('checking');
-    // R4：確かめの途中で画面を離れたら、読み直しが返っても何もしない
-    const gone = () => !mounted.current;
+    // R4：確かめの途中で画面を離れたら、読み直しが返っても何もしない。書けなくなったときも同じく何もしない（R1。送らない・
+    // ダイアログを出さない。印と「分かりません」は書けなくなったときに下ろしている。入力は下書きにある）
+    const gone = () => !mounted.current || !writableRef.current;
     // 送ると決まったら、送る前に読み直した部屋の行が入る
     let latest: StockDbRow[] | null = null;
     try {
@@ -501,7 +527,7 @@ export function StockInput({
 
   /** ダイアログの「上書きする」：読み直した行を入力の元にして、「保存」を押したときの数で送る */
   const overwrite = async () => {
-    if (!conflict) return;
+    if (!conflict || !writableRef.current) return;
     const { latest, values } = conflict;
     setConflict(null);
     await write(values, latest);
@@ -787,9 +813,10 @@ export function StockInput({
           onCloseAutoFocus={(e) => {
             // 開いた元（「保存」）は Radix が知らないので、自分で戻す。上書きして送信中なら、終わってから戻す
             e.preventDefault();
+            // 書けなくなって閉じたときは「保存」がないので戻さない
             const b = saveButtonRef.current;
             if (b && !b.disabled) b.focus();
-            else refocusSave.current = true;
+            else if (b) refocusSave.current = true;
           }}
         >
           <AlertDialogHeader>
