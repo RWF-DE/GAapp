@@ -503,7 +503,7 @@ export async function ensureGlobalTables(): Promise<GlobalRoom[]> {
 
     if (diffs.length > 0) {
       throw new Error(
-        `年度をまたぐ表がデータセットと食い違っています。seed（R8 の本データ）かデータセットの場所の名前・属性をそろえてください：\n- ${diffs.join('\n- ')}`,
+        `年度をまたぐ表がデータセットと食い違っています。次の場所の名前・属性（または距離の上書き・品目）が、DB（seed か前の実行の残り）とデータセット（e2e/support/datasets.ts の small・fixtures/synthetic/r8like）で違います。どちらかをそろえてください：\n- ${diffs.join('\n- ')}`,
       );
     }
     return rooms;

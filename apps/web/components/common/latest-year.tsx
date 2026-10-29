@@ -69,16 +69,35 @@ export function LatestYearSwitch({ className }: { className?: string }) {
   );
 }
 
+/** useNotLatestYearConfirm の文言（呼ぶ側の操作に合わせる） */
+export interface NotLatestYearConfirmOptions {
+  /**
+   * 操作の動詞（「保存」「回答」「提出」など）。題「最新でない年度（…）に〇〇します。よろしいですか」と
+   * 確定のボタン「この年度に〇〇する」に入る。既定は「保存」。
+   */
+  verb?: string;
+}
+
 /**
  * 書き込む画面の保存・提出・回答の前に、最新でない年度なら確かめる（1.3.1。T09a）。
  * confirmBeforeWrite() は、最新の年度なら確かめずに true。最新でなければダイアログを出し、続ければ true。dialog を画面に置く。
+ * 文言の動詞は options.verb で変えられる（既定は「保存」）。
  *
  * @example
  * const notLatest = useNotLatestYearConfirm();
  * const save = async () => { if (!(await notLatest.confirmBeforeWrite())) return; m.mutate(); };
  * return <>{notLatest.dialog}<Button onClick={save}>保存</Button></>;
+ *
+ * @example
+ * // 了承の回答の前（「最新でない年度（…）に回答します。よろしいですか」［この年度に回答する］）
+ * const notLatest = useNotLatestYearConfirm({ verb: '回答' });
  */
-export function useNotLatestYearConfirm(): { isLatest: boolean; confirmBeforeWrite: () => Promise<boolean>; dialog: React.ReactNode } {
+export function useNotLatestYearConfirm(options: NotLatestYearConfirmOptions = {}): {
+  isLatest: boolean;
+  confirmBeforeWrite: () => Promise<boolean>;
+  dialog: React.ReactNode;
+} {
+  const verb = options.verb?.trim() || '保存';
   const m = useReadyMembership();
   const latest = !m || isLatestYear(m);
   const [open, setOpen] = useState(false);
@@ -107,9 +126,9 @@ export function useNotLatestYearConfirm(): { isLatest: boolean; confirmBeforeWri
         onOpenChange={(o) => {
           if (!o) answer(false);
         }}
-        title={`最新でない年度（${yearText(m.year)}）に保存します。よろしいですか`}
+        title={`最新でない年度（${yearText(m.year)}）に${verb}します。よろしいですか`}
         description="ふだんは最新の年度に入力します。前の年度に書くときだけ続けてください。"
-        confirmLabel="この年度に保存する"
+        confirmLabel={`この年度に${verb}する`}
         onConfirm={() => answer(true)}
       />
     ) : null;

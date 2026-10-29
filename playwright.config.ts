@@ -66,6 +66,9 @@ export default defineConfig({
   use: {
     baseURL: `http://localhost:${PORT}`,
     trace: 'retain-on-failure',
+    // Chromium は LANG が空（C・POSIX）だと、ダウンロードの日本語のファイル名（Content-Disposition・a[download]）を
+    // 「download」に置き換える。コンテナや CI の LANG によらず名前を確かめられるよう、UTF-8 のロケールで起こす
+    launchOptions: { env: { ...process.env, LANG: 'C.UTF-8' } },
   },
   projects,
   webServer: {
