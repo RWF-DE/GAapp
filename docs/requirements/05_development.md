@@ -8,10 +8,13 @@ GitHub の組織の公開リポジトリにする。pnpm workspace のモノレ�
 GAapp/
 ├─ apps/web/                 Next.js（App Router、output: 'export'）
 │   ├─ app/(auth)/           login、auth/callback（Google から戻る先）
-│   ├─ app/(app)/            ログインが要る画面（共通レイアウトの中）。総務向け：/（dashboard）, allocation, swaps, requests, stocks, stock, rules, settings, history。団体向け：request, my
-│   ├─ components/           共通レイアウト（ナビゲーション・未招待の画面）、3状態（読み込み中・空・権限なし）、UI 部品
-│   ├─ workers/              振り分けの Web Worker
-│   └─ lib/                  supabase/（ブラウザ用クライアント）、auth/（ログイン状態・今の年度の立場）、navigation（ロールごとのメニュー）
+│   ├─ app/(app)/            ログインが要る画面（共通レイアウトの中）。総務向け：/（dashboard）, allocation, swaps, requests, stocks, stocks/qr, stock, rules, settings, history。団体向け：/（ホーム）, request, my
+│   ├─ components/           ui/（shadcn/ui の部品。手で置く）、common/（表・数の入力・理由の入力・エラーの帯など画面に共通の部品）、layout/・auth/・states（T04）、画面ごとの部品（dashboard/・settings/・stock/ など）
+│   ├─ workers/              振り分けの Web Worker（highs を読み込むのはここだけ）
+│   ├─ public/               highs.wasm（predev・prebuild で highs からコピー。git に入れない）。PWA のマニフェストとアイコンは app/ のファイルの規約（manifest.ts・icon.png・apple-icon.png）
+│   └─ lib/                  supabase/（ブラウザ用クライアント）、auth/（ログイン状態・今の年度の立場・年度の切り替え）、navigation（ロールごとのメニュー）、db/・rpc/（読み書きの補助と RPC の引数・返り値の zod）、errors（エラーの分類と日本語）、drafts（保存していない入力の下書き）、data/（画面ごとの読み書き。版を先に読むスナップショット）、allocation/（振り分け画面の純粋関数と Worker の呼び出し）、schemas/（入力の zod）
+├─ e2e/                      Playwright。setup/（年度をまたぐ表を1回だけ入れる・ログインの保存）、support/（シナリオの年度・データセット・使い捨てのユーザー・スクリーンショット。ローカルの DB にだけつなぐ）、チケットごとの *.spec.ts、serial/（年度の作成・年度をまたぐ表・通しの流れ。並行のテストの後に別に流す）、fixtures/（E2E 専用の入力。個人情報なし）、basepath/（basePath で書き出したもののスモーク）、shots/（スクリーンショット）・manual/（手での確かめのデータ作り）・perf.spec.ts（4G の速さ）は CI では流さない
+├─ scripts/                  copy-highs-wasm.mjs、build-e2e.mjs、e2e.mjs（並行のテストと serial を別に流す）、first-load-js.mjs、local-supabase-env.mjs、check-emails.mjs など
 ├─ packages/allocator/       allocate()、validate()、LP の組み立て（DB に依存しない）
 ├─ packages/exporter/        ExcelJS による xlsx、年度データの JSON
 ├─ packages/importer/        Googleフォーム回答の CSV 取り込み
@@ -47,14 +50,14 @@ seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DA
   1. `pnpm lint` と `pnpm typecheck`
   2. `pnpm test`（Vitest：allocator・exporter・importer・shared）
   3. `supabase test db`（pgTAP：表・列・制約、トリガー（監査、確定中の守り）、権限表の全セル（表 × 操作 × 年度の状態 × ロール）を期待値の表から確かめる、RPC の権限・状態・楽観ロック・版、関数の execute と表の権限の棚卸し）。テストは `supabase db reset` の後の seed が入った DB で流す。テスト用のデータは seed の品目を使い、seed とぶつからない名前とメールのドメイン（`@pgtap.test`）にする
-  4. Playwright（ログイン → 申請 → 自動振り分け → 確定 → 出力の通し）。Google ログインは CI で通せないので、ローカルの Supabase（CI ではログインに要るコンテナだけを起動する）にだけメールとパスワードのテストユーザー（管理者・部員・団体代表・閲覧のみ・未招待）を使う。テストユーザーは supabase/seed.sql で auth.users に直接入れて作り（Before User Created フックは通らない）、メールは予約済みのドメイン（`@example.test`）にする。seed は本番に流さず、本番ではメールログインを無効にする（D-02）。画面のテスト用ログインは E2E 用のビルド（`pnpm build:e2e`）にだけ入れ、本番と同じビルドに入っていないことを `pnpm check:no-test-login` で確かめる
+  4. Playwright（`pnpm e2e`。ログイン → 在庫 → 申請・取り込み → 締切 → 自動振り分け → 確定 → 出力 → 確定の解除 → 最小変更の通しと、画面ごとのテスト）。setup で、年度をまたぐ表（テスト用のデータセットの場所と距離の上書き）を並行のテストより前に1回だけ入れ（入れると振り分け中のすべての年度の版が上がるため。属性が食い違えば止める）、立場ごとに1回ログインして状態を保存する。chromium（並行）はテストごとに「シナリオの年度」をローカルの DB に作って閉じる（年度の表だけに書く）。serial（年度の作成〔create_year_from は全年度の中で最新の年度からしか作れないので、1日目を seed の R8 より後にしたシナリオの年度から、使い捨てのテストユーザーで作る〕、年度をまたぐ表〔場所・品目・距離〕の変更〔テスト専用の名前の行だけを作って変え、最後に消す〕、通しの流れ）は、`pnpm e2e`（scripts/e2e.mjs）が chromium の後に別に流す（chromium が落ちても serial の結果を残す。どちらかが落ちれば失敗）。setup は最初に、前の実行が途中で止まって残ったシナリオの年度・テスト用の行・使い捨てのユーザーを消す。シナリオの年度と使い捨てのテストユーザーは e2e/support の補助が `pg` でローカルの DB（127.0.0.1・localhost 以外なら止める）に直接作り、アプリとビルドには入らない（D-36）。通しの流れで出した xlsx は LibreOffice で再計算して確かめる（e2e ジョブで LibreOffice を入れる）。本番と同じ basePath（/GAapp）で書き出したものを別に配り、計算エンジンの wasm・QR の URL・マニフェストとアイコンを確かめる短いテストも流す（timeout-minutes は 25）。スクリーンショット（`pnpm e2e:shots`）、手での確かめのデータ作り、4G の速さの測定は CI では流さない。Google ログインは CI で通せないので、ローカルの Supabase（CI ではログインに要るコンテナだけを起動する）にだけメールとパスワードのテストユーザー（管理者・部員・団体代表・閲覧のみ・未招待）を使う。テストユーザーは supabase/seed.sql で auth.users に直接入れて作り（Before User Created フックは通らない）、メールは予約済みのドメイン（`@example.test`）にする。seed は本番に流さず、本番ではメールログインを無効にする（D-02）。画面のテスト用ログインは E2E 用のビルド（`pnpm build:e2e`）にだけ入れ、本番と同じビルドに入っていないことを `pnpm check:no-test-login` で確かめる
   5. `next build`（静的書き出しが通ること）
 - コミットメッセージは Conventional Commits（feat: / fix: / docs: など）
 - 仕様を変えるときは、先にこの要件定義書を直してから実装する
 
 ## チケット分割
 
-フェーズ1を15チケットに分ける。見積もりは目安で、S＝半日〜1日、M＝2〜3日、L＝1週間（放課後の作業を想定）。担当と状態はこの表で管理する。
+フェーズ1を16チケットに分ける（画面の共通基盤 T09a を T09 の前に足した。D-32）。見積もりは目安で、S＝半日〜1日、M＝2〜3日、L＝1週間（放課後の作業を想定）。担当と状態はこの表で管理する。
 
 | ID | 内容 | 前提 | 見積もり | 担当 | 状態 |
 | --- | --- | --- | --- | --- | --- |
@@ -67,14 +70,15 @@ seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DA
 | T06 | allocator：前処理、LP の組み立て、highs-js の実行、ルール4種、最小変更モード | T00、T05 の importer と共通基盤（fixtures/r8 は不要。共通基盤〔packages/shared の型・スキーマ・需要の組み立て、shared/testing、合成データ〕は T05 と T06 のうち先に着手した方が入れる） | L | Claude | 完了 |
 | T07 | allocator：validate()、解けないときの診断 | T06 | M | Claude | 完了 |
 | T08 | exporter：R8 様式の xlsx、交換依頼一覧、年度データの JSON、再計算テスト | T05 | M | Claude | 完了 |
-| T09 | 画面：マスタ設定（年度の作成と複製・場所・品目・団体・距離・ユーザー）とダッシュボード（共通レイアウトは T04 で作ったものを使う） | T04 | L |  | 未着手 |
-| T10 | 画面：在庫入力（スマホ・QR）と在庫一覧 | T04 | M |  | 未着手 |
-| T11 | 画面：申請と申請一覧、CSV 取り込み | T04、T05 | M |  | 未着手 |
-| T12 | 画面：ルール設定 | T06 | S |  | 未着手 |
-| T13 | 画面：振り分け（表・編集・固定・検証パネル・確定・出力）、キャスター机交換、/my | T07、T08 | L |  | 未着手 |
-| T14 | 画面：履歴。通しの E2E テスト。README（7月の再開と年度の始め方、ルールの変え方、年度末の書き出し、障害時の対応） | T13 | M |  | 未着手 |
+| T09a | 画面の共通基盤：UI 部品（shadcn/ui の手置き）と共通の部品、データの読み書きの層（版を先に読む・楽観ロック・削除の確かめ・エラーの日本語）、年度の切り替え（K-19）、未保存の入力の守り（移動の確認・下書き）、全画面の雛形とナビゲーション、T09〜T14 の依存の追加と wasm のコピー、テストの土台（jsdom・年度をまたぐ表の準備・シナリオの年度・スクリーンショット） | T04、T05、T07、T08 | M | Claude | 進行中 |
+| T09 | 画面：マスタ設定（年度の作成と複製・年度の変更・場所・品目・団体・距離・ユーザー・書き出し）とダッシュボード・ホーム | T09a | L |  | 未着手 |
+| T10 | 画面：在庫入力（スマホ・QR）と在庫一覧 | T09a | M |  | 未着手 |
+| T11 | 画面：申請と申請一覧、CSV 取り込み | T09a | M |  | 未着手 |
+| T12 | 画面：ルール設定 | T09a | S |  | 未着手 |
+| T13 | 画面：振り分け（表・編集・固定・検証パネル・確定・出力）、キャスター机交換、/my | T09a | L |  | 未着手 |
+| T14 | 画面：履歴。通しの E2E テスト。画面の受け入れと 4G の表示の速さの確かめ。basePath のスモーク。README（7月の再開と年度の始め方、ルールの変え方、年度末の書き出し、障害時の対応、本番の Auth で必ず守る設定）。PWA のマニフェスト（K-20） | T09〜T13 | M |  | 未着手 |
 
-T06 は fixtures/r8 がなくても、合成データ fixtures/synthetic/r8like で不変条件を確かめて進められる。fixtures/r8 が入った PR で同じテストを流す。T06〜T08 と T09〜T11 は並行して進められる。2〜3人なら「ロジック担当（T00、T05〜T08）」と「画面担当（T09〜T12）」に分けると衝突が少ない。T02〜T04 は全員の土台なので、最初に管理者役がまとめて作る。
+T06 は fixtures/r8 がなくても、合成データ fixtures/synthetic/r8like で不変条件を確かめて進められる。fixtures/r8 が入った PR で同じテストを流す。T02〜T04 は全員の土台なので、最初に管理者役がまとめて作る。画面は、T09a（共通の部品・依存・ナビゲーション・テストの土台）を、T04・T05・T07・T08 のマージの後に入れ、その後 T09〜T13 を並行して進める。各チケットは自分の画面のディレクトリ（app/(app)/<画面>/、components/<画面>/、lib/data/<画面>.ts、e2e/t<番号>-*.spec.ts）と、04 の自分の画面の節だけを直す。いちばん長い道は T09a → T13 → T14 なので、T13 を最初に始める。2人なら「T09・T10・T12」と「T11・T13」、3人なら「T09・T12」「T10・T11」「T13」に分ける。画面のチケットの PR では、この表の「状態」の列と notes/decisions.md を直さない（並行するブランチで隣の行を変えて衝突するため。新しい決定は notes/<チケットID>.md に書き、マージの後にまとめて直す。D-32）。
 
 ## 受け入れ基準とR8テストデータ
 
