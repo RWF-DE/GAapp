@@ -18,8 +18,8 @@ import {
   hasCountChanges,
   hasNoRequests,
   hasPreviousFor,
-  keepTyped,
   previousCountsFor,
+  rebaseRequestInput,
   stateChangesSince,
   submitAfterDeadline,
   submitRequests,
@@ -246,15 +246,24 @@ function ProxyForm({
   };
 
   /**
+   * 入力の元を読み直した記録にする（送る前の読み直しのとき）。読み直した値と同じ入力だけを外し、ほかの入れた数と書き換えた備考は
+   * 残す（rebaseRequestInput。/request と同じ。前の入力の元と同じ値に戻した入力も捨てない）。
+   */
+  const rebaseTo = (latest: GroupRequestState) => {
+    const next = rebaseRequestInput(items, group.category, latest, { edits, note: noteEdit });
+    setEdits(next.edits);
+    setNoteEdit(next.note);
+    setBase(latest);
+  };
+
+  /**
    * 読み直した記録でほかの人の変更が見つかったとき：読み直した記録を入力の元にし（表の読み直しを待たずに、確かめる値をシートに
-   * 出す）、入れた数（前の入力の元から変えた品目）と書き換えた備考だけを残して、上書きしてよいか確かめる。表も読み直す。
+   * 出す）、上書きしてよいか確かめる。表も読み直す。
    */
   const askOverwrite = (latest: GroupRequestState, reason: string | null) => {
     const changed: GroupChanges = stateChangesSince(base, latest, userId);
     const name = (id: string) => items.find((i) => i.id === id)?.name ?? '（不明な品目）';
-    setEdits((e) => keepTyped(model.fields, e));
-    setNoteEdit((n) => (n === savedNote ? null : n));
-    setBase(latest);
+    rebaseTo(latest);
     setOverwrite({ items: changed.items.map((c) => `${name(c.itemId)}（${c.from} → ${c.to}）`), submission: changed.submission, reason });
     void onReload().catch(() => undefined);
   };
@@ -289,7 +298,7 @@ function ProxyForm({
       return 'changed';
     }
     // 入力の元を読み直した記録にして送る（入れていない欄は読み直した値と同じ。違えばほかの人の変更で、上で止まる）
-    setBase(latest);
+    rebaseTo(latest);
     try {
       if (mode === 'deadline') {
         const fields = buildRequestForm(items, group.category, latest.requests).fields;

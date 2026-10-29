@@ -426,8 +426,9 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
    * 保存（締切前は直接、締切後は reason つき）。送る前に表を読み直し、セルごとに決める（設計 2.6 の (A)。judgePendingCells）：
    * DB がすでに入れた数のセルは送らずに「保存されていました」、ほかの人が先に変えたセルがあれば送らずに上書きするか確かめる、
    * ほかは入力の元を読み直した行にして送る。読み直しが通信できなければ送らずに知らせる（入力は残す）。
+   * 'changed' はほかの人の変更があって送らなかった（上書きの確かめを出した）。
    */
-  const runSave = async (reason: string | null) => {
+  const runSave = async (reason: string | null): Promise<'changed' | 'done'> => {
     savingRef.current = true;
     setSaving(true);
     setSaveError(null);
@@ -438,7 +439,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         const msg = isUnknownOutcome(res.error) ? unknownOutcomeMessage() : messageFor(classifyError(res.error));
         setSaveError(msg);
         toast.error(msg);
-        return;
+        return 'done';
       }
       const data = res.data;
       rebasedRef.current = data;
@@ -449,7 +450,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       applyPending((p) => rebaseKeysTo(p, Object.keys(p).filter((k) => !conflictKeys.has(k)), data));
       if (conflicts.length > 0) {
         setConflictAsk({ cells: conflicts, data, reason });
-        return;
+        return 'changed';
       }
       const sent = pendingChanges(pendingRef.current, data);
       if (sent.length === 0) {
@@ -457,23 +458,28 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           setSaveInfo(`保存されていました（${saved.length} 件）`);
           toast.success('保存されていました');
         }
-        return;
+        return 'done';
       }
       if (mode === 'deadline') await sendDeadline(sent, reason ?? '', saved.length);
       else await sendDirect(sent, saved.length);
+      return 'done';
     } finally {
       savingRef.current = false;
       setSaving(false);
     }
   };
 
-  /** ほかの人が先に変えたセルを上書きする：入力の元を読み直した行にして、もう一度保存する（もう一度読み直してから送る） */
+  /**
+   * ほかの人が先に変えたセルを上書きする：入力の元を読み直した行にして、もう一度保存する（もう一度読み直してから送る）。
+   * その読み直しでまた変わっていれば、送らずに最新の値で確かめ直す（投げてダイアログを開いたままにする。閉じると
+   * onOpenChange(false) で新しい確かめを「読み直す」として扱ってしまうため。/request・代理入力の changed_again と同じ）。
+   */
   const overwriteConflicts = async () => {
     const ask = conflictAskRef.current;
     if (!ask) return;
     setConflictAsk(null);
     applyPending((p) => rebaseKeysTo(p, ask.cells.map((c) => c.key), ask.data));
-    await runSave(ask.reason);
+    if ((await runSave(ask.reason)) === 'changed') throw new Error('changed_again');
   };
 
   /** 読み直す（ダイアログを閉じたときも）：編集した後に変わったセルを読み直した値に戻して印をつける */
@@ -552,7 +558,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
         }
       />
       {modeNotice(mode, year, admin, flagged)}
-      {draft && editable ? (
+      {draft && editable && Object.keys(rebasePending(draft.value, tables)).length > 0 ? (
         <DraftNotice
           savedAt={draft.savedAt}
           onRestore={() => {
