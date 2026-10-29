@@ -210,7 +210,7 @@ describe('使用不可にする前の一覧のダイアログ', () => {
     expect(screen.queryByRole('button', { name: '確かめる' })).toBeNull();
     expect((screen.getByLabelText('理由のメモ（任意）') as HTMLTextAreaElement).value).toBe('工事');
     fireEvent.click(within(notice).getByRole('button', { name: '読み直す' }));
-    expect(onReload).toHaveBeenCalled();
+    expect(onReload).toHaveBeenCalledWith('工事');
     const go = screen.getByRole('button', { name: '使用不可にする' }) as HTMLButtonElement;
     expect(go.disabled).toBe(false);
     fireEvent.click(go);
