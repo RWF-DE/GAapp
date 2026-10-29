@@ -73,7 +73,9 @@ function RepCard({ card: c, year, now }: { card: RepGroupCard; year: YearRow; no
             {c.submittedAt ? (
               <span className="inline-flex items-center gap-1 text-emerald-800">
                 <CheckCircle2 aria-hidden className="size-4" />
-                提出済み（<TokyoTime value={c.submittedAt} format="short" />）
+                <span>
+                  提出済み（<TokyoTime value={c.submittedAt} format="short" />）
+                </span>
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 text-amber-800">
