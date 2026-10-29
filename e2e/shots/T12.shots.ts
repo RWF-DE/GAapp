@@ -1,6 +1,6 @@
 // T12 ルールのスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T12` で notes/T12/ に撮る（CI では流さない）。
 // 一覧（PC・スマホ）、?code=S05 で開いた編集のシート、欄の下のエラー、ひな形のメニュー、無効にする確認、有効にできない理由、
-// 読み直しの失敗（前の一覧を残す帯）、空・読み込み中・権限なし・確定中（メモだけ）。
+// 読み直しの失敗（前の一覧を残す帯）、使用不可の場所を指す「残す」の印と知らせ、空・読み込み中・権限なし・確定中（メモだけ）。
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
@@ -24,6 +24,12 @@ test.describe('T12 管理者', () => {
         s.yearId,
       ]);
       await sql(`update public.rules set enabled = false, memo = 'E2E：今年は使わない' where year_id = $1 and code = 'S04'`, [s.yearId]);
+      // S08（残す）の場所を今年は使用不可にする（一覧の印・フォームの場所の欄の知らせ）
+      await sql(
+        `insert into public.room_years (year_id, room_id, usable, note) values ($1, $2, false, 'E2E：工事')
+         on conflict (year_id, room_id) do update set usable = false, note = excluded.note`,
+        [s.yearId, s.ids.rooms['第一多目的室']],
+      );
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       await page.goto('/rules/');
       await waitList(page);
@@ -68,6 +74,13 @@ test.describe('T12 管理者', () => {
       await sheet.getByRole('button', { name: '閉じる' }).click();
       await expect(sheet).toBeHidden();
 
+      // 使用不可の場所を指す「残す」（S08）：場所の欄の下の知らせ
+      await page.locator(`[data-row-id="${s.ids.rules['S08']}"]`).getByRole('button', { name: 'S08 を編集' }).click();
+      await expect(sheet.locator('[data-field="params.room"] [data-field-warning]')).toBeVisible();
+      await shoot(page, 'T12', 'form-keep-unusable-pc');
+      await sheet.getByRole('button', { name: '閉じる' }).click();
+      await expect(sheet).toBeHidden();
+
       // 無効にする確認
       await page.locator(`[data-row-id="${s.ids.rules['S05']}"]`).getByRole('switch', { name: 'S05 を有効にする' }).click();
       await expect(page.getByRole('alertdialog')).toBeVisible();
@@ -102,6 +115,7 @@ test.describe('T12 管理者', () => {
       await shoot(page, 'T12', 'list-mobile');
       await page.locator(`[data-row-id="${s.ids.rules['S08']}"]`).getByRole('button', { name: 'S08 を編集' }).click();
       await expect(sheet.getByRole('heading', { name: 'ルール S08（残す）を編集' })).toBeVisible();
+      await expect(sheet.locator('[data-field="params.room"] [data-field-warning]')).toBeVisible();
       await shoot(page, 'T12', 'form-keep-mobile');
     } finally {
       await s.cleanup();
@@ -137,7 +151,11 @@ test.describe('T12 管理者', () => {
         await route.continue();
       });
       await page.goto('/rules/');
+      // アプリ全体の読み込み（立場・年度）が終わり、/rules の PageHeader が出て、ルールの応答を待っているところを撮る
+      await expect(page.getByRole('heading', { level: 1, name: 'ルール' })).toBeVisible();
+      await expect(page.getByTestId('current-year')).toBeAttached();
       await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
+      await expect(page.getByTestId('rules-screen')).toHaveCount(0);
       await shoot(page, 'T12', 'state-loading-pc');
       release();
       await expect(page.getByText('ルールがありません')).toBeVisible();
