@@ -4,7 +4,8 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
-const EMAIL = /[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)/g;
+// TLD は英字のみ（pnpm@10.28.0 や lockfile の pkg@1.2.3 を除く）
+const EMAIL = /[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})(?![A-Za-z0-9-])/g;
 const ALLOWED_DOMAINS = new Set(['example.com', 'example.net', 'example.org']);
 const ALLOWED_TLDS = new Set(['example', 'test', 'invalid', 'localhost']);
 

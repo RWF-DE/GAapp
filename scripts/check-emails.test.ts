@@ -18,6 +18,7 @@ describe('findEmails', () => {
   });
   it('メール以外（@scope/pkg）や SSH の URL は検出しない', () => {
     expect(findEmails('@gaapp/web')).toEqual([]);
+    expect(findEmails('pnpm@10.28.0 /@types/node@22.20.5(x)')).toEqual([]);
     expect(findEmails(`git${at}github.com:x/y.git`)).toEqual([]);
   });
 });
