@@ -87,8 +87,8 @@ export function RequestsTable({
                 const key = cellKey(row.group.id, item.id);
                 const cell = row.cells[item.id]!;
                 const value = shownCount(pending, row, item.id);
-                // 未保存でも、今の表の数と同じセル（入力の元の数に戻したセルなど）は送らないので色をつけない
-                const isPending = Object.hasOwn(pending, key) && value !== cell.count;
+                // 未保存のセルは、今の表の数と同じでも色をつける（表が古いと DB の数と違うことがある。保存の読み直しで決まる）
+                const isPending = Object.hasOwn(pending, key);
                 const mark = marks[key];
                 return (
                   <td

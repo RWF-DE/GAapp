@@ -288,6 +288,85 @@ describe('申請 /request', () => {
       expect(screen.queryByTestId('submit-error')).toBeNull();
     });
 
+    /** 画面のクエリの読み直し（団体の行から読む）を止める。返すのは止めたものを流す関数 */
+    function holdScreenReload(base: (call: FakeCall) => FakeResult) {
+      let held = false;
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => (release = r));
+      state.handler = ((call: FakeCall) => (held && call.table === 'groups' ? gate.then(() => base(call)) : base(call))) as never;
+      return {
+        hold: () => {
+          held = true;
+        },
+        release: () => release(),
+      };
+    }
+
+    it('応答が落ちる（DB には入っている）→ もう一度押して「提出されていました」：画面の読み直しが返る前でも、欄は DB の値で「提出済み」。その間に入れても保存済みの数を消さない', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      const base = makeHandler({ requests: rows });
+      const gate = holdScreenReload((call) => {
+        if (call.table === 'rpc:submit_requests') {
+          for (const i of ITEMS) rows.push({ group_id: STALL, item_id: i.id, count: i.code === 'desk' ? 1 : i.code === 'chair' ? 2 : 0, updated_at: T1 });
+          state.submission = { group_id: STALL, submitted_at: T1, note: null, updated_at: T1, updated_by: USER };
+          return NETWORK;
+        }
+        return base(call);
+      });
+      renderScreen();
+      await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+      await user.click(screen.getByRole('button', { name: '椅子(木)の数を1増やす' }));
+      await user.click(screen.getByRole('button', { name: '椅子(木)の数を1増やす' }));
+      await submitDesk(user, false);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+
+      gate.hold();
+      await submitDesk(user, false);
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('提出されていました'));
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
+      expect(document.getElementById('request-chair')).toHaveProperty('value', '2');
+      expect(screen.getByTestId('request-submitted').textContent).toMatch(/^提出済み/);
+
+      // 読み直しが遅い間に机を足す → 読み直しが届く → 提出：椅子は保存済みの 2 のまま送る
+      await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+      gate.release();
+      await waitFor(() => expect(state.calls.filter((c) => c.table === 'groups').length).toBeGreaterThan(1));
+      expect(document.getElementById('request-chair')).toHaveProperty('value', '2');
+      await submitDesk(user, false);
+      await waitFor(() => expect(submitCalls()).toHaveLength(2));
+      const args = opArgs(submitCalls()[1]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+      expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(2);
+      expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(2);
+    });
+
+    it('送って成功したら、画面の読み直しが返るまで確かめのダイアログを「送信中…」で開いておき、返った後は DB の値を出す', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      const base = makeHandler({ requests: rows });
+      const gate = holdScreenReload((call) => {
+        if (call.table === 'rpc:submit_requests') {
+          for (const i of ITEMS) rows.push({ group_id: STALL, item_id: i.id, count: i.code === 'desk' ? 1 : 0, updated_at: T1 });
+          state.submission = { group_id: STALL, submitted_at: T1, note: null, updated_at: T1, updated_by: USER };
+        }
+        return base(call);
+      });
+      renderScreen();
+      await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+      gate.hold();
+      await submitDesk(user, false);
+      await waitFor(() => expect(submitCalls()).toHaveLength(1));
+      const dialog = screen.getByRole('alertdialog');
+      expect(within(dialog).getByRole('button', { name: '送信中…' })).toBeTruthy();
+      expect(screen.getByTestId('request-submitted').textContent).toBe('未提出');
+
+      gate.release();
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      expect(screen.getByTestId('request-submitted').textContent).toMatch(/^提出済み/);
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
+    });
+
     it('応答が落ち、DB に入っていなければ、もう一度押すと送る', async () => {
       const user = userEvent.setup();
       let n = 0;

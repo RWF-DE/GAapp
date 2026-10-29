@@ -158,7 +158,11 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   const tables = q.data;
   const matrix = useMemo(() => (tables ? buildRequestMatrix(tables, { category, filter }) : null), [tables, category, filter]);
   const allRows = useMemo(() => (tables ? buildRequestMatrix(tables) : null), [tables]);
-  const changes = useMemo(() => (tables ? pendingChanges(pending, tables) : []), [pending, tables]);
+  /**
+   * 未保存のセルの数（保存のボタン・離れるときの確かめ）。今の表の数と同じセル（応答が届かなかった後に、読み直しも落ちたまま
+   * 入力の元の数へ戻したセルなど）も数える：表が古いと DB の数と違うことがあり、押すと保存の読み直しで決まる（2.6 の (A) の (1)）
+   */
+  const unsaved = Object.keys(pending).length;
   const totals = useMemo(() => (matrix ? columnTotals(matrix, pending) : {}), [matrix, pending]);
   const names: NameLookup = useMemo(
     () => ({
@@ -498,7 +502,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   };
 
   const onSave = () => {
-    if (changes.length === 0 || saving) return;
+    if (unsaved === 0 || saving) return;
     if (mode === 'deadline') setReasonOpen(true);
     else if (mode === 'direct') void runSave(null);
   };
@@ -573,7 +577,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           }}
         />
       ) : null}
-      <UnsavedChangesGuard when={editable && changes.length > 0} />
+      <UnsavedChangesGuard when={editable && unsaved > 0} />
 
       {tables.groups.length === 0 ? (
         <EmptyState
@@ -637,10 +641,10 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           </p>
           {editable ? (
             <div className="sticky bottom-0 z-30 flex flex-wrap items-center gap-2 border-t bg-background py-3">
-              <Button disabled={changes.length === 0 || saving} aria-busy={saving || undefined} onClick={onSave}>
-                {saving ? '保存中…' : `保存（${changes.length}件）`}
+              <Button disabled={unsaved === 0 || saving} aria-busy={saving || undefined} onClick={onSave}>
+                {saving ? '保存中…' : `保存（${unsaved}件）`}
               </Button>
-              <Button variant="outline" disabled={changes.length === 0 || saving} onClick={() => applyPending(() => ({}))}>
+              <Button variant="outline" disabled={unsaved === 0 || saving} onClick={() => applyPending(() => ({}))}>
                 変更を取り消す
               </Button>
               {mode === 'deadline' ? <span className="text-xs text-muted-foreground">締切後なので、保存には理由が要ります</span> : null}
@@ -652,7 +656,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       <ReasonDialog
         open={reasonOpen}
         onOpenChange={setReasonOpen}
-        title={`締切後の申請の変更（${changes.length}件）`}
+        title={`締切後の申請の変更（${unsaved}件）`}
         description="団体ごとに保存します。理由は履歴に残ります。"
         presets={['団体の希望', '総務の確認', '入力の誤り']}
         pending={saving}

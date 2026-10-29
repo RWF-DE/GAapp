@@ -209,6 +209,10 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     if (effect.reload === 'data') void q.refetch();
   };
 
+  /** 画面のクエリの申請と提出の記録を、読み直した行にする */
+  const putState = (fresh: GroupRequestState) =>
+    queryClient.setQueryData<RepRequestData>(queryKey, (old) => (old ? { ...old, requests: fresh.requests, submission: fresh.submission } : old));
+
   /**
    * 入力の元を読み直したものにする（送る前の読み直しのときだけ）。読み直した値と同じ入力だけを外し、ほかの入れた数と
    * 書き換えた備考は残す（rebaseRequestInput。前の入力の元と同じ値に戻した入力も捨てない）。下書きの入力の元も書き換える。
@@ -219,17 +223,24 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     setNoteEdit(next.note);
     setBase(fresh);
     if (Object.keys(next.edits).length > 0 || next.note !== null) writeDraft(next.edits, next.note, fresh);
-    queryClient.setQueryData<RepRequestData>(queryKey, (old) => (old ? { ...old, requests: fresh.requests, submission: fresh.submission } : old));
+    putState(fresh);
   };
 
-  const done = (message: string) => {
-    toast.success(message);
+  /**
+   * 提出を終える（入力を外して、DB の値を出す）。fresh は送らずに終えたときの読み直した行で、それを先にクエリに入れる
+   * （画面の読み直しが返る前に、古い値〔数と「未提出」〕を出して入力の元にしないため）。送ったときは画面の読み直しを
+   * 待ってから入力を外す（その間は確かめのダイアログが「送信中…」で開いていて、入力できない）。
+   */
+  const done = async (message: string, fresh?: GroupRequestState) => {
     writer.clear();
     setDraft(null);
+    if (fresh) putState(fresh);
+    else await queryClient.invalidateQueries({ queryKey });
+    toast.success(message);
     setBase(null);
     setEdits({});
     setNoteEdit(null);
-    void queryClient.invalidateQueries({ queryKey });
+    if (fresh) void queryClient.invalidateQueries({ queryKey });
   };
 
   /**
@@ -254,7 +265,7 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     const from = startEditing();
     const decision = decideGroupSave(from, fresh, { counts: parsed.data.counts, note: parsed.data.note }, userId);
     if (decision === 'saved') {
-      done('提出されていました');
+      await done('提出されていました', fresh);
       return 'done';
     }
     rebaseTo(fresh);
@@ -269,7 +280,7 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     }
     try {
       const res = await submit.mutateAsync({ rows, note: parsed.data.note });
-      done(`提出しました（${formatShortDateTime(res.submitted_at)}）`);
+      await done(`提出しました（${formatShortDateTime(res.submitted_at)}）`);
       return 'done';
     } catch (e) {
       // 応答が届かなかった：自動では送り直さない。入力を残し、もう一度押すと読み直して決める

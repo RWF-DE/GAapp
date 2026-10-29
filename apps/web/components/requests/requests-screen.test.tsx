@@ -745,8 +745,18 @@ describe('保存の応答が届かなかったとき（数を絶対値で書く�
     await waitFor(() => expect(screen.getByTestId('save-error').textContent).toContain(UNKNOWN));
     await typeCell(user, '模擬店Aの机(木)', '3');
     expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '3');
+    // 古い表と同じ数でも未保存のセルとして数え、色をつけ、保存・取り消しを押せる（知らせの「もう一度「保存」を押すと」が押せる）
+    expect(saveButton(1).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: '変更を取り消す' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(cellOf('模擬店A:desk').getAttribute('data-pending')).toBe('true');
     // 下書きにも残る（画面を離れても戻せる）
     await waitFor(() => expect(localStorage.length).toBeGreaterThan(0));
+
+    // 読み直しが落ちたまま押す：送らずに知らせて入力を残す
+    await user.click(saveButton(1));
+    await waitFor(() => expect(screen.getByTestId('save-error').textContent).toBe(UNKNOWN));
+    expect(writes()).toHaveLength(1);
+    expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '3');
 
     // 通信が戻って表が読み直される：DB の 5 を出さず、入れた 3 を残す
     state.tableDown = false;
