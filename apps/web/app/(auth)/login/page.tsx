@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
+import { InAppBrowserNotice } from '@/components/auth/in-app-browser-notice';
 import { LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth/auth-provider';
@@ -80,6 +81,8 @@ function Login() {
           {message ?? urlMessage}
         </p>
       ) : null}
+      {/* アプリの中のブラウザでは Google のログインが拒まれる。案内だけ出し、ボタンは隠さない（T09a） */}
+      <InAppBrowserNotice />
       <Button size="lg" onClick={signInWithGoogle} disabled={pending || session.status === 'configError'}>
         学校の Google アカウントでログイン
       </Button>
