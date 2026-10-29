@@ -18,6 +18,7 @@ import {
   hasCountChanges,
   hasNoRequests,
   hasPreviousFor,
+  keepTyped,
   previousCountsFor,
   stateChangesSince,
   submitAfterDeadline,
@@ -27,7 +28,6 @@ import {
   type GroupChanges,
   type GroupRequestState,
   type MatrixRow,
-  type RequestField,
 } from '@/lib/data/requests';
 import type { ItemRow, YearRow } from '@/lib/db/types';
 import { classifyError, isUnknownOutcome, messageFor, unknownOutcomeMessage } from '@/lib/errors';
@@ -154,12 +154,6 @@ interface OverwriteAsk {
   reason: string | null;
 }
 
-/** 入れた数のうち、入力の元の欄の値（fields の current）から変えた品目だけを残す（上書きの確かめで、入れていない欄は読み直した値にする） */
-function keepTyped(fields: readonly RequestField[], edits: Readonly<Record<string, number>>): Record<string, number> {
-  const current = new Map(fields.map((f) => [f.item.id, f.current]));
-  return Object.fromEntries(Object.entries(edits).filter(([id, v]) => v !== current.get(id)));
-}
-
 function ProxyForm({
   row,
   items,
@@ -256,7 +250,7 @@ function ProxyForm({
    * 出す）、入れた数（前の入力の元から変えた品目）と書き換えた備考だけを残して、上書きしてよいか確かめる。表も読み直す。
    */
   const askOverwrite = (latest: GroupRequestState, reason: string | null) => {
-    const changed: GroupChanges = stateChangesSince(base, latest);
+    const changed: GroupChanges = stateChangesSince(base, latest, userId);
     const name = (id: string) => items.find((i) => i.id === id)?.name ?? '（不明な品目）';
     setEdits((e) => keepTyped(model.fields, e));
     setNoteEdit((n) => (n === savedNote ? null : n));

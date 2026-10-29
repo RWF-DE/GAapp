@@ -138,8 +138,12 @@ function makeHandler(opts: { requests?: RequestDbRow[]; submit?: FakeResult } = 
 /** 通信の失敗（supabase-js は code が空で message が TypeError…、status 0 で返す） */
 const NETWORK: FakeResult = { error: { code: '', message: 'TypeError: Failed to fetch' }, status: 0 };
 
+/** 最後に描いた画面の QueryClient（裏の読み直しをまねる） */
+let lastClient: QueryClient | null = null;
+
 function renderScreen() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  lastClient = qc;
   return render(
     <QueryClientProvider client={qc}>
       <RequestScreen />
@@ -323,6 +327,128 @@ describe('申請 /request', () => {
       await waitFor(() => expect(submitCalls()).toHaveLength(1));
       const args = opArgs(submitCalls()[0]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
       expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(1);
+    });
+
+    /** 自分の提出（机(木) desk、ほかは 0）が DB に届いたことにする（行と提出の記録は同じトランザクションの時刻 at） */
+    const arriveMine = (rows: RequestDbRow[], desk: number, at: string) => {
+      rows.length = 0;
+      for (const i of ITEMS) rows.push({ group_id: STALL, item_id: i.id, count: i.code === 'desk' ? desk : 0, updated_at: at });
+      state.submission = { group_id: STALL, submitted_at: at, note: null, updated_at: at, updated_by: USER };
+    };
+    const T2 = '2026-10-29T03:00:00.111111+00:00';
+
+    it('応答が落ちる（DB には入っている）→ 入力を変える → 提出：自分の提出はほかの人の変更にせず、確かめずに送る', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      let n = 0;
+      const base = makeHandler({ requests: rows });
+      state.handler = (call) => {
+        if (call.table === 'rpc:submit_requests' && n++ === 0) {
+          arriveMine(rows, 1, T1);
+          return NETWORK;
+        }
+        return base(call);
+      };
+      renderScreen();
+      await submitDesk(user);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+      await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+      await submitDesk(user, false);
+      await waitFor(() => expect(submitCalls()).toHaveLength(2));
+      expect(screen.queryByRole('alertdialog', { name: /上書きしますか/ })).toBeNull();
+      const args = opArgs(submitCalls()[1]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+      expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(2);
+    });
+
+    it('自分の提出が通った後に、ほかの人が品目の行だけを変えていれば「ほかの人がこの団体の申請を変えました」で確かめる（ほかの人の提出とは言わない）', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      const base = makeHandler({ requests: rows });
+      state.handler = (call) => {
+        if (call.table === 'rpc:submit_requests') {
+          arriveMine(rows, 1, T1);
+          return NETWORK;
+        }
+        return base(call);
+      };
+      renderScreen();
+      await submitDesk(user);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+      // その後にほかの人が椅子(木) を 3 にした（行だけ。提出の記録は自分のまま）
+      const chair = rows.findIndex((r) => r.item_id === itemId('chair'));
+      rows[chair] = { ...rows[chair]!, count: 3, updated_at: T2 };
+      await submitDesk(user, false);
+      const ask = await screen.findByRole('alertdialog', { name: 'ほかの人がこの団体の申請を変えました。上書きしますか' });
+      expect(within(ask).getByTestId('request-conflicts').textContent).toBe('椅子(木)（0 → 3）');
+      expect(submitCalls()).toHaveLength(1);
+    });
+
+    it('応答が落ちる → 画面を離れる → ほかの人が提出 → 下書きを戻して提出：送らずにほかの人の提出を確かめる', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      const base = makeHandler({ requests: rows });
+      state.handler = (call) => {
+        if (call.table === 'rpc:submit_requests') {
+          arriveMine(rows, 1, T1);
+          return NETWORK;
+        }
+        return base(call);
+      };
+      renderScreen();
+      await submitDesk(user);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+      cleanup();
+
+      // 離れている間に、ほかの代表者が机(木) 2 で提出した
+      for (const r of rows) if (r.item_id === itemId('desk')) Object.assign(r, { count: 2, updated_at: T2 });
+      state.submission = { group_id: STALL, submitted_at: T2, note: null, updated_at: T2, updated_by: OTHER_USER };
+      renderScreen();
+      await user.click(await screen.findByRole('button', { name: '戻す' }));
+      await waitFor(() => expect(document.getElementById('request-desk')).toHaveProperty('value', '1'));
+      await submitDesk(user, false);
+      await screen.findByRole('alertdialog', { name: /ほかの人が提出しています。上書きしますか/ });
+      expect(submitCalls()).toHaveLength(1);
+    });
+
+    it('机を 0 → 1 にして離れる → ほかの人が 2 にする → 戻って下書きを戻して提出：送らずに確かめる', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      state.handler = makeHandler({ requests: rows });
+      renderScreen();
+      await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+      cleanup();
+
+      rows.push({ group_id: STALL, item_id: itemId('desk'), count: 2, updated_at: T1 });
+      renderScreen();
+      await user.click(await screen.findByRole('button', { name: '戻す' }));
+      await waitFor(() => expect(document.getElementById('request-desk')).toHaveProperty('value', '1'));
+      await submitDesk(user, false);
+      const ask = await screen.findByRole('alertdialog', { name: 'ほかの人がこの団体の申請を変えました。上書きしますか' });
+      expect(within(ask).getByTestId('request-conflicts').textContent).toBe('机(木)（0 → 2）');
+      expect(submitCalls()).toHaveLength(0);
+    });
+
+    it('机を 0 → 1 にする → ほかの人が 2 にし椅子を 3 にする → 通信が戻ってクエリが読み直される → 提出：入力の元は変わらず、送らずに確かめる', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      state.handler = makeHandler({ requests: rows });
+      renderScreen();
+      await user.click(await screen.findByRole('button', { name: '机(木)の数を1増やす' }));
+
+      rows.push({ group_id: STALL, item_id: itemId('desk'), count: 2, updated_at: T1 }, { group_id: STALL, item_id: itemId('chair'), count: 3, updated_at: T1 });
+      const reads = state.calls.filter((c) => c.table === 'requests').length;
+      await lastClient!.invalidateQueries();
+      await waitFor(() => expect(state.calls.filter((c) => c.table === 'requests').length).toBeGreaterThan(reads));
+      // 表示は入れた数と、編集を始めたときの値のまま（裏の読み直しで入力の元を置き換えない）
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
+      expect(document.getElementById('request-chair')).toHaveProperty('value', '0');
+      await submitDesk(user, false);
+      const ask = await screen.findByRole('alertdialog', { name: 'ほかの人がこの団体の申請を変えました。上書きしますか' });
+      expect(within(ask).getByTestId('request-conflicts').textContent).toContain('机(木)（0 → 2）');
+      expect(submitCalls()).toHaveLength(0);
+      // 確かめの後は読み直した値になり、入れた数は残る
+      await waitFor(() => expect(document.getElementById('request-chair')).toHaveProperty('value', '3'));
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '1');
     });
   });
 });

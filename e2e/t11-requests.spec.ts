@@ -25,7 +25,7 @@ async function typeCell(page: Page, group: string, item: string, value: string) 
 test.describe('T11 申請一覧（管理者）', () => {
   test.use({ storageState: storageStateFor('admin') });
 
-  test('T11 申請一覧：締切前はセルを直接保存し、送る前の読み直しでほかの人が先に変えたセルが見つかれば確かめ、読み直すと読み直した値に戻して印をつける', async ({ page }) => {
+  test('T11 申請一覧：締切前はセルを直接保存し、送る前の読み直しでほかの人が先に変えたセルが見つかれば確かめ、読み直すと読み直した値に戻して印をつける。表の読み直しでは入力を残す', async ({ page }) => {
     const s = await createScenario({ roles: { admin: true } });
     try {
       const stall = s.ids.groups[SMALL.groups.stall]!;
@@ -57,13 +57,20 @@ test.describe('T11 申請一覧（管理者）', () => {
       expect(await countOf(dept, 'lectern')).toBe(1);
       expect(await countOf(dept, 'desk')).toBe(4);
 
-      // 編集した後にほかの人が同じセルを変え、「読み直す」→ 読み直した値に戻して印をつける（古い値で上書きしない）
+      // 編集した後にほかの人が同じセルを変え、「読み直す」→ 入力は残す（裏の読み直しで捨てない）。保存の読み直しで確かめ、
+      // 「読み直す」で読み直した値に戻して印をつける（古い値で上書きしない）
       await typeCell(page, SMALL.groups.stall, '机(木)', '7');
       await sql(
         "update public.requests set count = 9 where group_id = $1 and item_id = (select id from public.items where code = 'desk')",
         [stall],
       );
       await page.getByRole('button', { name: '読み直す' }).click();
+      await expect(page.getByRole('button', { name: '読み直す' })).toBeEnabled();
+      await expect(cell(page, SMALL.groups.stall, '机(木)')).toHaveValue('7');
+      await page.getByRole('button', { name: '保存（1件）' }).click();
+      const ask2 = page.getByRole('alertdialog');
+      await expect(ask2.getByTestId('cell-conflicts')).toHaveText(`${SMALL.groups.stall}の机(木)：5 → 9（入れた数 7）`);
+      await ask2.getByRole('button', { name: '読み直す' }).click();
       await expect(cell(page, SMALL.groups.stall, '机(木)')).toHaveValue('9');
       await expect(page.locator(`[data-cell="${SMALL.groups.stall}:desk"]`)).toHaveAttribute('data-mark', 'conflict');
       await expect(page.getByRole('button', { name: '保存（0件）' })).toBeDisabled();

@@ -28,6 +28,7 @@ import {
   pendingChanges,
   previousCountsFor,
   normalizePending,
+  normalizeRequestDraft,
   rebaseKeysTo,
   rebasePending,
   samePending,
@@ -194,14 +195,16 @@ describe('stateChangesSince（ほかの人の保存のダイアログに出す�
   const a = group(10, '模擬店A', 'stall');
   const row = buildRequestMatrix({ groups: [a], items: ITEMS, requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submissions: [sub(a, T0, '電源')] }).rows[0]!;
   const base = groupStateOf(row);
+  const ME = uuid(900);
+  const OTHER = uuid(901);
 
   it('同じなら変更なし（時刻の書き方の違いは同じ時刻として扱う）', () => {
-    const c = stateChangesSince(base, { requests: [req(a, 'desk', 3, '2026-10-29T10:02:03.123456+09:00'), req(a, 'chair', 2)], submission: sub(a, T0, '電源') });
+    const c = stateChangesSince(base, { requests: [req(a, 'desk', 3, '2026-10-29T10:02:03.123456+09:00'), req(a, 'chair', 2)], submission: sub(a, T0, '電源') }, ME);
     expect(c).toEqual({ items: [], submission: false });
   });
 
   it('updated_at が変わった・行が増えた・消えた品目と、提出の記録の変更（提出日時・備考・updated_at）を挙げる', () => {
-    const c = stateChangesSince(base, { requests: [req(a, 'desk', 4, T1), req(a, 'lectern', 1, T1)], submission: sub(a, T0, '電源を2つ') });
+    const c = stateChangesSince(base, { requests: [req(a, 'desk', 4, T1), req(a, 'lectern', 1, T1)], submission: sub(a, T0, '電源を2つ') }, ME);
     expect(c.items).toEqual(
       expect.arrayContaining([
         { itemId: item('desk').id, from: 3, to: 4 },
@@ -211,10 +214,44 @@ describe('stateChangesSince（ほかの人の保存のダイアログに出す�
     );
     expect(c.items).toHaveLength(3);
     expect(c.submission).toBe(true);
-    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: sub(a, T1, '電源') }).submission).toBe(true);
-    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: null }).submission).toBe(true);
+    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: sub(a, T1, '電源') }, ME).submission).toBe(true);
+    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: null }, ME).submission).toBe(true);
     // 同じ内容での出し直し（updated_at だけが進んだ）も変わったとする
-    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: { ...sub(a, T0, '電源'), updated_at: T1 } }).submission).toBe(true);
+    expect(stateChangesSince(base, { requests: [req(a, 'desk', 3), req(a, 'chair', 2)], submission: { ...sub(a, T0, '電源'), updated_at: T1 } }, ME).submission).toBe(true);
+  });
+
+  it('自分の書いたもの（提出の記録の updated_by が自分、その提出で書かれた申請の行）は挙げない', () => {
+    // 前に送って応答が届かなかった自分の提出（机 3 → 5）が通り、その後にほかの人が椅子を 4 にした
+    const mine = { ...sub(a, T1, '電源'), updated_at: T1, updated_by: ME };
+    const T2 = '2026-10-29T01:02:05.111111+00:00';
+    const c = stateChangesSince(base, { requests: [req(a, 'desk', 5, T1), req(a, 'chair', 4, T2)], submission: mine }, ME);
+    expect(c).toEqual({ items: [{ itemId: item('chair').id, from: 2, to: 4 }], submission: false });
+    // ほかの人の提出なら、提出の記録もその提出で書かれた行も挙げる
+    const theirs = { ...mine, updated_by: OTHER };
+    const d = stateChangesSince(base, { requests: [req(a, 'desk', 5, T1), req(a, 'chair', 4, T2)], submission: theirs }, ME);
+    expect(d.submission).toBe(true);
+    expect(d.items).toHaveLength(2);
+  });
+});
+
+describe('normalizeRequestDraft（/request の下書き。入力の元つき）', () => {
+  const g = group(10, '模擬店A', 'stall');
+  const base = { requests: [req(g, 'desk', 3, T0)], submission: { group_id: g.id, submitted_at: T0, note: '電源', updated_at: T0, updated_by: uuid(901) } };
+
+  it('入れた数・備考・入力の元を読む（提出の記録の updated_by がなければ null）', () => {
+    expect(normalizeRequestDraft({ edits: { [item('desk').id]: 5 }, note: null, base }, g.id)).toEqual({ edits: { [item('desk').id]: 5 }, note: null, base });
+    const { updated_by: _u, ...noBy } = base.submission;
+    void _u;
+    expect(normalizeRequestDraft({ edits: {}, note: 'x', base: { requests: [], submission: noBy } }, g.id)?.base.submission?.updated_by).toBeNull();
+    expect(normalizeRequestDraft({ edits: {}, note: null, base: { requests: [], submission: null } }, g.id)?.base).toEqual({ requests: [], submission: null });
+  });
+
+  it('入力の元のない古い形・形の違う値・ほかの団体の行は戻さない（null）', () => {
+    expect(normalizeRequestDraft({ edits: { [item('desk').id]: 5 }, note: null }, g.id)).toBeNull();
+    expect(normalizeRequestDraft({ edits: { [item('desk').id]: -1 }, note: null, base }, g.id)).toBeNull();
+    expect(normalizeRequestDraft({ edits: {}, note: null, base }, uuid(11))).toBeNull();
+    expect(normalizeRequestDraft({ edits: {}, note: null, base: { requests: [{ item_id: 'x' }], submission: null } }, g.id)).toBeNull();
+    expect(normalizeRequestDraft(null, g.id)).toBeNull();
   });
 });
 
@@ -262,6 +299,19 @@ describe('decideGroupSave（申請・代理入力の送る前の判定。2.6 の
     // 椅子を入力と同じ 2 にした行ができていた（ほかは誰も変えていない）→ 送る（机・提出の記録は入力と違うので saved ではない）
     const same = { requests: [req(g, 'desk', 3, T0), req(g, 'chair', 2, T1)], submission: s(T0, '電源', OTHER) };
     expect(decideGroupSave(base, same, { ...input, note: '電源を2つ' }, ME)).toBe('send');
+  });
+
+  it('応答が落ちる（DB には入っている）→ 入力を変える → 提出：自分の提出で書かれた行（updated_at が自分の提出の記録と同じ）はほかの人の変更にしない', () => {
+    // 前に送った「机 5・椅子 2」が通っていた（提出の記録も行も同じトランザクションの時刻 T1）。その後に机を 7 に変えた
+    const fresh = { requests: [req(g, 'desk', 5, T1), req(g, 'chair', 2, T1)], submission: s(T1, '電源', ME, T1) };
+    const changedInput = { counts: { [item('desk').id]: 7, [item('chair').id]: 2 }, note: '電源' };
+    expect(decideGroupSave(base, fresh, changedInput, ME)).toBe('send');
+    // 同じ形でも、提出の記録を書いたのがほかの人なら、その提出で書かれた行もほかの人の変更（conflict）
+    expect(decideGroupSave(base, { ...fresh, submission: s(T1, '電源', OTHER, T1) }, changedInput, ME)).toBe('conflict');
+    // 自分の提出の後に、ほかの人が行だけを変えた（updated_at が自分の提出と違う）→ 値で決める（conflict）
+    const T2 = '2026-10-29T01:02:05.111111+00:00';
+    const later = { requests: [req(g, 'desk', 6, T2), req(g, 'chair', 2, T1)], submission: s(T1, '電源', ME, T1) };
+    expect(decideGroupSave(base, later, changedInput, ME)).toBe('conflict');
   });
 });
 
@@ -340,26 +390,29 @@ describe('申請一覧の表', () => {
     expect(pendingChanges(q, added)).toEqual([{ groupId: b.id, itemId: item('chair').id, count: 2, updatedAt: null }]);
   });
 
-  it('当て直し：DB と同じになったセルは外し、基準から行が変わったセルは読み直した値に戻して conflicts に入れる', () => {
+  it('当て直し：DB と同じになったセルとなくなった団体・品目のセルだけを外す。行が基準から変わっても入れた数と基準は残す（裏の読み直しで入力を捨てない）', () => {
     let p = setPendingCell({}, a.id, item('desk').id, 5, cellOfT(a, 'desk'));
     p = setPendingCell(p, b.id, item('desk').id, 7, cellOfT(b, 'desk'));
     p = setPendingCell(p, b.id, item('chair').id, 2, cellOfT(b, 'chair'));
     p = setPendingCell(p, a.id, item('lectern').id, 1, cellOfT(a, 'lectern'));
     // 変わらなければ同じものを返す
-    expect(rebasePending(p, tables).pending).toBe(p);
-    // a の机：自分の数（5）になった → 外す。b の机：ほかの人が 9 にした → 戻して印。b の椅子：ほかの人が行を足した → 戻して印
+    expect(rebasePending(p, tables)).toBe(p);
+    // a の机：自分の数（5）になった → 外す。b の机：9 になった・b の椅子：行ができた → 残す（保存のときに確かめる）
     const after = {
       ...tables,
       requests: [req(a, 'desk', 5, T1), req(a, 'long_desk_3', 2), req(b, 'desk', 9, T1), req(b, 'chair', 3, T1), req(c, 'long_desk_3', 4)],
     };
-    const r = rebasePending(p, after);
-    expect(r.pending).toEqual({ [key(a, 'lectern')]: { value: 1, baseCount: 0, baseUpdatedAt: null } });
-    expect(r.conflicts.sort()).toEqual([key(b, 'desk'), key(b, 'chair')].sort());
-    // 行が消えた（not_found）も戻す
-    const removed = { ...tables, requests: tables.requests.filter((x) => !(x.group_id === b.id && x.item_id === item('desk').id)) };
-    expect(rebasePending(setPendingCell({}, b.id, item('desk').id, 7, cellOfT(b, 'desk')), removed).conflicts).toEqual([key(b, 'desk')]);
+    expect(rebasePending(p, after)).toEqual({
+      [key(a, 'lectern')]: { value: 1, baseCount: 0, baseUpdatedAt: null },
+      [key(b, 'desk')]: { value: 7, baseCount: 1, baseUpdatedAt: T0 },
+      [key(b, 'chair')]: { value: 2, baseCount: 0, baseUpdatedAt: null },
+    });
+    // 応答が落ちた自分の保存（5）の後に 7 へ入れ直したセル：裏の読み直しで 5 に戻さない
+    const mine = setPendingCell({}, b.id, item('desk').id, 7, cellOfT(b, 'desk'));
+    const lost = { ...tables, requests: tables.requests.map((x) => (x.group_id === b.id && x.item_id === item('desk').id ? req(b, 'desk', 5, T1) : x)) };
+    expect(rebasePending(mine, lost)).toBe(mine);
     // なくなった団体のセルは黙って外す
-    expect(rebasePending(p, { ...tables, groups: [a, c, d] }).pending).not.toHaveProperty(key(b, 'desk'));
+    expect(rebasePending(p, { ...tables, groups: [a, c, d] })).not.toHaveProperty(key(b, 'desk'));
   });
 
   it('基準を今の行に付け替える（値は残す。同じ数になれば外す）', () => {
