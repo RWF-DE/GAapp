@@ -16,6 +16,7 @@ import {
   freshDataOf,
   latestAdminOpenYear,
   runLockedWrite,
+  settleLockedCall,
   type LockedWriteCall,
   type LockedWriteResult,
 } from '@/lib/data/settings';
@@ -162,8 +163,14 @@ export const LOCKED_UNREAD_MESSAGE = 'ほかの人が変えた可能性があり
 
 export interface LockedSaveRun<Row extends { updated_at: string }> extends LockedWriteCall<Row> {
   /**
-   * changed のとき（と、読み直せなかった後に「読み直す」で読めたとき）に、読み直した行（なくなっていれば null）を渡す。
-   * 呼ぶ側は更新なら入力の元をこの行にする（入力は残す）。insert は何もしない（insert のまま）
+   * 保存できたとき（判定が saved のときも。earlier が真なら「保存されていました」）。呼ぶ側は文言を出し、閉じて関係するクエリを
+   * 読み直す。送った応答のほか、止められて読み直せなかった後の「読み直す」で読んだ行が入力と同じだったときにも呼ぶ
+   */
+  onSaved: (earlier: boolean) => Promise<void> | void;
+  /**
+   * 判定が changed（版が進んだ・行ができた・なくなった）のときに、読み直した行（なくなっていれば null）を渡す。
+   * 呼ぶ側は更新なら入力の元をこの行にし（入力は残す）、ほかの人の変更として出す。insert は何もしない（insert のまま）。
+   * not-saved（版が入力の元のまま）では呼ばない
    */
   onRebase?: (row: Row | null) => void;
   /** changed のとき、toast の代わりに欄にエラーを出す（距離の組の重複など）。真を返したら toast を出さない */
@@ -174,15 +181,21 @@ export interface LockedSaveRun<Row extends { updated_at: string }> extends Locke
 
 /**
  * マスタ設定の楽観ロックの更新・一意のキーの insert（団体・場所・品目・距離・今年の使用）を、2.6 の (B1) で送る。
- * run は runLockedWrite の結果を返す（done なら呼ぶ側が「保存しました」か、earlier なら「保存されていました」と出して閉じ、
- * 関係するクエリを読み直す）。changed は conflict の文言を出してデータを読み直し、onRebase で入力の元を付け替える。
- * unknown は unknownOutcomeMessage()。unread は notice（読み直すボタンつき）を出す。確かめるための状態は持たず、
- * 保存のボタンは押せるまま（次の保存はまた同じ道を通る）。
+ * 送った結果も、止められて読み直せなかった後の「読み直す」で読んだ行も、同じ判定（settleLockedCall → settleLockedWrite）を
+ * 通し、同じ扱い（handle）にする：done は onSaved（earlier なら「保存されていました」）、changed は conflict の文言を出して
+ * データを読み直し、判定が changed なら onRebase で入力の元を付け替える。unknown は unknownOutcomeMessage()。
+ * unread は notice（読み直すボタンつき）を出す。確かめるための状態は持たず、保存のボタンは押せるまま（次の保存はまた同じ道を通る）。
+ * current は、いまの入力で作った呼び出し（入力が正しくなければ null）。「読み直す」で読んだ行は、送った値ではなくいまの入力と
+ * 比べる（送った後に入力を変えていれば、前の送信が通っていてもほかの人の変更に見える。2.6 の (B1)）。
  */
-export function useLockedSave(opts: { dataKeys: readonly QueryKey[]; context?: MessageContext }) {
+export function useLockedSave<Row extends { updated_at: string }>(opts: {
+  dataKeys: readonly QueryKey[];
+  context?: MessageContext;
+  current: () => LockedSaveRun<Row> | null;
+}) {
   const onError = useWriteErrorHandler();
   const queryClient = useQueryClient();
-  const [unread, setUnread] = useState<{ reload: () => Promise<void> } | null>(null);
+  const [unread, setUnread] = useState<{ call: LockedSaveRun<Row>; error: unknown } | null>(null);
   const [reloading, setReloading] = useState(false);
   const { dataKeys, context } = opts;
 
@@ -191,12 +204,11 @@ export function useLockedSave(opts: { dataKeys: readonly QueryKey[]; context?: M
     [dataKeys, queryClient],
   );
 
-  const run = useCallback(
-    async <Row extends { updated_at: string }>(call: LockedSaveRun<Row>): Promise<LockedWriteResult<Row>> => {
-      setUnread(null);
-      const r = await runLockedWrite(call);
+  const handle = useCallback(
+    async (call: LockedSaveRun<Row>, r: LockedWriteResult<Row>) => {
       switch (r.kind) {
         case 'done':
+          await call.onSaved(r.earlier);
           break;
         case 'failed':
           if (!call.onFailed?.(r.error)) await onError(r.error, { ...(context ? { context } : {}), dataKeys });
@@ -207,35 +219,39 @@ export function useLockedSave(opts: { dataKeys: readonly QueryKey[]; context?: M
           void onError(r.error, { ...(context ? { context } : {}), dataKeys });
           break;
         case 'changed':
-          call.onRebase?.(r.row);
+          if (r.outcome === 'changed') call.onRebase?.(r.row);
           if (call.onChanged?.(r)) await invalidate();
           else await onError(r.conflict, { ...(context ? { context } : {}), dataKeys });
           break;
         case 'unread':
           toast.error(LOCKED_UNREAD_MESSAGE);
-          setUnread({
-            reload: async () => {
-              const row = await call.reread();
-              call.onRebase?.(row);
-              await invalidate();
-            },
-          });
+          setUnread({ call, error: r.error });
           break;
       }
-      return r;
     },
     [context, dataKeys, invalidate, onError],
   );
 
+  const run = useCallback(
+    async (call: LockedSaveRun<Row>): Promise<LockedWriteResult<Row>> => {
+      setUnread(null);
+      const r = await runLockedWrite(call);
+      await handle(call, r);
+      return r;
+    },
+    [handle],
+  );
+
+  // 止められて読み直せなかった後の「読み直す」：いまの入力で、送った後と同じ判定を通す（描画ごとに作り直すので current はいまのもの）
   const reload = async () => {
     if (!unread) return;
+    const call = opts.current() ?? { ...unread.call, matches: () => false };
     setReloading(true);
     try {
-      await unread.reload();
-      setUnread(null);
-      toast.success('読み直しました');
-    } catch (e) {
-      toast.error(messageFor(classifyError(e)));
+      const r = await settleLockedCall(call, unread.error);
+      // また読み直せなければ handle が notice を出し直す（いまの入力の呼び出しで）
+      if (r.kind !== 'unread') setUnread(null);
+      await handle(call, r);
     } finally {
       setReloading(false);
     }

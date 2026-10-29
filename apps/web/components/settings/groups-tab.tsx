@@ -36,7 +36,7 @@ import { NAME_MAX } from '@/lib/schemas/common';
 import { groupFormSchema, joinAliases, type GroupFormInput, type GroupFormOutput } from '@/lib/schemas/settings';
 import { GroupsCsvDialog } from './groups-csv-dialog';
 import { DeleteWithRefsDialog } from './rule-refs';
-import { Field, FormSheet, selectClass, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler } from './shared';
+import { Field, FormSheet, selectClass, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler, type LockedSaveRun } from './shared';
 
 export function GroupsTab() {
   const { year, yearWritable } = useSettings();
@@ -188,7 +188,6 @@ function GroupForm({
   const { year } = useSettings();
   // 入力の元（更新で送る updated_at）。conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
   const [base, setBase] = useState(group);
-  const locked = useLockedSave({ dataKeys: [settingsKeys.groups(year.id)] });
   const confirmed = year.status === 'confirmed';
   const form = useForm<GroupFormInput, unknown, GroupFormOutput>({
     resolver: zodResolver(groupFormSchema),
@@ -218,9 +217,56 @@ function GroupForm({
     [rooms],
   );
 
+  // 入力（zod の後）から、送る・読み直す・比べる呼び出しを作る（保存と、読み直せなかった後の「読み直す」で同じものを使う）
+  const callFor = (v: GroupFormOutput): LockedSaveRun<GroupRow> => {
+    // 送る値（zod で前後の空白を除き、空なら null にした後）。読み直した行もこの値で比べる
+    const values = {
+      name: v.name,
+      display_name: v.display_name,
+      aliases: v.aliases,
+      category: v.category,
+      is_food: v.is_food,
+      location_room_id: v.location_room_id,
+      sort_order: v.sort_order,
+    };
+    const onSaved = async (earlier: boolean) => {
+      toast.success(earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
+      form.reset(form.getValues());
+      await onDone();
+    };
+    return base
+      ? {
+          write: () => updateGroup(base, values),
+          reread: () => readGroup(base.id),
+          matches: (row) => matchesWritten(row, values),
+          baseVersion: base.updated_at,
+          onRebase: (row) => row && setBase(row),
+          onSaved,
+        }
+      : {
+          write: () => insertGroup(year.id, values),
+          reread: () => readGroupByName(year.id, values.name),
+          matches: (row) => matchesWritten(row, { ...values, year_id: year.id }),
+          baseVersion: null,
+          insert: true,
+          onSaved,
+        };
+  };
+  const locked = useLockedSave<GroupRow>({
+    dataKeys: [settingsKeys.groups(year.id)],
+    current: () => {
+      const p = groupFormSchema.safeParse(form.getValues());
+      return p.success ? callFor(p.data) : null;
+    },
+  });
+
   const onSubmit = handleSubmit(async (v) => {
-    // 年度の全団体（編集後）で名前の重複を見る（大文字・小文字・全角半角だけの違いも。D-27）
-    const after = [...groups.filter((g) => g.id !== base?.id).map((g) => ({ name: g.name })), { name: v.name }];
+    // 年度の全団体（編集後）で名前の重複を見る（大文字・小文字・全角半角だけの違いも。D-27）。
+    // 足すときは、名前が入力と完全に同じ団体は外す：応答が届かなかった前の送信が通っていれば、読み直した一覧に自分の足した団体が
+    // 入っているため。同じ名前の行は DB の unique (year_id, name) が 23505 で止め、読み直して決める（2.6 の (B1)。
+    // 入力と同じなら「保存されていました」、違えば「同じものがすでにあります」）
+    const others = groups.filter((g) => (base ? g.id !== base.id : g.name !== v.name));
+    const after = [...others.map((g) => ({ name: g.name })), { name: v.name }];
     const nameErrors = checkGroupNames(after).filter((e) => e.path === `groups.${after.length - 1}.name`);
     if (nameErrors.length > 0) {
       setError('name', { message: nameErrors[0]!.message });
@@ -228,37 +274,7 @@ function GroupForm({
     }
     setSaving(true);
     try {
-      // 送る値（zod で前後の空白を除き、空なら null にした後）。読み直した行もこの値で比べる
-      const values = {
-        name: v.name,
-        display_name: v.display_name,
-        aliases: v.aliases,
-        category: v.category,
-        is_food: v.is_food,
-        location_room_id: v.location_room_id,
-        sort_order: v.sort_order,
-      };
-      const r = await locked.run<GroupRow>(
-        base
-          ? {
-              write: () => updateGroup(base, values),
-              reread: () => readGroup(base.id),
-              matches: (row) => matchesWritten(row, values),
-              baseVersion: base.updated_at,
-              onRebase: (row) => row && setBase(row),
-            }
-          : {
-              write: () => insertGroup(year.id, values),
-              reread: () => readGroupByName(year.id, values.name),
-              matches: (row) => matchesWritten(row, { ...values, year_id: year.id }),
-              baseVersion: null,
-              insert: true,
-            },
-      );
-      if (r.kind !== 'done') return;
-      toast.success(r.earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
-      form.reset(form.getValues());
-      await onDone();
+      await locked.run(callFor(v));
     } finally {
       setSaving(false);
     }

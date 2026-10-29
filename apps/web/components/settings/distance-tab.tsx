@@ -31,7 +31,7 @@ import { classifyError } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
 import { BUILDING_MAX } from '@/lib/schemas/common';
 import { distanceFormSchema, type DistanceFormInput, type DistanceFormOutput } from '@/lib/schemas/settings';
-import { Field, FormSheet, GlobalReadOnlyNote, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler } from './shared';
+import { Field, FormSheet, GlobalReadOnlyNote, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler, type LockedSaveRun } from './shared';
 
 const keyOf = (r: Pick<DistanceOverrideRow, 'building_a' | 'building_b'>) => `${r.building_a}\u0000${r.building_b}`;
 
@@ -185,7 +185,6 @@ export function DistanceTab() {
 function DistanceForm({ row, buildings, onDone }: { row: DistanceOverrideRow | null; buildings: readonly string[]; onDone: () => Promise<void> }) {
   // 入力の元（更新で送る updated_at）。conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
   const [base, setBase] = useState(row);
-  const locked = useLockedSave({ dataKeys: [queryKeys.distance()] });
   const listId = useId();
   const form = useForm<DistanceFormInput, unknown, DistanceFormOutput>({
     resolver: zodResolver(distanceFormSchema),
@@ -195,35 +194,48 @@ function DistanceForm({ row, buildings, onDone }: { row: DistanceOverrideRow | n
   useUnsavedChanges(formState.isDirty);
   const [saving, setSaving] = useState(false);
 
+  // 入力（zod の後）から、送る・読み直す・比べる呼び出しを作る（保存と、読み直せなかった後の「読み直す」で同じものを使う）
+  const callFor = (v: DistanceFormOutput): LockedSaveRun<DistanceOverrideRow> => {
+    // 建物の組は DB が向きをそろえる（D-15）ので、読み直しと比べるのはその向きの組
+    const pair = base ? { building_a: base.building_a, building_b: base.building_b } : distancePair(v.building_a, v.building_b);
+    return {
+      write: () => (base ? updateDistance(base, v.cost) : insertDistance(v)),
+      reread: () => readDistance(pair.building_a, pair.building_b),
+      matches: (got) => matchesWritten(got, { ...pair, cost: v.cost }),
+      baseVersion: base?.updated_at ?? null,
+      ...(base ? { onRebase: (got: DistanceOverrideRow | null) => got && setBase(got) } : { insert: true }),
+      // 足すときの組の重複（23505）は欄に出す（今までどおり）
+      onChanged: ({ conflict }) => {
+        if (base || conflict.info.code !== '23505') return false;
+        setError('building_b', { message: 'その組はすでにあります' });
+        return true;
+      },
+      onFailed: (e) => {
+        if (classifyError(e).code !== '23514') return false;
+        setError('cost', { message: '入力が範囲を超えています（同じ建物どうしは入れられません）' });
+        return true;
+      },
+      onSaved: async (earlier) => {
+        toast.success(
+          earlier ? `${v.building_a}・${v.building_b} の距離は保存されていました` : `${v.building_a}・${v.building_b} の距離を保存しました`,
+        );
+        form.reset(form.getValues());
+        await onDone();
+      },
+    };
+  };
+  const locked = useLockedSave<DistanceOverrideRow>({
+    dataKeys: [queryKeys.distance()],
+    current: () => {
+      const p = distanceFormSchema.safeParse(form.getValues());
+      return p.success ? callFor(p.data) : null;
+    },
+  });
+
   const onSubmit = handleSubmit(async (v) => {
     setSaving(true);
     try {
-      // 建物の組は DB が向きをそろえる（D-15）ので、読み直しと比べるのはその向きの組
-      const pair = base ? { building_a: base.building_a, building_b: base.building_b } : distancePair(v.building_a, v.building_b);
-      const r = await locked.run<DistanceOverrideRow>({
-        write: () => (base ? updateDistance(base, v.cost) : insertDistance(v)),
-        reread: () => readDistance(pair.building_a, pair.building_b),
-        matches: (got) => matchesWritten(got, { ...pair, cost: v.cost }),
-        baseVersion: base?.updated_at ?? null,
-        ...(base ? { onRebase: (got: DistanceOverrideRow | null) => got && setBase(got) } : { insert: true }),
-        // 足すときの組の重複（23505）は欄に出す（今までどおり）
-        onChanged: ({ conflict }) => {
-          if (base || conflict.info.code !== '23505') return false;
-          setError('building_b', { message: 'その組はすでにあります' });
-          return true;
-        },
-        onFailed: (e) => {
-          if (classifyError(e).code !== '23514') return false;
-          setError('cost', { message: '入力が範囲を超えています（同じ建物どうしは入れられません）' });
-          return true;
-        },
-      });
-      if (r.kind !== 'done') return;
-      toast.success(
-        r.earlier ? `${v.building_a}・${v.building_b} の距離は保存されていました` : `${v.building_a}・${v.building_b} の距離を保存しました`,
-      );
-      form.reset(form.getValues());
-      await onDone();
+      await locked.run(callFor(v));
     } finally {
       setSaving(false);
     }

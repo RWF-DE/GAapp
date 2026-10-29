@@ -22,7 +22,7 @@ import { CATEGORY_LABELS } from '@/lib/labels';
 import { queryKeys } from '@/lib/query';
 import { NAME_MAX } from '@/lib/schemas/common';
 import { itemFormSchema, ITEM_CODE_MAX, joinAliases, type ItemFormInput, type ItemFormOutput } from '@/lib/schemas/settings';
-import { Field, FormSheet, GlobalReadOnlyNote, settingsKeys, TabHeading, useLockedSave, useSettings } from './shared';
+import { Field, FormSheet, GlobalReadOnlyNote, settingsKeys, TabHeading, useLockedSave, useSettings, type LockedSaveRun } from './shared';
 
 export function ItemsTab() {
   const { globalWritable } = useSettings();
@@ -104,7 +104,6 @@ export function ItemsTab() {
 function ItemForm({ item, onDone }: { item: ItemRow | null; onDone: () => Promise<void> }) {
   // 入力の元（更新で送る updated_at）。conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
   const [base, setBase] = useState(item);
-  const locked = useLockedSave({ dataKeys: [queryKeys.items()] });
   const form = useForm<ItemFormInput, unknown, ItemFormOutput>({
     resolver: zodResolver(itemFormSchema),
     defaultValues: {
@@ -120,33 +119,46 @@ function ItemForm({ item, onDone }: { item: ItemRow | null; onDone: () => Promis
   const [saving, setSaving] = useState(false);
   const categories = useWatch({ control, name: 'requestable_categories' });
 
+  // 入力（zod の後）から、送る・読み直す・比べる呼び出しを作る（保存と、読み直せなかった後の「読み直す」で同じものを使う）
+  const callFor = (v: ItemFormOutput): LockedSaveRun<ItemRow> => {
+    // 送る値（zod の後）。更新ではコードを送らない（作った後は変えない）。読み直した行もこの値で比べる
+    const patch = { name: v.name, aliases: v.aliases, requestable_categories: v.requestable_categories, sort_order: v.sort_order };
+    const values = { code: v.code, ...patch };
+    const onSaved = async (earlier: boolean) => {
+      toast.success(earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
+      form.reset(form.getValues());
+      await onDone();
+    };
+    return base
+      ? {
+          write: () => updateItem(base, patch),
+          reread: () => readItem(base.id),
+          matches: (row) => matchesWritten(row, patch),
+          baseVersion: base.updated_at,
+          onRebase: (row) => row && setBase(row),
+          onSaved,
+        }
+      : {
+          write: () => insertItem(values),
+          reread: () => readItemByCode(values.code),
+          matches: (row) => matchesWritten(row, values),
+          baseVersion: null,
+          insert: true,
+          onSaved,
+        };
+  };
+  const locked = useLockedSave<ItemRow>({
+    dataKeys: [queryKeys.items()],
+    current: () => {
+      const p = itemFormSchema.safeParse(form.getValues());
+      return p.success ? callFor(p.data) : null;
+    },
+  });
+
   const onSubmit = handleSubmit(async (v) => {
     setSaving(true);
     try {
-      // 送る値（zod の後）。更新ではコードを送らない（作った後は変えない）。読み直した行もこの値で比べる
-      const patch = { name: v.name, aliases: v.aliases, requestable_categories: v.requestable_categories, sort_order: v.sort_order };
-      const values = { code: v.code, ...patch };
-      const r = await locked.run<ItemRow>(
-        base
-          ? {
-              write: () => updateItem(base, patch),
-              reread: () => readItem(base.id),
-              matches: (row) => matchesWritten(row, patch),
-              baseVersion: base.updated_at,
-              onRebase: (row) => row && setBase(row),
-            }
-          : {
-              write: () => insertItem(values),
-              reread: () => readItemByCode(values.code),
-              matches: (row) => matchesWritten(row, values),
-              baseVersion: null,
-              insert: true,
-            },
-      );
-      if (r.kind !== 'done') return;
-      toast.success(r.earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
-      form.reset(form.getValues());
-      await onDone();
+      await locked.run(callFor(v));
     } finally {
       setSaving(false);
     }
