@@ -289,7 +289,7 @@ create view v_remaining with (security_invoker = true) as
 - distance_overrides の建物の組は向きを持たない。呼ぶ側が順序を気にしなくてよいよう、トリガーが C の照合順序（コードポイント順。DB の既定の照合順序や JavaScript の並べ替えに依存しない）で小さい方を building_a に入れ替える。同じ建物どうしは CHECK で拒否する
 - rules.year_id は作った後に変えられない（トリガーで拒否する。ルールを閉じた年度へ移す抜け道を、ポリシーに頼らず DB で止める）
 - 行を別の年度・団体へ動かす更新も止める。確定中・closed の守りと版の増分は新しい行の年度しか見ないので、動かせると確定中の年度から振り分けを抜き出せるため。年度を持つ表の year_id（room_years・stocks・groups・year_roles・invitations・allocations・slots・deliveries）と、団体を主キーに含む表の group_id（group_members・request_submissions・requests・substitution_consents）は、作った後に変えられない（トリガー `check_immutable`。`invalid_input`）。allocations・deliveries・invitations の group_id は、複合外部キーで year_id と対になっているので、同じ年度の別の団体にだけ変えられる
-- anon・authenticated には、public・private スキーマの表・ビュー・シーケンス・関数の権限を何も与えない（PUBLIC への既定の execute も外す）。pgTAP が has_*_privilege で全オブジェクトを棚卸しして確かめる。権限は T03 で表ごとに与える
+- anon と PUBLIC には、public・private スキーマの表・ビュー・シーケンス・関数の権限を何も与えない（PUBLIC への既定の execute も外す）。authenticated には、「権限とRLS」の表の権限（全表の select と、W の表の insert・update・delete）、RPC の execute、ポリシーが呼ぶ private の判定関数の execute と private の usage だけを与える。シーケンスの権限は誰にも与えない（audit_logs は SECURITY DEFINER のトリガーだけが書く）。pgTAP が has_*_privilege で全オブジェクトを棚卸しして、一覧と比べる
 - 前年度の複製（フェーズ1、RPC `create_year_from`）は、groups・rules・room_years を新しい year_id で作り直し、呼んだ人を新しい年度の admin にする（year_roles に1行）。呼べるのは複製元の年度の admin だけで（複製元が closed でもよい）、複製元は最新の年度（それを複製元にした年度も、1日目が同じかそれより後の年度もない）に限る。新しい年度の1日目は複製元より後にする。古い年度の admin や、ほかの年度の admin が年度を作って権限を取り戻したり、ロールのない年度を複製して読んだりできないようにするため。新しい年度の prev_year_id に複製元を入れる。rules.params の団体 id（group・groups）は、名前が同じ新しい団体に付け替える。付け替えられなかったルールは無効にして memo に理由を書く。stocks・requests・allocations・substitution_consents・year_roles（呼んだ人以外）・invitations は複製しない（在庫入力の「前年の数」と休憩所の申請の初期値は、RPC `previous_year_stocks`・`previous_year_requests` で前年度の数を読んで出す）
 - 最初の年度と最初の admin は、オーナーが一度アプリにログインしてから、管理画面の SQL Editor で years と year_roles に1行ずつ入れて作る。最新の年度の admin が誰も残っていないときも同じ方法で admin を足す。手順は README に書く。卒業する admin は、年度を closed にする前後に set_role で外す（closed でも外せる）
 - 同じ行を複数の管理者が同時に変えないよう、allocations と requests の更新は updated_at を条件に入れた楽観ロックにする。クライアントは受け取った updated_at の文字列をそのまま返し、DB はミリ秒までで比べる。合わなければ「他の人が変更しました」と出して読み直す
@@ -299,37 +299,46 @@ create view v_remaining with (security_invoker = true) as
 
 ## 権限とRLS
 
-全テーブルで RLS を有効にする。ロールは関数 `private.has_role(year_id, role)`（year_roles を読む）と `private.is_group_member(group_id)`（group_members を読む）で判定する。どちらも SECURITY DEFINER、`search_path = ''`、公開しないスキーマ private に置き、ポリシーの中で表を読んでも再帰しないようにする。アプリが使う鍵は publishable キーだけで、secret（旧 service_role）キーは使わない。
+全テーブルで RLS を有効にする。ロールは関数 `private.has_role(year_id, role)`（year_roles を読む）と `private.is_group_member(group_id)`（group_members を読む）で判定する。年度を持たない表（rooms・items・distance_overrides）の書き込みは `private.is_admin_of_open_year()`（状態が closed でない年度のどれかで admin。D-01）で、profiles の読み取りは `private.can_see_profile(user_id)`（自分と、自分が admin・staff である年度のメンバー）で判定する。ほかに、年度の状態・締切・団体の年度を引く関数を同じ場所に置く。どれも呼んだ人（auth.uid()）についてだけ答え、SECURITY DEFINER、`search_path = ''`、公開しないスキーマ private に置き、ポリシーの中で表を読んでも再帰しないようにする。アプリが使う鍵は publishable キーだけで、secret（旧 service_role）キーは使わない。
+
+表の権限（grant）も権限表に合わせる。anon には何も与えない。authenticated には全表の select と、W の表の insert・update・delete だけを与え、RPC でだけ書く表（years・year_roles・group_members・invitations・substitution_consents・allocations・profiles・audit_logs）には書き込みの権限を与えない。RPC の execute は authenticated だけに与える。
 
 R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ書ける、—＝不可。招待されていない人は、自分の profiles 以外は何も読めない。
 
 | テーブル | admin | staff | 団体代表 | viewer |
 | --- | --- | --- | --- | --- |
-| years | R・RPC | R | R | R |
-| rooms・items・room_years・distance_overrides | RW | R | R | R |
+| years | R・RPC | R | R（自団体の年度） | R |
+| rooms・items・distance_overrides | RW（closed でない年度のどれかで admin） | R | R | R |
+| room_years・slots | RW | R | R | R |
 | stocks | RW | RW（status が preparing / requesting のとき） | — | — |
 | v_remaining | R | R | — | — |
 | groups | RW | R | R（自団体） | R |
-| year_roles・group_members・invitations | R・RPC | — | R（自分の行） | R（自分の行） |
-| request_submissions・requests | RW（締切後は RPC） | R | RW（自団体・requesting・締切前） | — |
+| year_roles・group_members | R・RPC | R（自分の行） | R（自分の行） | R（自分の行） |
+| invitations | R・RPC | R（自分のメールの行） | R（自分のメールの行） | R（自分のメールの行） |
+| request_submissions・requests | RW（preparing と締切前。締切後は RPC） | R | RW・RPC（自団体・requesting・受付期間内） | — |
 | rules | RW | R | — | — |
 | substitution_consents | R・RPC | R | R（自団体）・RPC | — |
 | allocations | R・RPC | R | R（自団体・confirmed 以降） | R（confirmed 以降） |
-| slots | RW | R | R | R |
 | deliveries | RW | R・RPC | R（自団体） | R |
-| profiles | R | R（表示名） | R（自分） | R（自分） |
-| audit_logs | R | — | — | — |
+| profiles | R（自分と、その年度のメンバー） | R（自分と、その年度のメンバー。表示名） | R（自分） | R（自分） |
+| audit_logs | R（その年度の admin。年度のない行は、年度をまたぐ3表の分を closed でない年度の admin が読む） | — | — | — |
 
-- allocations は誰にも直接の書き込みを許さない。すべて RPC で書き、確定中は RPC がエラーを返すので、確定後の書き込みは確実に止まる
+admin・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。ロールと団体代表は兼ねられ、兼ねた人は両方の権限を持つ（例：staff が自団体の代表として申請を書く）。
+
+状態が closed の年度は、どのロールも書き込めない（読み取り専用）。例外は、ルールの memo（admin）と、運搬・返却のチェック（RPC `check_delivery`、admin・staff）。確定中（confirmed）は、「設計上の決めごと」の確定中の守りのとおり、確定済みのデータに error を作る書き込みができない。
+
+- allocations は誰にも直接の書き込みを許さない。すべて RPC で書き、確定中は RPC がエラーを返す。団体の連鎖削除などで確定中・終了の年度の allocations が変わることも、トリガーが止める。これで確定後の書き込みは確実に止まる
+- 締切前：団体代表が申請を書けるのは、status が requesting で、request_open_at が null か過ぎていて、now() が request_close_at より前のとき。request_close_at が null なら締切前とみなさない（書けない）。管理者が RPC なしで書けるのは、status が preparing のときと、requesting で締切前のとき。受付開始（requesting への遷移）は request_close_at が未来でなければエラーにする
+- ポリシーの update は using と with check に同じ述語を書く。with check は更新後の行しか見られないので、「年度・団体を変えない」はトリガー（check_immutable、rules は guard_rules）で止める（「設計上の決めごと」）
 - deliveries の「状態・問題・返却だけ更新できる」は、RLS ではなく RPC `check_delivery` で実現する（RLS は列を制限できない）
 - ログインは Supabase Auth の Google プロバイダー。学校のドメイン以外は Before User Created フック（Postgres 関数）で拒否する。許可するドメインは関数の中に定数で書く。Google は組織の判定に hd クレームを使うよう求めているので、フックの入力に hd が含まれるかを T04 で確かめ、含まれなければメールのドメインで判定する
 - 招待の受け入れは、auth.users への追加時のトリガー（SECURITY DEFINER）で行う。profiles を作り、メールが一致する未使用の invitations から year_roles と group_members を作る。すでにアカウントがある人を招待したときは、RPC `invite` の中でその場で同じ処理をする。メールは小文字にそろえて比べる
 - 学校の Google Workspace では、18歳未満に指定された利用者は、管理者が許可していない外部アプリにログインできない。1〜3年生が使えるかは情報担当への確認待ち（[概要](00_overview.md) の未決事項）
-- RLS と RPC の権限は pgTAP（`supabase test db`）でロールごとにテストする
+- RLS と RPC の権限は pgTAP（`supabase test db`）でロールごとにテストする。権限表の全セルは、期待値の表（表・操作・年度の状態・ペルソナごとの可否）から生成して確かめる。確定中の守りも、confirmed のセルとして確かめる。関数の execute と表の権限の棚卸し（anon が何も実行・参照できないこと、authenticated が実行できるのは RPC とポリシーの判定関数だけであること、supabase_auth_admin が実行できるのはフックだけであること）もテストする
 
 ## 年度ステータスの状態遷移
 
-状態は管理者が RPC `set_year_status(year_id, to, reason)` で進める。関数の中で admin を確かめ、理由を audit_logs に書く。締切日時を過ぎても自動では進めない（締切後の申請の書き込みは RLS で止める）。
+状態は管理者が RPC `set_year_status(year_id, to, reason, base_version)` で進める。関数の中で admin を確かめ、理由を audit_logs に書く（確定と確定の解除では理由が必須）。遷移のたびに years.allocation_version を増やす。締切日時を過ぎても自動では進めない（締切後の申請の書き込みは RLS で止める）。
 
 ```mermaid
 stateDiagram-v2
@@ -341,4 +350,4 @@ stateDiagram-v2
   confirmed --> closed: 祭の後
 ```
 
-図にない遷移はエラーにする。confirmed へは、DB の中で在庫超過（E001）・使用不可からの振り分け（E002）・残すの不整合（E005）がないことを確かめてから進める。確定を解除すると理由が必須で、団体への公開も止まる。
+図にない遷移はエラーにする。requesting へは、request_close_at が未来の日時で入っているときだけ進める。confirmed へは、理由と base_version（確定ボタンを押した画面が検証に使った版）が要る。版が今の版と違えば（検証の後に振り分けや入力が変わっていれば）エラーにする。そのうえで、DB の中で在庫超過（E001。固定・手動・残すの行を含む）・使用不可からの振り分け（E002）・残すの不整合（E005）がないことを確かめてから進める。warning（W102 の了承待ちを含む）では止めない。確定中は、確定済みのデータに error を作る書き込みをトリガーで止める（「設計上の決めごと」）。確定を解除すると理由が必須で、団体への公開も止まる。closed は終点で、closed の年度は読み取り専用になる（ルールの memo と、運搬・返却のチェックを除く）。

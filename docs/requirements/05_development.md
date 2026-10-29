@@ -40,7 +40,7 @@ GAapp/
 - CI（ci.yml）で次を実行し、すべて通らないとマージできない：
   1. `pnpm lint` と `pnpm typecheck`
   2. `pnpm test`（Vitest：allocator・exporter・importer・shared）
-  3. `supabase test db`（pgTAP：表・列・制約、トリガー（監査、確定中の守り）、ロールごとに読める・書ける範囲、RPC の権限・状態・楽観ロック・版）。テストは `supabase db reset` の後の seed が入った DB で流す。テスト用のデータは seed の品目を使い、seed とぶつからない名前とメールのドメイン（`@pgtap.test`）にする
+  3. `supabase test db`（pgTAP：表・列・制約、トリガー（監査、確定中の守り）、権限表の全セル（表 × 操作 × 年度の状態 × ロール）を期待値の表から確かめる、RPC の権限・状態・楽観ロック・版、関数の execute と表の権限の棚卸し）。テストは `supabase db reset` の後の seed が入った DB で流す。テスト用のデータは seed の品目を使い、seed とぶつからない名前とメールのドメイン（`@pgtap.test`）にする
   4. Playwright（ログイン → 申請 → 自動振り分け → 確定 → 出力の通し）。Google ログインは CI で通せないので、ローカルの Supabase にだけメールとパスワードのテストユーザーを作って使う（本番ではメールログインを無効にする）
   5. `next build`（静的書き出しが通ること）
 - コミットメッセージは Conventional Commits（feat: / fix: / docs: など）

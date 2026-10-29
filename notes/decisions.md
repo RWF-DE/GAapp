@@ -7,7 +7,7 @@
 - **決定**：rooms・items・distance_overrides など年度を持たない表は、「状態が closed でない年度のどれかで admin」の人が編集できる。create_year_from は、呼んだ人を新しい年度の admin にする（year_roles に行を作る）。最初の年度と最初の admin は、オーナーが Supabase の SQL Editor で1回だけ作り、手順を README に書く。表は増やさない。
 - **反映先**：02_data.md「権限とRLS」（判定の関数に `private.is_admin_of_any_open_year()` のようなものを足す。権限表の注記）、04_screens_api.md「DB関数（RPC）」の create_year_from。
 - **チケット**：T02・T03（関数とテスト）、T09（年度の作成）、T14（README の「年度の始め方」）。
-- **状態**：要件定義に未反映。
+- **状態**：要件定義に反映済み（02「権限とRLS」は T03 の PR、02「設計上の決めごと」の複製は T02 の PR、04 の create_year_from は T03 の PR）。README の手順は T14。
 
 ## D-02 テストユーザーとドメイン制限フック（2026-10-28、K-10）
 
@@ -51,7 +51,7 @@
 - **これに伴うこと**：save_auto_allocations は「auto かつ未固定」の行を消して入れ直すので、keep の行もそこで入れ替わり、二重にならない。管理者が keep の行を手で固定した場合（pinned = true）は fixedRows として入るので、その団体・部屋・品目について、ルールからは固定分を超える分だけを作る。
 - **反映先**：03_allocation.md「前処理」3、同「入力と出力」（結果の rows に keep の行を含めること）。
 - **チケット**：T06、T03（save_auto_allocations）。
-- **状態**：要件定義に未反映。
+- **状態**：要件定義に反映済み（03「入力と出力」の保存の箇条書きと「前処理」3。T03 の PR）。
 
 ## D-07 fixed_request の「申請がなければ」（2026-10-28、K-03）
 
@@ -133,9 +133,50 @@
 - **チケット**：T02、T03（RPC は year_id・group_id を更新しない）。
 - **状態**：要件定義に反映済み（T02 の PR）。
 
+## D-17 権限の範囲（2026-10-29、DB 設計・T03）
+
+- **決定**：
+  - closed の年度は読み取り専用。例外はルールの memo（admin。トリガーで memo 以外を止める）と、運搬・返却のチェック（RPC check_delivery、admin・staff）。01 の「年間の業務の流れ」9 はそのまま成り立つ。ロールと団体代表を外すこと（set_role の null、remove_group_member）も closed でできる（卒業した admin の権限を残さないため）。
+  - staff・団体代表・viewer は、自分の year_roles・group_members の行と、自分のメールあての invitations を読める（02 の権限表の staff の「—」は書き漏れとみる）。招待は、どこかの年度のロールか団体代表がある間だけ読める。ロールと団体代表は兼ねられ、権限は足し合わせになる。
+  - profiles は、自分と、自分が admin・staff である年度のメンバー（ロールか団体代表の行がある人）の分だけ読める。
+  - 前年度の数は RPC で読む：previous_year_stocks（admin・staff）、previous_year_requests（admin。団体名と数だけ）。前年度にロールがなくても、今の年度のロールで複製元の数を読める。個人情報は含まない。
+  - 招待は、メールを確認済みで削除されていないアカウントにだけ付ける（invite・accept_my_invitations。auth.users のトリガーは T04）。画面はログインのたびに accept_my_invitations を呼ぶ。
+  - 権限の判定関数は、ポリシーが呼ぶ 12 個だけにする（設計の 14 個から、使われていない private.year_role と private.is_request_open を消した）。authenticated に execute を与えるのはこの 12 個だけで、RPC の補助とトリガー関数には与えない。
+  - 権限表の全セル（20 の表・ビュー × 操作 × 年度の6つの状態 × 6 人）を pgTAP で確かめる。
+- **理由**：どれも権限を狭めるか、読めるのが自分の行・数と団体名だけで、権限を広げる危険がない。closed を読み取り専用にしても、01 で closed に行う作業（メモ、返却）は残る。
+- **反映先**：02_data.md「権限とRLS」（本文・権限表・表の下の説明・箇条書き）、04_screens_api.md「DB関数（RPC）」。
+- **チケット**：T03、T04（トリガーでの招待の受け入れ）、T09（ユーザーの画面）、T10（前年の数）。
+- **状態**：要件定義に反映済み（T03 の PR）。
+
+## D-18 年度の複製と確定（2026-10-29、DB 設計・T03）
+
+- **決定**：
+  - create_year_from を呼べるのは、複製元の年度の admin だけ（複製元が closed でもよい）。複製元は最新の年度（それを複製元にした年度も、1日目が同じか後の年度もない）に限る。新しい年度の1日目は複製元より後。卒業する admin は年度を closed にする前後に set_role で外す。最新の年度の admin が誰もいなければ、オーナーが SQL Editor で足す（D-01 の手順）。
+  - 確定（set_year_status の confirmed）には理由と、検証に使った版（p_base_version）が要る。版が違えば conflict。確定の解除にも理由が要る。受付開始（requesting）には未来の締切が要る。状態の遷移のたびに版を増やす。
+  - 画面（ダッシュボードの確定ボタン、振り分け画面）は、ほかのデータより先に years.allocation_version を読み、その版で検証し、確定のときにその版を渡す。conflict なら読み直して検証し直し、結果を見せてからもう一度押してもらう（自動で再送しない）。
+  - W102 は今の仕様どおり warning のままで、確定を止めない。了承の後に置き換えが了承した台数より増えたら W102 として出す。DB は了承の状態を勝手に変えない。
+- **理由**：古い年度やほかの年度の admin が、年度を作って権限を取り戻したり、ロールのない年度を複製して読んだりできないようにするため。検証していない振り分けや入力のまま確定しないため。
+- **反映先**：02_data.md「年度ステータスの状態遷移」、04_screens_api.md「ダッシュボード」「振り分け」「マスタ設定」「DB関数（RPC）」、03_allocation.md「検証コード一覧」。
+- **チケット**：T03、T09・T13（画面）。
+- **状態**：要件定義に反映済み（T03 の PR）。
+
+## D-19 RPC の入力・エラー・提出（2026-10-29、T03）
+
+- **決定**：
+  - 申請の提出は RPC submit_requests（申請と提出を1トランザクションで書く）。D-07 は変えない。
+  - update_requests_after_deadline の p_submission は `{ submitted: true, note }`（どちらも省略可。ほかのキーは invalid_input）。submitted は true だけを受け付け、提出済みにする（最初の提出日時を保つ）。未提出には戻さない（`submitted: false` は invalid_input）。未提出に戻すと D-07 で需要が fixed_request に変わり、振り分けが変わるため。どうしても戻すときは、確定の前に SQL Editor で直す（記録は監査に残る）。
+  - RPC の中で起きた形の誤り（SQLSTATE のクラス 22）と CHECK 違反（23514）は、すべての書き込みの RPC で invalid_input に直す（save_auto_allocations・set_consent・submit_requests・update_requests_after_deadline・check_delivery に例外ブロックを足した。save_auto_allocations は数の上限 10000 も先に確かめる）。
+  - revoke_invitation は、ロールを確かめてから招待の行をロックする（ロールのない人に行ロックを取らせない）。
+  - update_year は、年度名（一意の列）を変えるときだけ別の文で書く。SET に年度名があると、値が同じでも行のロックが外部キーの確認（FOR KEY SHARE）とぶつかる強さになり、その年度を参照する行の insert（部員の在庫入力など）を update_year のコミットまで待たせ、デッドロックの元になる（ローカルの Supabase で再現して確かめた。notes/T03.md）。
+  - rules.year_id の付け替えは、ポリシーの with check（更新後の行しか見ない）ではなく、T02 のトリガー guard_rules で止める（D-15）。T03 は pgTAP で、両方の年度の admin でも closed の年度へ移せないことを確かめる。
+- **理由**：画面に生の SQLSTATE を返さず、エラーの扱いを message のコードだけで決められるようにするため。提出の状態を誤って戻して振り分けが変わるのを防ぐため。
+- **反映先**：04_screens_api.md「DB関数（RPC）」の表と箇条書き。
+- **チケット**：T03、T11（申請一覧・締切後の修正）。
+- **状態**：要件定義に反映済み（T03 の PR）。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
-- **P-01**（K-06・K-07、T02・T03）：RPC を足す（update_year、set_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。
+- **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。
 - **P-02**（K-12、T06）：コストを整数にそろえ、使用場所以外からの移動に1を足して、同点なら「残す」が選ばれるようにする（例：d′ = 100·d ＋ 1、休憩所への不可椅子は −10、W と μ もこの単位で計算し直す）。
 - **P-03**（K-17、T04・T09）：共通レイアウト（ナビゲーション、ロールによる表示の切り替え、読み込み中・空・権限なしの3状態）を T09 から T04 に移す。
 
