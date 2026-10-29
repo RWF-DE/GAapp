@@ -548,6 +548,86 @@ describe('StockInput：保存できたか分からないとき・401', () => {
     expect((opArgs(upserts()[1]!, 'upsert')[0]![0] as { count: number }[])[0]!.count).toBe(12);
   });
 
+  /** 1回目の upsert の応答が届かず（NETWORK）、「もう一度」の保存の前の読み直し（部屋の3回目の読み込み）も通信できない。
+   *  4回目以降（「確かめる」）は check の結果 */
+  async function untilUnconfirmed(check: (n: number) => FakeResult | undefined) {
+    serve({
+      stocks: [stock(DESK, 10), stock(CHAIR, 20)],
+      upsert: (n) => (n === 1 ? NETWORK : undefined),
+      roomRead: (n) => (n === 3 ? NETWORK : n >= 4 ? check(n) : undefined),
+    });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const banner = await screen.findByTestId('error-banner');
+    await user.click(within(banner).getByRole('button', { name: 'もう一度' }));
+    const notice = await screen.findByTestId('stock-unconfirmed');
+    return { user, notice };
+  }
+  const saveButton = () => screen.getByRole('button', { name: '保存' }) as HTMLButtonElement;
+
+  it('「もう一度」の保存の前の読み直しも通信できなければ、入力を残して「確かめる」まで送り直しを押せなくする', async () => {
+    const { notice } = await untilUnconfirmed(() => undefined);
+    expect(notice.textContent).toContain('保存できたか確かめられません。通信が戻ったら「確かめる」を押してください');
+    expect(within(notice).getByRole('button', { name: '確かめる' })).toBeTruthy();
+    expect(saveButton().disabled).toBe(true);
+    expect(screen.queryByTestId('error-banner')).toBeNull();
+    expect((deskInput() as HTMLInputElement).value).toBe('11');
+    expect(upserts()).toHaveLength(1);
+  });
+
+  it('「確かめる」で読み直せて自分の保存が入っていれば「保存されていました」（送り直さない）', async () => {
+    const mine = [stock(DESK, 11, 'u-mine-desk', USER), stock(CHAIR, 20, 'u-mine-chair', USER)];
+    const { user, notice } = await untilUnconfirmed(() => ({ data: mine }));
+    await user.click(within(notice).getByRole('button', { name: '確かめる' }));
+    const saved = await screen.findByTestId('stock-saved');
+    expect(saved.textContent).toContain('保存されていました');
+    expect(screen.queryByTestId('stock-unconfirmed')).toBeNull();
+    expect(saveButton().disabled).toBe(false);
+    expect(upserts()).toHaveLength(1);
+    expect(screen.queryByText('保存していない変更があります')).toBeNull();
+  });
+
+  it('「確かめる」で読み直せて保存が入っていなければ、入力を残して送り直せる状態に戻す', async () => {
+    const { user, notice } = await untilUnconfirmed(() => undefined);
+    await user.click(within(notice).getByRole('button', { name: '確かめる' }));
+    await waitFor(() => expect(screen.queryByTestId('stock-unconfirmed')).toBeNull());
+    expect(screen.queryByTestId('stock-saved')).toBeNull();
+    expect((deskInput() as HTMLInputElement).value).toBe('11');
+    expect(saveButton().disabled).toBe(false);
+    expect(upserts()).toHaveLength(1);
+    await user.click(saveButton());
+    await screen.findByTestId('stock-saved');
+    expect(upserts()).toHaveLength(2);
+    expect((opArgs(upserts()[1]!, 'upsert')[0]![0] as { count: number }[])[0]!.count).toBe(11);
+  });
+
+  it('「確かめる」の読み直しも通信できなければ、知らせを残して送り直しを押せないまま', async () => {
+    const { user, notice } = await untilUnconfirmed(() => NETWORK);
+    await user.click(within(notice).getByRole('button', { name: '確かめる' }));
+    await waitFor(() => expect(within(screen.getByTestId('stock-unconfirmed')).getByRole('button', { name: '確かめる' })).toHaveProperty('disabled', false));
+    expect(saveButton().disabled).toBe(true);
+    expect((deskInput() as HTMLInputElement).value).toBe('11');
+    expect(upserts()).toHaveLength(1);
+  });
+
+  it('応答が届かなかった送信がなければ、保存の前の読み直しの通信の失敗はふつうのエラー（「もう一度」で送れる）', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], roomRead: (n) => (n === 2 ? NETWORK : undefined) });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(saveButton());
+    const banner = await screen.findByTestId('error-banner');
+    expect(screen.queryByTestId('stock-unconfirmed')).toBeNull();
+    expect(upserts()).toHaveLength(0);
+    await user.click(within(banner).getByRole('button', { name: 'もう一度' }));
+    await screen.findByTestId('stock-saved');
+    expect(upserts()).toHaveLength(1);
+  });
+
   it('保存の前の読み直しで 401 になり、セッションの更新が通ったら保存を続ける', async () => {
     auth.reauthenticate.mockResolvedValueOnce(true);
     serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], roomRead: (n) => (n === 2 ? EXPIRED : undefined) });

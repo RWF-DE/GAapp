@@ -11,6 +11,8 @@
 // - 読み直し（設計 2.6）：部屋の行を読み直したら、未保存の入力がなければその数で作り直し、入力があれば入力を残して
 //   「ほかの人が保存しました」と知らせる（入力の元の行は変えないので、保存の前のほかの人の保存の確かめが効く）。
 // - 通信の失敗の後の「もう一度」：読み直した行が送った数で、数えた人が自分なら「保存されていました」として終える。
+//   その読み直しも通信できなければ、入力を残して「保存できたか確かめられません」と出し、「確かめる」で読み直せるまで
+//   送り直しを押せなくする（読み直せたら、自分の保存が入っていれば「保存されていました」、なければ送り直せる状態に戻す）。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -82,6 +84,12 @@ type Phase = 'idle' | 'checking' | 'saving';
 
 /** 保存の前の読み直しで 401 になり、セッションを更新できなかった（onAuthError が signOut まで済ませた） */
 class AuthHandled extends Error {}
+
+/** 応答が届かず、保存されたか分からない失敗（設計 2.6 の「通信の失敗の後の書き込み」） */
+function isUncertain(e: unknown): boolean {
+  const kind = classifyError(e).kind;
+  return kind === 'network' || kind === 'unknown';
+}
 
 /** 行の updated_at（品目の id → updated_at） */
 function stampsOf(rows: readonly StockDbRow[]): StockBaseStamps {
@@ -216,6 +224,8 @@ export function StockInput({
   const [savedKind, setSavedKind] = useState<'saved' | 'recovered'>('saved');
   // 最後に送った数（応答が届かなかったときに残す。「もう一度」で保存されていたかを確かめる。設計 2.6）
   const lastSent = useRef<StockCounts | null>(null);
+  // 応答の届かなかった送信があり、確かめる読み直しも通信できなかった（「確かめる」で読み直せるまで送り直さない）
+  const [unconfirmed, setUnconfirmed] = useState(false);
 
   // 「前回の入力」は今の DB の行（入力を残して元の行を変えないときも、読み直した行で出す）
   const last = data ? latestCounted(data) : base ? latestCounted(base) : null;
@@ -279,6 +289,8 @@ export function StockInput({
       const rows = await saveRoomStocks(yearId, roomId, items, values);
       finishSaved(rows, 'saved');
     } catch (e) {
+      // 応答が届いた失敗なら何も保存されていない（応答の届かなかった失敗だけ、送った数を残して後で確かめる）
+      if (!isUncertain(e)) lastSent.current = null;
       // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks の upsert は同じ値で何度送っても同じ。2.6）
       if (classifyError(e).kind === 'auth' && !retried) {
         if ((await onAuthError(e)) === 'retry') return write(values, true);
@@ -290,8 +302,66 @@ export function StockInput({
     }
   };
 
+  /** 保存の前の読み直し。401 ならセッションの更新を1回試し、通れば読み直しを1回だけやり直す（読むだけなので送り直してよい） */
+  const fresh = async <T,>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read();
+    } catch (e) {
+      if (classifyError(e).kind !== 'auth') throw e;
+      if ((await onAuthError(e)) !== 'retry') throw new AuthHandled();
+      return read();
+    }
+  };
+
+  /** 読み直した部屋の行が、応答の届かなかった自分の保存だけで変わっていたら片づける（設計 2.6）。片づけたら true。
+   *  同じ数なら「保存されていました」で終え、その後に入力を変えていれば、読み直した行を元にする（その数はまだ保存していない） */
+  const settleOwnSave = (latest: StockDbRow[], other: OtherSave, values: StockCounts): 'recovered' | 'rebased' | null => {
+    const sent = lastSent.current;
+    if (!sent || !isOwnSave(items, latest, other, sent, open.userId)) return null;
+    if (sameCounts(items, values, sent)) {
+      finishSaved(latest, 'recovered');
+      return 'recovered';
+    }
+    lastSent.current = null;
+    setBase(latest);
+    setRestoredStamps(null);
+    setRemote(null);
+    return 'rebased';
+  };
+
+  /** 「確かめる」：応答の届かなかった送信が保存されたかを、部屋の行を読み直して確かめる */
+  const confirmLastSave = async () => {
+    if (!unconfirmed || !counts || !stamps || phase !== 'idle') return;
+    setError(null);
+    setPhase('checking');
+    try {
+      const latest = await fresh(() => fetchRoomStocks(yearId, roomId));
+      setUnconfirmed(false);
+      const other = detectOtherSave(loadedOf(stamps), latest);
+      const settled = other ? settleOwnSave(latest, other, counts) : null;
+      if (settled === 'recovered') return;
+      if (settled === 'rebased') {
+        setSeen(latest);
+        writer.write({ counts, base: stampsOf(latest) });
+        toast.info('前に送った数は保存されていました。その後に変えた数はまだ保存していません');
+      } else {
+        // 保存は入っていなかった。ほかの人の保存があれば、読み直しの決まりで知らせる（保存のときに上書きするか選べる）
+        lastSent.current = null;
+        toast.info('前に送った数は保存されていませんでした。もう一度「保存」を押してください');
+      }
+      queryClient.setQueryData(queryKeys.yearPart(yearId, 'stocks', 'room', roomId), latest);
+      for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
+    } catch (e) {
+      if (e instanceof AuthHandled) return;
+      if (isUncertain(e)) toast.error('まだ通信できません。通信が戻ったらもう一度「確かめる」を押してください');
+      else await handleError(e);
+    } finally {
+      setPhase('idle');
+    }
+  };
+
   const save = async () => {
-    if (!counts || !base || !stamps || phase !== 'idle' || !access.writable) return;
+    if (!counts || !base || !stamps || phase !== 'idle' || !access.writable || unconfirmed) return;
     setError(null);
     setBlocked(null);
     const parsed = stockCountsSchema.safeParse(counts);
@@ -303,16 +373,6 @@ export function StockInput({
     if (!(await notLatest.confirmBeforeWrite())) return;
     setPhase('checking');
     let proceed = false;
-    // 保存の前の読み直し。401 ならセッションの更新を1回試し、通れば読み直しを1回だけやり直して保存を続ける（読むだけなので送り直してよい）
-    const fresh = async <T,>(read: () => Promise<T>): Promise<T> => {
-      try {
-        return await read();
-      } catch (e) {
-        if (classifyError(e).kind !== 'auth') throw e;
-        if ((await onAuthError(e)) !== 'retry') throw new AuthHandled();
-        return read();
-      }
-    };
     try {
       if (access.shortfall !== 'none') {
         // 振り分けの合計は保存の直前に読み直す（DB の確定中の守りと同じ条件を先に確かめる）
@@ -330,24 +390,24 @@ export function StockInput({
       const latest = await fresh(() => fetchRoomStocks(yearId, roomId));
       const other = detectOtherSave(loadedOf(stamps), latest);
       if (other) {
-        const sent = lastSent.current;
-        if (!sent || !isOwnSave(items, latest, other, sent, open.userId)) {
+        // 変わったのが応答の届かなかった自分の保存だけなら、「保存されていました」で終えるか、読み直した行を元にしてその数で送る
+        const settled = settleOwnSave(latest, other, parsed.data);
+        if (settled === null) {
           setConflict({ latest, other });
           return;
         }
-        // 変わったのは、応答の届かなかった自分の保存だけ（設計 2.6）。同じ数なら「保存されていました」で終え、
-        // その後に入力を変えていれば、読み直した行を元にしてその数で送る
-        if (sameCounts(items, parsed.data, sent)) {
-          finishSaved(latest, 'recovered');
-          return;
-        }
-        setBase(latest);
-        setRestoredStamps(null);
-        setRemote(null);
+        if (settled === 'recovered') return;
       }
       proceed = true;
     } catch (e) {
-      if (!(e instanceof AuthHandled)) await handleError(e);
+      if (e instanceof AuthHandled) return;
+      if (lastSent.current && isUncertain(e)) {
+        // 応答の届かなかった送信があり、確かめる読み直しも通信できない。確かめずに送り直さない（設計 2.6）
+        setError(null);
+        setUnconfirmed(true);
+        return;
+      }
+      await handleError(e);
       return;
     } finally {
       if (!proceed) setPhase('idle');
@@ -486,8 +546,20 @@ export function StockInput({
               void stocksQ.refetch();
               if (access.shortfall !== 'none') void allocQ.refetch();
             }}
-            onRetry={classifyError(error).kind === 'network' || classifyError(error).kind === 'deadlock' ? () => void save() : undefined}
+            onRetry={!unconfirmed && (classifyError(error).kind === 'network' || classifyError(error).kind === 'deadlock') ? () => void save() : undefined}
           />
+        ) : null}
+        {unconfirmed ? (
+          <div role="alert" data-testid="stock-unconfirmed" className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="font-medium text-destructive">保存できたか確かめられません。通信が戻ったら「確かめる」を押してください</p>
+              <p className="text-xs text-muted-foreground">入力はそのまま残しています。確かめるまで保存は押せません（二重に送らないため）。</p>
+              <Button size="sm" variant="outline" onClick={() => void confirmLastSave()} disabled={busy}>
+                {phase === 'checking' ? '確かめています…' : '確かめる'}
+              </Button>
+            </div>
+          </div>
         ) : null}
         {remote && dirty ? (
           <div role="status" data-testid="stock-remote-change" className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
@@ -600,7 +672,7 @@ export function StockInput({
             size="lg"
             className="h-12 w-full text-base"
             onClick={() => void save()}
-            disabled={busy}
+            disabled={busy || unconfirmed}
             aria-busy={busy || undefined}
           >
             {phase === 'saving' ? '保存中…' : phase === 'checking' ? '確かめています…' : '保存'}

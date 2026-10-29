@@ -367,6 +367,55 @@ test.describe('T10 部員', () => {
     }
   });
 
+  test('T10 応答が届かなかった保存：「もう一度」の読み直しも通信できなければ「確かめる」まで送り直せず、確かめて「保存されていました」', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', roles: { staff: true } });
+    try {
+      const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
+      await pinYear(page, SEED_USER_IDS.staff, s.yearId);
+      await page.setViewportSize(MOBILE);
+      await page.goto(`/stock/?room=${roomA}`);
+      await waitInput(page, 10);
+      await plus(page, '机(木)').click();
+      // upsert は DB に届くが、応答はブラウザに届かない。その後は部屋の行の読み込みも通信できない（offline で切る）
+      let upserts = 0;
+      let offline = false;
+      await page.route('**/rest/v1/stocks?*', async (route) => {
+        const req = route.request();
+        if (req.method() === 'POST') {
+          upserts += 1;
+          const res = await route.fetch();
+          expect(res.ok()).toBe(true);
+          offline = true;
+          return route.abort('failed');
+        }
+        if (offline && req.url().includes('room_id=')) return route.abort('failed');
+        return route.fallback();
+      });
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await confirmNotLatest(page);
+      const banner = page.getByTestId('error-banner');
+      await expect(banner).toHaveAttribute('data-kind', 'network');
+      await banner.getByRole('button', { name: 'もう一度' }).click();
+      await confirmNotLatest(page);
+      const notice = page.getByTestId('stock-unconfirmed');
+      // postgrest-js は通信の失敗した GET を 1・2・4 秒あけて3回送り直すので、知らせが出るまで約7秒かかる
+      await expect(notice).toContainText('保存できたか確かめられません。通信が戻ったら「確かめる」を押してください', { timeout: 20_000 });
+      await expect(page.getByRole('button', { name: '保存', exact: true })).toBeDisabled();
+      await expect(plus(page, '机(木)')).toBeEnabled();
+      await expect(page.getByRole('textbox', { name: '机(木)の数' })).toHaveValue('11');
+      // 通信が戻った → 「確かめる」で読み直し、自分の保存が入っているので送り直さない
+      offline = false;
+      await notice.getByRole('button', { name: '確かめる' }).click();
+      await expect(page.getByTestId('stock-saved')).toContainText('保存されていました');
+      await expect(notice).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
+      expect(upserts).toBe(1);
+      expect((await roomStocks(s.yearId, roomA)).get(s.ids.items.desk!)!.count).toBe(11);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T10 最新でない年度：最新の年度に切り替えるボタンを出し、保存の前に確かめる（やめれば保存しない）', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', roles: { staff: true } });
     try {
