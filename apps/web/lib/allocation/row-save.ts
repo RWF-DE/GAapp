@@ -38,8 +38,13 @@ export type RowSaveOutcome =
   | { kind: 'rejected'; error: unknown }
   | UnknownCheck;
 
-/** 応答が届かず、保存されたか分からないエラーか（network・unknown。unexpected_response は通った応答の形が違うだけなので、確かめれば分かる） */
-export function isUnknownOutcome(e: unknown): boolean {
+/**
+ * save_allocation_rows の応答が届かず、保存されたか分からないとして版で確かめるエラーか（network・unknown。2.6 の (B2)）。
+ * lib/errors の isUnknownOutcome（(B1)・(A) が使う。コードつきの unknown は届いた失敗とする）より広い：insert に冪等の鍵がなく、
+ * 送り直すと行が二重になりうるので、コードつきの unknown（57014 など）も確かめる側に倒す（T09a の取り込みで中身が違うので置き換えなかった）。
+ * unexpected_response は通った応答の形が違うだけなので、確かめれば分かる。
+ */
+function isRowSaveUnknown(e: unknown): boolean {
   const c = classifyError(e);
   return c.kind === 'network' || c.kind === 'unknown';
 }
@@ -82,7 +87,7 @@ export async function saveRows(
     const result = await deps.save(toRpcChanges(args.pending), args.reason);
     return { kind: 'saved', result };
   } catch (e) {
-    if (!isUnknownOutcome(e)) return { kind: 'rejected', error: e };
+    if (!isRowSaveUnknown(e)) return { kind: 'rejected', error: e };
     return checkAfterUnknown(deps, args.pending, args.heldVersion, args.before);
   }
 }

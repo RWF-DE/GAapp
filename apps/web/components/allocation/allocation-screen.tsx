@@ -31,7 +31,7 @@ import { issueTarget, type IssueTarget } from '@/lib/allocation/issue-target';
 import { roomTabFor } from '@/lib/allocation/item-view';
 import type { FailureLine } from '@/lib/allocation/failure-view';
 import { describeRule } from '@/lib/allocation/rule-text';
-import { changeRoomUsable, checkRoomUsable, roomUsableBase, type RoomUsableBase, type RoomUsableOutcome } from '@/lib/allocation/room-usable';
+import { changeRoomUsable, roomUsableBase, type RoomUsableBase, type RoomUsableOutcome } from '@/lib/allocation/room-usable';
 import { unusableChecklist } from '@/lib/allocation/unusable';
 import { itemTabs, tabKeyByItem } from '@/lib/allocation/tabs';
 import { buildViewModel, namesOf } from '@/lib/allocation/view-model';
@@ -57,7 +57,7 @@ import { GroupViewList } from './group-view';
 import { ItemTabView } from './item-tab-view';
 import { IssuesPanel, ProblemsList } from './issues-panel';
 import { PendingBar, PendingNotices } from './pending-bar';
-import { AddRowDialog, RoomCheckNotice, rowLabel, SourceDialog, UnusableDialog } from './row-dialogs';
+import { AddRowDialog, RoomReloadNotice, rowLabel, SourceDialog, UnusableDialog } from './row-dialogs';
 import { RowEditProvider, type RowEditApi } from './row-edit';
 import { usePendingRows } from './use-pending';
 
@@ -371,41 +371,27 @@ function AllocationLoaded({
   const [unusableRoom, setUnusableRoom] = useState<string | null>(null);
   const [usableRoom, setUsableRoom] = useState<string | null>(null);
   const [roomBusy, setRoomBusy] = useState(false);
-  // ダイアログを開いたときの部屋の今年の使用（room_years.updated_at）。setRoomUsable に渡して、ほかの人の変更を黙って上書きしない
+  // ダイアログを開いたときの部屋の今年の使用（room_years.updated_at）。setRoomUsable に渡して、ほかの人の変更を黙って上書きしない。
+  // 応答が届かなかったとき・conflict の後も、確かめるための状態は持たない（2.6 の (B1)。lib/allocation/room-usable.ts）
   const [roomBase, setRoomBase] = useState<RoomUsableBase | null>(null);
-  // 読み直せず、保存できたか（conflict の後は今の値が）分からない間：ダイアログに知らせと「確かめる」を出し、確かめるまで押させない
-  const [roomCheck, setRoomCheck] = useState<{ after: 'unknown' | 'conflict'; message: string; usable: boolean; note: string | null } | null>(null);
-  // 応答の届かない送信をした部屋（後から通っているかもしれない）。ダイアログを閉じて開き直しても、その後の conflict で
-  // 読み直した行が自分の値なら「保存されていました」にする（ほかの人のせいにしない）
-  const [maybeSavedRooms, setMaybeSavedRooms] = useState<ReadonlySet<string>>(() => new Set());
-  const markMaybeSaved = (roomId: string, on: boolean) =>
-    setMaybeSavedRooms((prev) => {
-      if (prev.has(roomId) === on) return prev;
-      const next = new Set(prev);
-      if (on) next.add(roomId);
-      else next.delete(roomId);
-      return next;
-    });
+  // 止められた後に読み直せなかった：ダイアログに知らせと「読み直す」を出す（押せるボタンはそのまま。次の保存もまた同じ道を通る）
+  const [roomUnread, setRoomUnread] = useState<string | null>(null);
   const roomYears = snapshot.roomYears;
-  const baseFor = useCallback(
-    (roomId: string): RoomUsableBase => ({ ...roomUsableBase(roomYears, roomId), maybeSaved: maybeSavedRooms.has(roomId) }),
-    [roomYears, maybeSavedRooms],
-  );
   const openUnusable = useCallback(
     (roomId: string) => {
-      setRoomBase(baseFor(roomId));
-      setRoomCheck(null);
+      setRoomBase(roomUsableBase(roomYears, roomId));
+      setRoomUnread(null);
       setUnusableRoom(roomId);
     },
-    [baseFor],
+    [roomYears],
   );
   const openUsable = useCallback(
     (roomId: string) => {
-      setRoomBase(baseFor(roomId));
-      setRoomCheck(null);
+      setRoomBase(roomUsableBase(roomYears, roomId));
+      setRoomUnread(null);
       setUsableRoom(roomId);
     },
-    [baseFor],
+    [roomYears],
   );
   const [suggestMinimal, setSuggestMinimal] = useState<string | null>(null);
   const rowById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
@@ -448,48 +434,45 @@ function AllocationLoaded({
     setUnusableRoom(null);
     setUsableRoom(null);
     setRoomBase(null);
-    setRoomCheck(null);
+    setRoomUnread(null);
   };
   const reloadRoomYears = async () => {
     const r = await refetch();
     return r.isError ? undefined : r.data;
   };
-  /** 部屋の使用を変えた結果を知らせる。ダイアログを閉じたら true（閉じなければ、理由のメモを残して押し直せる・確かめられる） */
-  const applyRoomOutcome = async (out: RoomUsableOutcome, roomId: string, usable: boolean, note: string | null): Promise<boolean> => {
+  /** 部屋の使用を変えた結果を知らせる。ダイアログを閉じたら true（閉じなければ、理由のメモを残して押し直せる） */
+  const applyRoomOutcome = async (out: RoomUsableOutcome, roomId: string, usable: boolean): Promise<boolean> => {
     const name = vm.roomById.get(roomId)?.name ?? '';
     switch (out.kind) {
       case 'saved': {
-        markMaybeSaved(roomId, false);
-        // recovered は確かめるときに読み直し済み
+        // recovered は読み直し済み
         if (!out.recovered) await refetch();
         const done = usable ? `${name}を使用可に戻しました` : `${name}を今年は使用不可にしました`;
-        toast.success(out.recovered ? `保存されていました（${done}。応答が届かなかったので、読み直して確かめました）` : done);
+        toast.success(out.recovered ? `保存されていました（${done}）` : done);
         setSuggestMinimal(usable ? null : roomId);
         closeRoomDialogs();
         return true;
       }
+      case 'already':
+        // ほかの人がすでに望んだ状態にしていた（読み直し済み）。使用不可なら最小変更で再実行を目立たせる
+        toast.warning(out.message);
+        setSuggestMinimal(usable ? null : roomId);
+        closeRoomDialogs();
+        return true;
       case 'conflict':
-        // 読み直した。すでに望んだ状態なら閉じ、そうでなければ理由のメモを残して、読み直した版で押し直せるようにする
+        // 読み直した。理由のメモを残して、読み直した版で押し直せるようにする
         toast.error(out.message);
-        if (out.next.maybeSaved) markMaybeSaved(roomId, true);
-        if (out.done) {
-          closeRoomDialogs();
-          return true;
-        }
         setRoomBase(out.next);
-        setRoomCheck(null);
+        setRoomUnread(null);
         return false;
-      case 'not-saved':
+      case 'unknown':
+        // 応答が届かず、保存されていない・読み直せない。メモを残し、次はふつうに送る（前の送信が後から通っていれば DB が止める）
         toast.error(out.message);
-        markMaybeSaved(roomId, true);
-        setRoomBase(out.next);
-        setRoomCheck(null);
+        setRoomUnread(null);
         return false;
-      case 'unchecked':
+      case 'unread':
         toast.error(out.message);
-        if (out.base.maybeSaved) markMaybeSaved(roomId, true);
-        setRoomBase(out.base);
-        setRoomCheck({ after: out.after, message: out.message, usable, note });
+        setRoomUnread(out.message);
         return false;
       case 'error': {
         toast.error(messageFor(out.error, { names }));
@@ -505,28 +488,28 @@ function AllocationLoaded({
     }
   };
   const onRoomUsable = async (usable: boolean, note: string | null): Promise<boolean> => {
-    if (!roomBase || roomCheck) return false;
+    if (!roomBase) return false;
     const roomId = roomBase.roomId;
+    const roomName = vm.roomById.get(roomId)?.name ?? 'この部屋';
     setRoomBusy(true);
     try {
-      const out = await changeRoomUsable({ yearId, base: roomBase, usable, note }, { save: setRoomUsable, reload: reloadRoomYears });
-      return await applyRoomOutcome(out, roomId, usable, note);
+      const out = await changeRoomUsable({ yearId, base: roomBase, usable, note, roomName }, { save: setRoomUsable, reload: reloadRoomYears });
+      return await applyRoomOutcome(out, roomId, usable);
     } finally {
       setRoomBusy(false);
     }
   };
-  /** 「確かめる」：読み直して、保存されていたか（conflict の後は今の値）を確かめる */
-  const onRoomCheck = async () => {
-    if (!roomBase || !roomCheck) return;
+  /** 「読み直す」（止められた後に読み直せなかったとき）：スナップショットを読み直すだけ。base は変えない（次の保存でまた読み直して決める） */
+  const onRoomReload = async () => {
     setRoomBusy(true);
     try {
-      const out = await checkRoomUsable({ base: roomBase, usable: roomCheck.usable, note: roomCheck.note, after: roomCheck.after }, { reload: reloadRoomYears });
-      await applyRoomOutcome(out, roomBase.roomId, roomCheck.usable, roomCheck.note);
+      const r = await refetch();
+      if (!r.isError) setRoomUnread(null);
     } finally {
       setRoomBusy(false);
     }
   };
-  const roomCheckProps = roomCheck ? { message: roomCheck.message, onCheck: () => void onRoomCheck() } : null;
+  const roomReloadProps = roomUnread ? { message: roomUnread, onReload: () => void onRoomReload() } : null;
 
   // E002（使用不可の部屋からの行）：運び元の変更と削除だけ（固定を外すは出さない。部屋がすでに使用不可なので、
   // save_allocation_rows が固定だけの update も E002 で拒否するため）。検証の一覧と precheck の項目に添える。
@@ -812,7 +795,7 @@ function AllocationLoaded({
           checklist={checklist}
           pendingCount={pend.pending.length}
           busy={roomBusy}
-          check={roomCheckProps}
+          reload={roomReloadProps}
           onOpenChange={(o) => {
             if (!o) closeRoomDialogs();
           }}
@@ -830,13 +813,12 @@ function AllocationLoaded({
           description="今年もこの部屋の在庫を振り分けに使えるようにします。固定を外して保存してから、もう一度使用不可にすることもできます。"
           confirmLabel="使用可に戻す"
           pending={roomBusy}
-          confirmDisabled={roomCheck !== null}
           onConfirm={async () => {
-            // 閉じなかった（conflict で押し直す・確かめる・失敗）ときは投げて、ConfirmDialog を開いたままにする
+            // 閉じなかった（conflict で押し直す・応答が届かなかった・失敗）ときは投げて、ConfirmDialog を開いたままにする
             if (!(await onRoomUsable(true, null))) throw new Error('room_usable_kept_open');
           }}
         >
-          {roomCheckProps ? <RoomCheckNotice {...roomCheckProps} busy={roomBusy} /> : null}
+          {roomReloadProps ? <RoomReloadNotice {...roomReloadProps} busy={roomBusy} /> : null}
         </ConfirmDialog>
       </div>
     ) : null}
