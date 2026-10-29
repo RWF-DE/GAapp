@@ -4,17 +4,33 @@
 
 画面は[概要](00_overview.md)の画面一覧に対応する。Next.js の静的書き出し（output: 'export'）で作るため、id をパスに埋め込む動的な URL は使わず、クエリ文字列で渡す（/stock?room=…）。UI 部品は shadcn/ui、表は TanStack Table。すべての画面で、読み込み中・データが空・権限なしの3状態を表示する。招待されていない人がログインすると「総務から招待されていません」だけを表示する。
 
+### 共通レイアウト（P-03）
+
+- ログインが要る画面は共通レイアウトの中に置く。ログインしていなければ /login に送り、ログイン後に元のページへ戻す（戻り先は同じサイトのパスだけ）
+- ログインのたび（ページを開いたときも）に `accept_my_invitations` を呼んでから、自分の year_roles・group_members を読む。今の年度は、ロールか団体代表の行がある年度のうち1日目が最も遅いもの（年度の切り替えは T09 で決める）
+- どの年度にもロールも団体代表もなければ「総務から招待されていません」とログアウトのボタンだけを出す（ナビゲーションも年度も出さない）
+- ヘッダーに今の年度と状態、表示名と立場、ログアウト。ナビゲーションは PC では左、スマホではメニューのボタンで開く。項目は今の年度の立場で出し分ける（[概要](00_overview.md)の画面一覧のロール。admin は総務の画面すべて、staff は在庫入力・在庫一覧・申請一覧、団体代表は申請・自団体の振り分け、兼ねた人は両方）。表示の出し分けは見た目だけで、データは RLS と RPC が守る
+- 画面の中では、読み込み中・データが空・権限なし（立場が合わない）の3状態の部品を使う
+
+### ログイン /login（PC・スマホ）
+
+- 「学校の Google アカウントでログイン」のボタン。ブラウザの PKCE フローで、リダイレクト先は basePath 込みの /auth/callback/（Supabase の Redirect URLs に登録する）
+- フックで拒否されたとき（学校以外のアカウント）は「学校の Google アカウントでログインしてください」と出す。URL に付いたエラーの文言はそのまま表示しない
+- ローカルだけ、メール＋パスワードのテスト用ログイン（E2E 用。D-02）を出す。ビルド時のフラグがあり、Supabase の URL がローカルのときだけ出し、本番のビルドにはコードごと入れない
+- ログイン状態はブラウザに保存し（supabase-js）、トークンは自動で更新する
+
 ### ダッシュボード /（PC）
 
 - 年度のステータス、申請の提出数／団体数、在庫を数えた保管場所の数／保管場所の数、検証の error・warning の件数、キャスター机交換の了承状況
-- 年度の状態を進めるボタン（管理者のみ、理由の入力欄つき）
+- 年度の状態を進めるボタン（管理者のみ、理由の入力欄つき。確定と確定の解除では理由が必須）
+- 確定ボタン：画面を開いたときに、ほかのデータより先に years.allocation_version を読み、その版で検証（validate）を実行する。確定のときは検証した版を `set_year_status` の `p_base_version` に渡す。conflict が返ったら、読み直して検証をやり直し、結果を見せてから、もう一度確定を押してもらう（自動では再送しない）。受付開始は締切（request_close_at）が未来に入っていないとエラーになるので、先に受付期間の入力を促す
 
 ### 在庫入力 /stock?room=…（スマホ）
 
 - 表示：場所名、前回入力者と日時、品目ごとの行（品目名、数、前年の数）
-- 操作：＋－ボタンと数字入力、「保存」。保存時に counted_by・counted_at を更新
+- 操作：＋－ボタンと数字入力、「保存」。保存すると DB が counted_by（保存した人）と counted_at（保存した日時）を入れる（画面から送らない）
 - 場所の選び方：一覧から選ぶか、部屋に貼った QR（/stock?room=… の URL）を読む
-- 状態：年度が allocating 以降なら部員は読み取り専用。管理者は数え直しを入力でき、入力すると検証をやり直す。使用不可の部屋は先頭に「今年は使用不可」と表示する（数えることはできる）
+- 状態：年度が allocating 以降なら部員は読み取り専用。管理者は数え直しを入力でき、入力すると検証をやり直す。ただし確定中は、振り分けの合計より少なくなる数は保存できない（「確定を解除してから」と表示する）。終了した年度は読み取り専用。使用不可の部屋は先頭に「今年は使用不可」と表示する（数えることはできる）
 
 ### 在庫一覧 /stocks（PC）
 
@@ -23,7 +39,7 @@
 ### 申請 /request（スマホ）
 
 - 表示：団体名、使用場所、締切日時、その団体の区分で申請できる品目だけの入力欄（初期値0）、備考欄（数には影響しないと明記）
-- 操作：「提出」で全品目と備考を保存し、submitted_at を記録。締切前なら何度でも修正できる
+- 操作：「提出」で全品目と備考を RPC `submit_requests` で1回で保存し、submitted_at を記録する（日時は DB が入れる）。締切前なら何度でも修正できる。申請できない区分の品目は DB でも拒否する（E006。企業以外の長机(3人掛)は除く）。数は 10000 まで、備考は 2000 字まで
 - 状態：締切後は読み取り専用で「変更は総務へ」と表示。複数団体の代表なら団体を切り替える
 
 ### 申請一覧 /requests（PC）
@@ -37,18 +53,19 @@
 - 左：品目タブ（R8 のシートと同じ並び）。各タブは運び元ごとにまとめた表（運び先、団体、数、備考、自動／手動、固定）＋場所ごとの余り
 - 右：検証結果（error → warning → info の順）。クリックで該当行に移動
 - 切替：「品目別」と「団体別」の表示。団体別では需要（前処理1・2を当てた後の申請。企業以外の長机(3人掛)は長机(2人掛)に、未提出の設営は固定の数に。D-05・D-07）と振り分け数（申請品目ベース）を並べて差を表示
-- 行の操作：追加・数の変更・運び元の変更・削除・固定。手で変えた行は origin = manual。保存は RPC で、他の人が先に変えていたら読み直す
-- 「自動振り分け」：実行前に「自動の行 N 件を置き換えます。固定・手動の行は残ります」と確認。計算は Web Worker で行い、その間は画面をロック。結果が ok: false のときは振り分けを書き換えず、reason ごとに見出しを変えて出す
+- 読み込み：年度の版（years.allocation_version）を、ほかのデータより先に読む。保存と確定にはこの版を渡す
+- 行の操作：追加・数の変更・運び元の変更・削除・固定。手で変えた行は origin = manual（固定だけなら origin は変えない）。保存は RPC で、他の人が先に変えていたら読み直す。保存の返り値の版は、ロックした時点の版（allocation_version_before）が自分の持つ版と同じときだけ覚え直し、違えば読み直す
+- 「自動振り分け」：実行前に「自動の行 N 件を置き換えます。固定・手動の行は残ります」と確認。計算は Web Worker で行い、その間は画面をロック。入力を組み立てたときの版を保存の RPC に渡し、計算中に他の人が振り分け・了承・在庫・申請・ルールなどを変えていたら「他の人が変更しました」と出して読み直す。結果が ok: false のときは振り分けを書き換えず、reason ごとに見出しを変えて出す
   - invalid_input：「入力に誤りがあります」。inputErrors（項目とルールのコード）の一覧
   - precheck：「振り分けの前に直すものがあります」。issues（E001・E002・E005）の一覧。クリックで該当の行・ルールへ移動
   - infeasible：「解けません」。shortages（品目全体の不足 → 団体ごとの不足。groupId が null の行は品目全体）と causes（原因のルールと、需要・在庫合計）の一覧。「代替を含めても在庫が足りません」の cause は、代替先を共有する申請品目の組の不足を details の1件（itemIds の品目名を並べ、需要・在庫は組の合計）で出す。品目ごとの不足の行には混ぜない
   - solver_error：「計算できませんでした」。message（計算エンジンの読み込みの失敗か、計算中のエラーか）
 - 申請できない品目の申請（E006）を除いて計算したときは、結果の上に「申請できない品目の申請 N 件を除いて計算しました」と出し、検証の E006 を示す
-- 「確定」：error 0 件のときだけ押せる。確定後は編集不可。「確定を解除」は理由入力必須
+- 「確定」：error 0 件のときだけ押せる。理由の入力が必須。検証に使った版を一緒に送り、その後に何かが変わっていれば確定せずに読み直す（ダッシュボードの確定ボタンと同じ）。確定後は編集不可。「確定を解除」は理由入力必須
 
 ### キャスター机交換 /swaps（PC）
 
-- 置き換えが入った団体ごとに、置き換え台数と了承状況（未依頼・依頼済み・了承・拒否）を表示・更新する
+- 置き換えが入った団体ごとに、置き換え台数と了承状況（未依頼・依頼済み・了承・拒否）を表示・更新する。「依頼済み」にすると、その時点の置き換え台数を団体に見せる台数として記録する。依頼した後に置き換えが増えたら、了承を記録する前に依頼し直す。了承の後に再実行などで置き換えが増えた団体は、了承待ち（W102）として出すので、依頼し直す
 - 「了承」にするとその団体の置き換え行が固定される。「拒否」にするとその団体を置き換えの対象から外し、「最小変更で再実行」が必要なことを表示する
 - 交換依頼一覧（Excel）を出力する
 
@@ -60,10 +77,10 @@
 
 ### マスタ設定 /settings（PC）
 
-- 年度：作成（前年度からの複製を含む）、申請の受付期間
+- 年度：作成（最新の年度からの複製。最新の年度の管理者だけができ、作った人が新しい年度の管理者になる）、申請の受付期間（受付開始の前に締切を入れる）
 - 場所・品目・団体：表で追加・編集。団体は CSV 取り込み可
 - 距離：建物間の距離の上書き、場所ごとの追加コスト
-- ユーザー：招待（メール・ロール・団体）、ロールの変更、招待の取り消し
+- ユーザー：招待（メール・ロール・団体）、ロールの変更と外す（年度の最後の管理者は外せない。終了した年度でも外せる）、招待の取り消し（未使用のものだけ。終了した年度でも）、団体代表を外す
 - データの書き出し：年度データ（JSON）と振り分け表（Excel）。年度末のバックアップに使う
 
 ### ルール /rules（PC）
@@ -87,20 +104,31 @@
 
 ## DB関数とブラウザ側の処理
 
-サーバーを持たないので、Route Handler と Server Action は使わない。読み取りと、理由の要らない書き込み（在庫入力、締切前の申請、マスタの編集）は、画面から Supabase クライアントで直接行い、RLS で守る。理由が要る書き込みと、複数の表をまとめて変える書き込みは DB 関数（RPC）で行う。重い計算とファイルの作成は管理者のブラウザで行う。
+サーバーを持たないので、Route Handler と Server Action は使わない。読み取りと、理由の要らない書き込み（在庫入力、締切前の申請一覧のセル編集、マスタの編集）は、画面から Supabase クライアントで直接行い、RLS で守る。理由が要る書き込みと、複数の表をまとめて変える書き込み（申請の提出を含む）は DB 関数（RPC）で行う。重い計算とファイルの作成は管理者のブラウザで行う。
 
 **DB関数（RPC）**
 
+引数名は PL/pgSQL の列名とぶつからないよう `p_` を付ける（下の表では省略。supabase-js では `supabase.rpc('save_auto_allocations', { p_year_id, p_rows, p_mode, p_base_version })` のように呼ぶ）。
+
 | 名前 | 呼べる人 | 動作 |
 | --- | --- | --- |
-| set_year_status(year_id, to, reason) | admin | 状態遷移の図に合わない遷移はエラー。confirmed へは E001・E002・E005 がないときだけ |
-| create_year_from(prev_year_id, label, festival_start) | admin | 年度を作り、団体・ルール・場所の状態を複製してルールの団体 id を付け替える |
-| save_auto_allocations(year_id, rows, mode) | admin | auto かつ未固定の行を入れ替え、在庫超過があれば全体を取り消す。確定中はエラー |
-| save_allocation_rows(year_id, changes, reason) | admin | 行の追加・変更・削除・固定。origin = manual で保存。各行の updated_at で楽観ロック。確定中はエラー |
-| update_requests_after_deadline(group_id, rows, reason) | admin | 締切後の申請修正 |
-| set_consent(group_id, from_item, to_item, status, note) | admin、その団体の代表 | 了承なら該当の置き換え行を pinned にし、拒否なら pinned を外す |
-| invite(year_id, email, role, group_id) | admin | 招待を作る。すでにアカウントがあればその場でロールを付ける |
-| check_delivery(delivery_id, status, problem_note, returned) | admin、staff | 運搬の状態を更新（フェーズ2） |
+| set_year_status(year_id, to, reason, base_version) | admin | 状態遷移の図に合わない遷移はエラー。requesting へは締切が未来のときだけ。confirmed へは、base_version（検証に使った版）が今の版と同じで、E001・E002・E005 がないときだけ。確定と確定の解除は理由必須。遷移のたびに版を増やす |
+| update_year(year_id, patch, reason) | admin | 年度名・1日目・受付期間を変える（patch に入れたキーだけ。ほかのキーは invalid_input）。1日目は複製元（prev_year_id）より後で、この年度を複製元にした年度より前（違えば invalid_input）。1日目は 2000-01-01〜2200-12-31（infinity なども含め、範囲外は invalid_input（field: festival_start）。D-18）。requesting の間は締切を消せない。終了した年度は変えられない |
+| create_year_from(prev_year_id, label, festival_start) | 複製元の年度の admin（複製元が終了していてもよい） | 複製元が最新の年度のときだけ（それを複製元にした年度も、1日目が同じか後の年度もない）。1日目は複製元より後で、2000-01-01〜2200-12-31（範囲外は invalid_input（field: festival_start））。年度を作り、団体・ルール・場所の状態を複製してルールの団体 id を付け替える。呼んだ人を新しい年度の admin にする |
+| invite(year_id, email, role, group_id) | admin | 招待を作る。今のメールが本人のものと確かめられるアカウント（02「権限とRLS」の `private.verified_email`）があればその場でロールを付ける（別のロールを持っていればエラー）。終了した年度には招待できない。返り値は招待の id と、その場で付けたか（applied） |
+| set_role(year_id, user_id, role, reason) | admin | ロールを付ける・変える（role は必須。null は invalid_input）。終了した年度ではできない。最後の admin は降格できない |
+| remove_role(year_id, user_id, reason) | admin | ロールを外す（終了した年度でも。卒業した admin を外すため）。最後の admin は外せない。ロールがなければ not_found |
+| revoke_invitation(invitation_id) | admin | 未使用の招待を取り消す（終了した年度でも）。招待が見つからなければ forbidden（有無を漏らさない） |
+| remove_group_member(group_id, user_id, reason) | admin | 団体代表を外す（終了した年度でも） |
+| accept_my_invitations() | ログインしている人 | 自分のメール（本人のものと確かめられるときだけ。`private.verified_email`）あての未使用の招待（終了していない年度）を受け入れ、件数を返す。画面がログインのたびに呼ぶ |
+| save_auto_allocations(year_id, rows, mode, base_version) | admin | 版が base_version と同じときだけ、auto かつ未固定の行を差分で入れ替える。年度の一致・E002・E005 を保存前に、在庫超過を保存後に確かめ、だめなら全体を取り消す。振り分け中のみ（確定中はエラー） |
+| save_allocation_rows(year_id, changes, reason) | admin | 行の追加・変更・削除・固定。データを変えた行は origin = manual。各行の updated_at で楽観ロック。理由必須。ロックした時点の版と保存後の版を返す。振り分け中のみ（確定中はエラー） |
+| set_consent(group_id, from_item, to_item, status, note) | admin、その団体の代表 | 依頼済みにすると、その時点の置き換え台数を count に入れる。了承なら該当の置き換え行を pinned にし、拒否なら pinned を外す。団体代表は依頼済み以降に了承・拒否だけを記録できる。依頼した台数より置き換えが増えていれば了承は conflict。振り分け中のみ |
+| submit_requests(group_id, rows, note) | 団体代表（受付期間内）、admin（準備中と締切前） | 申請（品目ごとの数）と提出（備考、提出日時）を1回で保存する |
+| update_requests_after_deadline(group_id, rows, reason, submission) | admin | 締切後の申請修正（行ごとに updated_at で楽観ロック。新しい品目の行は updated_at なし）。理由必須。submission は `{ submitted: true, submittedAt, note }`（どれも省略可）で、提出済みにすることと備考を直すことができる。submittedAt（オフセットつきの ISO 8601 の日時。未来は不可）を渡すと、提出済みにして提出日時をその値にする（CSV の取り込みでフォームのタイムスタンプを残すため。提出済みでも置き換える。admin だけが呼べるので、団体代表は日時を偽れない。submit_requests と直接の書き込みの提出日時は DB の now()）。未提出には戻さない（D-07 で需要が fixed_request に変わり、振り分けが変わるため。`submitted: false` はエラー）。準備中・受付中・振り分け中のみ（確定中はエラー） |
+| check_delivery(delivery_id, status, problem_note, returned) | admin、staff | 運搬の状態・問題・返却を更新（フェーズ2）。確定中と終了後 |
+| previous_year_stocks(year_id) | admin、staff | 前年度（複製元）の在庫の数を返す（読み取りのみ） |
+| previous_year_requests(year_id) | admin | 前年度の申請の数を団体名つきで返す（休憩所の初期値。読み取りのみ） |
 
 **ブラウザ側の処理**
 
@@ -114,6 +142,9 @@
 | parseFormCsv(kind, csv, items) | packages/importer | Googleフォーム回答の読み取り（品目の列は items の aliases で対応。メールアドレスを捨てる） |
 | resolveResponses(parsed, groups, items, manual) | packages/importer | 読み取った回答を団体に対応させ、申請（読み替えの後、団体・品目ごとに1行）と提出（フォームのタイムスタンプ）を作る。合わない行・古い回答を返す |
 
-- RPC は SECURITY DEFINER にして `search_path = ''` を設定し、関数の最初でロールを確かめる。入力はブラウザで zod、DB では関数の中でもう一度確かめる
-- エラーは `raise exception` で返し、message にコード（forbidden、invalid_state、conflict、検証コードなど）を入れる。画面で日本語に直して表示する
+- RPC は SECURITY DEFINER にして `search_path = ''` を設定し、関数の最初でロールを確かめる。次に年度の行をロックし（`for no key update`）、ロールをもう一度確かめてから状態を確かめ、入力を確かめてから理由を置いて書き込む。入力はブラウザで zod、DB では関数の中でもう一度確かめる
+- エラーは `raise exception`（SQLSTATE P0001）で返し、message にコード、detail に該当する行の id などを JSON で入れる（メールアドレスは入れない）。PostgREST は HTTP 400 で `{ code: 'P0001', message, details }` を返す。コードは forbidden（ロールがない。対象が見つからないときも）、not_found、invalid_state（状態が違う、確定中に変えられない）、conflict（版・updated_at が違う、重複）、invalid_input（形や参照が違う、上限を超える）、reason_required、検証コード（E001・E002・E005・E006）。RPC の中で起きた形の誤り（jsonb の中の uuid・日付など）と CHECK 違反も invalid_input にして、生の SQLSTATE は返さない。ただし、RPC のトップレベルの型つきの引数（uuid・enum・date・integer）は PostgREST が関数の前に変換するので、形が違うと 22P02・22007 などがそのまま返る（関数の中では直せない）。画面は zod で先に確かめ、22 で始まる SQLSTATE は「入力の形が違う」として扱う。画面で日本語に直して表示する
+- 楽観ロックの updated_at は、受け取った文字列をそのまま返す（Date に変換しない）
+- 振り分けの行を渡す JSON は、03 の AllocationRow と同じ camelCase（sourceRoomId、groupId、itemId、requestedItemId、count、isKeep）にする
+- 書き込みがデッドロック（SQLSTATE 40P01。PostgREST は HTTP 500 で返す）で失敗したときは、何も保存されていない（1リクエスト＝1トランザクション）ので、入力を残したまま「ほかの人の保存と重なりました。もう一度保存してください」と出す。HTTP 500 を一律に扱わず、エラーの code で分ける
 - highs-js の wasm は振り分け画面を開いたときだけ読み込む（その画面のコンポーネントで `new Worker(new URL('…worker.ts', import.meta.url))` を作り、Worker の中で highs を読み込む）。wasm は node_modules/highs/build/highs.wasm を `apps/web/public/highs.wasm` にコピーして静的ファイルとして公開し（git には入れず .gitignore に書く）、locateFile で basePath を付けた URL（`${origin}${basePath}/highs.wasm?v=<highs の版>`）を渡す。コピーは apps/web の predev と prebuild の両方で行う（`pnpm dev` でも 404 にならないように）。basePath を付け忘れると GitHub Pages で 404 になり、`CompileError: expected magic word` で落ちる。読み込みに失敗したら、次の実行で読み直す（失敗を覚えたままにしない）。`next build --webpack` は highs.mjs の `node:module` で失敗するので使わない

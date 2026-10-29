@@ -20,7 +20,7 @@ Claude Code 向けの仕様の入口。詳細は docs/requirements/ にあり、
 ## 関係するファイルとインターフェース
 - 構成：05_development.md の「リポジトリ構成と環境変数」（apps/web、packages/allocator・exporter・importer・shared、supabase/、fixtures/r8・fixtures/synthetic）。
 - 振り分け：`allocate(input: AllocateInput, solver): AllocateResult`、`validate(data, rows): Issue[]`（型は 03_allocation.md。solver は呼ぶ側が読み込んだ highs のインスタンス）。
-- DB：02_data.md の DDL。書き込みの RPC は 04_screens_api.md の表（set_year_status、create_year_from、save_auto_allocations、save_allocation_rows、update_requests_after_deadline、set_consent、invite、check_delivery）。
+- DB：02_data.md の DDL。書き込みの RPC は 04_screens_api.md の表（set_year_status、update_year、create_year_from、invite、set_role、remove_role、revoke_invitation、remove_group_member、accept_my_invitations、save_auto_allocations、save_allocation_rows、set_consent、submit_requests、update_requests_after_deadline、check_delivery）。読み取りの RPC は previous_year_stocks、previous_year_requests。
 - 出力：`exportAllocationXlsx({ yearLabel, data, rows })`・`exportSwapsXlsx({ yearLabel, data, rows })`・`exportYearJson(yearExport)`。取り込み：`parseFormCsv(kind, csv, items)`・`resolveResponses(parsed, groups, items, manual)`（形は 04_screens_api.md の「ブラウザ側の処理」）。
 
 ## やらないこと

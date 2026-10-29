@@ -12,8 +12,9 @@ pnpm dev            # http://localhost:3100
 pnpm lint
 pnpm typecheck
 pnpm test           # Vitest（packages/* と apps/web と scripts）
-pnpm build          # apps/web/out に静的ファイルを出す
-pnpm e2e            # Playwright。先に pnpm build が必要
+pnpm build          # apps/web/out に静的ファイルを出す（本番と同じ。テスト用ログインは入らない）
+pnpm build:e2e      # E2E 用のビルド（ローカルの Supabase に向け、テスト用ログインを入れる）
+pnpm e2e            # Playwright。先にローカルの Supabase の起動と pnpm build:e2e が必要
 pnpm check:emails   # 追跡ファイルにメールアドレスが入っていないか
 ```
 
@@ -27,6 +28,36 @@ supabase db reset     # マイグレーションと seed を流す
 supabase test db      # pgTAP
 supabase stop --no-backup
 ```
+
+マイグレーションを変えたら、`supabase db reset` のあとに `pnpm gen:types` を実行して packages/shared/src/database.types.ts を作り直す。`pnpm check:types` は生成し直した型とコミット済みの型を比べるので、DB を起動した状態で、CI と同じ版の supabase CLI（2.122.0）で実行する（版が違うと出力がずれる）。
+
+ログインに要るものだけを起動するなら（E2E・画面の確認はこれで足りる。CI の e2e も同じ）：
+
+```bash
+supabase start -x realtime,storage-api,imgproxy,mailpit,studio,edge-runtime,logflare,vector,supavisor,postgres-meta
+```
+
+### ログインとテストユーザー（ローカル）
+
+本番のログインは学校の Google アカウントだけ（Supabase Auth の Google プロバイダー）。ローカルでは Google を使わず、`supabase/seed.sql` が auth.users に直接入れるテストユーザー（メール＋パスワード）でログインする。seed は本番に流さない。
+
+| メール | パスワード | R8 での立場 |
+| --- | --- | --- |
+| `admin@example.test` | `password123` | 総務管理者 |
+| `staff@example.test` | `password123` | 総務部員 |
+| `rep@example.test` | `password123` | 「テスト団体」の団体代表 |
+| `viewer@example.test` | `password123` | 閲覧のみ |
+| `outsider@example.test` | `password123` | 未招待（「総務から招待されていません」） |
+
+テスト用ログインのフォームは、`NEXT_PUBLIC_ENABLE_TEST_LOGIN=true` でビルド（または `pnpm dev`）し、かつ Supabase の URL が `127.0.0.1`・`localhost` のときだけ出る。本番のビルド（deploy.yml）には入らない（CI の `pnpm check:no-test-login` で確かめる）。`pnpm dev` で使うときは apps/web/.env.local に次を書く（`supabase status -o env` の値）：
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<supabase status の PUBLISHABLE_KEY>
+NEXT_PUBLIC_ENABLE_TEST_LOGIN=true
+```
+
+E2E は `supabase start …` → `pnpm build:e2e` → `pnpm e2e`。3100 番を別のサーバーが使っているときは `E2E_PORT=3101 pnpm e2e`。
 
 Claude Code のクラウドのセッションなど、Docker のデーモンが止まっている環境では、先に `dockerd` を起動してから `supabase start` する（`docker info` が失敗したら `nohup dockerd > /tmp/dockerd.log 2>&1 &`）。手元の PC では Docker Desktop などを起動しておく。ローカルの Supabase は同時に1つしか動かせない。
 
@@ -69,6 +100,7 @@ Settings → Pages → Build and deployment → Source を **GitHub Actions** �
 | --- | --- | --- | --- |
 | 変数 | `NEXT_PUBLIC_SUPABASE_URL` | Settings → Secrets and variables → Actions → Variables | ビルドに埋め込む接続先 |
 | 変数 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | 同上 | 公開してよい publishable キー。secret（service_role）キーは入れない |
+| 変数（任意） | `NEXT_PUBLIC_GOOGLE_HD_HINT` | 同上 | Google のアカウント選択を学校のドメインに絞るヒント（4） |
 | 変数 | `SUPABASE_PROJECT_REF` | Environments → production → Variables | migrate.yml が使う |
 | secret | `SUPABASE_ACCESS_TOKEN`、`SUPABASE_DB_PASSWORD` | Environments → production → Secrets | migrate.yml が本番 DB にマイグレーションを適用するときだけ |
 
@@ -87,13 +119,45 @@ Settings → Branches（または Rulesets）で main に次を設定する。
 - Require status checks to pass：`lint / typecheck / test / build`、`supabase test db`、`e2e (Playwright)`、`メールアドレスのチェック`（ジョブ名は ci.yml の `name`）
 - main への直接 push を禁止
 
-### 4. Supabase Auth のリダイレクト URL
+### 4. ログイン（Google Cloud と Supabase Auth）
 
-本番の Supabase の Authentication → URL Configuration に `https://rwf-de.github.io/GAapp/` を登録する（T04 で使う）。
+ログインは Supabase Auth の Google プロバイダーで、ブラウザの PKCE フロー（サーバーなし）。学校のドメイン以外と Google 以外のプロバイダーは、DB の Before User Created フック（`private.hook_before_user_created`、supabase/migrations/0007_auth.sql）が拒否する。次をこの順で行う。
+
+1. **学校のドメインを決める（D-04）**：0007_auth.sql の `c_domain`（今は仮の `school.example`）を学校の Google Workspace のドメインにする。本番に 0007 を適用する前なら 0007 のその1行を直す。適用した後なら、同じ関数を `create or replace` する新しいマイグレーションを足す（適用済みのファイルは書き換えない）。pgTAP（030_auth）と e2e/auth-hook.spec.ts のドメインも合わせる。
+2. **Google Cloud の OAuth クライアント（K-11）**：組織の持ち物のプロジェクト（個人のアカウントに紐付けない。オーナーを2人以上）で、APIs & Services → OAuth consent screen を作る。
+   - 学校の Workspace の中にプロジェクトを作れるなら、User type を **Internal** にする（学校のアカウントだけが使え、Google の審査が要らない）。
+   - Workspace の外に作るなら **External** になる。Publishing status が **Testing** のままだと、登録したテストユーザー（100 人まで）しかログインできないので、**In production** に公開する（スコープは email・profile・openid だけで、機密性の高いスコープを使わないので、アプリの審査は原則要らない）。どちらの場合も、許可するアカウントはフックが学校のドメインに絞る。
+   - 1〜3年生（18歳未満の指定がある人）が外部アプリにログインできるかは、学校の Workspace の管理者の設定による（00 の未決事項）。管理者に、このアプリ（OAuth クライアント ID）を「信頼できるアプリ」に入れてもらう。
+   - Credentials → Create credentials → OAuth client ID（Web application）。Authorized JavaScript origins に `https://rwf-de.github.io`、Authorized redirect URIs に `https://<project-ref>.supabase.co/auth/v1/callback` を入れる。
+3. **Supabase の Google プロバイダー**：Authentication → Sign In / Providers → Google を有効にし、2 のクライアント ID とシークレットを入れる（シークレットは Supabase にだけ置き、リポジトリや GitHub に置かない）。
+4. **リダイレクト URL**：Authentication → URL Configuration の Site URL を `https://rwf-de.github.io/GAapp/`、Redirect URLs に `https://rwf-de.github.io/GAapp/auth/callback/` を足す（basePath 込み。ローカルの `http://127.0.0.1:3100/**` は supabase/config.toml にある）。
+5. **フックの有効化**：Authentication → Auth Hooks → Add hook → Before User Created → Postgres を選び、スキーマ `private`、関数 `hook_before_user_created` を選ぶ。必要な権限（supabase_auth_admin の usage と execute）は 0007 で与えてあるので、管理画面が権限を足すか聞いてきても、ほかの関数には与えない。
+6. **メールログインの無効化**：Authentication → Sign In / Providers → Email を無効にする（E2E のメール＋パスワードはローカルだけ）。フックはメールのサインアップも拒否するが、二重に止める。「Allow new users to sign up」は**有効のまま**にする（Google で初めてログインした人の auth.users を作るため。誰が使えるかは招待で決まる）。
+7. **必ず守る Auth の設定（変えない）**：招待（admin を含む）は「今のメールが本人のもの」と確かめられるアカウントにだけ付く。次のどれかを外すと、ログイン済みの人が自分のメールを招待された人のアドレスに変えて、その招待を受け取れるおそれがある（D-17a）。
+   - ログインは **Google だけ**。Email プロバイダーは無効（6）。Phone・匿名ログイン（Allow anonymous sign-ins）・ほかの外部プロバイダーも無効のまま。
+   - Authentication → Sign In / Providers → Email の **Confirm email** と **Secure email change** は**有効のまま**にする（Email プロバイダーを無効にしても、メールの変更の確認にこの設定が使われる）。
+   - Authentication → Sign In / Providers の **Allow manual linking** は**無効のまま**にする。有効だと、利用者が identity を足したり外したりできる。Confirm email も崩れていると、Google のユーザーがメールを変えて email の identity を作り、Google の identity を外して email だけのアカウントになり、「Google の identity のメールだけを見る」守りを抜けて他人の招待を取れる（D-17a）。無効なら Google の identity を外せないので、Confirm email が崩れても止まる。
+   - DB の側でも、auth.users.email と同じメールの、email_verified が真の Google の identity（Google の identity があるアカウントは、これだけを見る）か、受信箱で確かめた（email_verified: true の）email の identity がなく、メールの変更の途中でもないアカウントには招待を付けない（`private.verified_email`、0005）。これは守りの二重化で、上の設定の代わりにはならない。
+   - ローカルの supabase/config.toml も同じ考え方にしてある（`enable_confirmations = true`、`double_confirm_changes = true`、`enable_manual_linking = false`、`enable_anonymous_sign_ins = false`。Email プロバイダーはテストユーザーのパスワードログインのためだけに有効）。
+8. 確かめる：学校のアカウントでログインして「総務から招待されていません」が出ること、個人の Google アカウントでは「学校の Google アカウントでログインしてください」と出てログインできないこと。
+
+GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン）を足すと、Google のアカウント選択が学校のアカウントに絞られる（任意。見た目だけで、拒否はフックが行う）。
 
 ### 5. 本番 DB への適用
 
 マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で、**ブランチに `main` を選んで**手動実行する（2 の設定が済んでいる場合だけ。private（無料）で Environments が使えないときは、管理者が main のチェックアウトから `supabase link` → `supabase db push` を手元で実行する）。
+
+### 6. 最初の年度と最初の管理者（D-01）
+
+最初の年度と admin だけは、オーナーが SQL Editor で作る。以後の年度は、最新の年度の admin がアプリの create_year_from で作る。
+
+1. オーナーが本番のアプリに学校の Google アカウントで1回ログインする（auth.users と profiles ができる。招待がないので「総務から招待されていません」と出る）。
+2. 管理画面の SQL Editor で年度を1行入れる：`insert into public.years (label, festival_start) values ('R9', '2027-10-16') returning id;`
+3. 同じく、自分を admin にする：`insert into public.year_roles (year_id, user_id, role) select '<年度の id>', id, 'admin' from auth.users where email = '<自分のメール>';`（メールはこの SQL にだけ書き、どこにも保存しない）
+4. アプリを開き直す。ほかの総務・団体代表は、アプリの招待（invite）で足す。招待された人は、初めてログインしたときにロールが付く。
+5. 最新の年度の admin が誰も残っていない（全員卒業して外した）ときは、3 と同じ SQL で、最新の年度に次の担当者を admin として足してから create_year_from を使う。
+
+SQL Editor は postgres で動くので RLS を通らず、監査の user_id は null になる。
 
 ## 個人情報
 
