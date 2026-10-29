@@ -750,9 +750,9 @@ rep。スマホ。団体の切り替えは /request と同じ（`?group=`）。
 
 admin。PC。
 
-- 絞り込み（URL に入れる）：表（複数。日本語の名前：申請・提出・在庫・振り分け・了承・ルール・年度・ロール・団体・団体代表・場所の状態・場所・品目・距離）、団体、期間（from・to。Asia/Tokyo の日付）、した人（その年度のメンバーの表示名から）。場所・品目・距離（年度をまたぐ表）を選んだときは year_id が null の行も含める（`or(year_id.eq.{年度},year_id.is.null)`。RLS で開いている年度の admin だけに返る）。
+- 絞り込み（URL に入れる）：表（複数。日本語の名前：申請・提出・在庫・振り分け・了承・ルール・年度・ロール・団体・団体代表・場所の状態・場所・品目・距離）、団体、期間（from・to。Asia/Tokyo の日付）、した人（その年度のメンバーの表示名から）。場所・品目・距離（年度をまたぐ表）を選んだときは year_id が null の行も含める（RLS で開いている年度の admin だけに返る）。or の1つの問い合わせ（`or(year_id.eq.{年度},year_id.is.null)`）にはせず、年度の表は `year_id = 年度`、年度をまたぐ表は `year_id is null` の2つの問い合わせで、それぞれ 51 件ずつ読み、`at desc, id desc` で合わせて先頭の 50 件を出す（51 件目があれば続きがある。or の1つだと索引の順で読めず遅い。D-43）。団体で絞るときは年度をまたぐ表の問い合わせを作らない。
 - 表：日時・操作（追加・変更・削除）・表・対象（団体・部屋・品目の名前。消えた団体は before・after の name から）・変更（before と after の差。created_at・updated_at は除く。「count：3 → 5」）・理由・した人（profiles の表示名。読めなければ「名前を表示できません」、user_id が null なら「SQL・seed（アプリの外）」）。
-- 読み方：`audit_logs` を `at desc, id desc` で 50 件ずつ。続きは「さらに読み込む」（最後の行の at と id より前：`or(at.lt.{at},and(at.eq.{at},id.lt.{id}))`）。件数は数えない（count: 'exact' は重い）。
+- 読み方：`audit_logs` を `at desc, id desc` で 50 件ずつ（上の2つの問い合わせを合わせる。合わせる並びは at をマイクロ秒まで比べる）。続きは「さらに読み込む」（最後の行の at と id より前：`or(at.lt.{at},and(at.eq.{at},id.lt.{id}))` と `at <= {at}`。D-43）。件数は数えない（count: 'exact' は重い）。
 - 差の作り方は純粋関数 `diffAudit(before, after)`（lib/data/history.ts。テストあり）。
 - 状態：履歴がない（「この条件の変更はありません」）。
 
