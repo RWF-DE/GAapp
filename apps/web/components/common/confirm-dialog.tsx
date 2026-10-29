@@ -1,0 +1,98 @@
+'use client';
+
+import { useState } from 'react';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
+
+export interface ConfirmDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description?: React.ReactNode;
+  /** 説明の下に置くもの（件数の一覧・チェックなど） */
+  children?: React.ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  /** 破壊的な操作（削除・終了など）は赤いボタン */
+  destructive?: boolean;
+  /**
+   * 確定のボタンを押したとき。Promise を返すと、終わるまで確定・やめるのボタンを押せず「処理中…」を出す（二重に送らない。1.4）。
+   * 終われば閉じる。例外を投げたら開いたまま（エラーの表示は呼ぶ側）。
+   */
+  onConfirm: () => void | Promise<void>;
+  /** 外の送信中（useMutation の isPending）。真の間は確定のボタンを押せない */
+  pending?: boolean;
+  pendingLabel?: string;
+  /** 確定のボタンを押せない（前提を満たさない） */
+  confirmDisabled?: boolean;
+}
+
+/**
+ * 確認のダイアログ（画面の設計 1.4。T09a）。送信中は確定のボタンを押せない。
+ *
+ * @example
+ * <ConfirmDialog open={open} onOpenChange={setOpen} title="団体を削除しますか" destructive confirmLabel="削除する"
+ *   onConfirm={() => m.mutateAsync()} pending={m.isPending} />
+ */
+export function ConfirmDialog({
+  open,
+  onOpenChange,
+  title,
+  description,
+  children,
+  confirmLabel = 'OK',
+  cancelLabel = 'やめる',
+  destructive = false,
+  onConfirm,
+  pending = false,
+  pendingLabel = '処理中…',
+  confirmDisabled = false,
+}: ConfirmDialogProps) {
+  const [running, setRunning] = useState(false);
+  const busy = pending || running;
+
+  const confirm = async () => {
+    if (busy) return;
+    setRunning(true);
+    try {
+      await onConfirm();
+      onOpenChange(false);
+    } catch {
+      // 開いたまま（呼ぶ側がエラーを出す）
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <AlertDialog open={open} onOpenChange={(o) => (busy ? undefined : onOpenChange(o))}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          {description ? <AlertDialogDescription>{description}</AlertDialogDescription> : null}
+        </AlertDialogHeader>
+        {children}
+        <AlertDialogFooter>
+          <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
+            {cancelLabel}
+          </Button>
+          <Button
+            variant={destructive ? 'destructive' : 'default'}
+            disabled={busy || confirmDisabled}
+            aria-busy={busy || undefined}
+            onClick={() => void confirm()}
+          >
+            {busy ? pendingLabel : confirmLabel}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
