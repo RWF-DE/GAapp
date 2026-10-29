@@ -48,7 +48,7 @@ import { queryKeys } from '@/lib/query';
 import { cn } from '@/lib/utils';
 import { AutoResult, seconds } from './auto-result';
 import { allocationHref, parseAllocationQuery, type AllocationQuery } from './allocation-query';
-import { autoBlockOf, AutoRunLock, MODE_LABELS, useAutoAllocation, type AutoRunDeps } from './auto-run';
+import { autoBlockOf, AutoRunLock, MODE_LABELS, RunInert, useAutoAllocation, type AutoRunDeps } from './auto-run';
 import { useRowFocus } from './use-row-focus';
 import { GroupViewList } from './group-view';
 import { ItemTabView } from './item-tab-view';
@@ -478,7 +478,8 @@ function AllocationLoaded({
 
   return (
     <>
-    <div aria-busy={running || undefined}>
+    {/* 計算中は本体を inert にし（クリックも Tab も届かない）、フォーカスはロックへ移す（AutoRunLock） */}
+    <RunInert running={running}>
       <PageHeader
         title="振り分け"
         description={
@@ -511,7 +512,8 @@ function AllocationLoaded({
       ) : null}
 
       {isAdmin && (allocating || status === 'confirmed') ? (
-        <div className="mb-3 print:hidden">
+        // 計算中は確定・確定を解除・終了を押せない（disabled の fieldset の中のボタンは押せない）
+        <fieldset disabled={running} data-testid="year-status-fieldset" className="m-0 mb-3 min-w-0 border-0 p-0 print:hidden">
           <YearStatusActions
             year={snapshot.year}
             snapshotVersion={snapshot.version}
@@ -526,7 +528,7 @@ function AllocationLoaded({
               </Button>
             }
           />
-        </div>
+        </fieldset>
       ) : null}
 
       <div className="mb-3 space-y-2">
@@ -650,9 +652,10 @@ function AllocationLoaded({
           void doExport();
         }}
       />
-    </div>
+    </RunInert>
     {editable ? (
-      <>
+      // 未保存の変更のバー（画面の下に固定）も計算中は届かない
+      <div inert={running}>
         <PendingBar api={pend} vm={vm} />
         <SourceDialog
           row={sourceRowId ? (rowById.get(sourceRowId) ?? null) : null}
@@ -719,7 +722,7 @@ function AllocationLoaded({
           pending={roomBusy}
           onConfirm={() => (usableRoom ? changeRoomUsable(usableRoom, true, null) : undefined)}
         />
-      </>
+      </div>
     ) : null}
     <AutoRunLock state={auto.state} onCancel={auto.cancel} />
     </>

@@ -14,7 +14,7 @@ import { toYearData } from '@/lib/data/year-data';
 import type { SaveAutoAllocationsResult } from '@/lib/rpc/payloads';
 import { fixtureSnapshot } from '@/lib/testing/fixture-rows';
 import { AutoResult } from './auto-result';
-import { autoBlockOf, AutoRunLock, CANCEL_AFTER_MS, useAutoAllocation, type AutoRunDeps } from './auto-run';
+import { autoBlockOf, AutoRunLock, CANCEL_AFTER_MS, RunInert, useAutoAllocation, type AutoRunDeps } from './auto-run';
 import { IssuesPanel } from './issues-panel';
 
 const auth = vi.hoisted(() => ({ membership: { status: 'idle' } as MembershipState }));
@@ -239,9 +239,12 @@ function Harness({ deps }: { deps: AutoRunDeps }) {
   const a = useAutoAllocation(deps);
   return (
     <>
-      <button type="button" onClick={() => void a.start('full')}>
-        go
-      </button>
+      <RunInert running={a.state.running}>
+        <button type="button" onClick={() => void a.start('full')}>
+          go
+        </button>
+        <button type="button">確定</button>
+      </RunInert>
       {a.state.outcome ? <span data-testid="outcome">{a.state.outcome.kind}</span> : null}
       <AutoRunLock state={a.state} onCancel={a.cancel} />
     </>
@@ -358,6 +361,54 @@ describe('計算中のロック（engine を偽物にして fake timers）', () 
     expect(screen.queryByRole('button', { name: '中止' })).toBeNull();
     expect(lock.textContent).toContain('（保存中…）');
     expect(lock.textContent).toContain('経過 30 秒');
+  });
+});
+
+describe('計算中のロックはキーボードで抜けられない（B5）', () => {
+  const tab = (shift = false) => fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Tab', shiftKey: shift });
+
+  it('計算中は画面の本体に inert を付け、ロックにフォーカスを移す。Tab・Shift+Tab でもロックの外へ出ない', async () => {
+    vi.useFakeTimers();
+    const { deps, engine } = makeDeps();
+    await act(async () => {
+      await engine.warmup();
+    });
+    render(<Harness deps={deps} />);
+    const body = screen.getByTestId('run-inert');
+    expect(body.hasAttribute('inert')).toBe(false);
+    const go = screen.getByRole('button', { name: 'go' });
+    go.focus();
+    fireEvent.click(go);
+    await flush();
+    await flush();
+    const lock = screen.getByTestId('allocate-lock');
+    expect(body.hasAttribute('inert')).toBe(true);
+    expect(body.getAttribute('aria-busy')).toBe('true');
+    expect(document.activeElement).toBe(lock);
+    // ロックの中に押せるものがない間は、Tab でも Shift+Tab でもロックに留まる
+    tab();
+    expect(document.activeElement).toBe(lock);
+    tab(true);
+    expect(document.activeElement).toBe(lock);
+    // 外（背景のボタン）にフォーカスがあっても、Tab でロックに戻す
+    screen.getByRole('button', { name: '確定', hidden: true }).focus();
+    tab();
+    expect(lock.contains(document.activeElement)).toBe(true);
+    // 「中止」が出たら、Tab はロックの中のボタンを回る
+    act(() => vi.advanceTimersByTime(CANCEL_AFTER_MS + 500));
+    const cancel = screen.getByRole('button', { name: '中止' });
+    tab();
+    expect(document.activeElement).toBe(cancel);
+    tab();
+    expect(document.activeElement).toBe(cancel);
+    tab(true);
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.click(cancel);
+    await flush();
+    await flush();
+    expect(screen.queryByTestId('allocate-lock')).toBeNull();
+    expect(body.hasAttribute('inert')).toBe(false);
+    expect(body.hasAttribute('aria-busy')).toBe(false);
   });
 });
 

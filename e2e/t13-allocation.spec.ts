@@ -57,6 +57,14 @@ test.describe('T13 管理者', () => {
       await expect(lock).toHaveAttribute('data-phase', 'saving');
       await expect(lock.getByText('（保存中…）')).toBeVisible();
       await expect(lock.getByRole('button', { name: '中止' })).toHaveCount(0);
+      // キーボードで抜けられない（B5）：フォーカスはロックにあり、Tab・Shift+Tab でも外へ出ない。本体は inert、確定は押せない
+      await expect(lock).toBeFocused();
+      for (const key of ['Tab', 'Tab', 'Shift+Tab', 'Tab']) {
+        await page.keyboard.press(key);
+        await expect(page.locator('[data-testid="allocate-lock"]:focus-within')).toHaveCount(1);
+      }
+      await expect(page.getByTestId('run-inert')).toHaveAttribute('inert', '');
+      await expect(page.locator('[data-testid="year-status-fieldset"] button', { hasText: '確定' })).toBeDisabled();
       release();
       await expect(lock).toBeHidden({ timeout: 30_000 });
       await page.unroute('**/rest/v1/rpc/save_auto_allocations');

@@ -294,22 +294,72 @@ function useElapsed(startedAt: number | null): number {
 }
 
 /**
+ * 計算中は押せなくする画面の本体（ツールバー・表・検証の一覧・未保存の変更のバーなど）を包む。
+ * running の間は inert（クリックもフォーカスも届かない。Tab で背景の確定・行の操作に届かない）と aria-busy。
+ */
+export function RunInert({ running, children, className }: { running: boolean; children: React.ReactNode; className?: string }) {
+  return (
+    <div data-testid="run-inert" inert={running} aria-busy={running || undefined} className={className}>
+      {children}
+    </div>
+  );
+}
+
+const FOCUSABLE = 'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * ロックを出している間、フォーカスをロックの中に留める：出したときにロック（tabIndex=-1）へ移し、
+ * Tab・Shift+Tab はロックの中の押せるもの（「中止」）を回る（なければロックに留まる）。フォーカスがロックの外にあっても
+ * Tab でロックへ戻す（アプリのヘッダーなど RunInert の外も含む）。
+ */
+function useLockFocus(ref: React.RefObject<HTMLDivElement | null>, shown: boolean): void {
+  useEffect(() => {
+    if (!shown) return;
+    const lock = ref.current;
+    if (lock && !lock.contains(document.activeElement)) lock.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+      const el = ref.current;
+      if (!el) return;
+      e.preventDefault();
+      const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)];
+      if (items.length === 0) {
+        el.focus();
+        return;
+      }
+      const k = items.indexOf(document.activeElement as HTMLElement);
+      const next = e.shiftKey ? (k <= 0 ? items[items.length - 1] : items[k - 1]) : k === -1 || k === items.length - 1 ? items[0] : items[k + 1];
+      next?.focus();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [ref, shown]);
+}
+
+/**
  * 計算中のロック（全面のオーバーレイ）。段階と経過秒数を出し、中止できる段階で 10 秒を過ぎたら「中止」を出す。
+ * 出したときにフォーカスをロックへ移し、Tab でロックの外へ出さない（背景は RunInert で inert にする）。
  */
 export function AutoRunLock({ state, onCancel }: { state: AutoRunState; onCancel: () => void }) {
   const elapsed = useElapsed(state.running ? state.startedAt : null);
+  const ref = useRef<HTMLDivElement>(null);
+  const shown = state.running && state.phase !== null;
+  useLockFocus(ref, shown);
   if (!state.running || !state.phase) return null;
   const current = PHASES.findIndex((p) => p.phase === state.phase);
   const canCancel = CANCELLABLE_PHASES.includes(state.phase) && elapsed >= CANCEL_AFTER_MS;
   return (
     <div
+      ref={ref}
       role="alertdialog"
       aria-modal="true"
       aria-busy="true"
       aria-labelledby="allocate-lock-title"
+      aria-describedby="allocate-lock-elapsed"
+      tabIndex={-1}
       data-testid="allocate-lock"
       data-phase={state.phase}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 outline-none backdrop-blur-sm"
     >
       <div className="w-full max-w-md space-y-4 rounded-lg border bg-card p-6 shadow-lg">
         <div className="flex items-center gap-2">
@@ -330,7 +380,7 @@ export function AutoRunLock({ state, onCancel }: { state: AutoRunState; onCancel
             </li>
           ))}
         </ol>
-        <p className="text-sm text-muted-foreground" data-testid="allocate-lock-elapsed">
+        <p id="allocate-lock-elapsed" className="text-sm text-muted-foreground" data-testid="allocate-lock-elapsed">
           経過 {Math.floor(elapsed / 1000)} 秒
         </p>
         {state.phase === 'saving' ? (
