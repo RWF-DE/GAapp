@@ -16,7 +16,9 @@ const noteSchema = optionalText(NOTE_MAX);
  *   updated_at が違う → conflict（lock_conflict）、行がない → not_found（lock_missing）、同じ → forbidden（lock_unchanged。RLS）。
  * - 行がなければ insert。ほかの人が先に足していれば（23505）conflict（lock_conflict）。
  * 失敗は AppError で投げる（info.kind が conflict・not_found なら room_years と年度を読み直して「ほかの人が変えました」と出し、
- * 入力は残す。forbidden は年度の行と立場を読み直す。network は「保存できたか分からない」）。classifyError・effectOf でそのまま分けられる。
+ * 入力は残す。forbidden は年度の行と立場を読み直す）。classifyError・effectOf でそのまま分けられる。
+ * 応答が届かなかったとき（isUnknownOutcome）と conflict・not_found（isLockRejection）のときは、readRoomYear で読み直して
+ * settleLockedWrite で決める（2.6 の (B1)。下の readRoomYear の例）。「確かめる」のボタンや未確定の印は持たない。
  * note は理由のメモ（空なら null）。
  * 使用不可にする前に、その部屋からの固定・手動の行を直して保存しておく（fixedRowsFrom。3.9 の順番）。
  * 書き込みで版が上がるので、成功した後はスナップショットを読み直す。
@@ -59,6 +61,43 @@ export async function setRoomUsable(
   }
   if (!res.data) throw appError('forbidden', 'lock_unchanged', { table: 'room_years', match });
   return res.data as unknown as RoomYearRow;
+}
+
+/**
+ * 今年の使用の行を1行読む（なければ null。失敗は AppError で投げる）。setRoomUsable の応答が届かなかったとき・
+ * conflict・not_found のときに、settleLockedWrite（lib/data/locked-save.ts）の reread に渡す（2.6 の (B1)）。
+ *
+ * @example
+ * const base = roomYear?.updated_at ?? null; // 入力の元（読み込んだときの updated_at。行がなければ null）
+ * try {
+ *   await setRoomUsable(yearId, roomId, base, usable, note);
+ *   done('保存しました');
+ * } catch (e) {
+ *   if (!isUnknownOutcome(e) && !isLockRejection(e)) throw e; // forbidden などは 2.5 の表のとおり
+ *   const outcome = await settleLockedWrite({
+ *     reread: () => readRoomYear(yearId, roomId),
+ *     matches: (row) => roomYearMatches(row, usable, note),
+ *     baseVersion: base,
+ *     versionOf: (row) => row.updated_at,
+ *   });
+ *   // saved → done('保存されていました')。応答が届かなかった後の not-saved・unread → unknownOutcomeMessage()。
+ *   // 止められた後の unread → 読み直せなかったことと読み直すボタン。それ以外 → 今までの conflict の扱い
+ * }
+ */
+export async function readRoomYear(
+  yearId: string,
+  roomId: string,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<RoomYearRow | null> {
+  const res = await client.from('room_years').select(COLUMNS.room_years).match({ year_id: yearId, room_id: roomId }).maybeSingle();
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data as unknown as RoomYearRow | null) ?? null;
+}
+
+/** 読み直した今年の使用の行が、送った usable と note（setRoomUsable と同じく前後の空白を除き、空なら null）と同じか */
+export function roomYearMatches(row: Pick<RoomYearRow, 'usable' | 'note'>, usable: boolean, note: string | null): boolean {
+  const n = noteSchema.safeParse(note);
+  return row.usable === usable && n.success && row.note === n.data;
 }
 
 /** 行の操作（使用不可にする前の一覧・使用不可の部屋の行で出すもの） */

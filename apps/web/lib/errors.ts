@@ -175,6 +175,30 @@ export function classifyError(e: unknown, status?: number | null): ClassifiedErr
   return base('unknown', code);
 }
 
+/**
+ * 書き込みの応答が届かず、保存できたか分からない失敗か（2.6）。範囲は通信の失敗とタイムアウトだけ：
+ * network（fetch の失敗・中止・status 0）と、コードのない失敗のうち status が null・408・5xx のもの
+ * （ゲートウェイのタイムアウトなど。lib/rpc の unexpected_response も status が null なのでここ）。
+ * DB・PostgREST からコードつきで返った失敗（57014・XX000・PGRST000・知らない P0001 など）と、
+ * コードのない 4xx（408 を除く）は届いた失敗（1リクエスト＝1トランザクションなので何も保存されていない）。
+ * status は supabase-js の応答の status（error の外にあるとき）。
+ */
+export function isUnknownOutcome(e: unknown, status?: number | null): boolean {
+  const c = classifyError(e, status);
+  if (c.kind === 'network') return true;
+  if (c.kind !== 'unknown' || c.code !== null) return false;
+  return c.status === null || c.status === 408 || c.status >= 500;
+}
+
+/**
+ * 数を絶対値で書く書き込み（在庫・申請・提出の記録。2.6）で、保存できたか分からないときの文言。
+ * verb は押すボタンの名前（既定は「保存」。団体代表の申請は「提出」）。空白だけなら既定。
+ */
+export function unknownOutcomeMessage(verb = '保存'): string {
+  const v = verb.trim() || '保存';
+  return `${v}できたか分かりません。もう一度「${v}」を押すと、確かめてから送ります`;
+}
+
 /** エラーの後の画面の動き（2.5 の「画面の動き」・2.6） */
 export interface ErrorEffect {
   /** none：読み直さない、data：その画面のデータを読み直す、year：年度の行と立場を読み直す（読み取り専用・権限なしに切り替える） */
