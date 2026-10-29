@@ -1,0 +1,245 @@
+'use client';
+
+// 年度のタブ（画面の設計 3.2「年度」。T09）：今の年度の変更（update_year）と、新しい年度の作成（create_year_from）。
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useForm } from 'react-hook-form';
+import { toast } from 'sonner';
+import type { z } from 'zod';
+import { AppLink } from '@/components/common/app-link';
+import { useUnsavedChanges } from '@/components/common/unsaved-changes-guard';
+import { YearStatusBadge } from '@/components/common/year-status-badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { useAuth } from '@/lib/auth/auth-provider';
+import { useGuardedSetYear } from '@/lib/auth/guarded';
+import { createYearFrom, yearPatch } from '@/lib/data/settings';
+import { formatDate, toDateTimeLocal } from '@/lib/datetime';
+import type { YearRow } from '@/lib/db/types';
+import { classifyError, messageFor } from '@/lib/errors';
+import { queryKeys } from '@/lib/query';
+import { callRpc } from '@/lib/rpc';
+import { FESTIVAL_START_MAX, FESTIVAL_START_MIN, REASON_MAX } from '@/lib/schemas/common';
+import { yearCreateSchema, yearEditSchema, type YearEditInput } from '@/lib/schemas/settings';
+import { Field, useSettings, useWriteErrorHandler } from './shared';
+
+export function YearsTab() {
+  const { year, membership } = useSettings();
+  const canCreate = membership.role === 'admin' && membership.latestYear?.id === year.id;
+  return (
+    <div className="space-y-6">
+      <YearEditCard key={`${year.id}:${year.updated_at}`} year={year} />
+      {canCreate ? (
+        <YearCreateCard year={year} />
+      ) : (
+        <p className="text-sm text-muted-foreground" data-testid="year-create-unavailable">
+          新しい年度は、最新の年度（{membership.latestYear?.label ?? '—'}）を開いて、その年度の管理者が作れます。
+        </p>
+      )}
+    </div>
+  );
+}
+
+type EditForm = YearEditInput & { reason: string };
+
+function YearEditCard({ year }: { year: YearRow }) {
+  const { yearWritable } = useSettings();
+  const queryClient = useQueryClient();
+  const { reloadMembership } = useAuth();
+  const onError = useWriteErrorHandler();
+  const schema = yearEditSchema(year.status);
+  const form = useForm<EditForm>({
+    defaultValues: {
+      label: year.label,
+      festival_start: year.festival_start,
+      request_open_at: toDateTimeLocal(year.request_open_at),
+      request_close_at: toDateTimeLocal(year.request_close_at),
+      reason: '',
+    },
+  });
+  const { register, handleSubmit, formState, setError, reset } = form;
+  useUnsavedChanges(formState.isDirty);
+  const [saving, setSaving] = useState(false);
+  const disabled = !yearWritable || saving;
+
+  const onSubmit = handleSubmit(async (values) => {
+    const parsed = schema.safeParse(values);
+    if (!parsed.success) {
+      for (const i of parsed.error.issues) setError(String(i.path[0]) as keyof EditForm, { message: i.message });
+      return;
+    }
+    const patch = yearPatch(year, parsed.data);
+    if (Object.keys(patch).length === 0) {
+      toast.info('変わった項目がありません');
+      return;
+    }
+    const reason = values.reason.trim();
+    setSaving(true);
+    try {
+      await callRpc('update_year', { p_year_id: year.id, p_patch: patch, ...(reason ? { p_reason: reason } : {}) });
+      toast.success('年度を保存しました');
+      reset(values);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.year(year.id) });
+      reloadMembership();
+    } catch (e) {
+      const c = classifyError(e);
+      const d = c.details as { field?: unknown } | null;
+      const field = d && typeof d.field === 'string' ? d.field : null;
+      if (c.kind === 'input' && (field === 'festival_start' || field === 'request_close_at' || field === 'reason')) {
+        setError(field, { message: messageFor(c) });
+      } else if (c.kind === 'conflict' && field === 'label') {
+        setError('label', { message: messageFor(c) });
+      } else {
+        await onError(e, { context: { rpc: 'update_year' }, dataKeys: [queryKeys.yearRow(year.id)] });
+      }
+    } finally {
+      setSaving(false);
+    }
+  });
+
+  const err = (k: keyof EditForm) => formState.errors[k]?.message;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          今の年度 <YearStatusBadge status={year.status} />
+        </CardTitle>
+        <CardDescription>
+          年度名・1日目・申請の受付期間を変えます。受付開始の前に締切を入れてください（受付中は締切を空にできません）。
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={onSubmit} className="grid gap-4 md:grid-cols-2" noValidate data-testid="year-edit-form">
+          <Field label="年度名" error={err('label')}>
+            {(p) => <Input {...p} {...register('label')} readOnly={disabled} maxLength={50} />}
+          </Field>
+          <Field label="1日目" error={err('festival_start')} hint="前の年度より後・次の年度より前の日付にします">
+            {(p) => <Input {...p} type="date" min={FESTIVAL_START_MIN} max={FESTIVAL_START_MAX} {...register('festival_start')} readOnly={disabled} />}
+          </Field>
+          <Field label="受付開始（日本時間）" error={err('request_open_at')}>
+            {(p) => <Input {...p} type="datetime-local" {...register('request_open_at')} readOnly={disabled} />}
+          </Field>
+          <Field label="締切（日本時間）" error={err('request_close_at')}>
+            {(p) => (
+              <Input {...p} type="datetime-local" {...register('request_close_at')} readOnly={disabled} required={year.status === 'requesting'} />
+            )}
+          </Field>
+          <Field label="理由（任意）" error={err('reason')} className="md:col-span-2">
+            {(p) => <Input {...p} {...register('reason')} readOnly={disabled} maxLength={REASON_MAX} />}
+          </Field>
+          {yearWritable ? (
+            <div className="md:col-span-2">
+              <Button type="submit" disabled={saving || !formState.isDirty}>
+                {saving ? '保存中…' : '年度を保存'}
+              </Button>
+            </div>
+          ) : null}
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+type CreateForm = z.input<ReturnType<typeof yearCreateSchema>>;
+
+function YearCreateCard({ year }: { year: YearRow }) {
+  const { reloadMembership } = useAuth();
+  const setYear = useGuardedSetYear();
+  const onError = useWriteErrorHandler();
+  const schema = yearCreateSchema(year.festival_start);
+  const form = useForm<CreateForm, unknown, z.output<typeof schema>>({
+    resolver: zodResolver(schema),
+    defaultValues: { label: '', festival_start: '' },
+  });
+  const { register, handleSubmit, formState, setError, reset } = form;
+  useUnsavedChanges(formState.isDirty);
+  const [saving, setSaving] = useState(false);
+  const [created, setCreated] = useState<{ year: YearRow; disabledRuleCodes: string[] } | null>(null);
+
+  const onSubmit = handleSubmit(async (values) => {
+    setSaving(true);
+    try {
+      const r = await createYearFrom(year, values.label, values.festival_start);
+      reset({ label: '', festival_start: '' });
+      setCreated(r);
+      const n = r.disabledRuleCodes.length;
+      toast.success(`${r.year.label} を作りました`, {
+        description:
+          n > 0
+            ? `対象の団体が見つからず無効になったルールが ${n} 件あります（${r.disabledRuleCodes.join('、')}）。ルール画面で確かめてください`
+            : '無効になったルールはありません',
+        duration: 15000,
+      });
+      reloadMembership();
+      // reset の後の描画で「未保存の入力」の印が消えてから切り替える（消える前だと切り替えの確かめが出てしまう）
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // 新しい年度に切り替える（画面は作り直される。1.3.1）
+      await setYear(r.year.id);
+    } catch (e) {
+      const c = classifyError(e);
+      const d = c.details as { field?: unknown } | null;
+      const field = d && typeof d.field === 'string' ? d.field : null;
+      const message = messageFor(c, { rpc: 'create_year_from', prevFestivalStart: year.festival_start });
+      if (c.kind === 'input' && field === 'festival_start') setError('festival_start', { message });
+      else if (c.kind === 'input' && field === 'label') setError('label', { message });
+      else if (c.kind === 'input' && !field) {
+        setError('label', { message });
+        setError('festival_start', { message });
+      } else if (c.kind === 'conflict' && field === 'label') setError('label', { message });
+      else await onError(e, { context: { rpc: 'create_year_from', prevFestivalStart: year.festival_start } });
+    } finally {
+      setSaving(false);
+    }
+  });
+
+  const err = (k: keyof CreateForm) => formState.errors[k]?.message;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>新しい年度を作る</CardTitle>
+        <CardDescription>
+          {year.label}（1日目 {formatDate(year.festival_start)}）から複製します。あなたが新しい年度の管理者になります。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-2 text-sm md:grid-cols-2">
+          <div className="rounded-md border p-3">
+            <p className="font-medium">複製されるもの</p>
+            <p className="text-muted-foreground">団体・ルール・場所の使用不可の設定</p>
+          </div>
+          <div className="rounded-md border p-3">
+            <p className="font-medium">複製されないもの</p>
+            <p className="text-muted-foreground">在庫・申請・振り分け・了承・ほかの人のロール・招待</p>
+          </div>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          団体を付け替えられなかったルールは無効になり、メモに理由が入ります。作った後にその件数を出します。
+        </p>
+        <form onSubmit={onSubmit} className="grid gap-4 md:grid-cols-2" noValidate data-testid="year-create-form">
+          <Field label="新しい年度名" error={err('label')}>
+            {(p) => <Input {...p} {...register('label')} maxLength={50} placeholder="R9" />}
+          </Field>
+          <Field label="新しい年度の1日目" error={err('festival_start')} hint={`${formatDate(year.festival_start)} より後の日付`}>
+            {(p) => <Input {...p} type="date" min={FESTIVAL_START_MIN} max={FESTIVAL_START_MAX} {...register('festival_start')} />}
+          </Field>
+          <div className="md:col-span-2">
+            <Button type="submit" disabled={saving}>
+              {saving ? '作成中…' : '新しい年度を作る'}
+            </Button>
+          </div>
+        </form>
+        {created ? (
+          <div role="status" data-testid="year-created" className="rounded-md border bg-muted/40 p-3 text-sm">
+            {created.year.label} を作りました。無効になったルール {created.disabledRuleCodes.length} 件
+            {created.disabledRuleCodes.length > 0 ? `（${created.disabledRuleCodes.join('、')}）` : ''}。
+            <AppLink href="/rules" className="ml-1 underline">
+              ルール画面へ
+            </AppLink>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
