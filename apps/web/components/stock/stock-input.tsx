@@ -13,6 +13,8 @@
 // - 通信の失敗の後の「もう一度」：読み直した行が送った数で、数えた人が自分なら「保存されていました」として終える。
 //   その読み直しも通信できなければ、入力を残して「保存できたか確かめられません」と出し、「確かめる」で読み直せるまで
 //   送り直しを押せなくする（読み直せたら、自分の保存が入っていれば「保存されていました」、なければ送り直せる状態に戻す）。
+//   自分の保存が入ったかは、送る直前に読んだ行（送った数と一緒に残す）と比べて見る。入力の元（base）は、確かめるまでの間にも
+//   読み直し（通信が戻ったときの読み直し・「ほかの人の数を読み直す」）で自分の保存の入った行に変わることがあるので使わない。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -222,8 +224,9 @@ export function StockInput({
   const [savedAt, setSavedAt] = useState<string | null>(null);
   /** 保存の表示：saved（今送って保存した）・recovered（前の送信で保存されていた） */
   const [savedKind, setSavedKind] = useState<'saved' | 'recovered'>('saved');
-  // 最後に送った数（応答が届かなかったときに残す。「もう一度」で保存されていたかを確かめる。設計 2.6）
-  const lastSent = useRef<StockCounts | null>(null);
+  // 最後に送った数と、送る直前に読んだ行の updated_at（応答が届かなかったときに残す。「もう一度」「確かめる」で
+  // 保存されていたかを確かめる。設計 2.6）。入力の元（stamps）はその後の読み直しで変わることがあるので、別に残す
+  const lastSent = useRef<{ counts: StockCounts; stamps: StockBaseStamps } | null>(null);
   // 応答の届かなかった送信があり、確かめる読み直しも通信できなかった（「確かめる」で読み直せるまで送り直さない）
   const [unconfirmed, setUnconfirmed] = useState(false);
 
@@ -282,9 +285,10 @@ export function StockInput({
     for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
   };
 
-  const write = async (values: StockCounts, retried = false): Promise<void> => {
+  /** values を送る。sentStamps は送る直前に読んだ部屋の行（応答が届かなかったときに、この後の変化が自分の保存かを見る元） */
+  const write = async (values: StockCounts, sentStamps: StockBaseStamps, retried = false): Promise<void> => {
     setPhase('saving');
-    lastSent.current = values;
+    lastSent.current = { counts: values, stamps: sentStamps };
     try {
       const rows = await saveRoomStocks(yearId, roomId, items, values);
       finishSaved(rows, 'saved');
@@ -293,7 +297,7 @@ export function StockInput({
       if (!isUncertain(e)) lastSent.current = null;
       // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks の upsert は同じ値で何度送っても同じ。2.6）
       if (classifyError(e).kind === 'auth' && !retried) {
-        if ((await onAuthError(e)) === 'retry') return write(values, true);
+        if ((await onAuthError(e)) === 'retry') return write(values, sentStamps, true);
         return;
       }
       await handleError(e);
@@ -313,12 +317,15 @@ export function StockInput({
     }
   };
 
-  /** 読み直した部屋の行が、応答の届かなかった自分の保存だけで変わっていたら片づける（設計 2.6）。片づけたら true。
-   *  同じ数なら「保存されていました」で終え、その後に入力を変えていれば、読み直した行を元にする（その数はまだ保存していない） */
-  const settleOwnSave = (latest: StockDbRow[], other: OtherSave, values: StockCounts): 'recovered' | 'rebased' | null => {
+  /** 読み直した部屋の行が、送る直前に読んだ行から応答の届かなかった自分の保存だけで変わっていたら片づける（設計 2.6）。
+   *  同じ数なら「保存されていました」で終え、その後に入力を変えていれば、読み直した行を元にする（その数はまだ保存していない）。
+   *  入力の元（stamps）とは比べない（確かめるまでの間の読み直しで、元がもう自分の保存の入った行になっていることがある） */
+  const settleOwnSave = (latest: StockDbRow[], values: StockCounts): 'recovered' | 'rebased' | null => {
     const sent = lastSent.current;
-    if (!sent || !isOwnSave(items, latest, other, sent, open.userId)) return null;
-    if (sameCounts(items, values, sent)) {
+    if (!sent) return null;
+    const own = detectOtherSave(loadedOf(sent.stamps), latest);
+    if (!own || !isOwnSave(items, latest, own, sent.counts, open.userId)) return null;
+    if (sameCounts(items, values, sent.counts)) {
       finishSaved(latest, 'recovered');
       return 'recovered';
     }
@@ -331,14 +338,13 @@ export function StockInput({
 
   /** 「確かめる」：応答の届かなかった送信が保存されたかを、部屋の行を読み直して確かめる */
   const confirmLastSave = async () => {
-    if (!unconfirmed || !counts || !stamps || phase !== 'idle') return;
+    if (!unconfirmed || !counts || phase !== 'idle') return;
     setError(null);
     setPhase('checking');
     try {
       const latest = await fresh(() => fetchRoomStocks(yearId, roomId));
       setUnconfirmed(false);
-      const other = detectOtherSave(loadedOf(stamps), latest);
-      const settled = other ? settleOwnSave(latest, other, counts) : null;
+      const settled = settleOwnSave(latest, counts);
       if (settled === 'recovered') return;
       if (settled === 'rebased') {
         setSeen(latest);
@@ -372,7 +378,8 @@ export function StockInput({
     writer.flush();
     if (!(await notLatest.confirmBeforeWrite())) return;
     setPhase('checking');
-    let proceed = false;
+    // 送る直前に読んだ部屋の行の updated_at（送ると決まったら入る）
+    let sentStamps: StockBaseStamps | null = null;
     try {
       if (access.shortfall !== 'none') {
         // 振り分けの合計は保存の直前に読み直す（DB の確定中の守りと同じ条件を先に確かめる）
@@ -388,17 +395,16 @@ export function StockInput({
         }
       }
       const latest = await fresh(() => fetchRoomStocks(yearId, roomId));
-      const other = detectOtherSave(loadedOf(stamps), latest);
+      // 応答の届かなかった自分の保存が入っていれば、「保存されていました」で終えるか、読み直した行を元にしてその数で送る
+      // （入力の元が読み直しで自分の保存の入った行になっていても、送る直前の行と比べるので見分けられる）
+      const settled = settleOwnSave(latest, parsed.data);
+      if (settled === 'recovered') return;
+      const other = settled === null ? detectOtherSave(loadedOf(stamps), latest) : null;
       if (other) {
-        // 変わったのが応答の届かなかった自分の保存だけなら、「保存されていました」で終えるか、読み直した行を元にしてその数で送る
-        const settled = settleOwnSave(latest, other, parsed.data);
-        if (settled === null) {
-          setConflict({ latest, other });
-          return;
-        }
-        if (settled === 'recovered') return;
+        setConflict({ latest, other });
+        return;
       }
-      proceed = true;
+      sentStamps = stampsOf(latest);
     } catch (e) {
       if (e instanceof AuthHandled) return;
       if (lastSent.current && isUncertain(e)) {
@@ -410,9 +416,9 @@ export function StockInput({
       await handleError(e);
       return;
     } finally {
-      if (!proceed) setPhase('idle');
+      if (!sentStamps) setPhase('idle');
     }
-    await write(parsed.data);
+    if (sentStamps) await write(parsed.data, sentStamps);
   };
 
   const overwrite = async () => {
@@ -421,7 +427,7 @@ export function StockInput({
     setRestoredStamps(null);
     setRemote(null);
     setConflict(null);
-    await write(counts);
+    await write(counts, stampsOf(conflict.latest));
   };
 
   /** ほかの人の数を入力にする（入力と下書きは捨てる） */
