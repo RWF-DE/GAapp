@@ -76,7 +76,7 @@ for (const mode of ['original', 'integer']) {
 }
 console.log(`並べ替えても同じ解: ${pages.every((p) => p.shuffledSame)}  解けない入力の Status: ${p0.infeasibleStatus}`);
 console.log(`20回: 使い回し 1回目 ${f(p0.reuse.first)}ms 2〜20回の中央値 ${f(p0.reuse.medianRest)}ms 同じ解=${p0.reuse.sameAll} wasmメモリ ${p0.reuse.mem0}→${p0.reuse.mem1}`);
-console.log(`20回: 毎回作り直し(wasmModule 共有) load 中央値 ${f(p0.recreate.loadMedian)}ms(最大 ${f(p0.recreate.loadMax)}) solve 中央値 ${f(p0.recreate.solveMedian)}ms 同じ解=${p0.recreate.sameAll}`);
+console.log(`20回: 毎回作り直し(instantiateWasm で Module 共有) load 中央値 ${f(p0.recreate.loadMedian)}ms(最大 ${f(p0.recreate.loadMax)}) solve 中央値 ${f(p0.recreate.solveMedian)}ms 同じ解=${p0.recreate.sameAll}`);
 // Node の解と同じか
 const nodeJson = JSON.parse(readFileSync(new URL('./results/node.json', import.meta.url), 'utf8'));
 console.log(`Node の解のハッシュと同じ: original=${nodeJson.five_original.hashes[0] === p0.original.hashes[0]}、integer=${nodeJson.five_integer.hashes[0] === p0.integer.hashes[0]}`);

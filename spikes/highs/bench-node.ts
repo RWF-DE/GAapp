@@ -107,14 +107,21 @@ out.reuse = { times: ru.times, same: new Set(ru.hashes).size === 1, mem0: ru.mem
   const m = buildModel(d.input, { costMode: 'original', wrap: 300 });
   const wasm = readFileSync(require.resolve('highs/runtime'));
   const compiled = await WebAssembly.compile(wasm);
-  for (const variant of ['loadHighs() 毎回（毎回 wasm を読んで compile）', 'wasmModule を共有（compile は1回）'] as const) {
+  // highs 1.15.4 は InitOptions.wasmModule / wasmBinary を読まない（型にはあるが build/highs.js に実装がない）。
+  // compile を 1 回にするには Emscripten の instantiateWasm フックで共有の Module から instantiate する
+  const shareOpts = () => ({ instantiateWasm: (imports: WebAssembly.Imports, receive: (i: WebAssembly.Instance) => void) => { WebAssembly.instantiate(compiled, imports).then(receive); return {}; } });
+  try {
+    await loadHighs({ wasmModule: compiled, locateFile: () => '/nonexistent/highs.wasm' } as any);
+    log('wasmModule の確認: 渡した wasmModule が使われた（locateFile は呼ばれなかった）');
+  } catch (e) { log(`wasmModule の確認: wasmModule を渡しても locateFile が呼ばれて失敗した → 1.15.4 では wasmModule は無視される (${String(e).slice(0, 80)})`); }
+  for (const variant of ['loadHighs() 毎回（毎回 wasm を読んで compile）', 'instantiateWasm で共有（compile は1回）'] as const) {
     const loadT: number[] = [], solveT: number[] = [], hashes: string[] = [];
     const rss0 = process.memoryUsage().rss;
     let ok = true, err = '';
     try {
       for (let k = 0; k < 20; k++) {
         const t0 = performance.now();
-        const h = await loadHighs(variant.startsWith('wasmModule') ? { wasmModule: compiled } : {});
+        const h = await loadHighs(variant.startsWith('instantiateWasm') ? (shareOpts() as any) : {});
         loadT.push(performance.now() - t0);
         const s = solveModel(h, m); solveT.push(s.ms); hashes.push(hashValues(s.values));
       }

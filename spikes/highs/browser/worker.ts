@@ -14,6 +14,9 @@ self.onmessage = async (ev: MessageEvent<{ base: string; locate: string; full: b
     // 注意：loadHighs に渡したオブジェクトは highs.js が書き換える。使い回すと 2 回目で TypeError になるので毎回作る
     const mkOpts = () => (wasmUrl ? { locateFile: (f: string) => (f === 'highs.wasm' ? new URL(wasmUrl, self.location.href).href : f) } : {});
     res.wasmUrl = wasmUrl ?? '(locateFile なし：既定)';
+    // highs 1.15.4 は wasmModule / wasmBinary を読まない（型にはあるが実装にない）。compiled な Module を共有するには
+    // Emscripten の instantiateWasm フックを使う（fetch も compile もせず instantiate だけ行う）
+    const mkShared = (mod: WebAssembly.Module) => ({ instantiateWasm: (imports: WebAssembly.Imports, receive: (i: WebAssembly.Instance) => void) => { WebAssembly.instantiate(mod, imports).then(receive); return {}; } }) as any;
 
     step = 'cold load';
     // 1. 読み込み（初回。fetch + compile + instantiate）
@@ -33,7 +36,7 @@ self.onmessage = async (ev: MessageEvent<{ base: string; locate: string; full: b
       const b = performance.now();
       const mod = await WebAssembly.compile(buf);
       const c = performance.now();
-      await loadHighs({ wasmModule: mod });
+      await loadHighs(mkShared(mod));
       const d = performance.now();
       res.split = { fetchMs: b - a, compileMs: c - b, instantiateMs: d - c, bytes: buf.byteLength };
       step = 'reload x5';
@@ -80,7 +83,7 @@ self.onmessage = async (ev: MessageEvent<{ base: string; locate: string; full: b
       const lt: number[] = [], st: number[] = [], rc: string[] = [];
       for (let k = 0; k < 20; k++) {
         const s0 = performance.now();
-        const h = await loadHighs({ wasmModule: mod });
+        const h = await loadHighs(mkShared(mod));
         lt.push(performance.now() - s0);
         const s = solveModel(h, m); st.push(s.ms); rc.push(hashValues(s.values));
       }

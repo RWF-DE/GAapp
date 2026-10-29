@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.0",
   "scripts": {
-    "build": "cp node_modules/highs/build/highs.wasm public/highs.wasm && next build"
+    "build": "mkdir -p public && cp node_modules/highs/build/highs.wasm public/highs.wasm && next build"
   },
   "dependencies": {
     "highs": "1.15.4",
