@@ -29,13 +29,18 @@ const WEB_ROUTER_EXEMPT = [
   'apps/web/app/(auth)/**',
   'apps/web/components/layout/app-shell.tsx',
 ];
-const WEB_TESTS = ['apps/web/**/*.test.{ts,tsx}'];
+// apps/web/lib/testing/ はテスト専用の補助（偽の Supabase・合成データの DB の行）。テストと同じ扱いにし、アプリからは読ませない
+const WEB_TESTS = ['apps/web/**/*.test.{ts,tsx}', 'apps/web/lib/testing/**'];
+const NO_WEB_TESTING = {
+  group: ['@/lib/testing', '@/lib/testing/*', '../testing/*', './testing/*', '../../lib/testing/*'],
+  message: 'apps/web/lib/testing/ はテスト専用。アプリのコードから import しない',
+};
 const WEB_WORKERS = ['apps/web/workers/**'];
-const webImports = ({ highs = true, exporter = true, router = true } = {}) => [
+const webImports = ({ highs = true, exporter = true, router = true, testing = true } = {}) => [
   'error',
   {
     paths: [
-      NO_TESTING,
+      ...(testing ? [NO_TESTING] : []),
       { name: '@gaapp/allocator/testing', message: '@gaapp/allocator/testing は Node のテストと E2E の補助だけで使う（highs を読むため）' },
       ...(highs
         ? [{ name: 'highs', message: 'highs は振り分けの Worker（apps/web/workers/）の中だけで読み込む' }]
@@ -59,7 +64,10 @@ const webImports = ({ highs = true, exporter = true, router = true } = {}) => [
           ]
         : []),
     ],
-    patterns: highs ? [{ group: ['highs/*'], message: 'highs は振り分けの Worker（apps/web/workers/）の中だけで読み込む' }] : [],
+    patterns: [
+      ...(highs ? [{ group: ['highs/*'], message: 'highs は振り分けの Worker（apps/web/workers/）の中だけで読み込む' }] : []),
+      ...(testing ? [NO_WEB_TESTING] : []),
+    ],
   },
 ];
 
@@ -133,10 +141,15 @@ export default tseslint.config(
     },
   },
   { files: WEB_WORKERS, rules: { '@typescript-eslint/no-restricted-imports': webImports({ highs: false }) } },
-  { files: WEB_TESTS, ignores: WEB_WORKERS, rules: { '@typescript-eslint/no-restricted-imports': webImports({ exporter: false }) } },
+  // テストは合成データ（@gaapp/shared/testing）と比べてよい（toYearData の突き合わせ。段 B）
+  {
+    files: WEB_TESTS,
+    ignores: WEB_WORKERS,
+    rules: { '@typescript-eslint/no-restricted-imports': webImports({ exporter: false, testing: false }) },
+  },
   {
     files: WEB_WORKERS.map((w) => `${w}/*.test.{ts,tsx}`),
-    rules: { '@typescript-eslint/no-restricted-imports': webImports({ highs: false, exporter: false }) },
+    rules: { '@typescript-eslint/no-restricted-imports': webImports({ highs: false, exporter: false, testing: false }) },
   },
   { files: WEB_ROUTER_EXEMPT, rules: { '@typescript-eslint/no-restricted-imports': webImports({ router: false }) } },
 );
