@@ -8,12 +8,13 @@ import { pinYear } from './support/year';
 // T09a 画面の共通基盤（画面の設計 7.2 の表の T09a の行）：ナビ・直接開いたときの権限・年度の切り替え・見え方。
 // シナリオの年度（createScenario）は 2001 年の日付なので、seed の利用者の既定の年度は R8 のまま。
 
-/** ナビの項目と、それぞれの画面を作るチケット（lib/navigation.ts の ROUTES と同じ） */
-const TICKET: Record<string, string> = {
+/** ナビの項目と、それぞれの画面を作るチケット（lib/navigation.ts の ROUTES と同じ）。null は画面ができた（雛形でない）ページ */
+const TICKET: Record<string, string | null> = {
   '/settings/': 'T09',
-  '/stock/': 'T10',
-  '/stocks/': 'T10',
-  '/stocks/qr/': 'T10',
+  // T10 が雛形を置き換えた（中身は e2e/t10-stock.spec.ts で確かめる。ここでは開けるか・権限なしかだけを見る）
+  '/stock/': null,
+  '/stocks/': null,
+  '/stocks/qr/': null,
   '/requests/': 'T11',
   '/rules/': 'T12',
   '/allocation/': 'T13',
@@ -42,8 +43,10 @@ const OPENS: Record<StoredUser, string[]> = {
 };
 
 async function expectPlaceholder(page: Page, path: string): Promise<void> {
-  if (!TICKET[path]) throw new Error(`TICKET にないパス：${path}`);
-  await expect(page.getByText(`この画面は準備中です（${TICKET[path]}）`)).toBeVisible();
+  if (!(path in TICKET)) throw new Error(`TICKET にないパス：${path}`);
+  const ticket = TICKET[path];
+  if (ticket) await expect(page.getByText(`この画面は準備中です（${ticket}）`)).toBeVisible();
+  else await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   await expect(page.getByText('権限がありません')).toHaveCount(0);
 }
 
