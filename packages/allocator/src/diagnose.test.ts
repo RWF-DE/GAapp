@@ -102,18 +102,51 @@ describe('diagnose：小さな入力', () => {
     expect(r.causes.some((c) => c.message === COMBINATION_MESSAGE)).toBe(false);
   });
 
-  it('運び元の制限がなく、代替先の在庫を 2 品目で分け合って足りない（LP だけが Infeasible）：共有する在庫の不足を shortages に示す', async () => {
-    // 企業 C の長机(3人掛)は長机(2人掛)で代替できる（S04）。部門 D は長机(2人掛)だけ。長机(2人掛)は 5 台、需要は合わせて 6 台
-    const b = new FixtureBuilder('d')
+  const sharedStock = () =>
+    new FixtureBuilder('d')
       .room('A').stock('A', { long_desk_2: 5 })
-      .group('C', 'company', 'A').group('D', 'department', 'A').request('C', { long_desk_3: 3 }).request('D', { long_desk_2: 3 })
+      .group('C', 'company', 'A').group('D', 'department', 'A').group('E', 'department', 'A')
+      .request('C', { long_desk_3: 3 }).request('D', { long_desk_2: 3 })
       .rule(RULES.S04());
+
+  it('運び元の制限がなく、代替先の在庫を 2 品目で分け合って足りない（LP だけが Infeasible）：shortages は空で、組全体の不足を cause の details に 1 件だけ示す', async () => {
+    // 企業 C の長机(3人掛)は長机(2人掛)で代替できる（S04）。部門 D は長机(2人掛)だけ。長机(2人掛)は 5 台、需要は合わせて 6 台
+    const b = sharedStock();
     const ix = b.ids();
     const r = fail(allocate(b.input(), await getHighs()));
-    expect(r.shortages).toEqual([
-      { requestedItemId: ix.itemId('long_desk_3'), groupId: null, demand: 6, supply: 5 },
-      { requestedItemId: ix.itemId('long_desk_2'), groupId: null, demand: 6, supply: 5 },
+    expect(r.shortages).toEqual([]);
+    expect(r.causes).toEqual([
+      { ruleCode: null, message: STOCK_SHORT_MESSAGE, details: [{ itemIds: [ix.itemId('long_desk_3'), ix.itemId('long_desk_2')], demand: 6, supply: 5 }] },
     ]);
+  });
+
+  it('共有する在庫の不足 + 無関係な運び元の制限（制限の団体に需要がない）：組み合わせとは言わず、在庫の不足を示す', async () => {
+    const b = sharedStock().rule(RULES.restrict('S05', 'E', ['chair'], ['A']));
+    const ix = b.ids();
+    const r = fail(allocate(b.input(), await getHighs()));
+    expect(r.shortages).toEqual([]);
+    expect(r.causes).toEqual([
+      { ruleCode: null, message: STOCK_SHORT_MESSAGE, details: [{ itemIds: [ix.itemId('long_desk_3'), ix.itemId('long_desk_2')], demand: 6, supply: 5 }] },
+    ]);
+  });
+
+  it('共有する在庫の不足 + 全部屋を許す運び元の制限（足りなくない制限）：組み合わせとは言わず、在庫の不足を示す', async () => {
+    const b = sharedStock().rule(RULES.restrict('S05', 'D', ['long_desk_2'], ['A']));
+    const ix = b.ids();
+    const r = fail(allocate(b.input(), await getHighs()));
+    expect(r.shortages).toEqual([]);
+    expect(r.causes.map((c) => c.message)).toEqual([STOCK_SHORT_MESSAGE]);
+    expect(r.causes[0]!.details).toEqual([{ itemIds: [ix.itemId('long_desk_3'), ix.itemId('long_desk_2')], demand: 6, supply: 5 }]);
+  });
+
+  it('団体つきの不足 + 無関係な運び元の制限（全部屋を許す）：組み合わせとは言わず、団体つきの不足を示す', async () => {
+    const b = new FixtureBuilder('d')
+      .room('A').stock('A', { desk: 3, desk_ng: 10 })
+      .group('G1', 'stall', 'A').group('G2', 'department', 'A').request('G1', { desk: 1 }).request('G2', { desk: 4 })
+      .rule(RULES.S01(), RULES.restrict('S05', 'G1', ['desk'], ['A']));
+    const ix = b.ids();
+    const r = fail(allocate(b.input(), await getHighs()));
+    expect(r.shortages).toEqual([{ requestedItemId: ix.itemId('desk'), groupId: ix.groupId('G2'), demand: 4, supply: 3 }]);
     expect(r.causes).toEqual([{ ruleCode: null, message: STOCK_SHORT_MESSAGE, details: [] }]);
   });
 

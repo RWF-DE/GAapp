@@ -11,7 +11,7 @@ export type Diagnosis = { shortages: Shortage[]; causes: Cause[] };
 
 export const INFEASIBLE_MESSAGE = '解けません';
 export const COMBINATION_MESSAGE = '複数の条件の組み合わせが原因です';
-/** 運び元の制限のルールがなく、どのルールを外しても解けないとき（代替先を含めても在庫が足りない。shortages で示す） */
+/** 運び元の制限をすべて外しても解けないとき（代替先を含めても在庫が足りない。団体つきの不足は shortages、共有する在庫の不足は details で示す） */
 export const STOCK_SHORT_MESSAGE = '代替を含めても在庫が足りません';
 
 /** 試すのは source_restrict・keep・fixed_request（代替ルールは外しても解けるようにならない。K-26） */
@@ -125,12 +125,12 @@ function combinationCause(ctx: Ctx, prepared: Prepared): Cause {
 }
 
 /**
- * 運び元の制限がないときの、代替先を共有する在庫の不足。
+ * 代替先を共有する在庫の不足（運び元の制限は見ない）。
  * 需要の (団体・申請品目) から候補の品目 J(g,i) へ、品目から在庫の合計へ流す最大流を求め、流しきれなければ
  * 残余グラフで始点から届く (団体・申請品目) の集まりとその J の和集合を、足りない組として返す（Hall の条件を破る組）。
- * 申請品目ごとに1件。demand・supply はその組全体の合計（groupId は null）
+ * 組全体で1件（Shortage は品目全体か団体つきなので使わない）。itemIds は組の申請品目と代替先（品目の順）、demand・supply は組の合計
  */
-function sharedStockShortages(ctx: Ctx, prepared: Prepared): Shortage[] {
+function sharedStockDetail(ctx: Ctx, prepared: Prepared): Detail | null {
   type Pair = { itemId: string; demand: number; js: string[] };
   const pairs: Pair[] = [];
   for (const g of ctx.groups) {
@@ -193,12 +193,13 @@ function sharedStockShortages(ctx: Ctx, prepared: Prepared): Shortage[] {
   }
   const { seen } = reach();
   const reached = pairs.filter((_, k) => seen[2 + k]);
-  if (reached.length === 0) return [];
+  if (reached.length === 0) return null;
   const demand = reached.reduce((a, p) => a + p.demand, 0);
   const js = new Set(reached.flatMap((p) => p.js));
   const supply = [...js].reduce((a, j) => a + supplyOfItem.get(j)!, 0);
-  if (demand <= supply) return [];
-  return ctx.items.filter((it) => reached.some((p) => p.itemId === it.id)).map((it) => ({ requestedItemId: it.id, groupId: null, demand, supply }));
+  if (demand <= supply) return null;
+  const ids = new Set([...reached.map((p) => p.itemId), ...js]);
+  return { itemIds: ctx.items.filter((it) => ids.has(it.id)).map((it) => it.id), demand, supply };
 }
 
 /**
@@ -221,12 +222,23 @@ export function diagnose(input: AllocateInput, solver: LpSolver, found: readonly
     if (solvesWithout(full, solver, disabled, rule.code)) causes.push(causeOf(ctx, prepared, rule));
   }
   if (causes.length === 0 && itemWide.length === 0) {
-    if (ctx.rules.some((r) => r.kind === 'source_restrict')) {
+    // 運び元の制限が効いているかどうかで分ける：制限をすべて外すと解けるなら組み合わせ、外しても解けないなら在庫の不足
+    const restrictCodes = ctx.rules.filter((r) => r.kind === 'source_restrict').map((r) => r.code);
+    const relaxed = buildModel(full, { disabledRuleCodes: [...disabled, ...restrictCodes] });
+    const restrictionsMatter =
+      restrictCodes.length > 0 && relaxed.stage === 'ready' && runSolver(solver, relaxed.lp, relaxed.names).status === 'optimal';
+    if (restrictionsMatter) {
       causes.push(combinationCause(ctx, prepared));
     } else {
-      // 運び元の制限がなければ、解けないのは代替先を含めても在庫が足りないとき。LP だけが Infeasible のときは、共有する在庫の不足を示す
-      if (found.length === 0) shortages = sharedStockShortages(ctx, prepared);
-      causes.push({ ruleCode: null, message: STOCK_SHORT_MESSAGE, details: [] });
+      // 団体つきの不足は制限を外した入力で数え直す（制限のせいで出た不足を、在庫の不足として示さない）。LP だけが Infeasible のときは共有する在庫の不足を details に示す
+      const details: Detail[] = [];
+      if (relaxed.stage === 'shortage') shortages = [...itemWide, ...relaxed.cands.shortages];
+      else {
+        shortages = [...itemWide];
+        const shared = relaxed.stage === 'ready' ? sharedStockDetail(relaxed.ctx, relaxed.prepared) : null;
+        if (shared !== null) details.push(shared);
+      }
+      causes.push({ ruleCode: null, message: STOCK_SHORT_MESSAGE, details });
     }
   }
   return { shortages, causes };
