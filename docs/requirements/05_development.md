@@ -55,7 +55,7 @@ GAapp/
 | T00 | スパイク：highs-js をブラウザで動かし、R8 規模の輸送問題の計算時間と、解が整数で返ることを確かめる | — | S |  | 未着手 |
 | T01 | 組織と公開リポジトリ、pnpm workspace、lint・CI の雛形、GitHub Pages への公開 | — | M | Claude | 完了 |
 | T02 | DDL・列挙型・ビュー・監査トリガーのマイグレーション | T01 | M | Claude | 完了 |
-| T03 | RLS、権限の関数、RPC、pgTAP テスト | T02 | L |  | 未着手 |
+| T03 | RLS、権限の関数、RPC、pgTAP テスト | T02 | L | Claude | 完了 |
 | T04 | Google ログイン、ドメイン制限のフック、招待と受け入れのトリガー、テスト用ログイン | T03 | M |  | 未着手 |
 | T05 | importer：Googleフォーム回答の取り込みと、R8 の fixtures（正規化した申請と変換表） | T02 | M |  | 未着手 |
 | T06 | allocator：前処理、LP の組み立て、highs-js の実行、ルール4種、最小変更モード | T00、T05 | L |  | 未着手 |
