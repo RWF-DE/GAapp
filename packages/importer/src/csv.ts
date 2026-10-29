@@ -1,6 +1,8 @@
 // Googleフォームの回答 CSV を読む最小のパーサ（ブラウザでも動く。Node の API は使わない）。
 // Google / Excel が書き出す CSV に合わせ、BOM と CRLF・CR・LF を受け付ける（shared/testing の parseCsv は fixtures 用で厳格）。
 
+import { ImportFormatError } from './errors';
+
 export function parseCsvLoose(text: string): string[][] {
   const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
   const rows: string[][] = [];
@@ -40,7 +42,7 @@ export function parseCsvLoose(text: string): string[][] {
       started = true;
     }
   }
-  if (quoted) throw new Error('CSV の引用符が閉じていません');
+  if (quoted) throw new ImportFormatError('CSV の引用符が閉じていません');
   if (started || field !== '') {
     row.push(field);
     rows.push(row);

@@ -4,3 +4,4 @@ export * from './parse';
 export * from './resolve';
 export { containsEmail, stripEmails } from './sanitize';
 export { parseCsvLoose } from './csv';
+export { ImportFormatError } from './errors';

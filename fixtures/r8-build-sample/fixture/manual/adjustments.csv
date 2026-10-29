@@ -1,0 +1,6 @@
+group,item,op,count,reason
+剣道部(非飲食),desk,add,2,R8 で机2を追加
+剣道部(非飲食),chair,add,1,R8 で椅子1を追加
+企業イ,long_desk_3,set,1,総務の代理入力
+設営,desk,set,5,S06 の固定の数
+休憩所1,chair,add,2,総務の代理入力

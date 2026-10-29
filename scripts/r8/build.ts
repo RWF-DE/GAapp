@@ -19,7 +19,7 @@ import {
   type ItemCounts,
   type ReferenceAllocation,
 } from '@gaapp/shared/testing';
-import { parseCsvLoose, parseFormCsv, resolveResponses, type FormKind, type ImportGroup } from '../../packages/importer/src/index';
+import { ImportFormatError, parseCsvLoose, parseFormCsv, resolveResponses, type FormKind, type ImportGroup } from '../../packages/importer/src/index';
 
 /** メッセージに元データの値を入れない（行番号・見出し・fixtures の名前だけ） */
 export class BuildError extends Error {}
@@ -70,7 +70,13 @@ function readText(file: string, label: string): string {
 
 /** 見出しのある CSV。完全に空の行は飛ばす。rowNumber は見出し＝1 のレコード番号 */
 function readTable(file: string, label: string): Table {
-  const records = parseCsvLoose(readText(file, label));
+  let records: string[][];
+  try {
+    records = parseCsvLoose(readText(file, label));
+  } catch (e) {
+    if (e instanceof ImportFormatError) throw new BuildError(`${label}: ${e.message}`);
+    throw e;
+  }
   const header = records[0]?.map((h) => h.trim());
   if (!header) throw new BuildError(`${label}: 見出しがありません`);
   const rows: Table['rows'] = [];
@@ -256,6 +262,7 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
   const roomLookup = new Map<string, string>();
   for (const r of roomsTable.rows)
     for (const n of [r.cells.name!, ...(r.cells.aliases ? r.cells.aliases.split('|') : [])]) roomLookup.set(compact(n), r.cells.name!);
+  const roomUsable = new Map(roomsTable.rows.map((r) => [r.cells.name!, boolCell(r.cells.usable!, `rooms.csv:${r.rowNumber}`)]));
   const roomOrder = new Map(roomsTable.rows.map((r, i) => [r.cells.name!, i]));
 
   const report: BuildReport = {
@@ -296,7 +303,14 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
       if (kind !== 'company') throw new BuildError(`${SOURCE_FILES[kind]} がありません`);
       continue;
     }
-    const parsed = parseFormCsv(kind, readFileSync(src(kind), 'utf8'), itemDefs);
+    let parsed: ReturnType<typeof parseFormCsv>;
+    try {
+      parsed = parseFormCsv(kind, readFileSync(src(kind), 'utf8'), itemDefs);
+    } catch (e) {
+      // 見出しが合わないなど。メッセージには元データの値が入らない（ImportFormatError）ので、どのフォームの何が合わないかを示す
+      if (e instanceof ImportFormatError) throw new BuildError(`${SOURCE_FILES[kind]}: ${e.message}`);
+      throw e;
+    }
     for (const r of parsed.rejected) fail(kind, r.rowNumber, r.reason);
     for (const r of parsed.responses) if (r.groupName !== null) r.groupName = anonymize(r.groupName);
     const manualMap: Record<number, string> = {};
@@ -360,6 +374,8 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
   const reference = buildReference();
 
   function buildReference(): FixtureReference {
+    // 「残す」は団体名ではない。集計シートでは除き、振り分け表では運び元の部屋の団体の行にする（下）
+    const keepKey = compact('残す');
     const skipKeys = new Set([...RESERVED_GROUP_NAMES, '合計', '計', ...manual.referenceSkip].map(compact));
     const splitKeys = new Map(Object.entries(settings.splitGroups).map(([k, v]) => [compact(anonymize(k)), v]));
     const resolveUse = (use: string): { skip: true } | { skip: false; group?: string; split?: string[] } => {
@@ -378,13 +394,27 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
     const rows: Row[] = [];
     for (const r of t.rows) {
       const at = `${SOURCE_FILES.allocation}:${r.rowNumber}`;
-      const u = resolveUse(r.cells['使用用途']!);
+      const useRaw = r.cells['使用用途']!;
+      let u: ReturnType<typeof resolveUse>;
+      let keepSource: string | undefined;
+      if (compact(useRaw) === keepKey) {
+        // 「残す」（S08）：使えない部屋の行は除く。使える部屋の行は、その部屋を使用場所とする団体の行にする
+        keepSource = roomLookup.get(compact(r.cells['運び元']!));
+        if (!keepSource) throw new BuildError(`${at}: rooms.csv の name・aliases に合わない運び元です`);
+        if (!roomUsable.get(keepSource)) continue;
+        const owners = manual.groups.filter((g) => g.location === keepSource);
+        if (owners.length !== 1)
+          throw new BuildError(
+            `${at}: 使用用途「残す」の運び元 ${keepSource} を使用場所とする団体が${owners.length === 0 ? 'ありません' : '複数あります'}（manual/groups.csv の location を確かめてください）`,
+          );
+        u = { skip: false, group: owners[0]!.name };
+      } else u = resolveUse(useRaw);
       if (u.skip) continue;
       const item = itemLookup(r.cells['品目']!);
       if (!item) throw new BuildError(`${at}: 品目として読めません`);
       const count = intCell(r.cells['数']!, at);
       if (count === 0) continue;
-      const source = roomLookup.get(compact(r.cells['運び元']!));
+      const source = keepSource ?? roomLookup.get(compact(r.cells['運び元']!));
       if (!source) throw new BuildError(`${at}: rooms.csv の name・aliases に合わない運び元です`);
       if (!u.group && !u.split) throw new BuildError(`${at}: 使用用途が団体に対応しません（manual/groups.csv の name・aliases か anonymize.csv に足してください）`);
       const noteRaw = r.cells['備考']!.normalize('NFKC').trim();

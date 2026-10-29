@@ -1,0 +1,12 @@
+name,display_name,category,is_food,location,sort_order,aliases,submission
+模擬店甲,,stall,true,1-1,1,甲店,form
+模擬店乙,,stall,false,1-2,2,,form
+剣道部(飲食),,stall,true,,3,剣道部（飲食）,form
+剣道部(非飲食),,stall,false,,4,剣道部（非飲食）,form
+学科展示,,department,false,2-1,5,,form
+研究室A,,department,false,,6,,form
+企業ア,,company,false,,7,,form
+企業イ,,company,false,,8,,proxy
+設営,,department,false,,9,,proxy
+休憩所1,,rest_area,false,,10,,proxy
+未提出団体,,stall,false,,11,,none

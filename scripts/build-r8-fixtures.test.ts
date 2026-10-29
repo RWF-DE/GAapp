@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, appendFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, appendFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,7 +19,7 @@ beforeEach(() => {
   work = mkdtempSync(path.join(tmpdir(), 'r8build-'));
   out = path.join(work, 'out');
   source = path.join(work, 'source');
-  cpSync(path.join(SAMPLE, 'out'), out, { recursive: true });
+  cpSync(path.join(SAMPLE, 'fixture'), out, { recursive: true });
   cpSync(path.join(SAMPLE, 'source'), source, { recursive: true });
 });
 afterEach(() => rmSync(work, { recursive: true, force: true }));
@@ -85,7 +85,7 @@ describe('build-r8-fixtures: 匿名化した小さなサンプル', () => {
     expect(at('設営')).toBe('2026-10-10T23:59:00+09:00');
     expect(at('未提出団体')).toBeNull();
     for (const f of ['rooms.csv', 'rules.json', 'meta.json', 'distance_overrides.csv', 'manual/groups.csv'])
-      expect(read(f)).toBe(readFileSync(path.join(SAMPLE, 'out', f), 'utf8'));
+      expect(read(f)).toBe(readFileSync(path.join(SAMPLE, 'fixture', f), 'utf8'));
   });
 
   it('申請：フォームの読み替え（学科の長机(3人掛)→長机(2人掛)の合算）と adjustments を当てる', () => {
@@ -130,9 +130,42 @@ describe('build-r8-fixtures: 匿名化した小さなサンプル', () => {
     run();
     const { allocations: a } = readReferenceDir(out)!;
     expect(a.map((x) => x.group)).not.toContain('予備');
-    expect(a.some((x) => x.source === '2-1' && x.item === 'desk')).toBe(false); // 余り・残すの行だけの運び元
+    expect(a.filter((x) => x.source === '2-1' && x.item === 'desk').map((x) => [x.group, x.count])).toEqual([['学科展示', 3]]); // 余りの行は入らない。残すは次のテスト
     expect(a.find((x) => x.group === '研究室A')!.count).toBe(1);
     expect(a.every((x) => x.note === null || x.note === 'キャスター机に交換')).toBe(true);
+  });
+
+  it('reference：使える部屋の「残す」は、その部屋を使用場所とする団体の行になる（S08）。申請との差も出ない', () => {
+    const r = run();
+    const { allocations: a } = readReferenceDir(out)!;
+    expect(a.filter((x) => x.group === '学科展示' && x.item === 'desk').map((x) => [x.source, x.count, x.requestedItem, x.note])).toEqual([
+      ['倉庫', 3, 'desk', null],
+      ['2-1', 3, 'desk', null],
+    ]);
+    expect(r.stdout).not.toMatch(/学科展示 desk/);
+  });
+
+  it('reference：使えない部屋の「残す」の行は入れない', () => {
+    const f = path.join(out, 'rooms.csv');
+    writeFileSync(f, readFileSync(f, 'utf8').replace('2-1,room,2,1,false,0,3,true,', '2-1,room,2,1,false,0,3,false,'));
+    const r = run();
+    expect(r.code, r.stderr).toBe(0);
+    const { allocations: a } = readReferenceDir(out)!;
+    expect(a.some((x) => x.source === '2-1')).toBe(true); // 長机(2人掛)は運び元の使用可否に依らない
+    expect(a.some((x) => x.source === '2-1' && x.item === 'desk')).toBe(false);
+  });
+
+  it('reference：使える部屋の「残す」に当たる団体がない・複数あるときは、行番号つきで失敗する', () => {
+    const g = path.join(out, 'manual', 'groups.csv');
+    const orig = readFileSync(g, 'utf8');
+    writeFileSync(g, orig.replace('学科展示,,department,false,2-1,', '学科展示,,department,false,,'));
+    let r = run();
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/allocation\.csv:9: .*残す.*ありません/);
+    writeFileSync(g, orig.replace('研究室A,,department,false,,', '研究室A,,department,false,2-1,'));
+    r = run();
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/allocation\.csv:9: .*残す.*複数/);
   });
 
   it('group_totals：集計シートと振り分け表の行の合計が違う団体は載せない', () => {
@@ -174,6 +207,22 @@ describe('build-r8-fixtures: 匿名化した小さなサンプル', () => {
 
 describe('build-r8-fixtures: 失敗のしかた（元データの値を出さない）', () => {
   const secret = '秘密の個人名ABC';
+  it('フォームの見出しが合わない：どのフォームの何が合わないかを示して失敗する', () => {
+    const f = path.join(source, 'forms', 'stall.csv');
+    writeFileSync(f, readFileSync(f, 'utf8').replaceAll('団体名', '店名'));
+    const r = run();
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('forms/stall.csv: 団体名の列が見つかりません');
+    expect(r.stderr).not.toContain('想定外');
+    expect(existsSync(path.join(out, 'groups.csv'))).toBe(false);
+  });
+  it('フォームの CSV の引用符が閉じていない：ファイル名つきで示して失敗する', () => {
+    appendFileSync(path.join(source, 'forms', 'department.csv'), `2026/10/06 12:00:00,"${secret}\n`);
+    const r = run();
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('forms/department.csv: CSV の引用符が閉じていません');
+    expect(r.stderr).not.toContain(secret);
+  });
   it('対応しない使用用途：名前を出さずに行番号だけを示して失敗する', () => {
     appendFileSync(path.join(source, 'allocation.csv'), `机(木),倉庫,${secret},1,\n`);
     const r = run();
@@ -213,12 +262,12 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
 describe('fixtures とスクリプトの出力に個人情報がない', () => {
   const files = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(path.join(dir, e.name)) : [path.join(dir, e.name)]));
-  it('fixtures/ の全ファイルに、予約ドメイン以外のメールがない。生成物の置き場（r8・synthetic・サンプルの out）には @ 自体がない', () => {
+  it('fixtures/ の全ファイルに、予約ドメイン以外のメールがない。生成物の置き場（r8・synthetic・サンプルの fixture）には @ 自体がない', () => {
     const root = path.join(repoRoot(), 'fixtures');
     for (const f of files(root)) {
       const text = readFileSync(f, 'utf8');
       expect(findEmails(text), path.relative(root, f)).toEqual([]);
-      if (/^(r8\/|synthetic\/|r8-build-sample\/out\/)/.test(path.relative(root, f).split(path.sep).join('/'))) expect(text, path.relative(root, f)).not.toContain(at);
+      if (/^(r8\/|synthetic\/|r8-build-sample\/fixture\/)/.test(path.relative(root, f).split(path.sep).join('/'))) expect(text, path.relative(root, f)).not.toContain(at);
     }
   });
   it('supabase/seed.sql があれば、予約ドメイン以外のメールがない', () => {

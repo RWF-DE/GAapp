@@ -2,6 +2,7 @@
 // 種類ごとの列の対応表にある列（団体名・品目・備考・タイムスタンプ）だけを読み、それ以外の列は読まずに捨てる（D-03）。
 import { MAX_COUNT } from '@gaapp/shared';
 import { parseCsvLoose } from './csv';
+import { ImportFormatError } from './errors';
 import { containsEmail, normalizeText, stripEmails } from './sanitize';
 
 export type FormKind = 'stall' | 'department' | 'company';
@@ -138,14 +139,14 @@ export function parseFormCsv(
 ): ParsedForm {
   const rows = parseCsvLoose(csv);
   const header = rows[0];
-  if (!header) throw new Error('CSV に見出しの行がありません');
+  if (!header) throw new ImportFormatError('CSV に見出しの行がありません');
   const { cols, ignored } = classifyHeaders(kind, header, items);
   const ts = cols.find((c) => c.role === 'timestamp');
-  if (!ts) throw new Error('タイムスタンプの列が見つかりません（見出しは「タイムスタンプ」にしてください）');
+  if (!ts) throw new ImportFormatError('タイムスタンプの列が見つかりません（見出しは「タイムスタンプ」にしてください）');
   const nameCols = cols.filter((c) => c.role === 'name');
-  if (FORM_COLUMN_MAP[kind].name && nameCols.length === 0) throw new Error('団体名の列が見つかりません');
+  if (FORM_COLUMN_MAP[kind].name && nameCols.length === 0) throw new ImportFormatError('団体名の列が見つかりません');
   const itemCols = cols.filter((c) => c.role === 'item');
-  if (itemCols.length === 0) throw new Error('品目の列が見つかりません（見出しが items の aliases と合いません）');
+  if (itemCols.length === 0) throw new ImportFormatError('品目の列が見つかりません（見出しが items の aliases と合いません）');
   const noteCols = cols.filter((c) => c.role === 'note');
   // 見出しのない列（値があればずれた行）
   const unnamed = new Set(header.map((h, i) => (compact(h) === '' ? i : -1)).filter((i) => i >= 0));

@@ -110,7 +110,7 @@ fixtures/r8 は、元データから決まるものを `scripts/build-r8-fixture
    | allocation_totals.csv | 振り分け表の団体別集計。1 列目が使用用途、ほかは品目の列 |
    | anonymize.csv | （団体名に個人名があるときだけ）列 `source_name,fixture_name` |
 
-2. 手で書くファイルを `fixtures/r8/` に置く：`meta.json`・`rooms.csv`・`rules.json`・`distance_overrides.csv`・`manual/`（`groups.csv`・`adjustments.csv`・`reference_skip.csv`・`settings.json`）。列は設計書 3.2・3.8。サンプルは [fixtures/r8-build-sample/out](fixtures/r8-build-sample/out)。
+2. 手で書くファイルを `fixtures/r8/` に置く：`meta.json`・`rooms.csv`・`rules.json`・`distance_overrides.csv`・`manual/`（`groups.csv`・`adjustments.csv`・`reference_skip.csv`・`settings.json`）。列は設計書 3.2・3.8。サンプルは [fixtures/r8-build-sample/fixture](fixtures/r8-build-sample/fixture)。
 3. 実行する：
 
    ```bash
