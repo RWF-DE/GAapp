@@ -12,6 +12,10 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EMAIL = /[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})(?![A-Za-z0-9-])/g;
 const ALLOWED_DOMAINS = new Set(['example.com', 'example.net', 'example.org']);
 const ALLOWED_TLDS = new Set(['example', 'test', 'invalid', 'localhost']);
+// このスクリプト自身のテストは、検出される例として JPRS の例示用ドメイン（許可リストの外）を使う。
+// そのファイルの中のこのドメインだけを、実行時の検査から外す（findEmails は検出する）。
+const SELF_TEST_FILE = 'scripts/check-emails.test.ts';
+const SELF_TEST_DOMAINS = new Set(['example.jp', 'example.ac.jp']);
 
 export function isAllowedDomain(domain) {
   const d = domain.toLowerCase();
@@ -63,6 +67,7 @@ function main() {
     }
     text.split('\n').forEach((line, i) => {
       for (const email of findEmails(line)) {
+        if (file === SELF_TEST_FILE && SELF_TEST_DOMAINS.has(email.split('@')[1].toLowerCase())) continue;
         bad++;
         // 値そのものはログに出さない（ログへの転記を避ける）
         console.error(`${file}:${i + 1}: メールアドレスらしき文字列 (${email.length} 文字)`);
