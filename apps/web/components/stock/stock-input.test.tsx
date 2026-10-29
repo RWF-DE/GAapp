@@ -2,7 +2,7 @@
 // 在庫入力の部品のテスト（画面の設計 7.1「在庫入力の読み取り専用の切り替えと最新でない年度の確認」。T10）。
 // Supabase は偽のクライアント（lib/testing/fake-supabase）に差し替え、立場は useAuth を差し替える。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Membership, YearSummary } from '@/lib/auth/membership';
@@ -119,14 +119,28 @@ interface Db {
   stocks: StockDbRow[];
   /** 2回目以降の stocks の読み込みで返す行（ほかの人の保存） */
   stocksLater?: StockDbRow[];
+  /** 部屋の stocks の n 回目（1 から）の読み込みの結果（あれば stocks・stocksLater より先に使う） */
+  roomRead?: (n: number) => FakeResult | undefined;
+  /** n 回目（1 から）の upsert の結果（undefined なら保存できたことにする） */
+  upsert?: (n: number) => FakeResult | undefined;
   allocated?: { id: string; item_id: string; count: number }[];
   prev?: { room_id: string; item_id: string; count: number }[];
+  /** previous_year_stocks の失敗 */
+  prevError?: boolean;
 }
+
+/** 通信の失敗（supabase-js は code '' と status 0 で返す）と、セッションの切れ（401） */
+const NETWORK: FakeResult = { error: { code: '', message: 'TypeError: Failed to fetch' }, status: 0 };
+const EXPIRED: FakeResult = { error: { code: 'PGRST301', message: 'JWT expired' }, status: 401 };
 
 function serve(db: Db) {
   let stockReads = 0;
+  let upsertCount = 0;
   fake.handler = (call) => {
     if (call.table === 'stocks' && opArgs(call, 'upsert').length > 0) {
+      upsertCount += 1;
+      const forced = db.upsert?.(upsertCount);
+      if (forced) return forced;
       const rows = opArgs(call, 'upsert')[0]![0] as { item_id: string; count: number }[];
       return { data: rows.map((r) => ({ ...stock(ITEMS.find((i) => i.id === r.item_id)!, r.count, `saved-${r.item_id}`), counted_at: '2026-10-29T09:30:00+00:00' })) };
     }
@@ -134,10 +148,12 @@ function serve(db: Db) {
       const isRoom = opArgs(call, 'eq').some(([col]) => col === 'room_id');
       if (!isRoom) return { data: db.stocks };
       stockReads += 1;
+      const forced = db.roomRead?.(stockReads);
+      if (forced) return forced;
       return { data: stockReads > 1 && db.stocksLater ? db.stocksLater : db.stocks };
     }
     if (call.table === 'allocations') return { data: db.allocated ?? [] };
-    if (call.table === 'rpc:previous_year_stocks') return { data: db.prev ?? [] };
+    if (call.table === 'rpc:previous_year_stocks') return db.prevError ? { error: { code: 'XX000', message: 'boom' }, status: 500 } : { data: db.prev ?? [] };
     if (call.table === 'profiles') return { data: [{ user_id: USER, display_name: 'テスト部員' }, { user_id: id(77), display_name: 'テスト管理者' }] };
     return { data: [] };
   };
@@ -148,11 +164,12 @@ function renderInput(o: { role: 'admin' | 'staff'; status: YearStatus; latest?: 
   const open: OpenYear = { membership: auth.membership as Membership, year: (auth.membership as Membership).year!, role: o.role, userId: USER };
   const storage = storageRooms([ROOM, ROOM2], []);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const r = render(
     <QueryClientProvider client={qc}>
       <StockInput open={open} year={yearRow(o.status, o.prev)} target={storage[0]!} storage={storage} items={ITEMS} />
     </QueryClientProvider>,
   );
+  return Object.assign(r, { qc });
 }
 
 const upserts = () => fake.issued.filter((c) => c.table === 'stocks' && opArgs(c, 'upsert').length > 0);
@@ -400,5 +417,170 @@ describe('StockInput：下書き', () => {
     renderInput({ role: 'staff', status: 'confirmed' });
     await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
     expect(screen.queryByTestId('draft-notice')).toBeNull();
+  });
+});
+
+describe('StockInput：読み直し（設計 2.6）', () => {
+  const theirs = () => [stock(DESK, 7, 'u-other', id(77)), stock(CHAIR, 20)];
+
+  it('未保存の入力がなければ、裏で読み直した数で作り直す（「前回の入力」も新しくなる）', async () => {
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('7'));
+    await waitFor(() => expect(screen.getByTestId('last-counted').textContent).toContain('テスト管理者'));
+    expect(screen.queryByTestId('stock-remote-change')).toBeNull();
+    expect(screen.queryByText('保存していない変更があります')).toBeNull();
+  });
+
+  it('入力があれば入力を残し、ほかの人が変えたことを知らせる。保存するときはほかの人の保存を確かめる', async () => {
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    const notice = await screen.findByTestId('stock-remote-change');
+    await waitFor(() => expect(notice.textContent).toContain('テスト管理者さんが'));
+    expect((deskInput() as HTMLInputElement).value).toBe('11');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const dialog = await screen.findByTestId('stock-conflict-dialog');
+    await waitFor(() => expect(dialog.textContent).toContain('テスト管理者さんが'));
+    expect(upserts()).toHaveLength(0);
+  });
+
+  it('知らせの「ほかの人の数を読み直す」で、相手の数にする（送らない）', async () => {
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)] };
+    serve(db);
+    const user = userEvent.setup();
+    const r = renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    db.stocks = theirs();
+    await act(() => r.qc.invalidateQueries());
+    const notice = await screen.findByTestId('stock-remote-change');
+    await user.click(within(notice).getByRole('button', { name: 'ほかの人の数を読み直す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('7'));
+    expect(screen.queryByTestId('stock-remote-change')).toBeNull();
+    expect(upserts()).toHaveLength(0);
+  });
+
+  it('名前を読めない人の保存は「ほかの人が … 保存しました（名前は表示できません）」', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], stocksLater: [stock(DESK, 7, 'u-other', null), stock(CHAIR, 20)] });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const dialog = await screen.findByTestId('stock-conflict-dialog');
+    expect(dialog.textContent).toContain('ほかの人が');
+    expect(dialog.textContent).toContain('保存しました（名前は表示できません）');
+    expect(dialog.textContent).not.toContain('名前を表示できませんさん');
+    expect(within(dialog).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['品目', 'ほかの人', 'あなた']);
+  });
+});
+
+describe('StockInput：保存できたか分からないとき・401', () => {
+  it('通信の失敗の「もう一度」で、読み直した行が送った数で数えた人が自分なら「保存されていました」（送り直さない）', async () => {
+    const mine = [
+      { ...stock(DESK, 11, 'u-mine-desk', USER), counted_at: '2026-10-29T09:30:00+00:00' },
+      { ...stock(CHAIR, 20, 'u-mine-chair', USER), counted_at: '2026-10-29T09:30:00+00:00' },
+    ];
+    // 1回目の upsert は DB に入ったが応答が届かなかった
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], upsert: (n) => (n === 1 ? NETWORK : undefined), roomRead: (n) => (n >= 3 ? { data: mine } : undefined) });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const banner = await screen.findByTestId('error-banner');
+    await user.click(within(banner).getByRole('button', { name: 'もう一度' }));
+    const saved = await screen.findByTestId('stock-saved');
+    expect(saved.textContent).toContain('保存されていました');
+    expect(screen.queryByTestId('stock-conflict-dialog')).toBeNull();
+    expect(upserts()).toHaveLength(1);
+    expect(screen.queryByText('保存していない変更があります')).toBeNull();
+  });
+
+  it('自分の保存が入っていても、その後に入力を変えていれば、その数で送る（確かめない）', async () => {
+    const mine = [stock(DESK, 11, 'u-mine-desk', USER), stock(CHAIR, 20, 'u-mine-chair', USER)];
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], upsert: (n) => (n === 1 ? NETWORK : undefined), roomRead: (n) => (n >= 3 ? { data: mine } : undefined) });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('error-banner');
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-saved');
+    expect(screen.queryByTestId('stock-conflict-dialog')).toBeNull();
+    expect(upserts()).toHaveLength(2);
+    expect((opArgs(upserts()[1]!, 'upsert')[0]![0] as { count: number }[])[0]!.count).toBe(12);
+  });
+
+  it('保存の前の読み直しで 401 になり、セッションの更新が通ったら保存を続ける', async () => {
+    auth.reauthenticate.mockResolvedValueOnce(true);
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], roomRead: (n) => (n === 2 ? EXPIRED : undefined) });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-saved');
+    expect(auth.reauthenticate).toHaveBeenCalledTimes(1);
+    expect(upserts()).toHaveLength(1);
+  });
+});
+
+describe('StockInput：前年の数を読めないとき', () => {
+  it('失敗を出し、「前年の数を読み直す」で読み直せる（前年がないのと見分ける）', async () => {
+    const db: Db = { stocks: [stock(DESK, 10), stock(CHAIR, 20)], prev: [{ room_id: ROOM.id, item_id: DESK.id, count: 8 }], prevError: true };
+    serve(db);
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting', prev: true });
+    const err = await screen.findByTestId('stock-prev-error');
+    expect(err.textContent).toContain('前年の数を読み込めませんでした');
+    expect(screen.queryAllByTestId('stock-prev').map((e) => e.textContent)).not.toContain('前年 —');
+    db.prevError = false;
+    await user.click(within(err).getByRole('button', { name: '前年の数を読み直す' }));
+    await waitFor(() => expect(screen.getAllByTestId('stock-prev').map((e) => e.textContent)).toEqual(['前年 8', '前年 —']));
+    expect(screen.queryByTestId('stock-prev-error')).toBeNull();
+  });
+});
+
+describe('StockInput：下書きの書き出し', () => {
+  const key = () => draftKey({ userId: USER, yearId: Y, screen: 'stock', target: ROOM.id });
+
+  it('pagehide で、待たずに下書きへ書き出す', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)] });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    expect(localStorage.getItem(key())).toBeNull();
+    window.dispatchEvent(new Event('pagehide'));
+    expect(JSON.parse(localStorage.getItem(key())!).value.counts).toEqual({ [DESK.id]: 11, [CHAIR.id]: 20 });
+  });
+
+  it('裏に回った（visibilitychange で hidden）ときも書き出す', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)] });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    expect(localStorage.getItem(key())).toBeNull();
+    const spy = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    try {
+      document.dispatchEvent(new Event('visibilitychange'));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(JSON.parse(localStorage.getItem(key())!).value.counts).toEqual({ [DESK.id]: 11, [CHAIR.id]: 20 });
   });
 });

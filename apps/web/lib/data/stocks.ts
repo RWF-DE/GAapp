@@ -232,6 +232,22 @@ export function detectOtherSave(loaded: readonly Pick<StockDbRow, 'item_id' | 'u
   return { changedItemIds: changed, by: latestCounted(changedRows) };
 }
 
+/**
+ * 読み直した行の変化が、応答の届かなかった自分の保存だけで説明できるか（設計 2.6「読み直して、値が自分の入れたものなら
+ * 『保存されていました』」）。部屋の全品目の行があり、数が送った数（sent）と同じで、変わった行の数えた人がすべて自分なら true。
+ */
+export function isOwnSave(
+  items: readonly Pick<ItemRow, 'id'>[],
+  latest: readonly StockDbRow[],
+  other: Pick<OtherSave, 'changedItemIds'>,
+  sent: StockCounts,
+  userId: string,
+): boolean {
+  const byItem = new Map(latest.map((r) => [r.item_id, r]));
+  if (!items.every((i) => byItem.get(i.id)?.count === (sent[i.id] ?? 0))) return false;
+  return other.changedItemIds.every((id) => byItem.get(id)?.counted_by === userId);
+}
+
 // ---- 保存 ----
 
 /** 部屋の全品目（0 を含む）の upsert の行。year_id・room_id・item_id・count だけ（counted_by・counted_at は DB が入れる。D-10） */
@@ -417,7 +433,8 @@ const cell = (count: number | null, prev: number | null): MatrixCell => ({
 
 /**
  * 保管場所 × 品目の表（設計 3.4）。各セルは今年の数と前年との差、行と列の合計。合計は「使用不可を除く」と「全部」。
- * 合計の前年は、同じ部屋の前年の数の合計（前年の行がない部屋は 0 とみなす）。数えていない部屋は今年の合計に入らない（0）。
+ * 合計の前年は、今年数えた部屋の前年の数の合計（前年の行がない部屋は 0 とみなす）。数えていない部屋は今年の合計に入らず（0）、
+ * 前年の合計からも除く（今年と同じ部屋どうしで比べる）。数えた部屋が1つもなければ合計の差は出さない。
  * prev が null なら前年度がない（差を出さない）。
  */
 export function buildStockMatrix(input: {
@@ -450,22 +467,25 @@ export function buildStockMatrix(input: {
     return { storage: s, counted, cells, total: cell(counted ? total : null, hasPrev && anyPrev ? prevTotal : null) };
   });
   const totals = (pick: (r: MatrixRow) => boolean): MatrixTotals => {
+    const picked = rows.filter(pick);
+    // 前年は今年数えた部屋だけを足す（数えている途中に、まだの部屋の前年の数で差が小さく出ないように）。
+    // 数えた部屋がなければ比べるものがないので差を出さない
+    const comparable = hasPrev && picked.some((r) => r.counted);
     const cells: Record<string, MatrixCell> = {};
     let all = 0;
     let allPrev = 0;
     for (const i of input.items) {
       let sum = 0;
       let sumPrev = 0;
-      for (const r of rows) {
-        if (!pick(r)) continue;
+      for (const r of picked) {
         sum += r.cells[i.id]?.count ?? 0;
-        sumPrev += r.cells[i.id]?.prev ?? 0;
+        if (r.counted) sumPrev += r.cells[i.id]?.prev ?? 0;
       }
-      cells[i.id] = cell(sum, hasPrev ? sumPrev : null);
+      cells[i.id] = cell(sum, comparable ? sumPrev : null);
       all += sum;
       allPrev += sumPrev;
     }
-    return { cells, total: cell(all, hasPrev ? allPrev : null) };
+    return { cells, total: cell(all, comparable ? allPrev : null) };
   };
   return {
     items: [...input.items],

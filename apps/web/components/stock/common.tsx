@@ -31,7 +31,12 @@ export function useOpenYear(): OpenYear | null {
 export const UNKNOWN_NAME = '名前を表示できません';
 
 export function countedName(info: CountedInfo, names: ReadonlyMap<string, string> | undefined): string {
-  return (info.countedBy && names?.get(info.countedBy)) || UNKNOWN_NAME;
+  return knownName(info, names) ?? UNKNOWN_NAME;
+}
+
+/** 数えた人の名前（読めなければ null。文の中で「○○さんが」と「ほかの人が…（名前は表示できません）」を分けるとき） */
+export function knownName(info: CountedInfo, names: ReadonlyMap<string, string> | undefined): string | null {
+  return (info.countedBy && names?.get(info.countedBy)) || null;
 }
 
 /** 「数えた（10/5 18:01・山田）」か「まだ」 */

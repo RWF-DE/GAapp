@@ -7,8 +7,12 @@
 // - 年度の状態とロールで書けるか（stockAccess）。管理者は振り分け中なら振り分けの合計より少なくなる品目を確かめ、確定中なら止める。
 // - 最新でない年度なら保存の前に確かめる（useNotLatestYearConfirm）。入力の途中で離れるときは確かめ、入力は部屋ごとの下書きに残す。
 //   下書きには入力の元にした行の updated_at も置き、戻した後の保存では、下書きを作った後のほかの人の保存も確かめる。
+//   下書きは 500 ms まとめて書くほか、画面を外れる・pagehide・裏に回った（visibilitychange で hidden）ときにすぐ書き出す。
+// - 読み直し（設計 2.6）：部屋の行を読み直したら、未保存の入力がなければその数で作り直し、入力があれば入力を残して
+//   「ほかの人が保存しました」と知らせる（入力の元の行は変えないので、保存の前のほかの人の保存の確かめが効く）。
+// - 通信の失敗の後の「もう一度」：読み直した行が送った数で、数えた人が自分なら「保存されていました」として終える。
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Ban, CheckCircle2 } from 'lucide-react';
+import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { AppLink } from '@/components/common/app-link';
@@ -39,6 +43,7 @@ import {
   detectOtherSave,
   fetchRoomAllocated,
   fetchRoomStocks,
+  isOwnSave,
   latestCounted,
   nextUncountedRoom,
   placeOf,
@@ -71,13 +76,21 @@ import {
 } from '@/lib/schemas/stock';
 import { useUnsavedChanges } from '@/lib/unsaved-changes';
 import { cn } from '@/lib/utils';
-import { countedName, type OpenYear } from './common';
+import { countedName, knownName, type OpenYear } from './common';
 
 type Phase = 'idle' | 'checking' | 'saving';
+
+/** 保存の前の読み直しで 401 になり、セッションを更新できなかった（onAuthError が signOut まで済ませた） */
+class AuthHandled extends Error {}
 
 /** 行の updated_at（品目の id → updated_at） */
 function stampsOf(rows: readonly StockDbRow[]): StockBaseStamps {
   return Object.fromEntries(rows.map((r) => [r.item_id, r.updated_at]));
+}
+
+/** detectOtherSave に渡す「読み込んだときの行」 */
+function loadedOf(stamps: StockBaseStamps) {
+  return Object.entries(stamps).map(([item_id, updated_at]) => ({ item_id, updated_at }));
 }
 
 interface Conflict {
@@ -135,10 +148,6 @@ export function StockInput({
   // 読み込んだときの行（ほかの人の保存を見分ける元）と入力中の数
   const [base, setBase] = useState<StockDbRow[] | null>(null);
   const [counts, setCounts] = useState<StockCounts | null>(null);
-  if (base === null && stocksQ.data) {
-    setBase(stocksQ.data);
-    setCounts(countsFromRows(items, stocksQ.data));
-  }
   const baseCounts = useMemo(() => (base ? countsFromRows(items, base) : null), [base, items]);
   const dirty = access.writable && !!counts && !!baseCounts && !sameCounts(items, counts, baseCounts);
   useUnsavedChanges(dirty);
@@ -146,6 +155,25 @@ export function StockInput({
   // 保存の直前に読み直した行とこれを比べるので、下書きを作った後のほかの人の保存も確かめられる
   const [restoredStamps, setRestoredStamps] = useState<StockBaseStamps | null>(null);
   const stamps = useMemo(() => restoredStamps ?? (base ? stampsOf(base) : null), [restoredStamps, base]);
+
+  // 読み直し（設計 2.6）：部屋の行が新しくなったら（ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、
+  // 自分の保存の後の invalidate など）、未保存の入力がなければその行で作り直す。入力があれば入力も元の行も残し、
+  // ほかの人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
+  const [seen, setSeen] = useState<StockDbRow[] | null>(null);
+  const [remote, setRemote] = useState<OtherSave | null>(null);
+  const data = stocksQ.data;
+  if (data && (data !== seen || (remote !== null && !dirty))) {
+    setSeen(data);
+    if (base === null || !dirty) {
+      setBase(data);
+      setCounts(countsFromRows(items, data));
+      setRestoredStamps(null);
+      setRemote(null);
+    } else if (stamps) {
+      const other = detectOtherSave(loadedOf(stamps), data);
+      if (other) setRemote(other);
+    }
+  }
   // ほかの人の保存のダイアログを閉じたら「保存」へフォーカスを戻す（送信中で押せなければ、終わってから戻す）
   const saveButtonRef = useRef<HTMLButtonElement>(null);
   const refocusSave = useRef(false);
@@ -154,6 +182,19 @@ export function StockInput({
   const draftKey = useMemo<DraftKey>(() => ({ userId: open.userId, yearId, screen: 'stock', target: roomId }), [open.userId, yearId, roomId]);
   const writer = useMemo(() => createDraftWriter<StockDraft>(draftKey), [draftKey]);
   useEffect(() => () => writer.flush(), [writer]);
+  // 次の QR の URL を開く・スマホで裏に回る・タブを閉じるときは、500 ms を待たずに書き出す（unmount だけでは間に合わない）
+  useEffect(() => {
+    const flush = () => writer.flush();
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') writer.flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [writer]);
   const [draft, setDraft] = useState(() => {
     const d = loadDraft<unknown>(draftKey);
     if (!d) return null;
@@ -171,9 +212,14 @@ export function StockInput({
   const [blocked, setBlocked] = useState<Shortfall[] | null>(null);
   const [conflict, setConflict] = useState<Conflict | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  /** 保存の表示：saved（今送って保存した）・recovered（前の送信で保存されていた） */
+  const [savedKind, setSavedKind] = useState<'saved' | 'recovered'>('saved');
+  // 最後に送った数（応答が届かなかったときに残す。「もう一度」で保存されていたかを確かめる。設計 2.6）
+  const lastSent = useRef<StockCounts | null>(null);
 
-  const last = base ? latestCounted(base) : null;
-  const namesQ = useProfileNames(yearId, [last?.countedBy ?? null, conflict?.other.by?.countedBy ?? null]);
+  // 「前回の入力」は今の DB の行（入力を残して元の行を変えないときも、読み直した行で出す）
+  const last = data ? latestCounted(data) : base ? latestCounted(base) : null;
+  const namesQ = useProfileNames(yearId, [last?.countedBy ?? null, conflict?.other.by?.countedBy ?? null, remote?.by?.countedBy ?? null]);
   const prev = useMemo(() => (prevQ.data ? previousCountMap(prevQ.data) : null), [prevQ.data]);
   const hasPrev = !!year.prev_year_id;
   const itemName = useMemo(() => new Map(items.map((i) => [i.id, i.name])), [items]);
@@ -210,18 +256,28 @@ export function StockInput({
     }
   };
 
+  /** 保存できた（今送った・前の送信で保存されていた）後の片づけ。rows が今の DB の部屋の行 */
+  const finishSaved = (rows: StockDbRow[], kind: 'saved' | 'recovered') => {
+    lastSent.current = null;
+    writer.clear();
+    setDraft(null);
+    setBase(rows);
+    setRestoredStamps(null);
+    setRemote(null);
+    setCounts(countsFromRows(items, rows));
+    setSavedKind(kind);
+    setSavedAt(kind === 'recovered' ? (latestCounted(rows)?.countedAt ?? new Date().toISOString()) : new Date().toISOString());
+    toast.success(kind === 'recovered' ? '保存されていました' : '保存しました');
+    queryClient.setQueryData(queryKeys.yearPart(yearId, 'stocks', 'room', roomId), rows);
+    for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
+  };
+
   const write = async (values: StockCounts, retried = false): Promise<void> => {
     setPhase('saving');
+    lastSent.current = values;
     try {
       const rows = await saveRoomStocks(yearId, roomId, items, values);
-      writer.clear();
-      setDraft(null);
-      setBase(rows);
-      setRestoredStamps(null);
-      setCounts(countsFromRows(items, rows));
-      setSavedAt(new Date().toISOString());
-      toast.success('保存しました');
-      for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
+      finishSaved(rows, 'saved');
     } catch (e) {
       // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks の upsert は同じ値で何度送っても同じ。2.6）
       if (classifyError(e).kind === 'auth' && !retried) {
@@ -247,10 +303,20 @@ export function StockInput({
     if (!(await notLatest.confirmBeforeWrite())) return;
     setPhase('checking');
     let proceed = false;
+    // 保存の前の読み直し。401 ならセッションの更新を1回試し、通れば読み直しを1回だけやり直して保存を続ける（読むだけなので送り直してよい）
+    const fresh = async <T,>(read: () => Promise<T>): Promise<T> => {
+      try {
+        return await read();
+      } catch (e) {
+        if (classifyError(e).kind !== 'auth') throw e;
+        if ((await onAuthError(e)) !== 'retry') throw new AuthHandled();
+        return read();
+      }
+    };
     try {
       if (access.shortfall !== 'none') {
         // 振り分けの合計は保存の直前に読み直す（DB の確定中の守りと同じ条件を先に確かめる）
-        const allocated = await fetchRoomAllocated(yearId, roomId);
+        const allocated = await fresh(() => fetchRoomAllocated(yearId, roomId));
         queryClient.setQueryData(queryKeys.yearPart(yearId, 'allocated', roomId), allocated);
         const list = shortfalls(items, parsed.data, allocated);
         if (list.length > 0) {
@@ -261,16 +327,27 @@ export function StockInput({
           if (!(await shortfallAsk.ask(list))) return;
         }
       }
-      const latest = await fetchRoomStocks(yearId, roomId);
-      const loaded = Object.entries(stamps).map(([item_id, updated_at]) => ({ item_id, updated_at }));
-      const other = detectOtherSave(loaded, latest);
+      const latest = await fresh(() => fetchRoomStocks(yearId, roomId));
+      const other = detectOtherSave(loadedOf(stamps), latest);
       if (other) {
-        setConflict({ latest, other });
-        return;
+        const sent = lastSent.current;
+        if (!sent || !isOwnSave(items, latest, other, sent, open.userId)) {
+          setConflict({ latest, other });
+          return;
+        }
+        // 変わったのは、応答の届かなかった自分の保存だけ（設計 2.6）。同じ数なら「保存されていました」で終え、
+        // その後に入力を変えていれば、読み直した行を元にしてその数で送る
+        if (sameCounts(items, parsed.data, sent)) {
+          finishSaved(latest, 'recovered');
+          return;
+        }
+        setBase(latest);
+        setRestoredStamps(null);
+        setRemote(null);
       }
       proceed = true;
     } catch (e) {
-      await handleError(e);
+      if (!(e instanceof AuthHandled)) await handleError(e);
       return;
     } finally {
       if (!proceed) setPhase('idle');
@@ -282,19 +359,26 @@ export function StockInput({
     if (!conflict || !counts) return;
     setBase(conflict.latest);
     setRestoredStamps(null);
+    setRemote(null);
     setConflict(null);
     await write(counts);
   };
 
-  const reloadLatest = () => {
-    if (!conflict) return;
-    setBase(conflict.latest);
+  /** ほかの人の数を入力にする（入力と下書きは捨てる） */
+  const adopt = (rows: StockDbRow[]) => {
+    setBase(rows);
     setRestoredStamps(null);
-    setCounts(countsFromRows(items, conflict.latest));
+    setRemote(null);
+    setCounts(countsFromRows(items, rows));
     writer.clear();
     setDraft(null);
-    setConflict(null);
     toast.info('ほかの人が保存した数を読み直しました');
+  };
+
+  const reloadLatest = () => {
+    if (!conflict) return;
+    adopt(conflict.latest);
+    setConflict(null);
   };
 
   useEffect(() => {
@@ -321,10 +405,14 @@ export function StockInput({
   }
 
   const busy = phase !== 'idle';
-  const otherName = conflict?.other.by ? countedName(conflict.other.by, namesQ.data) : null;
+  const otherName = conflict?.other.by ? knownName(conflict.other.by, namesQ.data) : null;
+  const remoteName = remote?.by ? knownName(remote.by, namesQ.data) : null;
+  const prevFailed = hasPrev && prevQ.isError;
+  // E2E が「読み込み終わった」を待つ印（部屋の行・前年・名前・振り分けの合計のどれかを読んでいる間は true）
+  const fetching = stocksQ.isFetching || prevQ.isFetching || namesQ.isFetching || allocQ.isFetching;
 
   return (
-    <div className={cn('mx-auto max-w-xl', access.writable && 'pb-4')}>
+    <div className={cn('mx-auto max-w-xl', access.writable && 'pb-4')} data-testid="stock-input" data-fetching={fetching ? 'true' : 'false'}>
       <LatestYearSwitch />
       <PageHeader title="在庫入力" />
 
@@ -390,9 +478,47 @@ export function StockInput({
             onReload={() => {
               setError(null);
               void stocksQ.refetch();
+              if (access.shortfall !== 'none') void allocQ.refetch();
             }}
             onRetry={classifyError(error).kind === 'network' || classifyError(error).kind === 'deadlock' ? () => void save() : undefined}
           />
+        ) : null}
+        {remote && dirty ? (
+          <div role="status" data-testid="stock-remote-change" className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <p>
+                {remote.by ? (
+                  remoteName ? (
+                    <>
+                      {remoteName}さんが <TokyoTime value={remote.by.countedAt} /> にこの部屋の数を保存しました。
+                    </>
+                  ) : (
+                    <>
+                      ほかの人が <TokyoTime value={remote.by.countedAt} /> にこの部屋の数を保存しました（名前は表示できません）。
+                    </>
+                  )
+                ) : (
+                  'ほかの人がこの部屋の数を保存しました。'
+                )}
+                入力はそのまま残しています。保存するときに、上書きするか読み直すかを選べます。
+              </p>
+              <Button size="sm" variant="outline" onClick={() => data && adopt(data)} disabled={busy}>
+                ほかの人の数を読み直す
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {prevFailed ? (
+          <div role="alert" data-testid="stock-prev-error" className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <p className="font-medium text-destructive">前年の数を読み込めませんでした（{messageFor(classifyError(prevQ.error))}）</p>
+              <Button size="sm" variant="outline" onClick={() => void prevQ.refetch()} disabled={prevQ.isFetching}>
+                前年の数を読み直す
+              </Button>
+            </div>
+          </div>
         ) : null}
         {blocked ? (
           <div role="alert" data-testid="stock-shortfall-blocked" className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
@@ -415,7 +541,7 @@ export function StockInput({
                 <div className="min-w-0 flex-1">
                   <p className="font-medium">{item.name}</p>
                   <p className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
-                    {hasPrev ? (
+                    {hasPrev && !prevFailed ? (
                       <span data-testid="stock-prev">前年 {prevQ.isPending ? '…' : prevCount === undefined ? '—' : prevCount}</span>
                     ) : null}
                     {access.shortfall !== 'none' && allocated > 0 ? (
@@ -426,11 +552,12 @@ export function StockInput({
                   </p>
                 </div>
                 <CountStepper
+                  size="lg"
                   label={`${item.name}の数`}
                   value={value}
                   onChange={(v) => change(item.id, v)}
                   disabled={!access.writable || busy}
-                  className="shrink-0 [&_button]:size-11 [&_input]:h-11 [&_input]:w-16 [&_input]:text-lg"
+                  className="shrink-0"
                 />
               </li>
             );
@@ -443,7 +570,7 @@ export function StockInput({
           <p className="flex items-center gap-2 font-medium">
             <CheckCircle2 aria-hidden className="size-4" />
             <span>
-              保存しました（<TokyoTime value={savedAt} format="time" />）
+              {savedKind === 'recovered' ? '保存されていました' : '保存しました'}（<TokyoTime value={savedAt} format="time" />）
             </span>
           </p>
           {next ? (
@@ -504,9 +631,15 @@ export function StockInput({
             <AlertDialogTitle>ほかの人が先に保存しています</AlertDialogTitle>
             <AlertDialogDescription>
               {conflict?.other.by ? (
-                <>
-                  {otherName}さんが <TokyoTime value={conflict.other.by.countedAt} /> に保存しています。
-                </>
+                otherName ? (
+                  <>
+                    {otherName}さんが <TokyoTime value={conflict.other.by.countedAt} /> に保存しています。
+                  </>
+                ) : (
+                  <>
+                    ほかの人が <TokyoTime value={conflict.other.by.countedAt} /> に保存しました（名前は表示できません）。
+                  </>
+                )
               ) : (
                 'この画面を開いた後に、ほかの人が保存しています。'
               )}

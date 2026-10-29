@@ -12,6 +12,7 @@ import {
   formatCell,
   formatDiff,
   groupByBuilding,
+  isOwnSave,
   latestCounted,
   nextUncountedRoom,
   placeOf,
@@ -276,6 +277,24 @@ describe('読む', () => {
   });
 });
 
+describe('isOwnSave（応答の届かなかった自分の保存。設計 2.6）', () => {
+  const ME = id(9);
+  const sent = { [DESK.id]: 11, [CHAIR.id]: 20 };
+  const latest = [stock(1, 1, 11, { counted_by: ME, updated_at: 'new-1' }), stock(1, 2, 20, { counted_by: ME, updated_at: 'new-2' })];
+  const other = { changedItemIds: [DESK.id, CHAIR.id] };
+
+  it('全品目の数が送った数と同じで、変わった行の数えた人が自分なら true', () => {
+    expect(isOwnSave(ITEMS, latest, other, sent, ME)).toBe(true);
+  });
+
+  it('数が違う・ほかの人が数えた・行が欠けていれば false', () => {
+    expect(isOwnSave(ITEMS, latest, other, { ...sent, [DESK.id]: 12 }, ME)).toBe(false);
+    expect(isOwnSave(ITEMS, latest, other, sent, id(77))).toBe(false);
+    expect(isOwnSave(ITEMS, [latest[0]!, { ...latest[1]!, counted_by: null }], other, sent, ME)).toBe(false);
+    expect(isOwnSave(ITEMS, [latest[0]!], other, sent, ME)).toBe(false);
+  });
+});
+
 describe('buildStockMatrix（在庫一覧の表。設計 3.4）', () => {
   const list = storageRooms([room(1), room(2), room(3)], [{ year_id: Y, room_id: id(3), usable: false, note: null, updated_at: 't' }]);
   const stocks = [stock(1, 1, 12), stock(1, 2, 20), stock(3, 1, 4)];
@@ -320,6 +339,25 @@ describe('buildStockMatrix（在庫一覧の表。設計 3.4）', () => {
     const m = buildStockMatrix({ storage: list, items: ITEMS, stocks: [], prev: [] });
     expect(m.rows.every((r) => !r.counted)).toBe(true);
     expect(m.allTotals.total.count).toBe(0);
+    // 比べる場所がないので、合計の前年との差は出さない
+    expect(m.allTotals.total).toEqual({ count: 0, prev: null, diff: null });
+    expect(m.allTotals.cells[DESK.id]).toEqual({ count: 0, prev: null, diff: null });
+  });
+
+  it('数えている途中：合計の前年との差は、今年数えた場所だけで比べる（まだの場所は前年からも除く）', () => {
+    const prev = [
+      { room_id: id(1), item_id: DESK.id, count: 10 },
+      { room_id: id(1), item_id: CHAIR.id, count: 21 },
+      { room_id: id(2), item_id: DESK.id, count: 3 },
+      { room_id: id(3), item_id: DESK.id, count: 4 },
+    ];
+    // 部屋2 はまだ数えていない（前年は机 3）
+    const m = buildStockMatrix({ storage: list, items: ITEMS, stocks, prev });
+    expect(m.rows[1]!.counted).toBe(false);
+    expect(m.usableTotals.cells[DESK.id]).toEqual({ count: 12, prev: 10, diff: 2 });
+    expect(m.usableTotals.total).toEqual({ count: 32, prev: 31, diff: 1 });
+    expect(m.allTotals.cells[DESK.id]).toEqual({ count: 16, prev: 14, diff: 2 });
+    expect(m.allTotals.total).toEqual({ count: 36, prev: 35, diff: 1 });
   });
 
   it('formatDiff', () => {

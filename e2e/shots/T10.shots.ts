@@ -109,6 +109,69 @@ test.describe('T10 部員', () => {
     }
   });
 
+  test('T10 ほかの人が保存したことの知らせ・前年の数の失敗・保存されていました', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', roles: { staff: true, admin: true }, prevYear: { dataset: 'small' } });
+    try {
+      const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
+      await pinYear(page, SEED_USER_IDS.staff, s.yearId);
+      await page.setViewportSize(MOBILE);
+      const fetched = page.getByTestId('stock-input');
+
+      // 前年の数を読めない
+      await page.route('**/rest/v1/rpc/previous_year_stocks*', (route) =>
+        route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ code: 'XX000', message: 'boom', details: '', hint: '' }) }),
+      );
+      await page.goto(`/stock/?room=${roomA}`);
+      await expect(page.getByTestId('stock-prev-error')).toBeVisible();
+      await expect(fetched).toHaveAttribute('data-fetching', 'false');
+      await shoot(page, 'T10', 'stock-prev-error-mobile');
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+
+      // 入力の途中で読み直した行が、ほかの人の保存だった（送信が conflict で返り、画面が読み直す）
+      await page.goto(`/stock/?room=${roomA}`);
+      await expect(input(page, '机(木)')).toHaveValue('10');
+      await expect(fetched).toHaveAttribute('data-fetching', 'false');
+      await plus(page, '机(木)').click();
+      await page.route('**/rest/v1/stocks?*', async (route) => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        await sql('update public.stocks set count = 19, counted_by = $3, counted_at = now() where year_id = $1 and room_id = $2 and item_id = $4', [
+          s.yearId,
+          roomA,
+          SEED_USER_IDS.admin,
+          s.ids.items.chair,
+        ]);
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ code: '23505', message: 'duplicate key', details: '', hint: '' }) });
+      });
+      await save(page).click();
+      await confirmNotLatest(page);
+      await expect(page.getByTestId('stock-remote-change')).toContainText('テスト管理者さんが');
+      await expect(fetched).toHaveAttribute('data-fetching', 'false');
+      await shoot(page, 'T10', 'stock-remote-change-mobile');
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await page.getByTestId('stock-remote-change').getByRole('button', { name: 'ほかの人の数を読み直す' }).click();
+      await expect(input(page, '椅子(木)')).toHaveValue('19');
+
+      // 送った upsert は DB に入ったが応答が届かなかった → 「もう一度」で「保存されていました」
+      await plus(page, '机(木)').click();
+      await page.route('**/rest/v1/stocks?*', async (route) => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        await route.fetch();
+        await route.abort('failed');
+      });
+      await save(page).click();
+      await confirmNotLatest(page);
+      await expect(page.getByTestId('error-banner')).toHaveAttribute('data-kind', 'network');
+      await page.getByTestId('error-banner').getByRole('button', { name: 'もう一度' }).click();
+      await confirmNotLatest(page);
+      await expect(page.getByTestId('stock-saved')).toContainText('保存されていました');
+      await page.getByTestId('stock-saved').scrollIntoViewIfNeeded();
+      await shoot(page, 'T10', 'stock-recovered-mobile');
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T10 読み取り専用（部員・振り分け中）と使用不可の部屋', async ({ page }) => {
     const s = await createScenario({ status: 'allocating', roles: { staff: true }, usable: { [SMALL.rooms.storageB]: false } });
     try {

@@ -169,6 +169,11 @@ export function StocksScreen() {
         {matrix.hasPrev ? 'セルは「今年の数（前年との差）」。' : '前年度がないので、前年との差は出しません。'}
         「まだ」はその場所をまだ数えていないことを表します。
       </p>
+      {matrix.hasPrev ? (
+        <p className="mb-2 text-xs text-muted-foreground" data-testid="stock-total-note">
+          合計の前年との差は、今年数えた場所だけで比べます（まだ数えていない場所は、今年と前年の両方から除きます）。
+        </p>
+      ) : null}
       <div className="max-h-[70vh] overflow-auto rounded-lg border">
         <table className="w-full border-collapse text-sm" data-testid="stock-matrix">
           <thead className="sticky top-0 z-20 bg-background">

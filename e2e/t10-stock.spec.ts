@@ -32,9 +32,13 @@ async function confirmNotLatest(page: Page): Promise<void> {
   await dialog.getByRole('button', { name: 'この年度に保存する' }).click();
 }
 
-/** 画面が読み込み終わるまで待つ（机(木)の数が出るまで） */
+/**
+ * 画面が読み込み終わるまで待つ：机(木)の数が出て、部屋の行・前年・名前・振り分けの合計のどれも読んでいない
+ * （data-fetching="false"）。この後に SQL でほかの人の保存を入れても、裏の読み込みに拾われない（保存の前の確かめで見つかる）。
+ */
 async function waitInput(page: Page, desk: number): Promise<void> {
   await expect(input(page, '机(木)')).toHaveValue(String(desk));
+  await expect(page.getByTestId('stock-input')).toHaveAttribute('data-fetching', 'false');
 }
 
 test.describe('T10 部員', () => {
@@ -179,6 +183,28 @@ test.describe('T10 部員', () => {
     }
   });
 
+  test('T10 前年の数を読めないとき：失敗を出し、読み直せる（前年がないのと見分ける）', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', roles: { staff: true }, prevYear: { dataset: 'small' } });
+    try {
+      const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
+      await pinYear(page, SEED_USER_IDS.staff, s.yearId);
+      await page.setViewportSize(MOBILE);
+      await page.route('**/rest/v1/rpc/previous_year_stocks*', (route) =>
+        route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ code: 'XX000', message: 'boom', details: '', hint: '' }) }),
+      );
+      await page.goto(`/stock/?room=${roomA}`);
+      const err = page.getByTestId('stock-prev-error');
+      await expect(err).toContainText('前年の数を読み込めませんでした');
+      await expect(page.getByTestId('stock-prev')).toHaveCount(0);
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await err.getByRole('button', { name: '前年の数を読み直す' }).click();
+      await expect(page.getByTestId('stock-item-row').filter({ hasText: '机(木)' }).getByTestId('stock-prev')).toHaveText('前年 10');
+      await expect(err).toHaveCount(0);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T10 下書き：入力の途中で別の画面へ移って戻ると、下書きから戻せる', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', roles: { staff: true } });
     try {
@@ -250,6 +276,87 @@ test.describe('T10 部員', () => {
       expect(after.get(desk)!.count).toBe(10);
       expect(after.get(chair)!.count).toBe(19);
       expect(after.get(chair)!.counted_by).toBe(SEED_USER_IDS.admin);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T10 読み直し：入力があるときに読み直した行がほかの人の保存なら、入力を残して知らせる（保存するときに選べる）', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', roles: { staff: true, admin: true } });
+    try {
+      const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
+      const desk = s.ids.items.desk!;
+      const chair = s.ids.items.chair!;
+      await pinYear(page, SEED_USER_IDS.staff, s.yearId);
+      await page.setViewportSize(MOBILE);
+      await page.goto(`/stock/?room=${roomA}`);
+      await waitInput(page, 10);
+      await plus(page, '机(木)').click();
+      // 保存の送信の間に管理者が椅子(木)を保存し、自分の送信は一意の違反（conflict）で返る → 画面が部屋の行を読み直す
+      await page.route('**/rest/v1/stocks?*', async (route) => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        await sql('update public.stocks set count = 19, counted_by = $3, counted_at = now() where year_id = $1 and room_id = $2 and item_id = $4', [
+          s.yearId,
+          roomA,
+          SEED_USER_IDS.admin,
+          chair,
+        ]);
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ code: '23505', message: 'duplicate key', details: '', hint: '' }) });
+      });
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await confirmNotLatest(page);
+      const notice = page.getByTestId('stock-remote-change');
+      await expect(notice).toContainText('テスト管理者さんが');
+      await expect(input(page, '机(木)')).toHaveValue('11');
+      await expect(input(page, '椅子(木)')).toHaveValue('20');
+      await expect(page.getByTestId('last-counted')).toContainText('テスト管理者');
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      // 保存すると、読み込んだ後のほかの人の保存として選ばせる
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await confirmNotLatest(page);
+      const dialog = page.getByTestId('stock-conflict-dialog');
+      await expect(dialog).toContainText('テスト管理者さんが');
+      await dialog.getByRole('button', { name: '読み直す' }).click();
+      await waitInput(page, 10);
+      await expect(input(page, '椅子(木)')).toHaveValue('19');
+      await expect(notice).toHaveCount(0);
+      const after = await roomStocks(s.yearId, roomA);
+      expect(after.get(desk)!.count).toBe(10);
+      expect(after.get(chair)!.count).toBe(19);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T10 応答が届かなかった保存：「もう一度」で読み直し、自分の保存が入っていれば「保存されていました」', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', roles: { staff: true } });
+    try {
+      const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
+      await pinYear(page, SEED_USER_IDS.staff, s.yearId);
+      await page.setViewportSize(MOBILE);
+      await page.goto(`/stock/?room=${roomA}`);
+      await waitInput(page, 10);
+      await plus(page, '机(木)').click();
+      // upsert は DB に届くが、応答はブラウザに届かない
+      let upserts = 0;
+      await page.route('**/rest/v1/stocks?*', async (route) => {
+        if (route.request().method() !== 'POST') return route.fallback();
+        upserts += 1;
+        const res = await route.fetch();
+        expect(res.ok()).toBe(true);
+        await route.abort('failed');
+      });
+      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await confirmNotLatest(page);
+      const banner = page.getByTestId('error-banner');
+      await expect(banner).toHaveAttribute('data-kind', 'network');
+      expect((await roomStocks(s.yearId, roomA)).get(s.ids.items.desk!)!.count).toBe(11);
+      await banner.getByRole('button', { name: 'もう一度' }).click();
+      await confirmNotLatest(page);
+      await expect(page.getByTestId('stock-saved')).toContainText('保存されていました');
+      await expect(page.getByTestId('stock-conflict-dialog')).toHaveCount(0);
+      await expect(banner).toHaveCount(0);
+      expect(upserts).toBe(1);
     } finally {
       await s.cleanup();
     }
