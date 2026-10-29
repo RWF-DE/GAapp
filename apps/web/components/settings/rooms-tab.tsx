@@ -24,12 +24,13 @@ import { setRoomUsable } from '@/lib/data/room-years';
 import { deleteRoom, fetchAllocationSources, fetchRooms, fetchRoomYears, insertRoom, updateRoom } from '@/lib/data/settings';
 import type { RoomRow, RoomYearRow } from '@/lib/db/types';
 import { ROOM_KIND_LABELS } from '@/lib/labels';
+import { classifyError, messageFor } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
 import { BUILDING_MAX, NAME_MAX, NOTE_MAX } from '@/lib/schemas/common';
 import { joinAliases, roomFormSchema, roomUsableSchema, type RoomFormInput, type RoomFormOutput } from '@/lib/schemas/settings';
 import { MAX_DISTANCE_COST } from '@gaapp/shared';
 import { DeleteWithRefsDialog } from './rule-refs';
-import { Field, FormSheet, selectClass, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
+import { Field, FormSheet, GlobalReadOnlyNote, selectClass, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
 
 interface RoomView extends RoomRow {
   usable: boolean;
@@ -146,7 +147,7 @@ export function RoomsTab() {
         description={
           <>
             場所の変更はすべての年度に効きます（今年の使用だけは年度ごと）。建物の中の部屋は建物を入れてください（空欄の部屋は、距離の計算で別の建物として扱われます）。
-            {yearWritable && !globalWritable ? ' 開いている年度の管理者でないため、場所は編集できません。' : ''}
+            <GlobalReadOnlyNote what="場所" />
           </>
         }
         actions={
@@ -209,6 +210,9 @@ export function RoomsTab() {
           fixedRows={sourcesQ.data?.fixed.get(usableOf.id) ?? 0}
           allRows={sourcesQ.data?.all.get(usableOf.id) ?? 0}
           sourcesReady={!guardSources || sourcesQ.isSuccess}
+          sourcesError={guardSources && sourcesQ.isError ? sourcesQ.error : null}
+          sourcesReloading={sourcesQ.isFetching}
+          onReloadSources={() => void sourcesQ.refetch()}
           onClose={() => setUsableOf(null)}
         />
       ) : null}
@@ -307,12 +311,19 @@ function UsableDialog({
   fixedRows,
   allRows,
   sourcesReady,
+  sourcesError,
+  sourcesReloading,
+  onReloadSources,
   onClose,
 }: {
   room: RoomView;
   fixedRows: number;
   allRows: number;
   sourcesReady: boolean;
+  /** 振り分けの行（運び元）の読み込みの失敗。あれば使用不可にする前に知らせ、読み直せるようにする */
+  sourcesError: unknown;
+  sourcesReloading: boolean;
+  onReloadSources: () => void;
   onClose: () => void;
 }) {
   const { year } = useSettings();
@@ -373,6 +384,22 @@ function UsableDialog({
                 振り分け画面へ
               </AppLink>
             </p>
+          ) : null}
+          {makingUnusable && !sourcesReady ? (
+            sourcesError ? (
+              <div role="alert" className="space-y-2 text-sm text-destructive" data-testid="usable-sources-error">
+                <p>
+                  振り分けの行を読めなかったので、この場所を使用不可にできるかを確かめられません（{messageFor(classifyError(sourcesError))}）。
+                </p>
+                <Button type="button" size="sm" variant="outline" onClick={onReloadSources} disabled={sourcesReloading}>
+                  {sourcesReloading ? '読み直し中…' : '読み直す'}
+                </Button>
+              </div>
+            ) : (
+              <p role="status" className="text-sm text-muted-foreground">
+                振り分けの行を確かめています…
+              </p>
+            )
           ) : null}
           {blockedByConfirmed ? (
             <p role="alert" className="text-sm text-destructive">

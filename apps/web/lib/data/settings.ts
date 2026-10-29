@@ -19,7 +19,7 @@ import { updateWithLock } from '@/lib/db/update-with-lock';
 import { appError, toAppError } from '@/lib/errors';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { callRpc } from '@/lib/rpc';
-import type { AppRole } from '@/lib/auth/membership';
+import type { AppRole, YearSummary } from '@/lib/auth/membership';
 import type { GroupCsvRow } from '@/lib/schemas/settings';
 import { nameKey } from '@/lib/schemas/settings';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
@@ -123,6 +123,76 @@ export function rulesReferencing(
     (r.enabled ? out.enabled : out.disabled).push(ref);
   }
   return out;
+}
+
+// ---- 場所の削除の前：終了していない年度のルール（2.7・3.2） ----
+
+/**
+ * 場所（全年度で共有）を参照するルールを探す年度。終了していない年度のうち、ルールを読める年度（その年度の admin・staff。
+ * rules の RLS）と、読めない年度（団体代表・閲覧のみ）に分ける。1日目の新しい順。ロールも団体代表もない年度は years を読めないので
+ * ここに出てこない（画面では確かめられない。DB での強制は notes/T09.md の申し送り）。純粋関数。
+ */
+export function openYearsForRoomRefs(
+  years: readonly YearSummary[],
+  roles: readonly { year_id: string; role: AppRole }[],
+): { readable: YearSummary[]; unreadable: YearSummary[] } {
+  const canRead = new Set(roles.filter((r) => r.role === 'admin' || r.role === 'staff').map((r) => r.year_id));
+  const open = years
+    .filter((y) => y.status !== 'closed')
+    .sort((a, b) => cmp(b.festival_start, a.festival_start) || cmp(b.label, a.label) || cmp(b.id, a.id));
+  return { readable: open.filter((y) => canRead.has(y.id)), unreadable: open.filter((y) => !canRead.has(y.id)) };
+}
+
+export interface RoomRuleRefs {
+  /** 参照しているルールがある年度だけ（年度の順） */
+  byYear: { year: YearSummary; refs: RuleRefs }[];
+  /** 参照している有効なルールの数（すべての年度。1以上なら削除を押せない） */
+  enabledCount: number;
+  /** ルールを読めなかった終了していない年度（削除の前に知らせる） */
+  unreadable: YearSummary[];
+}
+
+/** 終了していない年度のルールから、その場所を参照するものを年度ごとに探す（rulesReferencing を年度ごとに）。純粋関数 */
+export function roomRefsAcrossYears(
+  rules: readonly (RuleRefSource & { year_id: string })[],
+  scope: { readable: readonly YearSummary[]; unreadable: readonly YearSummary[] },
+  roomId: string,
+): RoomRuleRefs {
+  const byYear = scope.readable.flatMap((year) => {
+    const refs = rulesReferencing(
+      rules.filter((r) => r.year_id === year.id),
+      { roomId },
+    );
+    return refs.enabled.length + refs.disabled.length > 0 ? [{ year, refs }] : [];
+  });
+  return {
+    byYear,
+    enabledCount: byYear.reduce((n, y) => n + y.refs.enabled.length, 0),
+    unreadable: [...scope.unreadable],
+  };
+}
+
+/**
+ * 終了していない年度のうち読める年度のルールを読む（場所の削除の前）。年度と自分のロールを読み直してから（開いた後に年度が
+ * 作られた・終了した・ロールが変わったときも、その時点の年度で確かめる）、読める年度のルールを1回で読む。
+ */
+export async function fetchOpenYearRules(
+  userId: string,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<{ scope: { readable: YearSummary[]; unreadable: YearSummary[] }; rules: RuleDbRow[] }> {
+  const [years, roles] = await Promise.all([
+    client.from('years').select('id, label, status, festival_start'),
+    client.from('year_roles').select('year_id, role').eq('user_id', userId),
+  ]);
+  if (years.error) throw toAppError(years.error, years.status);
+  if (roles.error) throw toAppError(roles.error, roles.status);
+  const scope = openYearsForRoomRefs((years.data ?? []) as YearSummary[], roles.data ?? []);
+  if (scope.readable.length === 0) return { scope, rules: [] };
+  const ids = scope.readable.map((y) => y.id);
+  const rules = await fetchAll((from, to) =>
+    client.from('rules').select(COLUMNS.rules).in('year_id', ids).order('id').range(from, to),
+  );
+  return { scope, rules: rules as unknown as RuleDbRow[] };
 }
 
 // ---- 年度 ----

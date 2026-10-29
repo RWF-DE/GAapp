@@ -22,7 +22,7 @@ import { classifyError } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
 import { BUILDING_MAX } from '@/lib/schemas/common';
 import { distanceFormSchema, type DistanceFormInput, type DistanceFormOutput } from '@/lib/schemas/settings';
-import { Field, FormSheet, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
+import { Field, FormSheet, GlobalReadOnlyNote, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
 
 const keyOf = (r: Pick<DistanceOverrideRow, 'building_a' | 'building_b'>) => `${r.building_a}\u0000${r.building_b}`;
 
@@ -85,7 +85,12 @@ export function DistanceTab() {
       <section>
         <TabHeading
           title="建物どうしの距離の上書き"
-          description={`距離を変えると、次の自動振り分けから効きます（すべての年度に効きます）。コストは 0〜${MAX_DISTANCE_COST}。`}
+          description={
+            <>
+              距離を変えると、次の自動振り分けから効きます（すべての年度に効きます）。コストは 0〜{MAX_DISTANCE_COST}。
+              <GlobalReadOnlyNote what="距離" />
+            </>
+          }
           actions={
             globalWritable ? (
               <Button onClick={() => setEditing('new')} data-testid="distance-add">

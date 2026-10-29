@@ -3,7 +3,17 @@ import { describe, expect, it } from 'vitest';
 import type { GroupRow, RuleDbRow } from '@/lib/db/types';
 import type { GroupCsvRow } from '@/lib/schemas/settings';
 import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
-import { createYearFrom, parseSettingsTab, planGroupImport, rulesReferencing, saveGroupImport, yearPatch } from './settings';
+import {
+  createYearFrom,
+  fetchOpenYearRules,
+  openYearsForRoomRefs,
+  parseSettingsTab,
+  planGroupImport,
+  roomRefsAcrossYears,
+  rulesReferencing,
+  saveGroupImport,
+  yearPatch,
+} from './settings';
 
 const G1 = '00000000-0000-4000-8000-000000000001';
 const G2 = '00000000-0000-4000-8000-000000000002';
@@ -182,5 +192,89 @@ describe('createYearFrom', () => {
     expect(r.disabledRuleCodes).toEqual(['S05']);
     const rpcArgs = opArgs(issued[0]!, 'rpc')[0]![0];
     expect(rpcArgs).toEqual({ p_prev_year_id: PREV, p_label: 'R10', p_festival_start: '2027-10-16' });
+  });
+});
+
+describe('場所の削除の前：終了していない年度のルール（場所は全年度で共有）', () => {
+  const y = (id: string, label: string, status: 'preparing' | 'requesting' | 'allocating' | 'confirmed' | 'closed', festival_start: string) => ({
+    id,
+    label,
+    status,
+    festival_start,
+  });
+  const R8 = y('y8', 'R8', 'confirmed', '2026-10-17');
+  const R9 = y('y9', 'R9', 'preparing', '2027-10-16');
+  const R7 = y('y7', 'R7', 'closed', '2025-10-18');
+  const R10 = y('y10', 'R10', 'requesting', '2028-10-14');
+
+  it('openYearsForRoomRefs：終了した年度は見ない。admin・staff の年度は読め、団体代表・閲覧のみ・ロールのない年度は読めない', () => {
+    const scope = openYearsForRoomRefs(
+      [R7, R8, R9, R10],
+      [
+        { year_id: 'y7', role: 'admin' },
+        { year_id: 'y8', role: 'staff' },
+        { year_id: 'y9', role: 'admin' },
+        { year_id: 'y10', role: 'viewer' },
+      ],
+    );
+    expect(scope.readable.map((x) => x.label)).toEqual(['R9', 'R8']);
+    expect(scope.unreadable.map((x) => x.label)).toEqual(['R10']);
+    // 団体代表だけの年度（ロールの行がない）も読めない
+    expect(openYearsForRoomRefs([R8, R9], [{ year_id: 'y9', role: 'admin' }]).unreadable.map((x) => x.label)).toEqual(['R8']);
+  });
+
+  it('roomRefsAcrossYears：表示中でない年度の有効なルールも見つけ、年度ごとに分ける', () => {
+    const rules = [
+      { ...rule('S05', 'source_restrict', { group: G1, items: ['desk'], rooms: [R1] }), year_id: 'y8' },
+      { ...rule('S08', 'keep', { group: G2, room: R1, items: { desk: 2 } }, false), year_id: 'y9' },
+      { ...rule('S09', 'keep', { group: G2, room: R2, items: { desk: 2 } }), year_id: 'y9' },
+    ];
+    const r = roomRefsAcrossYears(rules, { readable: [R9, R8], unreadable: [R10] }, R1);
+    expect(r.byYear.map((x) => [x.year.label, x.refs.enabled.map((e) => e.code), x.refs.disabled.map((e) => e.code)])).toEqual([
+      ['R9', [], ['S08']],
+      ['R8', ['S05'], []],
+    ]);
+    expect(r.enabledCount).toBe(1);
+    expect(r.unreadable.map((x) => x.label)).toEqual(['R10']);
+    // 参照がなければ年度の行を出さない
+    expect(roomRefsAcrossYears(rules, { readable: [R9, R8], unreadable: [] }, 'other').byYear).toEqual([]);
+  });
+
+  it('fetchOpenYearRules：年度と自分のロールを読み、読める終了していない年度のルールだけを1回で読む', async () => {
+    const { client, issued } = createFakeSupabase((call) => {
+      if (call.table === 'years') return { data: [R7, R8, R9, R10], error: null };
+      if (call.table === 'year_roles') {
+        return {
+          data: [
+            { year_id: 'y7', role: 'admin' },
+            { year_id: 'y8', role: 'admin' },
+            { year_id: 'y9', role: 'staff' },
+          ],
+          error: null,
+        };
+      }
+      if (call.table === 'rules') return { data: [{ ...rule('S05', 'keep', { room: R1 }), year_id: 'y8' }], error: null };
+      throw new Error(call.table);
+    });
+    const r = await fetchOpenYearRules('u1', client);
+    expect(r.scope.readable.map((x) => x.label)).toEqual(['R9', 'R8']);
+    expect(r.scope.unreadable.map((x) => x.label)).toEqual(['R10']);
+    expect(r.rules.map((x) => x.code)).toEqual(['S05']);
+    const roles = issued.find((c) => c.table === 'year_roles')!;
+    expect(opArgs(roles, 'eq')).toEqual([['user_id', 'u1']]);
+    const rulesCall = issued.find((c) => c.table === 'rules')!;
+    expect(opArgs(rulesCall, 'in')).toEqual([['year_id', ['y9', 'y8']]]);
+  });
+
+  it('fetchOpenYearRules：読める年度がなければルールを読まない', async () => {
+    const { client, issued } = createFakeSupabase((call) => {
+      if (call.table === 'years') return { data: [R8], error: null };
+      if (call.table === 'year_roles') return { data: [], error: null };
+      throw new Error(call.table);
+    });
+    const r = await fetchOpenYearRules('u1', client);
+    expect(r.rules).toEqual([]);
+    expect(r.scope.unreadable.map((x) => x.label)).toEqual(['R8']);
+    expect(issued.some((c) => c.table === 'rules')).toBe(false);
   });
 });

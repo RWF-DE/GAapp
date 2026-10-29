@@ -369,8 +369,10 @@ function InviteCard({ groups, onInvited }: { groups: readonly { id: string; name
     <Card>
       <CardHeader>
         <CardTitle>招待する</CardTitle>
-        <CardDescription>
-          学校の Google アカウントのメールアドレスを入れます。アカウントがあればその場でロールが付き、なければその人がログインしたときに付きます。
+        {/* applied が偽を「アカウントがない」と読ませない（アカウントがあっても今のメールを本人のものと確かめられなければ偽。D-17a） */}
+        <CardDescription data-testid="invite-description">
+          学校の Google アカウントのメールアドレスを入れます。すでにアカウントがあり、今のメールを本人のものと確かめられれば、その場でロールが付きます。
+          それ以外（まだアカウントがない、メールを確かめられないなど）は、その人が学校の Google アカウントでログインしたときに付きます。
         </CardDescription>
       </CardHeader>
       <CardContent>

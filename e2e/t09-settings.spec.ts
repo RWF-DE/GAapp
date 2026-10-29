@@ -194,6 +194,11 @@ test.describe('T09 ユーザー（使い捨てのユーザー）', () => {
       await loginWith(page, admin);
       await page.goto('/settings/?tab=users');
       const form = page.getByTestId('invite-form');
+      // 説明は applied が偽を「アカウントがない」と読ませない（アカウントがあってもメールを確かめられなければ偽。D-17a）
+      const description = page.getByTestId('invite-description');
+      await expect(description).toContainText('今のメールを本人のものと確かめられれば、その場でロールが付きます');
+      await expect(description).toContainText('メールを確かめられない');
+      await expect(description).not.toContainText('なければその人がログインしたときに付きます');
       const invite = async (email: string) => {
         await form.getByLabel('メールアドレス').fill(email);
         await form.getByLabel('立場').selectOption('staff');
@@ -282,9 +287,71 @@ test.describe('T09 マスタ設定（開いている年度の管理者が、終�
         await expect(page.getByTestId(add)).toHaveCount(0);
         await expect(page.getByRole('button', { name: '編集', exact: true })).toHaveCount(0);
         await expect(page.getByRole('button', { name: '削除', exact: true })).toHaveCount(0);
-        // 読み取り専用の理由は上の知らせ（終了した年度）。「開いている年度の管理者でない」とは言わない
+        // 読み取り専用の理由は終了した年度。「開いている年度の管理者でない」とは言わず、最新の年度で直すよう案内する
         await expect(page.getByText(/開いている年度の管理者でないため/)).toHaveCount(0);
+        await expect(page.getByTestId('global-read-only')).toContainText('最新の年度を開いて直してください');
       }
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+test.describe('T09 場所（開いている年度が2つ以上）', () => {
+  test('T09 場所の削除：表示中でない終了していない年度の有効なルールが参照していれば削除できず、ルールを読めない年度は知らせる', async ({ page }) => {
+    const u = await createUser({ purpose: 'rooms-refs' });
+    // 表示する年度（ルールなし）、部員の年度（S05 が 1-1 を運び元にする）、団体代表だけの年度（ルールを読めない）、終了した年度（見ない）
+    const shown = await createScenario({ status: 'requesting', dataset: 'small', rules: 'none', grants: [{ userId: u.id, role: 'admin' }] });
+    const other = await createScenario({ status: 'allocating', dataset: 'synthetic', grants: [{ userId: u.id, role: 'staff' }] });
+    const repOnly = await createScenario({ status: 'preparing', dataset: 'small' });
+    const closed = await createScenario({ status: 'closed', dataset: 'synthetic', grants: [{ userId: u.id, role: 'admin' }] });
+    try {
+      await sql('insert into public.group_members (group_id, user_id) values ($1, $2)', [repOnly.ids.groups[SMALL.groups.stall], u.id]);
+      await pinYear(page, u.id, shown.yearId);
+      await loginWith(page, u);
+      await page.goto('/settings/?tab=rooms');
+      await expect(page.getByTestId('current-year')).toContainText(shown.label);
+      await rowOf(page, '1-1').getByRole('button', { name: '削除' }).click();
+      const dialog = page.getByRole('alertdialog');
+      const refs = dialog.getByTestId('rule-refs');
+      await expect(refs).toContainText(other.label);
+      await expect(refs).toContainText('S05');
+      await expect(refs).not.toContainText(closed.label);
+      await expect(dialog.getByTestId('rule-refs-unreadable')).toContainText(repOnly.label);
+      await expect(dialog.getByRole('button', { name: '削除する' })).toBeDisabled();
+      await dialog.getByRole('button', { name: 'やめる' }).click();
+      expect(await sql("select id from public.rooms where name = '1-1'")).toHaveLength(1);
+    } finally {
+      await Promise.all([shown.cleanup(), other.cleanup(), repOnly.cleanup(), closed.cleanup()]);
+      await u.cleanup();
+    }
+  });
+});
+
+test.describe('T09 場所の今年の使用（管理者）', () => {
+  test.use({ storageState: storageStateFor('admin') });
+
+  test('T09 今年の使用：振り分けの行を読めなければ知らせて読み直せる（保存を押せないままにしない）', async ({ page }) => {
+    const s = await createScenario({ status: 'allocating', dataset: 'small', roles: { admin: true } });
+    try {
+      let fail = true;
+      await page.route('**/rest/v1/allocations*', async (route) => {
+        if (fail) await route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"e2e"}' });
+        else await route.continue();
+      });
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=rooms');
+      await rowOf(page, SMALL.rooms.class1).getByRole('button', { name: `${SMALL.rooms.class1}の今年の使用を変える` }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('今年は使用する').uncheck();
+      const err = dialog.getByTestId('usable-sources-error');
+      await expect(err).toContainText('振り分けの行を読めなかったので');
+      await expect(dialog.getByRole('button', { name: '保存' })).toBeDisabled();
+      fail = false;
+      await err.getByRole('button', { name: '読み直す' }).click();
+      await expect(err).toHaveCount(0);
+      await expect(dialog.getByRole('button', { name: '保存' })).toBeEnabled();
+      await dialog.getByRole('button', { name: 'やめる' }).click();
     } finally {
       await s.cleanup();
     }

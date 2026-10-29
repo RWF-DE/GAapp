@@ -8,8 +8,9 @@ import { toast } from 'sonner';
 import { Label } from '@/components/ui/label';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { useAuth } from '@/lib/auth/auth-provider';
-import { useAuthErrorHandler } from '@/lib/auth/guarded';
-import type { Membership } from '@/lib/auth/membership';
+import { Button } from '@/components/ui/button';
+import { useAuthErrorHandler, useGuardedSetYear } from '@/lib/auth/guarded';
+import { latestWritableYear, type Membership } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
 import { classifyError, effectOf, messageFor, type MessageContext } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
@@ -32,6 +33,30 @@ export function useSettings(): SettingsContextValue {
   const v = useContext(SettingsContext);
   if (!v) throw new Error('SettingsContext の外で使っている');
   return v;
+}
+
+/**
+ * 年度をまたぐ表（場所・品目・距離）のタブの説明に添える、読み取り専用の理由。終了した年度では、ほかの開いている年度の
+ * 管理者でも直せない（04「終了した年度では読み取り専用」）ので、最新の年度を開くよう案内する（開ける最新の年度があればボタンも）。
+ */
+export function GlobalReadOnlyNote({ what }: { what: '場所' | '品目' | '距離' }) {
+  const { year, membership, yearWritable, globalWritable } = useSettings();
+  const setYear = useGuardedSetYear();
+  if (globalWritable) return null;
+  if (yearWritable) {
+    return <span data-testid="global-read-only"> 開いている年度の管理者でないため、{what}は編集できません。</span>;
+  }
+  const latest = latestWritableYear(membership);
+  return (
+    <span className="mt-1 block" data-testid="global-read-only">
+      終了した年度のため、{what}は直せません（すべての年度で共有の表です）。最新の年度を開いて直してください。
+      {latest && latest.id !== year.id ? (
+        <Button type="button" variant="link" size="sm" className="h-auto px-1 py-0" onClick={() => void setYear(latest.id)}>
+          最新の年度（{latest.label}）を開く
+        </Button>
+      ) : null}
+    </span>
+  );
 }
 
 // ---- エラー ----
@@ -179,4 +204,6 @@ export const settingsKeys = {
   rules: (yearId: string) => queryKeys.yearPart(yearId, 'settings', 'rules'),
   members: (yearId: string) => queryKeys.yearPart(yearId, 'settings', 'members'),
   allocationSources: (yearId: string) => queryKeys.yearPart(yearId, 'settings', 'allocation_sources'),
+  /** 場所の削除の前に読む、終了していない年度のルール（年度をまたぐので年度を入れない。利用者ごと） */
+  openYearRules: (userId: string) => ['settings', 'open_year_rules', userId] as const,
 };
