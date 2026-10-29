@@ -55,16 +55,21 @@ describe('allocate：ok: false の形（設計 9 章、D-25）', () => {
     expect(res).toMatchObject({
       ok: false,
       reason: 'infeasible',
-      message: '解けません（不足の内訳は未実装）',
-      shortages: [{ requestedItemId: ix.itemId('lectern'), groupId: ix.groupId('H'), demand: 2, supply: 0 }],
+      message: '解けません',
+      shortages: [
+        { requestedItemId: ix.itemId('lectern'), groupId: null, demand: 2, supply: 0 },
+        { requestedItemId: ix.itemId('lectern'), groupId: ix.groupId('H'), demand: 2, supply: 0 },
+      ],
       causes: [],
     });
     expect(called).toBe(0);
   });
 
   it('infeasible（HiGHS が Infeasible）：1つずつの需要には候補が足りるが、合わせると足りない', async () => {
-    const res = allocate(base().request('H', { desk: 3 }).input(), await getHighs());
-    expect(res).toMatchObject({ ok: false, reason: 'infeasible', shortages: [], causes: [], stats: { solverStatus: 'Infeasible' } });
+    const b = base().request('H', { desk: 3 });
+    const res = allocate(b.input(), await getHighs());
+    // 品目全体では 6 台の需要に在庫 4 台（団体ごとの不足はない）
+    expect(res).toMatchObject({ ok: false, reason: 'infeasible', shortages: [{ groupId: null, demand: 6, supply: 4 }], causes: [], stats: { solverStatus: 'Infeasible' } });
   });
 
   it('solver_error：Optimal 以外・自己検算の不一致', () => {

@@ -11,5 +11,6 @@ export { runSolver, HIGHS_OPTIONS, INFEASIBLE_STATUSES, type LpSolver, type Solv
 export { toRows } from './rows';
 export { distance } from './distance';
 export { substituteOptions, allowedSources, canUse, substituteCost, type SubstituteOption } from './rules';
-export { diagnose, type Diagnosis } from './diagnose';
+export { diagnose, INFEASIBLE_MESSAGE, COMBINATION_MESSAGE, type Diagnosis } from './diagnose';
+export { validate } from './validate';
 export { findW107, contextFor, type W107Finding } from './w107';

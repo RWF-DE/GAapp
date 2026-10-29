@@ -1,6 +1,6 @@
 // allocate() の全体の流れ（設計 4 章）
 import type { AllocateFailureReason, AllocateInput, AllocateResult, AllocateStats, Cause, InputError, Issue, Shortage } from '@gaapp/shared';
-import { diagnose, DIAGNOSE_PENDING_MESSAGE } from './diagnose';
+import { diagnose, INFEASIBLE_MESSAGE } from './diagnose';
 import { buildModel, type BuildModelOptions, type Model } from './model';
 import { toRows } from './rows';
 import { runSolver, type LpSolver } from './solve';
@@ -10,7 +10,7 @@ const now = () => performance.now();
 export const FAILURE_MESSAGES: Record<AllocateFailureReason, string> = {
   invalid_input: '入力に誤りがあります',
   precheck: '振り分けの前に直すものがあります',
-  infeasible: DIAGNOSE_PENDING_MESSAGE,
+  infeasible: INFEASIBLE_MESSAGE,
   solver_error: '計算できませんでした',
 };
 
