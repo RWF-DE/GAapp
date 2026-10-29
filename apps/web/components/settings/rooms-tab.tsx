@@ -20,8 +20,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { setRoomUsable } from '@/lib/data/room-years';
-import { deleteRoom, fetchAllocationSources, fetchRooms, fetchRoomYears, insertRoom, updateRoom } from '@/lib/data/settings';
+import { deleteRoom, fetchAllocationSources, fetchRooms, fetchRoomYears, insertRoom, saveRoomYear, updateRoom } from '@/lib/data/settings';
 import type { RoomRow, RoomYearRow } from '@/lib/db/types';
 import { ROOM_KIND_LABELS } from '@/lib/labels';
 import { classifyError, messageFor } from '@/lib/errors';
@@ -50,7 +49,8 @@ export function RoomsTab() {
   });
   const [editing, setEditing] = useState<RoomRow | 'new' | null>(null);
   const [deleting, setDeleting] = useState<RoomRow | null>(null);
-  const [usableOf, setUsableOf] = useState<RoomView | null>(null);
+  // 今年の使用のダイアログは場所の id で持ち、読み直した後の行（room_years の updated_at）で保存する（2.3）
+  const [usableOfId, setUsableOfId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const onError = useWriteErrorHandler();
 
@@ -62,6 +62,8 @@ export function RoomsTab() {
       return { ...r, usable: y?.usable ?? true, usableNote: y?.note ?? null, roomYear: y };
     });
   }, [roomsQ.data, roomYearsQ.data]);
+
+  const usableOf = usableOfId ? (views?.find((v) => v.id === usableOfId) ?? null) : null;
 
   const combined = {
     data: views,
@@ -102,7 +104,7 @@ export function RoomsTab() {
                 variant="ghost"
                 className="h-7 px-2 text-xs underline"
                 aria-label={`${row.original.name}の今年の使用を変える`}
-                onClick={() => setUsableOf(row.original)}
+                onClick={() => setUsableOfId(row.original.id)}
               >
                 変える
               </Button>
@@ -213,7 +215,7 @@ export function RoomsTab() {
           sourcesError={guardSources && sourcesQ.isError ? sourcesQ.error : null}
           sourcesReloading={sourcesQ.isFetching}
           onReloadSources={() => void sourcesQ.refetch()}
-          onClose={() => setUsableOf(null)}
+          onClose={() => setUsableOfId(null)}
         />
       ) : null}
     </div>
@@ -333,6 +335,9 @@ function UsableDialog({
   const [note, setNote] = useState(room.usableNote ?? '');
   const [saving, setSaving] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
+  // 開いたときの行。読み直して updated_at が変わっていれば、ほかの人が変えたと知らせる（入力は残す）
+  const [opened] = useState(room);
+  const changedByOther = (room.roomYear?.updated_at ?? null) !== (opened.roomYear?.updated_at ?? null);
   useUnsavedChanges(usable !== room.usable || note !== (room.usableNote ?? ''));
 
   // 使用不可にするときの守り（3.2・3.9）：振り分け中は固定・手動の行、確定中は振り分けの行があれば、ここでは押せない
@@ -349,7 +354,7 @@ function UsableDialog({
     }
     setSaving(true);
     try {
-      await setRoomUsable(year.id, room.id, parsed.data.usable, parsed.data.note);
+      await saveRoomYear(year.id, room.id, room.roomYear, parsed.data.usable, parsed.data.note);
       toast.success(`「${room.name}」を今年は${parsed.data.usable ? '使用可' : '使用不可'}にしました`);
       await queryClient.invalidateQueries({ queryKey: queryKeys.year(year.id) });
       onClose();
@@ -368,6 +373,12 @@ function UsableDialog({
           <DialogDescription>{year.label} だけに効きます（ほかの年度は変わりません）。</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
+          {changedByOther ? (
+            <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-950" data-testid="usable-changed-by-other">
+              ほかの人がこの場所の今年の使用を変えました。いまの設定は「{room.usable ? '使用可' : '使用不可'}」
+              {room.usableNote ? `（メモ：${room.usableNote}）` : ''}です。確かめてから保存してください。
+            </p>
+          ) : null}
           <div className="flex items-center gap-2">
             <Checkbox id="room-usable" checked={usable} onCheckedChange={(c) => setUsable(c === true)} />
             <Label htmlFor="room-usable">今年は使用する</Label>

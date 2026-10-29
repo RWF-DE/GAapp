@@ -12,6 +12,7 @@ import {
   roomRefsAcrossYears,
   rulesReferencing,
   saveGroupImport,
+  saveRoomYear,
   yearPatch,
 } from './settings';
 
@@ -276,5 +277,53 @@ describe('場所の削除の前：終了していない年度のルール（場�
     expect(r.rules).toEqual([]);
     expect(r.scope.unreadable.map((x) => x.label)).toEqual(['R8']);
     expect(issued.some((c) => c.table === 'rules')).toBe(false);
+  });
+});
+
+describe('saveRoomYear（今年の使用。楽観ロック）', () => {
+  const Y = '00000000-0000-4000-8000-0000000000b1';
+  const ROW = { year_id: Y, room_id: R1, usable: false, note: '工事', updated_at: T };
+
+  it('行があれば読み込んだときの updated_at で update する（upsert しない）。メモは前後の空白を除き、空なら null', async () => {
+    const { client, issued } = createFakeSupabase(() => ({ data: { ...ROW, updated_at: 'new' } }));
+    const row = await saveRoomYear(Y, R1, { updated_at: T }, false, '  工事 ', client);
+    expect(row.updated_at).toBe('new');
+    const call = issued[0]!;
+    expect(call.table).toBe('room_years');
+    expect(opArgs(call, 'upsert')).toEqual([]);
+    expect(opArgs(call, 'update')).toEqual([[{ usable: false, note: '工事' }]]);
+    expect(opArgs(call, 'match')).toEqual([[{ year_id: Y, room_id: R1 }]]);
+    expect(opArgs(call, 'eq')).toEqual([['updated_at', T]]);
+    await saveRoomYear(Y, R1, { updated_at: T }, true, '   ', client);
+    expect(opArgs(issued[1]!, 'update')[0]![0]).toEqual({ usable: true, note: null });
+  });
+
+  it('ほかの人が先に変えて 0 行なら conflict（黙って上書きしない）', async () => {
+    const { client, issued } = createFakeSupabase((call) =>
+      opArgs(call, 'update').length > 0 ? { data: null } : { data: { updated_at: 'other' } },
+    );
+    await expect(saveRoomYear(Y, R1, { updated_at: T }, true, null, client)).rejects.toMatchObject({
+      info: { kind: 'conflict', reason: 'lock_conflict' },
+    });
+    expect(issued).toHaveLength(2);
+  });
+
+  it('行がなければ insert し、ほかの人が先に足していれば（23505）conflict', async () => {
+    const ok = createFakeSupabase(() => ({ data: ROW }));
+    await saveRoomYear(Y, R1, null, false, '工事', ok.client);
+    expect(opArgs(ok.issued[0]!, 'upsert')).toEqual([]);
+    expect(opArgs(ok.issued[0]!, 'insert')).toEqual([[{ year_id: Y, room_id: R1, usable: false, note: '工事' }]]);
+    const dup = createFakeSupabase(() => ({ error: { code: '23505', message: 'duplicate key value' }, status: 409 }));
+    await expect(saveRoomYear(Y, R1, null, true, null, dup.client)).rejects.toMatchObject({
+      info: { kind: 'conflict', reason: 'lock_conflict' },
+    });
+  });
+
+  it('RLS で書けなければ forbidden。id の形が違えば送らない', async () => {
+    const denied = createFakeSupabase(() => ({ error: { code: '42501', message: 'new row violates row-level security policy' }, status: 403 }));
+    await expect(saveRoomYear(Y, R1, null, false, null, denied.client)).rejects.toMatchObject({ info: { kind: 'forbidden' } });
+    const bad = createFakeSupabase(() => ({ data: null }));
+    await expect(saveRoomYear('x', R1, null, false, null, bad.client)).rejects.toMatchObject({ info: { kind: 'input' } });
+    expect(bad.issued).toHaveLength(0);
   });
 });

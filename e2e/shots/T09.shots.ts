@@ -123,6 +123,34 @@ test.describe('T09 マスタ設定（管理者）', () => {
     }
   });
 
+  test('T09 マスタ設定：今年の使用を開いている間にほかの人が変えたとき（conflict で読み直し、入力は残す）', async ({ page }) => {
+    const s = await createScenario({ dataset: 'small', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=rooms');
+      await page
+        .getByRole('row')
+        .filter({ has: page.getByRole('cell', { name: SMALL.rooms.class1, exact: true }) })
+        .getByRole('button', { name: `${SMALL.rooms.class1}の今年の使用を変える` })
+        .click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog.getByLabel('今年は使用する')).toBeChecked();
+      // ほかの管理者の保存の代わりに、DB で使用不可にしてメモを入れる
+      await sql(
+        `insert into public.room_years (year_id, room_id, usable, note)
+         select $1, id, false, '工事のため' from public.rooms where name = $2
+         on conflict (year_id, room_id) do update set usable = excluded.usable, note = excluded.note`,
+        [s.yearId, SMALL.rooms.class1],
+      );
+      await dialog.getByLabel('理由のメモ（任意）').fill('メモだけ直す');
+      await dialog.getByRole('button', { name: '保存' }).click();
+      await expect(dialog.getByTestId('usable-changed-by-other')).toBeVisible();
+      await shoot(page, 'T09', 'settings-room-usable-conflict-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T09 マスタ設定：保存中に通信が切れたとき（フォームは残して帯で知らせる）とルールを読めない年度がある場所の削除', async ({ page }) => {
     test.setTimeout(90_000);
     const s = await createScenario({ status: 'requesting', dataset: 'small', rules: 'none', roles: { admin: true } });

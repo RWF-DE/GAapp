@@ -403,6 +403,57 @@ test.describe('T09 場所の今年の使用（管理者）', () => {
       await s.cleanup();
     }
   });
+
+  test('T09 今年の使用：開いている間にほかの管理者が変えたら、後の保存は conflict になり、黙って上書きしない', async ({ page, browser }) => {
+    const s = await createScenario({ dataset: 'small', roles: { admin: true } });
+    const ctxB = await browser.newContext({ storageState: storageStateFor('admin') });
+    try {
+      const pageB = await ctxB.newPage();
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await pinYear(pageB, SEED_USER_IDS.admin, s.yearId);
+      const open = async (p: Page) => {
+        await p.goto('/settings/?tab=rooms');
+        await rowOf(p, SMALL.rooms.class1).getByRole('button', { name: `${SMALL.rooms.class1}の今年の使用を変える` }).click();
+        const d = p.getByRole('dialog');
+        await expect(d.getByLabel('今年は使用する')).toBeChecked();
+        return d;
+      };
+      const roomYear = () =>
+        sql<{ usable: boolean; note: string | null }>(
+          'select ry.usable, ry.note from public.room_years ry join public.rooms r on r.id = ry.room_id where ry.year_id = $1 and r.name = $2',
+          [s.yearId, SMALL.rooms.class1],
+        );
+
+      // A が開く（使用可・メモなし）→ その間に B が使用不可にしてメモを入れて保存する
+      const dialogA = await open(page);
+      const dialogB = await open(pageB);
+      await dialogB.getByLabel('今年は使用する').uncheck();
+      await dialogB.getByLabel('理由のメモ（任意）').fill('E2E 工事のため');
+      await dialogB.getByRole('button', { name: '保存' }).click();
+      await expect(pageB.getByText(`「${SMALL.rooms.class1}」を今年は使用不可にしました`)).toBeVisible();
+      await expect(dialogB).toHaveCount(0);
+
+      // A は古い表示のままメモだけ直して保存する → conflict。B の使用不可は残り、A の入力も残る
+      await dialogA.getByLabel('理由のメモ（任意）').fill('E2E メモだけ直す');
+      await dialogA.getByRole('button', { name: '保存' }).click();
+      await expect(page.getByText('他の人が先に変更しました。読み直しました')).toBeVisible();
+      const notice = dialogA.getByTestId('usable-changed-by-other');
+      await expect(notice).toContainText('「使用不可」');
+      await expect(notice).toContainText('E2E 工事のため');
+      await expect(dialogA.getByLabel('理由のメモ（任意）')).toHaveValue('E2E メモだけ直す');
+      expect(await roomYear()).toEqual([{ usable: false, note: 'E2E 工事のため' }]);
+
+      // 読み直した後は、A が確かめて保存し直せる
+      await dialogA.getByLabel('今年は使用する').uncheck();
+      await dialogA.getByRole('button', { name: '保存' }).click();
+      await expect(page.getByText(`「${SMALL.rooms.class1}」を今年は使用不可にしました`)).toBeVisible();
+      await expect(dialogA).toHaveCount(0);
+      expect(await roomYear()).toEqual([{ usable: false, note: 'E2E メモだけ直す' }]);
+    } finally {
+      await ctxB.close();
+      await s.cleanup();
+    }
+  });
 });
 
 test.describe('T09 マスタ設定の権限', () => {

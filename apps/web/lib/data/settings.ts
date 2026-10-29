@@ -22,6 +22,7 @@ import { callRpc } from '@/lib/rpc';
 import type { AppRole, YearSummary } from '@/lib/auth/membership';
 import type { GroupCsvRow } from '@/lib/schemas/settings';
 import { nameKey } from '@/lib/schemas/settings';
+import { NOTE_MAX, optionalText, uuidSchema } from '@/lib/schemas/common';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 
 // ---- タブ ----
@@ -395,7 +396,7 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
 
 async function insertOne<T>(
   client: AppSupabaseClient,
-  table: 'rooms' | 'items' | 'groups' | 'distance_overrides',
+  table: 'rooms' | 'room_years' | 'items' | 'groups' | 'distance_overrides',
   values: unknown,
   columns: string,
 ): Promise<T> {
@@ -419,6 +420,44 @@ export const updateRoom = (row: Pick<RoomRow, 'id' | 'updated_at'>, patch: Table
   updateWithLock(client, 'rooms', { id: row.id }, row.updated_at, patch);
 export const deleteRoom = (row: Pick<RoomRow, 'id' | 'updated_at'>, client: AppSupabaseClient = getSupabase()) =>
   deleteChecked(client, 'rooms', { id: row.id }, row.updated_at);
+
+const roomYearNoteSchema = optionalText(NOTE_MAX);
+
+/**
+ * 今年の使用（room_years）を、読み込んだときの行に対してだけ保存する（2.3。黙って上書きしない）。
+ * - current（読み込んだときの行。なければ null）がある → updateWithLock（updated_at が違えば conflict、行が消えていれば not_found）
+ * - current が null → insert。ほかの人が先に足していれば（23505）conflict
+ * どちらの conflict も、呼び出し側は room_years を読み直し、入力は残す。
+ * 書き込みで版が上がるので、成功した後は年度（queryKeys.year）を読み直す。
+ *
+ * @example
+ * await saveRoomYear(year.id, room.id, room.roomYear, false, '工事のため');
+ */
+export async function saveRoomYear(
+  yearId: string,
+  roomId: string,
+  current: Pick<RoomYearRow, 'updated_at'> | null,
+  usable: boolean,
+  note: string | null,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<RoomYearRow> {
+  if (!uuidSchema.safeParse(yearId).success || !uuidSchema.safeParse(roomId).success) {
+    throw appError('input', 'client_validation', { field: 'room_id' });
+  }
+  const n = roomYearNoteSchema.safeParse(note);
+  if (!n.success) throw appError('input', 'client_validation', { field: 'note' });
+  const match = { year_id: yearId, room_id: roomId };
+  if (current) {
+    return (await updateWithLock(client, 'room_years', match, current.updated_at, { usable, note: n.data })) as unknown as RoomYearRow;
+  }
+  try {
+    return await insertOne<RoomYearRow>(client, 'room_years', { ...match, usable, note: n.data }, COLUMNS.room_years);
+  } catch (e) {
+    const err = toAppError(e);
+    if (err.info.code === '23505') throw appError('conflict', 'lock_conflict', { table: 'room_years', match });
+    throw err;
+  }
+}
 
 export const insertItem = (v: ItemValues, client: AppSupabaseClient = getSupabase()) =>
   insertOne<ItemRow>(client, 'items', v, COLUMNS.items);
