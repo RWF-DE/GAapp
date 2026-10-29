@@ -133,7 +133,13 @@ Settings → Branches（または Rulesets）で main に次を設定する。
 4. **リダイレクト URL**：Authentication → URL Configuration の Site URL を `https://rwf-de.github.io/GAapp/`、Redirect URLs に `https://rwf-de.github.io/GAapp/auth/callback/` を足す（basePath 込み。ローカルの `http://127.0.0.1:3100/**` は supabase/config.toml にある）。
 5. **フックの有効化**：Authentication → Auth Hooks → Add hook → Before User Created → Postgres を選び、スキーマ `private`、関数 `hook_before_user_created` を選ぶ。必要な権限（supabase_auth_admin の usage と execute）は 0007 で与えてあるので、管理画面が権限を足すか聞いてきても、ほかの関数には与えない。
 6. **メールログインの無効化**：Authentication → Sign In / Providers → Email を無効にする（E2E のメール＋パスワードはローカルだけ）。フックはメールのサインアップも拒否するが、二重に止める。「Allow new users to sign up」は**有効のまま**にする（Google で初めてログインした人の auth.users を作るため。誰が使えるかは招待で決まる）。
-7. 確かめる：学校のアカウントでログインして「総務から招待されていません」が出ること、個人の Google アカウントでは「学校の Google アカウントでログインしてください」と出てログインできないこと。
+7. **必ず守る Auth の設定（変えない）**：招待（admin を含む）は「今のメールが本人のもの」と確かめられるアカウントにだけ付く。次のどれかを外すと、ログイン済みの人が自分のメールを招待された人のアドレスに変えて、その招待を受け取れるおそれがある（D-17a）。
+   - ログインは **Google だけ**。Email プロバイダーは無効（6）。Phone・匿名ログイン（Allow anonymous sign-ins）・ほかの外部プロバイダーも無効のまま。
+   - Authentication → Sign In / Providers → Email の **Confirm email** と **Secure email change** は**有効のまま**にする（Email プロバイダーを無効にしても、メールの変更の確認にこの設定が使われる）。
+   - Authentication → Sign In / Providers の **Allow manual linking** は**無効のまま**にする。有効だと、利用者が identity を足したり外したりできる。Confirm email も崩れていると、Google のユーザーがメールを変えて email の identity を作り、Google の identity を外して email だけのアカウントになり、「Google の identity のメールだけを見る」守りを抜けて他人の招待を取れる（D-17a）。無効なら Google の identity を外せないので、Confirm email が崩れても止まる。
+   - DB の側でも、auth.users.email と同じメールの、email_verified が真の Google の identity（Google の identity があるアカウントは、これだけを見る）か、受信箱で確かめた（email_verified: true の）email の identity がなく、メールの変更の途中でもないアカウントには招待を付けない（`private.verified_email`、0005）。これは守りの二重化で、上の設定の代わりにはならない。
+   - ローカルの supabase/config.toml も同じ考え方にしてある（`enable_confirmations = true`、`double_confirm_changes = true`、`enable_manual_linking = false`、`enable_anonymous_sign_ins = false`。Email プロバイダーはテストユーザーのパスワードログインのためだけに有効）。
+8. 確かめる：学校のアカウントでログインして「総務から招待されていません」が出ること、個人の Google アカウントでは「学校の Google アカウントでログインしてください」と出てログインできないこと。
 
 GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン）を足すと、Google のアカウント選択が学校のアカウントに絞られる（任意。見た目だけで、拒否はフックが行う）。
 

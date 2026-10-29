@@ -219,9 +219,11 @@ web3 = 30
 # secret = ""
 
 [auth.email]
-# 本番と同じ考え方（D-17a）：メールの確認と、メールの変更の確認（新旧の両方）を有効にする。
+# 本番と同じ考え方（README の「4. ログイン」の 7、D-17a）：メールの確認と、メールの変更の確認（新旧の両方）を有効にする。
 # 無効だと、GoTrue は古いアドレスに届いたリンクだけでメールの変更を終え、email の identity を email_verified: true にするので、
 # 招待された人のアドレスを名乗れる（DB の private.verified_email は、Google の identity のないアカウントではこの設定に頼る）。
+# ローカルで Email プロバイダーを有効にしているのは、seed のテストユーザーのパスワードログイン（E2E）のため。
+# サインアップはフックが拒否する（e2e/auth-hook.spec.ts）。本番では Email プロバイダーを無効にする。
 # Allow/disallow new user signups via email to your project.
 enable_signup = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email

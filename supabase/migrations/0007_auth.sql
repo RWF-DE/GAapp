@@ -3,14 +3,18 @@
 -- 確かめたこと（notes/T04.md）：
 -- - GoTrue（v2.197）は外部 ID（Google）のユーザーを、email_confirmed_at が null のまま insert し、同じトランザクションの
 --   後の update で確認済みにする（internal/api/external.go の createAccountFromExternalIdentity → user.Confirm）。
---   そのため招待の受け入れは on_auth_user_confirmed で起きる。seed のように確認済みで insert されたときは on_auth_user_created で起きる。
+--   identity（auth.identities）は、その2つの間（ユーザーの insert の後、確認の前）に insert する。
+--   そのため Google のユーザーの招待の受け入れは on_auth_user_confirmed で起きる。seed のように確認済みのユーザーを入れてから
+--   identity を入れたときは on_auth_identity_created で起きる。
+-- - 招待を付けるのは、今のメールが本人のものと確かめられるときだけ（private.verified_email、0005。D-17a）。
+--   email_confirmed_at は最初の確認の時刻で、あとで email を変えても null に戻らないので、identity のメールと突き合わせる。
 -- - フックの入力は {"metadata": {...}, "user": {...}}。user.app_metadata.provider にプロバイダー（"google"・"email"）、
 --   Google の ID トークンに hd があれば user.user_metadata.custom_claims.hd に入る（internal/api/provider/oidc.go）。
 --   ID トークンがなく userinfo で取ったときは hd が入らないので、そのときはメールのドメインだけで判定する。
 -- - フックは GoTrue の API でユーザーを作るときだけ呼ばれる。seed・SQL Editor の insert と、管理 API（admin）の作成では呼ばれない。
 
 ------------------------------------------------------------------------
--- auth.users への追加：profiles を作る。招待の受け入れは、メールを確認済みのときだけ
+-- auth.users への追加：profiles を作る。招待の受け入れは、identity の追加とメールの確認のとき
 ------------------------------------------------------------------------
 -- 表示名は Google の氏名（full_name → name）。なければ「名前未設定」。メールの @ より前は使わない（学籍番号などが入り得るため）。
 -- 例外を握りつぶさない（失敗するとユーザーの作成も失敗し、GoTrue は「Database error saving new user」を返す）。
@@ -35,26 +39,38 @@ begin
                                 nullif(btrim(new.raw_user_meta_data ->> 'name'), ''),
                                 '名前未設定'), 100))
   on conflict (user_id) do nothing;
-  if new.email is not null and new.email_confirmed_at is not null and new.deleted_at is null then
-    perform private.accept_invitations_of(new.id, new.email);
-  end if;
+  -- 招待はここでは受け入れない。この時点では auth.identities がまだなく、本人のメールと確かめられない
   return null;
 end $$;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function private.handle_new_user();
 
--- メールの確認（Google のユーザーはここで招待が付く）
+-- メールの確認（Google のユーザーはここで招待が付く。identity は確認より先に入っている）
 create function private.handle_user_confirmed()
 returns trigger language plpgsql security definer set search_path = '' as $$
+declare v_email text := private.verified_email(new.id);
 begin
-  if new.email is not null and new.deleted_at is null then
-    perform private.accept_invitations_of(new.id, new.email);
+  if v_email is not null then
+    perform private.accept_invitations_of(new.id, v_email);
   end if;
   return null;
 end $$;
 create trigger on_auth_user_confirmed after update of email_confirmed_at on auth.users
   for each row when (old.email_confirmed_at is null and new.email_confirmed_at is not null)
   execute function private.handle_user_confirmed();
+
+-- identity の追加（seed のように、確認済みのユーザーを入れてから identity を入れたときは、ここで招待が付く）
+create function private.handle_identity_created()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare v_email text := private.verified_email(new.user_id);
+begin
+  if v_email is not null then
+    perform private.accept_invitations_of(new.user_id, v_email);
+  end if;
+  return null;
+end $$;
+create trigger on_auth_identity_created after insert on auth.identities
+  for each row execute function private.handle_identity_created();
 
 ------------------------------------------------------------------------
 -- Before User Created フック
@@ -91,6 +107,7 @@ end $$;
 revoke all on function private.accept_invitations_of(uuid, text) from public, anon, authenticated;
 revoke all on function private.handle_new_user() from public, anon, authenticated;
 revoke all on function private.handle_user_confirmed() from public, anon, authenticated;
+revoke all on function private.handle_identity_created() from public, anon, authenticated;
 revoke all on function private.hook_before_user_created(jsonb) from public, anon, authenticated;
 grant usage on schema private to supabase_auth_admin;
 grant execute on function private.hook_before_user_created(jsonb) to supabase_auth_admin;

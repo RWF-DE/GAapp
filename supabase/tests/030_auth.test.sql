@@ -1,14 +1,18 @@
 -- 030_auth：auth.users のトリガー（profiles・招待の受け入れ）と Before User Created フック（T04、0007_auth.sql）
 -- GoTrue（Google）は、ユーザーを email_confirmed_at が null のまま insert し、同じトランザクションで確認済みに update する
--- （notes/T04.md）。ここでは auth.users に直接書いて、その2つの経路（insert で確認済み・後の update で確認済み）を確かめる。
+-- （notes/T04.md）。identity はその間に insert する。ここでは auth.users・auth.identities に直接書いて、2つの経路
+-- （確認済みのユーザーに identity を足す＝seed・後の update で確認済み＝Google）と、email を他人のアドレスに変えたユーザーに
+-- 招待が付かないこと（private.verified_email、D-17a）を確かめる。
 -- フックは GoTrue が supabase_auth_admin で呼ぶ。テストでは関数に入力の JSON を渡して直接呼ぶ（GoTrue を通した確認は e2e/auth-hook.spec.ts）。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(59);
+select plan(71);
 
--- auth.users に直接ユーザーを入れる（GoTrue の代わり）。confirmed = false なら email_confirmed_at を null にする
-create function tests.auth_insert(p_name text, p_email text, p_meta jsonb, p_confirmed boolean, p_deleted boolean default false)
+-- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。confirmed = false なら email_confirmed_at を null にする。
+-- provider が google なら Google の identity（Google の経路）、email なら email_verified: true の email の identity（seed の経路）
+create function tests.auth_insert(p_name text, p_email text, p_meta jsonb, p_confirmed boolean, p_deleted boolean default false,
+                                  p_provider text default 'google')
 returns uuid language plpgsql as $$
 declare v_id uuid := gen_random_uuid();
 begin
@@ -17,7 +21,12 @@ begin
                           confirmation_token, recovery_token, email_change_token_new, email_change)
   values ('00000000-0000-0000-0000-000000000000', v_id, 'authenticated', 'authenticated', p_email, '',
           case when p_confirmed then now() end, case when p_deleted then now() end,
-          '{"provider":"google","providers":["google"]}', p_meta, now(), now(), '', '', '', '');
+          jsonb_build_object('provider', p_provider, 'providers', jsonb_build_array(p_provider)), p_meta, now(), now(), '', '', '', '');
+  insert into auth.identities (provider_id, user_id, identity_data, provider, created_at, updated_at)
+  values (case when p_provider = 'google' then 'g-' || p_name else v_id::text end, v_id,
+          jsonb_build_object('sub', case when p_provider = 'google' then 'g-' || p_name else v_id::text end,
+                             'email', lower(p_email), 'email_verified', true),
+          p_provider, now(), now());
   insert into tests.ids values (p_name, v_id);
   return v_id;
 end $$;
@@ -45,6 +54,9 @@ grant execute on function tests.count_visible(text) to authenticated;
 -- ================================================================ 関数とトリガーの形
 select has_trigger('auth', 'users', 'on_auth_user_created', 'auth.users に insert のトリガー');
 select has_trigger('auth', 'users', 'on_auth_user_confirmed', 'auth.users にメール確認のトリガー');
+select has_trigger('auth', 'identities', 'on_auth_identity_created', 'auth.identities に insert のトリガー');
+select ok((select prosecdef and proconfig @> array['search_path=""'] from pg_proc where oid = 'private.handle_identity_created()'::regprocedure),
+  'handle_identity_created は SECURITY DEFINER・search_path = ""');
 select ok((select prosecdef and proconfig @> array['search_path=""'] from pg_proc where oid = 'private.handle_new_user()'::regprocedure),
   'handle_new_user は SECURITY DEFINER・search_path = ""');
 select ok((select prosecdef and proconfig @> array['search_path=""'] from pg_proc where oid = 'private.handle_user_confirmed()'::regprocedure),
@@ -60,7 +72,9 @@ select ok(not has_function_privilege('authenticated', 'private.hook_before_user_
   'authenticated・anon はフックを実行できない');
 select ok(not has_function_privilege('authenticated', 'private.handle_new_user()', 'execute')
           and not has_function_privilege('authenticated', 'private.handle_user_confirmed()', 'execute')
-          and not has_function_privilege('authenticated', 'private.accept_invitations_of(uuid, text)', 'execute'),
+          and not has_function_privilege('authenticated', 'private.handle_identity_created()', 'execute')
+          and not has_function_privilege('authenticated', 'private.accept_invitations_of(uuid, text)', 'execute')
+          and not has_function_privilege('authenticated', 'private.verified_email(uuid)', 'execute'),
   'authenticated はトリガー関数と招待の受け入れの関数を実行できない');
 select tests.login_as('outsider');
 select throws_ok($$ select private.hook_before_user_created('{}') $$, '42501', null, 'ログインした人がフックを呼ぶと 42501');
@@ -108,10 +122,10 @@ select is(nullif(current_setting('app.reason', true), ''), null, '受け入れ�
 update auth.users set email_confirmed_at = now() + interval '1 second' where id = tests.id('g_new');
 select is((select count(*)::int from public.year_roles where user_id = tests.id('g_new')), 1, '確認済みのまま更新しても、もう一度は動かない');
 
--- (2) seed の経路：確認済みで insert（大文字の混じったメール）
-select tests.auth_insert('seed_path', 'Seed_Path@PGTAP.test', '{}', true);
+-- (2) seed の経路：確認済みで insert し、email_verified: true の email の identity を足す（大文字の混じったメール）
+select tests.auth_insert('seed_path', 'Seed_Path@PGTAP.test', '{}', true, false, 'email');
 select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('seed_path')), 'viewer'::public.app_role,
-  '確認済みで insert されたら、その場で招待を受け入れる（メールは小文字で比べる）');
+  '確認済みのユーザーに identity が足されたら、その場で招待を受け入れる（メールは小文字で比べる）');
 select ok(exists (select 1 from public.group_members where group_id = tests.id('G1') and user_id = tests.id('seed_path')),
   'ロールと団体代表の両方の招待を受け入れる');
 
@@ -141,6 +155,57 @@ select is((select count(*)::int from public.year_roles where user_id = tests.id(
 select ok((select used_at is null from public.invitations where email = 'closed_y@pgtap.test'), 'closed の年度の招待は未使用のまま');
 select tests.set_scenario('requesting');
 
+-- (5b) email を他人のアドレスに変えたユーザーには、その人あての招待が付かない（D-17a）
+-- email_confirmed_at は最初の確認の時刻のまま残る。メールの変更に確認が要らない設定（や SQL・管理 API での変更）で、
+-- auth.users.email だけが招待された人のアドレスに変わった状態を作る
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'victim@pgtap.test', 'admin');
+insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'victim@pgtap.test', tests.id('G1'));
+-- Google のユーザー：Google の identity のメールは自分のまま
+select tests.auth_insert('sw_google', 'sw_google@pgtap.test', '{}', false);
+update auth.users set email_confirmed_at = now() where id = tests.id('sw_google');
+update auth.users set email = 'victim@pgtap.test' where id = tests.id('sw_google');
+select tests.login_as('sw_google');
+select is(public.accept_my_invitations(), 0, 'email を他人のアドレスに変えた Google のユーザーは、その人あての招待を受け入れられない');
+select tests.logout();
+select tests.login_as('admin');
+select is((public.invite(tests.id('Y1'), 'victim@pgtap.test', 'admin') ->> 'applied')::boolean, false,
+  'invite も、email を変えただけのアカウントにはその場で付けない');
+select tests.logout();
+select is((select count(*)::int from public.year_roles where user_id = tests.id('sw_google'))
+          + (select count(*)::int from public.group_members where user_id = tests.id('sw_google')), 0,
+  'email を変えた Google のユーザーには、admin の招待も団体代表の招待も付かない');
+select is((select count(*)::int from public.invitations where email = 'victim@pgtap.test' and used_at is null), 2, 'その招待は未使用のまま');
+update auth.users set email = 'sw_google@pgtap.test' where id = tests.id('sw_google');   -- 元に戻す（email は一意）
+-- メールの identity（seed の形）：identity のメールは自分のまま、または変えたアドレスでも email_verified でない
+select tests.auth_insert('sw_email', 'sw_email@pgtap.test', '{}', true, false, 'email');
+update auth.users set email = 'victim@pgtap.test' where id = tests.id('sw_email');
+select tests.login_as('sw_email');
+select is(public.accept_my_invitations(), 0, 'email の identity のメールが元のままなら受け入れない');
+select tests.logout();
+update auth.identities set identity_data = identity_data || '{"email": "victim@pgtap.test", "email_verified": false}'
+where user_id = tests.id('sw_email');
+select tests.login_as('sw_email');
+select is(public.accept_my_invitations(), 0, 'email の identity のメールが変わっても、email_verified でなければ受け入れない');
+select tests.logout();
+-- 本人のメールでも、メールの変更の途中（email_change が空でない）は受け入れない
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'pending@pgtap.test', 'viewer');
+select tests.auth_insert('pending', 'pending@pgtap.test', '{}', false);
+update auth.users set email_change = 'other@pgtap.test' where id = tests.id('pending');
+update auth.users set email_confirmed_at = now() where id = tests.id('pending');
+select is((select count(*)::int from public.year_roles where user_id = tests.id('pending')), 0, 'メールの変更の途中なら、確認のトリガーでも受け入れない');
+update auth.users set email_change = '' where id = tests.id('pending');
+select tests.login_as('pending');
+select is(public.accept_my_invitations(), 1, '変更が終われば（取り消されれば）、ログイン時に受け入れる');
+select tests.logout();
+-- 受信箱で確かめた変更（GoTrue は email の identity を新しいアドレスと email_verified: true に書き換える）なら受け入れる
+update auth.identities set identity_data = identity_data || '{"email": "victim@pgtap.test", "email_verified": true}'
+where user_id = tests.id('sw_email');
+select tests.login_as('sw_email');
+select is(public.accept_my_invitations(), 2, '新しいアドレスを受信箱で確かめた変更なら、そのアドレスあての招待を受け入れる');
+select tests.logout();
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('sw_email')), 'admin'::public.app_role,
+  '確かめたアドレスの持ち主に招待のロールが付く');
+
 -- (6) 招待のない人：profiles だけができ、何も読めない
 select tests.auth_insert('nobody', 'nobody@pgtap.test', '{"full_name": "招待なし"}', false);
 update auth.users set email_confirmed_at = now() where id = tests.id('nobody');
@@ -165,7 +230,7 @@ select is((select count(*)::int from public.years where id = tests.id('Y1')), 1,
 select tests.logout();
 
 -- ================================================================ seed のテストユーザー（D-02）
--- seed は auth.users に直接入れる（フックを通らない）。トリガーでロールが付き、本番と同じ経路を通る
+-- seed は auth.users・auth.identities に直接入れる（フックを通らない）。identity の追加のトリガーでロールが付く
 select is((select string_agg(coalesce(yr.role::text, case when gm.user_id is not null then 'rep' else 'none' end), ',' order by u.id)
            from auth.users u
            left join public.year_roles yr on yr.user_id = u.id and yr.year_id = '00000000-0000-4000-8000-0000000000a1'

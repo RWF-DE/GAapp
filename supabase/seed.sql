@@ -24,8 +24,9 @@ insert into public.rooms (name, kind, building, floor, is_storage, sort_order) v
 
 -- ---------------------------------------------------------------- T04：R8 の年度とテストユーザー（D-02）
 -- ローカル専用。本番には流さない（migrate.yml は supabase db push だけ）。本番ではメールログインを無効にする。
--- 年度・団体・招待を先に入れておくと、auth.users のトリガー（0007_auth.sql）がロールを付ける
--- （email_confirmed_at を入れるので受け入れられる。profiles もトリガーが作るので、ここでは入れない）。
+-- 年度・団体・招待を先に入れておくと、auth.identities の追加のトリガー（0007_auth.sql）がロールを付ける
+-- （email_confirmed_at を入れたユーザーに、同じメールで email_verified: true の email の identity を足すので、本人のメールと
+-- 確かめられる。private.verified_email、D-17a。profiles は auth.users のトリガーが作るので、ここでは入れない）。
 -- R8 の年度は固定の id（…a1）。T05 の R8 の本データはこの年度に団体・在庫を足し、年度を作り直さない。
 -- テスト用の団体は R8 の団体名と重ならない名前にする（groups の unique (year_id, name)）。
 -- ユーザーの id は固定（Playwright から参照できるように）。メールは予約済みのドメイン（@example.test）。
