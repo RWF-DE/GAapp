@@ -9,8 +9,8 @@ import { readCsvRecords, readFixtureDir, readReferenceDir, repoRoot } from '@gaa
 import { main } from './build-r8-fixtures';
 
 const SAMPLE = path.join(repoRoot(), 'fixtures', 'r8-build-sample');
-const at = '@';
-const realMail = `taro${at}${'gmail'}.com`;
+// メールのテストには予約済みのドメイン（.example）を使う。作成はドメインによらず、すべてのアドレスを捨てる
+const realMail = 'taro@mail.example';
 
 let work: string;
 let out: string;
@@ -185,23 +185,23 @@ describe('build-r8-fixtures: 匿名化した小さなサンプル', () => {
 
   it('出力のどこにもメールアドレスがない（元データには予約ドメインのメールが入っている）', () => {
     const src = readFileSync(path.join(source, 'forms', 'stall.csv'), 'utf8');
-    expect(src).toContain(at);
+    expect(src).toContain('@');
     const r = run();
     expect(r.code).toBe(0);
     for (const rel of ['groups.csv', 'stocks.csv', 'requests.csv', 'consents.csv', 'reference/allocations.csv', 'reference/group_totals.csv'])
-      expect(read(rel), rel).not.toContain(at);
-    expect(r.stdout + r.stderr).not.toContain(at);
+      expect(read(rel), rel).not.toContain('@');
+    expect(r.stdout + r.stderr).not.toContain('@');
   });
 
-  it('実在しうるドメインのメールがフォームのどの列にあっても、出力とログに出ない', () => {
+  it('メールがフォームのどの列にあっても（ドメインによらず）、出力とログに出ない', () => {
     const f = path.join(source, 'forms', 'stall.csv');
     appendFileSync(f, `2026/10/05 21:00:00,${realMail},いいえ,,模擬店乙 ${realMail},1,1,0,連絡先 ${realMail}\n`);
     appendFileSync(f, `2026/10/05 21:30:00,${realMail},いいえ,,${realMail},1,1,0,\n`);
     const r = run({ R8_SOURCE_DIR: source }, ['--allow-rejected']);
     expect(r.code, r.stderr).toBe(0);
-    for (const rel of ['groups.csv', 'requests.csv', 'reference/allocations.csv']) expect(read(rel)).not.toContain(at);
-    expect(r.stdout + r.stderr).not.toContain(at);
-    expect(r.stdout + r.stderr).not.toContain('gmail');
+    for (const rel of ['groups.csv', 'requests.csv', 'reference/allocations.csv']) expect(read(rel)).not.toContain('@');
+    expect(r.stdout + r.stderr).not.toContain('@');
+    expect(r.stdout + r.stderr).not.toContain('mail.example');
   });
 });
 
@@ -301,7 +301,7 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('forms/department.csv:4');
     expect(r.stderr).not.toContain(secret);
-    expect(r.stderr).not.toContain(at);
+    expect(r.stderr).not.toContain('@');
   });
   it('許さない備考：文言を出さずに失敗する', () => {
     appendFileSync(path.join(source, 'allocation.csv'), `机(木),倉庫,設営,1,${secret}\n`);
@@ -331,7 +331,7 @@ describe('fixtures とスクリプトの出力に個人情報がない', () => {
     for (const f of files(root)) {
       const text = readFileSync(f, 'utf8');
       expect(findEmails(text), path.relative(root, f)).toEqual([]);
-      if (/^(r8\/|synthetic\/|r8-build-sample\/fixture\/)/.test(path.relative(root, f).split(path.sep).join('/'))) expect(text, path.relative(root, f)).not.toContain(at);
+      if (/^(r8\/|synthetic\/|r8-build-sample\/fixture\/)/.test(path.relative(root, f).split(path.sep).join('/'))) expect(text, path.relative(root, f)).not.toContain('@');
     }
   });
   it('supabase/seed.sql があれば、予約ドメイン以外のメールがない', () => {
