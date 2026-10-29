@@ -15,13 +15,16 @@
 // 入力の守りと下書きの消し方は、次の4つの決まりだけで決める（notes/T10.md の決めたことの 22）。
 // - R1 入力の守りの印（held）：この画面で数を変えた・下書きを戻した・「保存」を押したら立てる。立っている間は、裏で届いた行
 //   （読み直し・invalidate・通信の復帰・キャッシュ）で入力・入力の元・戻した下書きの元を置き換えず、「ほかの人が保存しました」
-//   （detectOtherSave）と「前回の入力」だけを新しくする。下ろすのは、保存が決まったとき（送って成功・「保存されていました」）、
-//   ほかの人の数を取ったとき（知らせ・ダイアログの「読み直す」）、下書きを「捨てる」ときだけ（エラー・段階・ダイアログでは変えない）。
+//   （detectOtherSave）と「前回の入力」だけを新しくする。下ろすのは、保存が決まったとき（送って成功・「保存されていました」）と、
+//   ほかの人の数を取ったとき（知らせ・ダイアログの「読み直す」）だけ（エラー・段階・ダイアログ・下書きの「捨てる」では変えない）。
+//   印は書ける間だけ効かせる。書けなくなったら（読み取り専用）印を下ろし、届いた行で作り直す（入力は下書きに残る）。
+//   「保存していない」かは、入力の元と、届いた最新の行の両方と比べて決める（ほかの人の保存が届いた後に元の数へ戻しても未保存）。
 // - R2 「保存できたか分かりません」（unknownOutcome）は、次の保存が決まる（送った・「保存されていました」・ほかの人の保存の
 //   ダイアログを出した）か、ほかの人の数を取るまで消さない。送る前の読み直しがコードつきで失敗しても残し、その失敗は toast で出す。
 // - R3 下書きを消すのは、保存が決まったとき・「捨てる」・戻していない下書きがある間に届いた行の記録（updated_at）が下書きの
 //   base から変わっていて、下書きを重ねても行と同じ数のとき（下書きの数が書かれた証拠がある）だけ。キャッシュに残った送る前の行
-//   （記録が下書きの base と同じ）では消さない。ほかに、入力を元の数へ戻したら（分からない間を除く）書く中身がないので消す。
+//   （記録が下書きの base と同じ）では消さない。ほかに、入力に保存していないものがなくなったら（入力の元とも届いた最新の行とも
+//   同じ数。分からない間・ほかの人の保存を知らせている間を除く）書く中身がないので消す。「読み直す」は戻していない下書きを消さない。
 // - R4 送る前の読み直し（「確かめています…」）の間に画面を離れたら、読み直しが返っても何もしない（送らない。入力は下書きにある）。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
@@ -170,7 +173,16 @@ export function StockInput({
   const [base, setBase] = useState<StockDbRow[] | null>(null);
   const [counts, setCounts] = useState<StockCounts | null>(null);
   const baseCounts = useMemo(() => (base ? countsFromRows(items, base) : null), [base, items]);
-  const dirty = access.writable && !!counts && !!baseCounts && !sameCounts(items, counts, baseCounts);
+  // 届いた最新の部屋の行（R1 の印が立っている間は、入力の元より新しいことがある）
+  const data = stocksQ.data;
+  const latestCounts = useMemo(() => (data ? countsFromRows(items, data) : null), [data, items]);
+  /**
+   * values に保存していないものがあるか：入力の元とも、届いた最新の行とも同じでなければある。印が立っている間は入力の元を
+   * 新しくしないので、ほかの人の保存が届いた後に入力を古い元の数へ戻しても、最新の行と違えば保存していない入力のまま
+   */
+  const unsavedIn = (values: StockCounts) =>
+    !!baseCounts && (!sameCounts(items, values, baseCounts) || (!!latestCounts && !sameCounts(items, values, latestCounts)));
+  const dirty = access.writable && !!counts && unsavedIn(counts);
   // 下書きを戻したときは、入力の元が「下書きを作ったときの行」になる（null なら base が元）。
   // 保存の直前に読み直した行とこれを比べるので、下書きを作った後のほかの人の保存も確かめられる
   const [restoredStamps, setRestoredStamps] = useState<StockBaseStamps | null>(null);
@@ -234,21 +246,29 @@ export function StockInput({
   // 自分の保存の後の invalidate など）：R3 の (c) で下書きを確かめ、R1 の印がなければその行で作り直す。印があれば入力も
   // 入力の元も残し、自分以外の人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
   const [seen, setSeen] = useState<StockDbRow[] | null>(null);
-  const data = stocksQ.data;
+  /** rows（届いた部屋の行）で入力と入力の元を作り直す */
+  const rebuild = (rows: StockDbRow[]) => {
+    setBase(rows);
+    setCounts(countsFromRows(items, rows));
+    setRestoredStamps(null);
+    setRemote(null);
+  };
   if (data && data !== seen) {
     setSeen(data);
     if (draftWritten(data)) {
       removeDraft(draftKey);
       setDraft(null);
     }
-    if (base === null || !held) {
-      setBase(data);
-      setCounts(countsFromRows(items, data));
-      setRestoredStamps(null);
-      setRemote(null);
-    } else if (stamps) {
-      setRemote(detectOtherSave(items, stamps, data, open.userId));
-    }
+    if (base === null || !held) rebuild(data);
+    else if (stamps) setRemote(detectOtherSave(items, stamps, data, open.userId));
+  }
+  // R1：印は書ける間だけ効かせる。書けなくなったら（部員の振り分け中・終了など。保存の失敗や年度の読み直しで切り替わる）
+  // 印を下ろし、届いた行で作り直す（読み取り専用の画面に DB にない数を出さない）。入力は数を変えたときに下書きへ書いているので、
+  // 書けるときに開き直せば戻せる。書けない間は数を変える・戻す・「保存」ができないので、印は立たない
+  if (held && !access.writable) {
+    setHeld(false);
+    const rows = data ?? base;
+    if (rows) rebuild(rows);
   }
   // ほかの人の保存のダイアログを閉じたら「保存」へフォーカスを戻す（送信中で押せなければ、終わってから戻す）
   const saveButtonRef = useRef<HTMLButtonElement>(null);
@@ -288,9 +308,10 @@ export function StockInput({
     setDraft(null);
     setSavedAt(null);
     setBlocked(null);
-    // 入力の元と同じ数に戻したら、下書きに書く中身がないので消す（印は下ろさない）。保存できたか分からない間は下書きに残す
-    // （送った数が入っていれば、戻した数を送り直す入力になる）
-    if (baseCounts && !unknownOutcome && sameCounts(items, next, baseCounts)) writer.clear();
+    // 保存していないものがなくなったら（入力の元とも、届いた最新の行とも同じ数）、下書きに書く中身がないので消す（印は下ろさない）。
+    // 保存できたか分からない間（送った数が入っていれば、戻した数を送り直す入力になる）と、ほかの人の保存を知らせている間
+    // （入力はほかの人の数と比べて選ぶまで守る）は下書きに残す（R3）
+    if (baseCounts && !unknownOutcome && !remote && !unsavedIn(next)) writer.clear();
     else if (stamps) writeDraft(next, stamps);
   };
 
@@ -470,7 +491,7 @@ export function StockInput({
   };
 
   /**
-   * ほかの人の数を入力にする（入力と下書きは捨てる）。rows は今の DB の部屋の行。利用者がほかの人の数を取ったので、印を下ろし（R1）、
+   * ほかの人の数を入力にする（今の入力の下書きは捨てる）。rows は今の DB の部屋の行。利用者がほかの人の数を取ったので、印を下ろし（R1）、
    * 「保存できたか分かりません」も消す（ダイアログの「読み直す」はダイアログを出したときに消えている。知らせの「ほかの人の数を
    * 読み直す」も同じく、押した数を捨てると決めたので、残すと「入力はそのまま残しています」が事実と違う）
    */
@@ -480,8 +501,9 @@ export function StockInput({
     setHeld(false);
     rebase(rows);
     setCounts(countsFromRows(items, rows));
-    writer.clear();
-    setDraft(null);
+    // 戻していない前の下書き（draft。知らせが出ている）は、利用者が戻すか捨てるかを選ぶまで残す（R3）。ストレージにあるのは
+    // その下書きのまま（数を変える・戻す・送ると draft は null になる）なので、消すのは今の入力の分だけ
+    if (!draft) writer.clear();
     toast.info('ほかの人が保存した数を読み直しました');
   };
 
@@ -579,13 +601,14 @@ export function StockInput({
               setDraft(null);
             }}
             onDiscard={() => {
+              // 消すのは下書きだけ（R1 の印は変えない。知らせが出ている間に印が立っているのは「保存」を押したときだけで、
+              // 保存はまだ決まっていない）
               writer.clear();
               setDraft(null);
-              setHeld(false);
             }}
           />
         ) : null}
-        {unknownOutcome ? (
+        {access.writable && unknownOutcome ? (
           // 応答が届かず保存できたか分からない・保存の前の読み直しが通信できない（設計 2.6 の (A) の 1・4）。
           // 確かめるためのボタンは置かない（「保存」を押せば、送る前に読み直して決まる）
           <div role="alert" data-testid="stock-unknown-outcome" className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
@@ -608,7 +631,7 @@ export function StockInput({
             onRetry={classifyError(error).kind === 'deadlock' ? () => void save() : undefined}
           />
         ) : null}
-        {remote ? (
+        {access.writable && remote ? (
           <div role="status" data-testid="stock-remote-change" className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
             <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
             <div className="min-w-0 flex-1 space-y-2">
