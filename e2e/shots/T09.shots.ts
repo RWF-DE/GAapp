@@ -174,11 +174,87 @@ test.describe('T09 マスタ設定（管理者）', () => {
       await form.getByLabel('団体名').fill('通信が切れた団体');
       await page.route('**/rest/v1/**', (route: Route) => route.abort('internetdisconnected'));
       await form.getByRole('button', { name: '保存' }).click();
+      // 読み直し（GET）は supabase-js が間を空けて再試行するので、知らせが出るまで数秒かかる
+      await expect(page.getByText('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります')).toBeVisible({ timeout: 30_000 });
       await expect(page.getByTestId('settings-reload-error')).toBeVisible({ timeout: 45_000 });
       await shoot(page, 'T09', 'settings-reload-error-pc');
     } finally {
       await page.unrouteAll({ behavior: 'ignoreErrors' });
       await Promise.all([s.cleanup(), viewerOnly.cleanup()]);
+    }
+  });
+
+  test('T09 マスタ設定：応答が届かなかった・止められた保存の読み直し（2.6 の (B1)）', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=groups');
+      await expect(page.getByRole('row').nth(1)).toBeVisible();
+
+      // 応答だけが届かなかったが通っていた → 読み直して「保存されていました」で閉じる
+      let dropped = 0;
+      await page.route('**/rest/v1/groups*', async (route: Route) => {
+        if (route.request().method() === 'POST' && dropped === 0) {
+          dropped += 1;
+          await route.fetch();
+          await route.abort('failed');
+          return;
+        }
+        await route.continue();
+      });
+      await page.getByTestId('group-add').click();
+      let form = page.getByTestId('group-form');
+      await form.getByLabel('団体名').fill('応答が届かなかった団体');
+      await form.getByRole('button', { name: '保存' }).click();
+      await expect(page.getByText('「応答が届かなかった団体」は保存されていました')).toBeVisible();
+      await expect(form).toHaveCount(0);
+      await shoot(page, 'T09', 'settings-group-saved-earlier-pc');
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+
+      // 23505 で止められ、一意のキーでの読み直しも失敗 → 「読み直せませんでした」と読み直すボタン（入力は残す）
+      await page.route('**/rest/v1/groups*', async (route: Route) => {
+        const req = route.request();
+        if (req.method() === 'POST') {
+          await route.fulfill({ status: 409, contentType: 'application/json', body: '{"code":"23505","message":"duplicate key value"}' });
+        } else if (req.method() === 'GET' && req.url().includes('name=eq.')) {
+          await route.abort('failed');
+        } else {
+          await route.continue();
+        }
+      });
+      await page.getByTestId('group-add').click();
+      form = page.getByTestId('group-form');
+      await form.getByLabel('団体名').fill('読み直せなかった団体');
+      await form.getByRole('button', { name: '保存' }).click();
+      // 一意のキーでの読み直し（GET）は supabase-js が間を空けて再試行するので、数秒かかる
+      await expect(form.getByTestId('locked-save-unread')).toBeVisible({ timeout: 30_000 });
+      await shoot(page, 'T09', 'settings-group-unread-pc');
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await s.cleanup();
+    }
+  });
+
+  test('T09 マスタ設定：終了した年度で、自分の年度のロールを読めなかったとき（行き先を確かめられない）', async ({ page }) => {
+    const s = await createScenario({ status: 'closed', dataset: 'empty', roles: { admin: true } });
+    try {
+      // 立場の読み込み（AuthProvider）と同じ問い合わせなので、画面が出た後に場所のタブを開くときから落とす
+      let fail = false;
+      await page.route('**/rest/v1/year_roles*', async (route: Route) => {
+        if (fail) await route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"e2e"}' });
+        else await route.continue();
+      });
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=groups');
+      await expect(page.getByText('団体がありません')).toBeVisible();
+      fail = true;
+      await page.getByTestId('settings-tab-rooms').click();
+      await expect(page.getByRole('row').nth(1)).toBeVisible();
+      await expect(page.getByTestId('global-read-only-roles-error')).toBeVisible({ timeout: 30_000 });
+      await shoot(page, 'T09', 'settings-rooms-closed-roles-error-pc');
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await s.cleanup();
     }
   });
 

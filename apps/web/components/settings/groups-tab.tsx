@@ -18,7 +18,17 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { deleteGroup, fetchGroups, fetchMembers, fetchRooms, insertGroup, updateGroup } from '@/lib/data/settings';
+import {
+  deleteGroup,
+  fetchGroups,
+  fetchMembers,
+  fetchRooms,
+  insertGroup,
+  matchesWritten,
+  readGroup,
+  readGroupByName,
+  updateGroup,
+} from '@/lib/data/settings';
 import type { GroupRow, RoomRow } from '@/lib/db/types';
 import { CATEGORY_LABELS, ROOM_KIND_LABELS } from '@/lib/labels';
 import { queryKeys } from '@/lib/query';
@@ -26,7 +36,7 @@ import { NAME_MAX } from '@/lib/schemas/common';
 import { groupFormSchema, joinAliases, type GroupFormInput, type GroupFormOutput } from '@/lib/schemas/settings';
 import { GroupsCsvDialog } from './groups-csv-dialog';
 import { DeleteWithRefsDialog } from './rule-refs';
-import { Field, FormSheet, selectClass, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
+import { Field, FormSheet, selectClass, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler } from './shared';
 
 export function GroupsTab() {
   const { year, yearWritable } = useSettings();
@@ -142,7 +152,7 @@ export function GroupsTab() {
               toast.success(`「${deleting.name}」を削除しました`);
               await invalidate();
             } catch (e) {
-              await onError(e, { dataKeys: [settingsKeys.groups(year.id)] });
+              await onError(e, { dataKeys: [settingsKeys.groups(year.id)], unknownMessage: null });
               throw e;
             }
           }}
@@ -176,7 +186,9 @@ function GroupForm({
   onDone: () => Promise<void>;
 }) {
   const { year } = useSettings();
-  const onError = useWriteErrorHandler();
+  // 入力の元（更新で送る updated_at）。conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
+  const [base, setBase] = useState(group);
+  const locked = useLockedSave({ dataKeys: [settingsKeys.groups(year.id)] });
   const confirmed = year.status === 'confirmed';
   const form = useForm<GroupFormInput, unknown, GroupFormOutput>({
     resolver: zodResolver(groupFormSchema),
@@ -208,7 +220,7 @@ function GroupForm({
 
   const onSubmit = handleSubmit(async (v) => {
     // 年度の全団体（編集後）で名前の重複を見る（大文字・小文字・全角半角だけの違いも。D-27）
-    const after = [...groups.filter((g) => g.id !== group?.id).map((g) => ({ name: g.name })), { name: v.name }];
+    const after = [...groups.filter((g) => g.id !== base?.id).map((g) => ({ name: g.name })), { name: v.name }];
     const nameErrors = checkGroupNames(after).filter((e) => e.path === `groups.${after.length - 1}.name`);
     if (nameErrors.length > 0) {
       setError('name', { message: nameErrors[0]!.message });
@@ -216,6 +228,7 @@ function GroupForm({
     }
     setSaving(true);
     try {
+      // 送る値（zod で前後の空白を除き、空なら null にした後）。読み直した行もこの値で比べる
       const values = {
         name: v.name,
         display_name: v.display_name,
@@ -225,17 +238,27 @@ function GroupForm({
         location_room_id: v.location_room_id,
         sort_order: v.sort_order,
       };
-      if (group) {
-        await updateGroup(group, values);
-        toast.success(`「${v.name}」を保存しました`);
-      } else {
-        await insertGroup(year.id, values);
-        toast.success(`「${v.name}」を足しました`);
-      }
+      const r = await locked.run<GroupRow>(
+        base
+          ? {
+              write: () => updateGroup(base, values),
+              reread: () => readGroup(base.id),
+              matches: (row) => matchesWritten(row, values),
+              baseVersion: base.updated_at,
+              onRebase: (row) => row && setBase(row),
+            }
+          : {
+              write: () => insertGroup(year.id, values),
+              reread: () => readGroupByName(year.id, values.name),
+              matches: (row) => matchesWritten(row, { ...values, year_id: year.id }),
+              baseVersion: null,
+              insert: true,
+            },
+      );
+      if (r.kind !== 'done') return;
+      toast.success(r.earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
       form.reset(form.getValues());
       await onDone();
-    } catch (e) {
-      await onError(e, { dataKeys: [settingsKeys.groups(year.id)] });
     } finally {
       setSaving(false);
     }
@@ -244,6 +267,7 @@ function GroupForm({
 
   return (
     <form onSubmit={onSubmit} className="space-y-4" noValidate data-testid="group-form">
+      {locked.notice}
       <Field label="団体名" error={err('name')}>
         {(p) => <Input {...p} {...register('name')} maxLength={NAME_MAX} />}
       </Field>

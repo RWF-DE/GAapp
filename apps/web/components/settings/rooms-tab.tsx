@@ -20,8 +20,18 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { setRoomUsable } from '@/lib/data/room-years';
-import { deleteRoom, fetchAllocationSources, fetchRooms, fetchRoomYears, insertRoom, updateRoom } from '@/lib/data/settings';
+import { readRoomYear, roomYearMatches, setRoomUsable } from '@/lib/data/room-years';
+import {
+  deleteRoom,
+  fetchAllocationSources,
+  fetchRooms,
+  fetchRoomYears,
+  insertRoom,
+  matchesWritten,
+  readRoom,
+  readRoomByName,
+  updateRoom,
+} from '@/lib/data/settings';
 import type { RoomRow, RoomYearRow } from '@/lib/db/types';
 import { ROOM_KIND_LABELS } from '@/lib/labels';
 import { classifyError, messageFor } from '@/lib/errors';
@@ -30,7 +40,7 @@ import { BUILDING_MAX, NAME_MAX, NOTE_MAX } from '@/lib/schemas/common';
 import { joinAliases, roomFormSchema, roomUsableSchema, type RoomFormInput, type RoomFormOutput } from '@/lib/schemas/settings';
 import { MAX_DISTANCE_COST } from '@gaapp/shared';
 import { DeleteWithRefsDialog } from './rule-refs';
-import { Field, FormSheet, GlobalReadOnlyNote, selectClass, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
+import { Field, FormSheet, GlobalReadOnlyNote, selectClass, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler } from './shared';
 
 interface RoomView extends RoomRow {
   usable: boolean;
@@ -200,7 +210,7 @@ export function RoomsTab() {
               toast.success(`「${deleting.name}」を削除しました`);
               await invalidateRooms();
             } catch (e) {
-              await onError(e, { dataKeys: [queryKeys.rooms()] });
+              await onError(e, { dataKeys: [queryKeys.rooms()], unknownMessage: null });
               throw e;
             }
           }}
@@ -224,7 +234,9 @@ export function RoomsTab() {
 }
 
 function RoomForm({ room, onDone }: { room: RoomRow | null; onDone: () => Promise<void> }) {
-  const onError = useWriteErrorHandler();
+  // 入力の元（更新で送る updated_at）。conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
+  const [base, setBase] = useState(room);
+  const locked = useLockedSave({ dataKeys: [queryKeys.rooms()] });
   const form = useForm<RoomFormInput, unknown, RoomFormOutput>({
     resolver: zodResolver(roomFormSchema),
     defaultValues: {
@@ -246,17 +258,38 @@ function RoomForm({ room, onDone }: { room: RoomRow | null; onDone: () => Promis
   const onSubmit = handleSubmit(async (v) => {
     setSaving(true);
     try {
-      if (room) {
-        await updateRoom(room, v);
-        toast.success(`「${v.name}」を保存しました`);
-      } else {
-        await insertRoom(v);
-        toast.success(`「${v.name}」を足しました`);
-      }
+      // 送る値（zod で前後の空白を除き、空なら null にした後）。読み直した行もこの値で比べる
+      const values = {
+        name: v.name,
+        aliases: v.aliases,
+        kind: v.kind,
+        building: v.building,
+        floor: v.floor,
+        is_storage: v.is_storage,
+        extra_cost: v.extra_cost,
+        sort_order: v.sort_order,
+      };
+      const r = await locked.run<RoomRow>(
+        base
+          ? {
+              write: () => updateRoom(base, values),
+              reread: () => readRoom(base.id),
+              matches: (row) => matchesWritten(row, values),
+              baseVersion: base.updated_at,
+              onRebase: (row) => row && setBase(row),
+            }
+          : {
+              write: () => insertRoom(values),
+              reread: () => readRoomByName(values.name),
+              matches: (row) => matchesWritten(row, values),
+              baseVersion: null,
+              insert: true,
+            },
+      );
+      if (r.kind !== 'done') return;
+      toast.success(r.earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
       form.reset(form.getValues());
       await onDone();
-    } catch (e) {
-      await onError(e, { dataKeys: [queryKeys.rooms()] });
     } finally {
       setSaving(false);
     }
@@ -265,6 +298,7 @@ function RoomForm({ room, onDone }: { room: RoomRow | null; onDone: () => Promis
 
   return (
     <form onSubmit={onSubmit} className="space-y-4" noValidate data-testid="room-form">
+      {locked.notice}
       <Field label="名前" error={err('name')}>
         {(p) => <Input {...p} {...register('name')} maxLength={NAME_MAX} />}
       </Field>
@@ -331,14 +365,22 @@ function UsableDialog({
 }) {
   const { year } = useSettings();
   const queryClient = useQueryClient();
-  const onError = useWriteErrorHandler();
   const [usable, setUsable] = useState(room.usable);
   const [note, setNote] = useState(room.usableNote ?? '');
   const [saving, setSaving] = useState(false);
   const [noteError, setNoteError] = useState<string | null>(null);
-  // 開いたときの行。読み直して updated_at が変わっていれば、ほかの人が変えたと知らせる（入力は残す）
-  const [opened] = useState(room);
-  const changedByOther = (room.roomYear?.updated_at ?? null) !== (opened.roomYear?.updated_at ?? null);
+  // 入力の元（開いたときの room_years の行。行がなければ null）。setRoomUsable にはこの行の updated_at を渡し、
+  // conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
+  const [base, setBase] = useState<RoomYearRow | null>(room.roomYear);
+  // conflict の後に読み直した設定（ほかの人の変更として出す。次の保存で消す）
+  const [changedTo, setChangedTo] = useState<{ usable: boolean; note: string | null } | null>(null);
+  const roomNames = { names: { room: (id: string) => (id === room.id ? room.name : undefined) } };
+  const locked = useLockedSave({ dataKeys: [settingsKeys.roomYears(year.id)], context: roomNames });
+  // 裏の読み直しで、入力の元から版が進み、いまの設定が入力と違う（ほかの人が変えた）。自分の保存が後から通った行は
+  // 入力と同じなので出さない（成功したら閉じてから読み直すので、成功の後にも出ない）
+  const liveVersion = room.roomYear?.updated_at ?? null;
+  const liveDiffers = liveVersion !== (base?.updated_at ?? null) && !roomYearMatches({ usable: room.usable, note: room.usableNote }, usable, note);
+  const otherSetting = changedTo ?? (liveDiffers ? { usable: room.usable, note: room.usableNote } : null);
   useUnsavedChanges(usable !== room.usable || note !== (room.usableNote ?? ''));
 
   // 使用不可にするときの守り（3.2・3.9）：振り分け中は固定・手動の行、確定中は振り分けの行があれば、ここでは押せない
@@ -353,15 +395,31 @@ function UsableDialog({
       setNoteError(parsed.error.issues[0]?.message ?? '入力が正しくありません');
       return;
     }
+    const { usable: u, note: n } = parsed.data;
     setSaving(true);
+    setChangedTo(null);
     try {
-      // 楽観ロック（T09a）：読み直した後の room_years.updated_at（行がなければ null）で保存する
-      await setRoomUsable(year.id, room.id, room.roomYear?.updated_at ?? null, parsed.data.usable, parsed.data.note);
-      toast.success(`「${room.name}」を今年は${parsed.data.usable ? '使用可' : '使用不可'}にしました`);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.year(year.id) });
+      // 楽観ロック（T09a）：入力の元の room_years.updated_at（行がなければ null）で保存する。応答が届かなかったとき・
+      // conflict・not_found のときは (year_id, room_id) で読み直して決める（2.6 の (B1)）
+      const r = await locked.run<RoomYearRow>({
+        write: () => setRoomUsable(year.id, room.id, base?.updated_at ?? null, u, n),
+        reread: () => readRoomYear(year.id, room.id),
+        matches: (row) => roomYearMatches(row, u, n),
+        baseVersion: base?.updated_at ?? null,
+        onRebase: (row) => {
+          setBase(row);
+          setChangedTo(row ? { usable: row.usable, note: row.note } : { usable: true, note: null });
+        },
+      });
+      if (r.kind !== 'done') return;
+      toast.success(
+        r.earlier
+          ? `「${room.name}」の今年の使用は保存されていました`
+          : `「${room.name}」を今年は${u ? '使用可' : '使用不可'}にしました`,
+      );
+      // 閉じてから読み直す（開いたまま読み直すと、自分の保存がほかの人の変更に見えるため）
       onClose();
-    } catch (e) {
-      await onError(e, { context: { names: { room: (id) => (id === room.id ? room.name : undefined) } }, dataKeys: [settingsKeys.roomYears(year.id)] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.year(year.id) });
     } finally {
       setSaving(false);
     }
@@ -375,12 +433,13 @@ function UsableDialog({
           <DialogDescription>{year.label} だけに効きます（ほかの年度は変わりません）。</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
-          {changedByOther ? (
+          {otherSetting ? (
             <p role="status" className="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-950" data-testid="usable-changed-by-other">
-              ほかの人がこの場所の今年の使用を変えました。いまの設定は「{room.usable ? '使用可' : '使用不可'}」
-              {room.usableNote ? `（メモ：${room.usableNote}）` : ''}です。確かめてから保存してください。
+              ほかの人がこの場所の今年の使用を変えました。いまの設定は「{otherSetting.usable ? '使用可' : '使用不可'}」
+              {otherSetting.note ? `（メモ：${otherSetting.note}）` : ''}です。確かめてから保存してください。
             </p>
           ) : null}
+          {locked.notice}
           <div className="flex items-center gap-2">
             <Checkbox id="room-usable" checked={usable} onCheckedChange={(c) => setUsable(c === true)} />
             <Label htmlFor="room-usable">今年は使用する</Label>

@@ -1,10 +1,20 @@
 import type { Json } from '@gaapp/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GroupRow, RuleDbRow } from '@/lib/db/types';
 import type { GroupCsvRow } from '@/lib/schemas/settings';
 import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
+import { appError, unknownOutcomeMessage } from '@/lib/errors';
 import {
   createYearFrom,
+  distancePair,
+  matchesWritten,
+  readDistance,
+  readGroup,
+  readGroupByName,
+  readItemByCode,
+  readRoom,
+  readRoomByName,
+  runLockedWrite,
   fetchMyYearRoles,
   fetchOpenYearRules,
   freshDataOf,
@@ -331,5 +341,204 @@ describe('freshDataOf（削除の確かめに使う読み込みの結果）', ()
     expect(freshDataOf({ data: [1], isFetching: true, isError: false })).toBeNull();
     // 一度読めてキャッシュがあり、開き直したときの読み直しが失敗した（isError で古い data が残る）ときは使わない
     expect(freshDataOf({ data: [1], isFetching: false, isError: true })).toBeNull();
+  });
+});
+
+// ---- 2.6 の (B1)：楽観ロックの更新・一意のキーの insert ----
+
+describe('matchesWritten（読み直した行の書いた列が、送った値と同じか）', () => {
+  const row = { id: G1, name: '企業A', display_name: null, aliases: ['A', 'えー'], sort_order: 3, updated_at: T };
+
+  it('書いた列だけを比べる（書いていない列・updated_at は見ない）', () => {
+    expect(matchesWritten(row, { name: '企業A', sort_order: 3 })).toBe(true);
+    expect(matchesWritten(row, { name: '企業B' })).toBe(false);
+  });
+
+  it('送った値（zod で空白を除き、空なら null にした後）と同じ正規化で比べる：空の任意の文字列は null で、空白つきは別の値', () => {
+    expect(matchesWritten(row, { display_name: null })).toBe(true);
+    expect(matchesWritten(row, { display_name: '' })).toBe(false);
+    expect(matchesWritten(row, { name: ' 企業A' })).toBe(false);
+    // 書かなかった（undefined）列は比べない
+    expect(matchesWritten(row, { display_name: undefined, name: '企業A' })).toBe(true);
+  });
+
+  it('配列（別名・申請できる区分）は順も含めて比べる', () => {
+    expect(matchesWritten(row, { aliases: ['A', 'えー'] })).toBe(true);
+    expect(matchesWritten(row, { aliases: ['えー', 'A'] })).toBe(false);
+    expect(matchesWritten(row, { aliases: ['A'] })).toBe(false);
+    expect(matchesWritten({ aliases: null }, { aliases: [] })).toBe(false);
+  });
+});
+
+describe('distancePair（建物の組を DB のトリガーと同じ向きに）', () => {
+  it('C の照合順序（コードポイントの順）で小さい方を building_a に', () => {
+    expect(distancePair('B棟', 'A棟')).toEqual({ building_a: 'A棟', building_b: 'B棟' });
+    expect(distancePair('A棟', 'B棟')).toEqual({ building_a: 'A棟', building_b: 'B棟' });
+    // 大文字は小文字より前（C の照合順序。localeCompare とは違う）
+    expect(distancePair('a', 'B')).toEqual({ building_a: 'B', building_b: 'a' });
+    // サロゲートペア（U+1F3EB）は UTF-16 の単位ではなくコードポイントで比べる（U+FF21 より後）
+    expect(distancePair('\u{1F3EB}', '\uFF21')).toEqual({ building_a: '\uFF21', building_b: '\u{1F3EB}' });
+  });
+});
+
+describe('読み直しの関数（更新は主キー、insert は一意のキー）', () => {
+  it('readRoom・readRoomByName・readItemByCode・readGroup・readGroupByName は1行を読み、なければ null', async () => {
+    const { client, issued } = createFakeSupabase((call) => ({ data: call.table === 'items' ? null : { id: 'x' } }));
+    expect(await readRoom(R1, client)).toEqual({ id: 'x' });
+    expect(await readRoomByName('1-1', client)).toEqual({ id: 'x' });
+    expect(await readItemByCode('desk', client)).toBeNull();
+    expect(await readGroup(G1, client)).toEqual({ id: 'x' });
+    expect(await readGroupByName('y', '企業A', client)).toEqual({ id: 'x' });
+    expect(issued.map((c) => [c.table, opArgs(c, 'match')[0]])).toEqual([
+      ['rooms', [{ id: R1 }]],
+      ['rooms', [{ name: '1-1' }]],
+      ['items', [{ code: 'desk' }]],
+      ['groups', [{ id: G1 }]],
+      ['groups', [{ year_id: 'y', name: '企業A' }]],
+    ]);
+    expect(issued.every((c) => opArgs(c, 'maybeSingle').length === 1)).toBe(true);
+  });
+
+  it('readDistance は DB の向きの組で読む', async () => {
+    const { client, issued } = createFakeSupabase(() => ({ data: null }));
+    await readDistance('B棟', 'A棟', client);
+    expect(opArgs(issued[0]!, 'match')).toEqual([[{ building_a: 'A棟', building_b: 'B棟' }]]);
+  });
+
+  it('読めなければ AppError を投げる（通信の失敗は network）', async () => {
+    const { client } = createFakeSupabase(() => ({ error: { code: '', message: 'TypeError: fetch failed' }, status: 0 }));
+    await expect(readRoom(R1, client)).rejects.toMatchObject({ info: { kind: 'network' } });
+  });
+});
+
+describe('runLockedWrite（2.6 の (B1) の分かれ道）', () => {
+  interface Row {
+    name: string;
+    updated_at: string;
+  }
+  const T0 = '2026-10-29T01:00:00.000001+00:00';
+  const T1 = '2026-10-29T01:00:01.000002+00:00';
+  const network = () => new TypeError('Failed to fetch');
+  const run = (
+    write: () => Promise<unknown>,
+    reread: Row | null | Error,
+    opts: { input?: string; base?: string | null; insert?: boolean } = {},
+  ) => {
+    const rereadFn = vi.fn(() => (reread instanceof Error ? Promise.reject(reread) : Promise.resolve(reread)));
+    const result = runLockedWrite<Row>({
+      write,
+      reread: rereadFn,
+      matches: (r) => r.name === (opts.input ?? '新'),
+      baseVersion: opts.base === undefined ? T0 : opts.base,
+      ...(opts.insert ? { insert: true } : {}),
+    });
+    return { result, rereadFn };
+  };
+
+  it('成功したら done（読み直さない）', async () => {
+    const { result, rereadFn } = run(() => Promise.resolve({}), null);
+    expect(await result).toEqual({ kind: 'done', earlier: false });
+    expect(rereadFn).not.toHaveBeenCalled();
+  });
+
+  it('forbidden・input などは failed（読み直さない。2.5 の表のとおり）', async () => {
+    for (const e of [appError('forbidden', 'lock_unchanged'), { code: '23514', message: 'check' }, { code: '42501', message: 'rls' }]) {
+      const { result, rereadFn } = run(() => Promise.reject(e), null);
+      expect((await result).kind).toBe('failed');
+      expect(rereadFn).not.toHaveBeenCalled();
+    }
+  });
+
+  describe('応答が届かなかった（isUnknownOutcome）', () => {
+    it('saved：読み直した行が入力と同じ → done（earlier。「保存されていました」）', async () => {
+      const { result } = run(() => Promise.reject(network()), { name: '新', updated_at: T1 });
+      expect(await result).toEqual({ kind: 'done', earlier: true });
+    });
+
+    it('not-saved：版が入力の元のまま → unknown（入力を残して unknownOutcomeMessage()）', async () => {
+      const { result } = run(() => Promise.reject(network()), { name: '元', updated_at: T0 });
+      expect((await result).kind).toBe('unknown');
+    });
+
+    it('unread：読み直しも届かない → unknown', async () => {
+      const { result } = run(() => Promise.reject(network()), network());
+      expect((await result).kind).toBe('unknown');
+    });
+
+    it('ゲートウェイのタイムアウト（コードのない 504）も同じ', async () => {
+      const { result } = run(() => Promise.reject({ message: 'Gateway Timeout', status: 504 }), { name: '新', updated_at: T1 });
+      expect((await result).kind).toBe('done');
+    });
+
+    it('changed：版が進み入力と違う → changed。文言は更新なら lock_conflict、行がなくなっていれば lock_missing', async () => {
+      const a = await run(() => Promise.reject(network()), { name: '他', updated_at: T1 }).result;
+      expect(a).toMatchObject({ kind: 'changed', row: { name: '他', updated_at: T1 }, conflict: { info: { kind: 'conflict', reason: 'lock_conflict' } } });
+      const b = await run(() => Promise.reject(network()), null).result;
+      expect(b).toMatchObject({ kind: 'changed', row: null, conflict: { info: { kind: 'not_found', reason: 'lock_missing' } } });
+    });
+
+    it('insert：行がなければ not-saved（unknown）、別の値の行ができていれば changed（23505 の文言）、入力と同じ行なら done', async () => {
+      expect((await run(() => Promise.reject(network()), null, { base: null, insert: true }).result).kind).toBe('unknown');
+      expect(await run(() => Promise.reject(network()), { name: '他', updated_at: T1 }, { base: null, insert: true }).result).toMatchObject({
+        kind: 'changed',
+        conflict: { info: { kind: 'conflict', code: '23505' } },
+      });
+      expect(await run(() => Promise.reject(network()), { name: '新', updated_at: T1 }, { base: null, insert: true }).result).toEqual({
+        kind: 'done',
+        earlier: true,
+      });
+    });
+
+    it('自分の前の送信（値が今の入力と違う）が後から通っていた → changed（ほかの人の変更に見える。受け入れる）', async () => {
+      const { result } = run(() => Promise.reject(network()), { name: '前に送った値', updated_at: T1 });
+      expect((await result).kind).toBe('changed');
+    });
+  });
+
+  describe('止められた（conflict・not_found・23505）', () => {
+    const conflict = appError('conflict', 'lock_conflict');
+
+    it('saved：前の送信が後から通っていて入力と同じ → done（earlier）', async () => {
+      const { result, rereadFn } = run(() => Promise.reject(conflict), { name: '新', updated_at: T1 });
+      expect(await result).toEqual({ kind: 'done', earlier: true });
+      expect(rereadFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('changed：ほかの人の値 → changed（止めたエラーの文言。読み直した行を入力の元にする）', async () => {
+      const { result } = run(() => Promise.reject(conflict), { name: '他', updated_at: T1 });
+      expect(await result).toMatchObject({ kind: 'changed', row: { name: '他', updated_at: T1 }, conflict: { info: { reason: 'lock_conflict' } } });
+    });
+
+    it('not-saved（版が入力の元のまま。更新の 23505 など）→ changed（今までの conflict の扱い）', async () => {
+      const dup = { code: '23505', message: 'duplicate key' };
+      const { result } = run(() => Promise.reject(dup), { name: '元', updated_at: T0 });
+      expect(await result).toMatchObject({ kind: 'changed', conflict: { info: { kind: 'conflict', code: '23505' } } });
+    });
+
+    it('not_found（lock_missing）で行がない → changed（row は null）', async () => {
+      const { result } = run(() => Promise.reject(appError('not_found', 'lock_missing')), null);
+      expect(await result).toMatchObject({ kind: 'changed', row: null, conflict: { info: { kind: 'not_found' } } });
+    });
+
+    it('insert の 23505：入力と同じ行なら done、違えば changed（23505）', async () => {
+      const dup = { code: '23505', message: 'duplicate key' };
+      expect(await run(() => Promise.reject(dup), { name: '新', updated_at: T1 }, { base: null, insert: true }).result).toEqual({
+        kind: 'done',
+        earlier: true,
+      });
+      expect(await run(() => Promise.reject(dup), { name: '他', updated_at: T1 }, { base: null, insert: true }).result).toMatchObject({
+        kind: 'changed',
+        conflict: { info: { code: '23505' } },
+      });
+    });
+
+    it('unread：読み直せない → unread（「読み直しました」と言わず、読み直すボタン）', async () => {
+      const { result } = run(() => Promise.reject(conflict), network());
+      expect(await result).toMatchObject({ kind: 'unread' });
+    });
+  });
+
+  it('unknownOutcomeMessage の文言（画面が出すもの）', () => {
+    expect(unknownOutcomeMessage()).toBe('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります');
   });
 });

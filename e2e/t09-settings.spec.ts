@@ -155,6 +155,10 @@ test.describe('T09 マスタ設定（管理者）', () => {
       const offline = (route: Route) => route.abort('internetdisconnected');
       await page.route('**/rest/v1/**', offline);
       await form.getByRole('button', { name: '保存' }).click();
+      // 応答が届かず、読み直しも届かない：保存できたか分からない（2.6 の (B1)。「確かめる」のボタンは作らない）
+      // 読み直し（GET）は supabase-js が間を空けて再試行するので、知らせが出るまで数秒かかる
+      await expect(page.getByText('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります')).toBeVisible({ timeout: 30_000 });
+      await expect(form.getByRole('button', { name: '保存' })).toBeEnabled();
       const banner = page.getByTestId('settings-reload-error');
       await expect(banner).toBeVisible({ timeout: 45_000 });
       // 画面は差し替わらず、フォームと入力は残る
@@ -170,6 +174,40 @@ test.describe('T09 マスタ設定（管理者）', () => {
       await expect(page.getByText('「E2E通信切れ」を足しました')).toBeVisible();
       await expect(form).toHaveCount(0);
       await expect(banner).toHaveCount(0);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09 団体の追加：応答だけが届かなくても、一意のキーで読み直して「保存されていました」で閉じ、行は1つで値は入力のとおり', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=groups');
+      await expect(rowOf(page, SMALL.groups.stall)).toBeVisible();
+      // 団体の insert（POST）をサーバーには届け、応答だけを落とす（1回だけ）
+      let dropped = 0;
+      await page.route('**/rest/v1/groups*', async (route) => {
+        if (route.request().method() === 'POST' && dropped === 0) {
+          dropped += 1;
+          await route.fetch();
+          await route.abort('failed');
+          return;
+        }
+        await route.continue();
+      });
+      await page.getByTestId('group-add').click();
+      const form = page.getByTestId('group-form');
+      await form.getByLabel('団体名').fill('E2E応答なし');
+      await form.getByLabel('表示名（企画名。任意）').fill('  E2E 企画  ');
+      await form.getByRole('button', { name: '保存' }).click();
+      await expect(page.getByText('「E2E応答なし」は保存されていました')).toBeVisible();
+      await expect(form).toHaveCount(0);
+      expect(dropped).toBe(1);
+      await expect(rowOf(page, 'E2E応答なし')).toBeVisible();
+      expect(
+        await sql('select name, display_name from public.groups where year_id = $1 and name like $2', [s.yearId, 'E2E応答なし%']),
+      ).toEqual([{ name: 'E2E応答なし', display_name: 'E2E 企画' }]);
     } finally {
       await s.cleanup();
     }
@@ -476,6 +514,43 @@ test.describe('T09 場所の今年の使用（管理者）', () => {
       await expect(err).toHaveCount(0);
       await expect(dialog.getByRole('button', { name: '保存' })).toBeEnabled();
       await dialog.getByRole('button', { name: 'やめる' }).click();
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09 今年の使用：応答だけが届かなくても、読み直して「保存されていました」で閉じ、「ほかの人が変えました」と出さない', async ({ page }) => {
+    const s = await createScenario({ dataset: 'small', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=rooms');
+      // 今年の使用の書き込み（行がなければ POST、あれば PATCH）をサーバーには届け、応答だけを落とす（1回だけ）
+      let dropped = 0;
+      await page.route('**/rest/v1/room_years*', async (route) => {
+        if (route.request().method() !== 'GET' && dropped === 0) {
+          dropped += 1;
+          await route.fetch();
+          await route.abort('failed');
+          return;
+        }
+        await route.continue();
+      });
+      await rowOf(page, SMALL.rooms.class2).getByRole('button', { name: `${SMALL.rooms.class2}の今年の使用を変える` }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('今年は使用する').uncheck();
+      await dialog.getByLabel('理由のメモ（任意）').fill(' E2E 応答なし ');
+      await dialog.getByRole('button', { name: '保存' }).click();
+      await expect(page.getByText(`「${SMALL.rooms.class2}」の今年の使用は保存されていました`)).toBeVisible();
+      await expect(dialog).toHaveCount(0);
+      expect(dropped).toBe(1);
+      await expect(page.getByTestId('usable-changed-by-other')).toHaveCount(0);
+      await expect(rowOf(page, SMALL.rooms.class2)).toContainText('使用不可');
+      expect(
+        await sql(
+          'select ry.usable, ry.note from public.room_years ry join public.rooms r on r.id = ry.room_id where ry.year_id = $1 and r.name = $2',
+          [s.yearId, SMALL.rooms.class2],
+        ),
+      ).toEqual([{ usable: false, note: 'E2E 応答なし' }]);
     } finally {
       await s.cleanup();
     }

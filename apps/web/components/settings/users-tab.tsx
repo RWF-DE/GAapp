@@ -71,7 +71,7 @@ export function UsersTab() {
         setReasonError(messageFor(c));
         throw e;
       }
-      await onError(e, { context: { rpc }, dataKeys: [settingsKeys.members(year.id)] });
+      await onError(e, { context: { rpc }, dataKeys: [settingsKeys.members(year.id)], unknownMessage: null });
       if (c.kind === 'state' || c.kind === 'input' || c.kind === 'deadlock') throw e; // 開いたまま
     }
   };
@@ -359,7 +359,7 @@ function InviteCard({ groups, onInvited }: { groups: readonly { id: string; name
       if (c.kind === 'input' && field === 'email') setError('email', { message: messageFor(c) });
       else if (c.kind === 'input' && field === 'group_id') setError('group_id', { message: '団体を選び直してください' });
       else if (c.kind === 'conflict' && field === 'role') setError('kind', { message: messageFor(c) });
-      else await onError(e, { context: { rpc: 'invite' }, dataKeys: [settingsKeys.members(year.id)] });
+      else await onError(e, { context: { rpc: 'invite' }, dataKeys: [settingsKeys.members(year.id)], unknownMessage: null });
     } finally {
       setSaving(false);
     }
