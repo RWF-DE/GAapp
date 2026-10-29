@@ -408,7 +408,7 @@ test.describe('T12 管理者', () => {
     }
   });
 
-  test('T12 無効にするダイアログを開いている間にほかの人がルールを変えたら、ダイアログを閉じて読み直す（古い行・古いメモで送り続けない）', async ({ page }) => {
+  test('T12 無効にするダイアログを開いている間にほかの人がルールを変えたら、ダイアログを開いたまま今のメモを知らせ、入力を残す。もう一度押すと読み直した版で上書きする', async ({ page }) => {
     const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
     try {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
@@ -423,26 +423,27 @@ test.describe('T12 管理者', () => {
       // ダイアログを開いている間に、ほかの人がメモを直す（updated_at が変わる）
       await sql(`update public.rules set memo = 'E2E：ほかの人のメモ' where year_id = $1 and code = 'S04'`, [s.yearId]);
       await dlg.getByRole('button', { name: '無効にする' }).click();
-      // conflict：ダイアログを閉じ、読み直した一覧にほかの人のメモが出る
-      await expect(dlg).toBeHidden();
+      // conflict → 読み直して changed：ダイアログは開いたまま、今のメモを知らせる。入力は残り、一覧も読み直される
+      const failure = dlg.getByTestId('disable-failure');
+      await expect(failure).toContainText('他の人が先に変更しました');
+      await expect(failure).toContainText('E2E：ほかの人のメモ');
+      await expect(failure).toContainText('もう一度「無効にする」を押すと、入力したメモで上書きします');
+      await expect(dlg.getByLabel('メモ')).toHaveValue('E2E：古い画面のメモ');
       await expect(s04).toContainText('E2E：ほかの人のメモ');
-      await expect(toggle).toBeChecked();
+      // （ダイアログの間は裏の一覧が aria-hidden なので、Switch は DB で確かめる）
       expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
 
-      // 開き直すと今のメモが入っていて、無効にできる
-      await toggle.click();
-      await expect(dlg.getByLabel('メモ')).toHaveValue('E2E：ほかの人のメモ');
-      await dlg.getByLabel('メモ').fill('E2E：ほかの人のメモ。今年は使わない');
+      // ほかの人の変更を見た後にもう一度押すと、読み直した版で送り、入力したメモで無効にする（古い版で送り続けない）
       await dlg.getByRole('button', { name: '無効にする' }).click();
       await expect(dlg).toBeHidden();
       await expect(toggle).not.toBeChecked();
-      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: false, memo: 'E2E：ほかの人のメモ。今年は使わない' });
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: false, memo: 'E2E：古い画面のメモ' });
     } finally {
       await s.cleanup();
     }
   });
 
-  test('T12 無効にするダイアログで止められた後に読み直せなかったら、ダイアログの中に知らせと「読み直す」を出す。読み直しても版は進めず、もう一度押すと conflict で閉じる', async ({ page }) => {
+  test('T12 無効にするダイアログで止められた後に読み直せなかったら、ダイアログの中に知らせと「読み直す」を出す。一覧の読み直しでは版を進めず、もう一度押すと conflict を確かめて開いたまま知らせ、メモを残す', async ({ page }) => {
     // supabase-js の GET の再試行で、読み直しの失敗が出るまで数秒かかる
     test.setTimeout(120_000);
     const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
@@ -467,7 +468,7 @@ test.describe('T12 管理者', () => {
       });
       await dlg.getByRole('button', { name: '無効にする' }).click();
       const failure = dlg.getByTestId('disable-failure');
-      await expect(failure).toContainText('読み直せませんでした。「読み直す」を押してから、もう一度「無効にする」を押してください', { timeout: 60_000 });
+      await expect(failure).toContainText('読み直せませんでした。もう一度「無効にする」を押すと、ほかの人の変更を確かめます', { timeout: 60_000 });
       await expect(failure).not.toContainText('保存');
       await expect(dlg.getByLabel('メモ')).toHaveValue('E2E：わたしのメモ');
       // モーダルの間でも押せる「読み直す」がダイアログの中にある。押すと一覧が読み直される
@@ -475,12 +476,20 @@ test.describe('T12 管理者', () => {
       await expect(s04).toContainText('E2E：ほかの人のメモ');
       expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
 
-      // 一覧を読み直しても版は進めない：もう一度押すと開いたときの版で送り、DB が conflict で止め、読み直して（changed）閉じる。ほかの人のメモは残る
+      // 一覧を読み直しても版は進めない：もう一度押すと開いたときの版で送り、DB が conflict で止め、読み直して（changed）
+      // 読み直した行を入力の元にする。ダイアログは開いたまま今のメモを知らせ、メモの入力は残る。ほかの人のメモは DB に残る
       await page.unroute(rereadPattern);
       await dlg.getByRole('button', { name: '無効にする' }).click();
-      await expect(dlg).toBeHidden();
-      await expect(toggle).toBeChecked();
+      await expect(failure).toContainText('他の人が先に変更しました');
+      await expect(failure).toContainText('E2E：ほかの人のメモ');
+      await expect(dlg.getByLabel('メモ')).toHaveValue('E2E：わたしのメモ');
       expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
+
+      // 知らせを見た後にもう一度押すと、読み直した版で送り、入力したメモで無効にする
+      await dlg.getByRole('button', { name: '無効にする' }).click();
+      await expect(dlg).toBeHidden();
+      await expect(toggle).not.toBeChecked();
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: false, memo: 'E2E：わたしのメモ' });
     } finally {
       await s.cleanup();
     }
@@ -543,10 +552,10 @@ test.describe('T12 管理者', () => {
       await sql(`update public.rules set memo = 'E2E：ほかの人のメモ' where year_id = $1 and code = 'S04'`, [s.yearId]);
       await refetchBehind(page, s04, 'E2E：ほかの人のメモ');
 
-      // 開いたときの版で送るので conflict：ダイアログを閉じ、ほかの人のメモが残る
+      // 開いたときの版で送るので conflict：ダイアログは開いたまま今のメモを知らせ、入力は残る。ほかの人のメモが DB に残る
       await dlg.getByRole('button', { name: '無効にする' }).click();
-      await expect(dlg).toBeHidden();
-      await expect(toggle).toBeChecked();
+      await expect(dlg.getByTestId('disable-failure')).toContainText('他の人が先に変更しました');
+      await expect(dlg.getByLabel('メモ')).toHaveValue('E2E：古い画面のメモ');
       expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
     } finally {
       await s.cleanup();
