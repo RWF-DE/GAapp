@@ -152,6 +152,14 @@ export function checkRuleRefs(rule: RuleDraft, ctx: RuleCheckContext): RuleCheck
       p.rooms.forEach((id, k) => {
         if (!roomIds.has(id)) err(`params.rooms.${k}`, '場所がありません');
       });
+      // 同じ団体・品目の keep の部屋が rooms に入っていないと、残すの行がこの制限に反する（E004）
+      for (const other of ctx.rules) {
+        if (other.kind !== 'keep' || other.params.group !== p.group || p.rooms.includes(other.params.room)) continue;
+        const codes = p.items.filter((c) => Object.hasOwn(other.params.items, c));
+        if (codes.length > 0) {
+          err('params.rooms', `「残す」のルール ${other.code} の部屋が、この制限の場所に入っていません（${codes.join('・')}）`);
+        }
+      }
       break;
     }
     case 'fixed_request': {
@@ -174,6 +182,19 @@ export function checkRuleRefs(rule: RuleDraft, ctx: RuleCheckContext): RuleCheck
       for (const c of Object.keys(p.items)) {
         needItem(`params.items.${c}`, c);
         needRequestable(`params.items.${c}`, c, g);
+        for (const other of ctx.rules) {
+          if (other.kind === 'keep' && other.params.group === p.group && other.params.room === p.room && Object.hasOwn(other.params.items, c)) {
+            err(`params.items.${c}`, `同じ団体・部屋・品目（${c}）の「残す」のルール ${other.code} があります`);
+          }
+        }
+      }
+      // 運び元の制限（source_restrict）がある品目は、残す部屋がその場所に入っていること（残すの行が E004 にならないように）
+      for (const other of ctx.rules) {
+        if (other.kind !== 'source_restrict' || other.params.group !== p.group || other.params.rooms.includes(p.room)) continue;
+        const codes = other.params.items.filter((c) => Object.hasOwn(p.items, c));
+        if (codes.length > 0) {
+          err('params.room', `「残す」の部屋が、運び元の制限のルール ${other.code} の場所に入っていません（${codes.join('・')}）`);
+        }
       }
       break;
     }

@@ -30,7 +30,8 @@ export function prepare(ctx: Ctx): Prepared {
   const fixedByKey = new Map<string, number>();
   for (const f of ctx.fixedRows) add(fixedByKey, rgijKey(f.sourceRoomId, f.groupId, f.requestedItemId, f.itemId), f.count);
 
-  // P2（残す）。keep ルールを code の順、params.items を品目の並び順に見る
+  // P2（残す）。keep ルールを code の順、params.items を品目の並び順に見る。
+  // 同じ（部屋・団体・品目）の keep の重なりと、source_restrict の外の部屋は P0（checkRuleRefs）で止めてある
   const keepRows: AllocationRow[] = [];
   const keepRuleOfKey = new Map<string, string>(); // (r,j) → 関わる keep のルールの code（E001 の refs）
   for (const rule of ctx.rules) {

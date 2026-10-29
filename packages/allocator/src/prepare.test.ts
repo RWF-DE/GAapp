@@ -76,6 +76,53 @@ describe('前処理3（残す。D-06）', () => {
     expect(p2.keepRows).toEqual([]);
   });
 
+  it('keep の部屋が同じ団体・品目の source_restrict の運び元に入っていなければ、両方のルールを示して invalid_input', async () => {
+    const solver = await getHighs();
+    const b = base()
+      .request('学科展示', { desk: 2 })
+      .rule(RULES.restrict('S05', '学科展示', ['desk'], ['X']))
+      .rule(RULES.keep('S08', '学科展示', 'Y', { desk: 2 }));
+    const res = allocate(b.input(), solver);
+    expect(res).toMatchObject({ ok: false, reason: 'invalid_input' });
+    const errs = !res.ok && res.reason === 'invalid_input' ? res.inputErrors : [];
+    expect(errs.map((e) => [e.ruleCode, e.path])).toEqual([
+      ['S05', 'rules.S05.params.rooms'],
+      ['S08', 'rules.S08.params.room'],
+    ]);
+    expect(errs[0]!.message).toContain('S08');
+    expect(errs[1]!.message).toContain('S05');
+    // 運び元に入っていれば止めない。制限の対象でない品目（chair）も止めない
+    const okIn = base()
+      .request('学科展示', { desk: 2, chair: 1 })
+      .rule(RULES.restrict('S05', '学科展示', ['desk'], ['X', 'Y']))
+      .rule(RULES.keep('S08', '学科展示', 'Y', { desk: 2 }));
+    expect(allocate(okIn.input(), solver).ok).toBe(true);
+    const okOther = base()
+      .request('学科展示', { desk: 2, chair: 1 })
+      .rule(RULES.restrict('S05', '学科展示', ['desk'], ['X']))
+      .rule(RULES.keep('S08', '学科展示', 'Y', { chair: 1 }));
+    expect(allocate(okOther.input(), solver).ok).toBe(true);
+  });
+
+  it('同じ団体・部屋・品目の keep が2つあれば invalid_input（固定行の有無で残す数が変わらないように）', async () => {
+    const b = base()
+      .request('学科展示', { desk: 4 })
+      .rule(RULES.keep('S08', '学科展示', 'Y', { desk: 2 }))
+      .rule(RULES.keep('S09', '学科展示', 'Y', { desk: 2, chair: 1 }));
+    const res = allocate(b.input(), await getHighs());
+    expect(res).toMatchObject({ ok: false, reason: 'invalid_input' });
+    expect(!res.ok && res.reason === 'invalid_input' && res.inputErrors.map((e) => [e.ruleCode, e.path])).toEqual([
+      ['S08', 'rules.S08.params.items.desk'],
+      ['S09', 'rules.S09.params.items.desk'],
+    ]);
+    // 品目が重ならなければ止めない
+    const ok = base()
+      .request('学科展示', { desk: 2, chair: 1 })
+      .rule(RULES.keep('S08', '学科展示', 'Y', { desk: 2 }))
+      .rule(RULES.keep('S09', '学科展示', 'Y', { chair: 1 }));
+    expect(allocate(ok.input(), await getHighs()).ok).toBe(true);
+  });
+
   it('keep の部屋が使用場所でなければ E005、使用不可なら E002（ruleCode つき）で止める', async () => {
     const e5 = base().rule(RULES.keep('S08', '学科展示', 'X', { desk: 1 }));
     const r5 = allocate(e5.input(), await getHighs());

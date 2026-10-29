@@ -99,6 +99,32 @@ describe('checkRuleRefs', () => {
     expect(checkRuleRefs(dupCode, ctx([s1])).map((x) => x.path)).toEqual(['code']);
   });
 
+  it('重なり：同じ団体・部屋・品目の keep', () => {
+    const k1 = draft({ code: 'K1', kind: 'keep', params: { group: ix.groupId('模擬店'), room: ix.roomId('X'), items: { desk: 2 } } });
+    const k2 = draft({ code: 'K2', kind: 'keep', params: { group: ix.groupId('模擬店'), room: ix.roomId('X'), items: { chair: 1, desk: 3 } } });
+    expect(checkRuleRefs(strip(k2), ctx([k1])).map((x) => x.path)).toEqual(['params.items.desk']);
+    expect(checkRuleRefs(strip(k1), ctx([k2])).map((x) => x.path)).toEqual(['params.items.desk']);
+    const k3 = draft({ code: 'K3', kind: 'keep', params: { group: ix.groupId('模擬店'), room: ix.roomId('X'), items: { chair: 1 } } });
+    expect(checkRuleRefs(strip(k3), ctx([k1]))).toEqual([]);
+  });
+
+  it('keep の room が、同じ団体・品目の source_restrict の rooms に入っていること（両方のルールから）', () => {
+    const k = draft({ code: 'K', kind: 'keep', params: { group: ix.groupId('模擬店'), room: ix.roomId('X'), items: { desk: 2, chair: 1 } } });
+    const r = draft({ code: 'R', kind: 'source_restrict', params: { group: ix.groupId('模擬店'), items: ['desk'], rooms: [ix.roomId('Y')] } });
+    const ek = checkRuleRefs(strip(k), ctx([r]));
+    expect(ek.map((x) => x.path)).toEqual(['params.room']);
+    expect(ek[0]!.message).toContain('R');
+    const er = checkRuleRefs(strip(r), ctx([k]));
+    expect(er.map((x) => x.path)).toEqual(['params.rooms']);
+    expect(er[0]!.message).toContain('K');
+    const inside = draft({ code: 'R', kind: 'source_restrict', params: { group: ix.groupId('模擬店'), items: ['desk'], rooms: [ix.roomId('X'), ix.roomId('Y')] } });
+    expect(checkRuleRefs(strip(k), ctx([inside]))).toEqual([]);
+    const otherItem = draft({ code: 'R', kind: 'source_restrict', params: { group: ix.groupId('模擬店'), items: ['long_desk_2'], rooms: [ix.roomId('Y')] } });
+    expect(checkRuleRefs(strip(k), ctx([otherItem]))).toEqual([]);
+    const otherGroup = draft({ code: 'R', kind: 'source_restrict', params: { group: ix.groupId('企業'), items: ['desk'], rooms: [ix.roomId('Y')] } });
+    expect(checkRuleRefs(strip(k), ctx([otherGroup]))).toEqual([]);
+  });
+
   it('id のない RuleDraft を受け取れる', () => {
     const d: RuleDraft = { code: 'N', kind: 'keep', params: { group: ix.groupId('模擬店'), room: ix.roomId('X'), items: { desk: 2 } } };
     expect(checkRuleRefs(d, ctx())).toEqual([]);

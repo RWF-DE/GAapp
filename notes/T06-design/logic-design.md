@@ -176,6 +176,8 @@ export type RuleCheckError = InputError & { code?: 'E005' };   // E005 だけは
   - 申請できる品目：fixed_request の item と keep の items の品目が、対象の団体の区分で申請できること（読み替えの元の品目（企業以外の長机(3人掛)）も不可。画面では読み替え先（長机(2人掛)）を選ぶよう案内する）。申請できない品目のまま需要や残すの行を作ると、S03 に反する変数（j ＝ i）や、どの申請にも当たらない行ができるため。
   - keep の room が団体の使用場所であること（違えば `code: 'E005'`）。
   - 重なり（ctx.rules と比べる）：fixed_request の（group, item）が他の fixed_request と重ならないこと、substitute の from→to が同じで区分が重なるルールが2つないこと、code が他のルールと重ならないこと（DB の unique (year_id, code) と同じ）。
+  - keep の（group, room, 品目）が他の keep と重ならないこと（path は `params.items.<code>`）。重なると P2 で各ルールが固定分を別々に引くので、固定行があるかどうかで残す数が変わる（2+2 = 4 が、固定すると 2 になる）。
+  - keep の room が、同じ group で同じ品目を含む source_restrict の rooms に入っていること（keep 側は `params.room`、source_restrict 側は `params.rooms`。message に相手のルールの code を入れる）。入っていないと P2 の残すの行が運び元の制限に反し、validate の E004 になる（allocate は自分が作る行に error を出さない）。source_restrict が複数あるときの許される運び元は共通部分なので、ルールの組ごとに確かめれば足りる。
 - allocate の P0 は、enabled のルールを code 順に、自分以外のルールを ctx.rules にして呼ぶ（disabledRuleCodes のルールは除く）。T12 のフォームは保存の前に呼び、エラーを入力欄の下に出す。団体の区分や品目の申請できる区分を後から変えたときは、allocate の P0 で invalid_input（ruleCode つき）として見つかる。
 
 ### 2.4 結果と Issue
@@ -515,6 +517,7 @@ E006 を止めない理由：DB は申請の書き込みで E006 を止める（
 2. params.room が L(g) と違えば E005、params.room が使用不可なら E002（refs: ruleCode）。これは precheck で止める（allocate が error の行を作らないため）。
 3. 同じキー (room, g, item, item) の固定行（P0 の読み替えの後）の合計 f を引き、`n − f > 0` なら、その数で keep の行を作る（is_keep、requestedItemId = itemId）。手で固定した keep の行（D-06）や手動の行と重なっても二重にならない。f が n を超えた分は固定行のまま残る（多ければ validate の W101）。
 4. 団体の申請が keep より少なくても、keep の数をそのまま作る（S08 は数を決めている。多い分は W101）。keep の items は checkRuleRefs で申請できる品目に限っている（2.3）。
+5. 同じ（room, g, item）の keep が2つあること、keep の room が同じ団体・品目の source_restrict の rooms に入っていないことは、P0 の checkRuleRefs が invalid_input で止めている（2.3）。そのため 3 で固定分を引くのはキーごとに1回で、作る keep の行は運び元の制限に反しない。
 
 **P3 固定行の扱い**
 
@@ -714,8 +717,8 @@ T00 のダミー（gen.ts）に、この設計の前処理・距離・変数・�
 | --- | --- |
 | distance.test.ts | 6.1 の表の各行、上書きの両方向、上書きが同じ建物・屋外に効かないこと、extra、floor null |
 | weights.test.ts | B ＞ K、A ＞ B·P ＋ K、μ ＞ K·U、W ＞ K·(U ＋ μ)。係数が整数。規模の上限で solver_error。**総当たり**：シード固定の小さな入力を作り、全整数解を列挙した辞書式の最小と LP の解の辞書式の値が一致すること（spikes/logic-lab/brute-lex-1200.ts の生成器と列挙を移す。入力の作り方と期待値は 12.5 の表。CI では、列挙できた入力が 200 通りになるまでのシードに絞ってよい）。**段ごとの検算**（R8 規模。係数が大きいときの HiGHS の許容誤差の確認）：testing/solveLexStages が、同じ候補で目的を1段ずつにした LP を順に解き（①Σc_sub の最小 → ②Σx̂ の最大 → ③Σd の最小 → ④Σp の最大 → ⑤Σe の最小）、前の段の値を等式の制約に入れて次の段を解く。得た5段の値が、allocate の rows から計算した5段の値と一致すること。対象は r8like の full、r8like で MER を使用不可にした minimal_change、fixtures/r8 の full と第一セミナーの minimal_change（12.3 の手順1・2）。1回あたり数百 ms。highs を上げるときの回帰テストにもなる |
-| prepare.test.ts | D-05（企業以外の長机(3人掛)が長机(2人掛)に、企業はそのまま、不可机の申請は需要から除かれ excluded に入り、allocate は止まらない）、D-07（未提出は固定数、提出済みの0は0、未提出で申請の行があっても固定数）、D-06（keep の行が作られる、手で固定した keep と重なると超える分だけ、keep が申請より多くても作る）、固定行の差し引き、固定行・前回の行の requestedItemId の読み替え（企業以外の長机(3人掛)の手動の行が D′(g, 長机(2人掛)) から引かれ、二重にならない）、E001（rowIds つき。使用不可の部屋でも在庫超過なら E001）、keep のルールの E002・E005（ruleCode つき）、固定行の運び元が使用不可でも止まらないこと、使用不可の部屋の在庫が使われないこと、disabledRuleCodes |
-| rules.test.ts（shared） | checkRuleRefs：参照先がない、fixed_request・keep の品目が団体の区分で申請できない（企業以外の長机(3人掛)を含む）、keep の room が使用場所でない（code: 'E005'）、fixed_request の重なり・substitute の区分の重なり・code の重なり（ctx.rules と比べる）、id のない RuleDraft を受け取れる。zod：ruleCode は 50 字まで、count は 10000 まで、extraCost・distanceOverrides.cost は 0〜20 の整数（負・小数・21 は失敗） |
+| prepare.test.ts | D-05（企業以外の長机(3人掛)が長机(2人掛)に、企業はそのまま、不可机の申請は需要から除かれ excluded に入り、allocate は止まらない）、D-07（未提出は固定数、提出済みの0は0、未提出で申請の行があっても固定数）、D-06（keep の行が作られる、手で固定した keep と重なると超える分だけ、keep が申請より多くても作る）、固定行の差し引き、固定行・前回の行の requestedItemId の読み替え（企業以外の長机(3人掛)の手動の行が D′(g, 長机(2人掛)) から引かれ、二重にならない）、E001（rowIds つき。使用不可の部屋でも在庫超過なら E001）、keep のルールの E002・E005（ruleCode つき）、keep の重なりと source_restrict の外の keep の部屋が invalid_input（両方のルールの code）、固定行の運び元が使用不可でも止まらないこと、使用不可の部屋の在庫が使われないこと、disabledRuleCodes |
+| rules.test.ts（shared） | checkRuleRefs：参照先がない、fixed_request・keep の品目が団体の区分で申請できない（企業以外の長机(3人掛)を含む）、keep の room が使用場所でない（code: 'E005'）、fixed_request の重なり・keep の（団体・部屋・品目）の重なり・substitute の区分の重なり・code の重なり（ctx.rules と比べる）、keep の room が同じ団体・品目の source_restrict の rooms にない（両方のルールから）、id のない RuleDraft を受け取れる。zod：ruleCode は 50 字まで、count は 10000 まで、extraCost・distanceOverrides.cost は 0〜20 の整数（負・小数・21 は失敗） |
 | candidates.test.ts | categories、indoorOnly（屋外・体育館・使用場所なしは対象外）、needsConsent（declined だけ外す）、preferCategory の p、同じ j に当てはまる代替が2つのとき cost が小さいもの・同じなら code が先、source_restrict の共通部分と代替先への適用、x̂ は x があるキーだけ・上限は前回 − keep、P7 の shortages（候補なし、候補の在庫の合計が足りない） |
 | lp.test.ts | 小さな入力の LP の文字列のスナップショット、変数名の形（`^x[1-9][0-9]*$`）、並べ替えた入力で同じ文字列（8 章）、同名・同 sortOrder で id だけ違う団体の並び |
 | solve.test.ts | 偽の LpSolver で：'Time limit reached'・'Unbounded'・'Unknown' → solver_error、'Infeasible'・'Primal infeasible or unbounded' → infeasible、0.5 が返る → solver_error、Columns に変数がない・Primal が数でない・NaN → solver_error、例外 → solver_error。型：`const s: LpSolver = await loadHighs()` が通ること（Columns は `Record<string, unknown>`。2.4） |
