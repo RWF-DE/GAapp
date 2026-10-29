@@ -22,9 +22,11 @@ import {
   cellKey,
   columnTotals,
   groupDeadlineRows,
+  groupStateOf,
   isOutsideFlagActive,
   isUnknownOutcome,
   judgeDirectFailure,
+  judgeProxyAfterUnknown,
   judgeSubmitFailure,
   markSubmittedAfterDeadline,
   markSubmittedDirect,
@@ -47,6 +49,7 @@ import {
   type OutsideFlag,
   type PendingCell,
   type PendingCells,
+  type ProxyUnverified,
   type RequestsTables,
 } from '@/lib/data/requests';
 import { useYearRow, type YearRow } from '@/lib/data/year';
@@ -129,6 +132,14 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   /** 通信が途切れて保存されたか分からず、読み直しもできなかった変更（確かめるまで保存を押せない。2.6） */
   const [unverified, setUnverified] = useState<Unverified | null>(null);
   const [proxyGroupId, setProxyGroupId] = useState<string | null>(null);
+  /**
+   * 代理入力の未確定の送信（応答が届かず、保存されたか分からない。団体ごと。2.6）。シートを閉じても消さず、確かめるまで同じ団体の
+   * 代理入力の送り直しを止める。シートを開いている団体はシートが確かめ、閉じた団体は表が届いたときにここで確かめる
+   */
+  const [proxyUnverified, setProxyUnverified] = useState<Readonly<Record<string, ProxyUnverified>>>({});
+  const proxyUnverifiedRef = useRef<Readonly<Record<string, ProxyUnverified>>>({});
+  /** 代理入力の未確定の送信を、シートを閉じた後に確かめた結果の知らせ */
+  const [proxyNotice, setProxyNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null);
   const [markRow, setMarkRow] = useState<MatrixRow | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
@@ -267,7 +278,51 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
     const n = u ? settleUnverified(t, u) : rebaseOnto(t);
     if (n > 0) toast.info(`${n} 件のセルは、ほかの人が先に変えたので読み直した値に戻しました`);
   };
-  const onTablesLoaded = useEffectEvent((t: RequestsTables) => rebaseIfNew(t));
+  /** 代理入力の未確定の印を付ける・外す */
+  const setProxyMark = (groupId: string, u: ProxyUnverified | null) => {
+    const next = { ...proxyUnverifiedRef.current };
+    if (u) next[groupId] = u;
+    else delete next[groupId];
+    proxyUnverifiedRef.current = next;
+    setProxyUnverified(next);
+  };
+
+  /**
+   * 届いた表で、シートを閉じた団体の代理入力の未確定の送信を確かめる（2.6。シートの確かめと同じ judgeProxyAfterUnknown）。
+   * シートを閉じたので入力は残っていない。結果を知らせて印を外す（others は表の値を見てもらう）。
+   */
+  const settleProxyMarks = (t: RequestsTables, openGroupId: string | null) => {
+    const marks = proxyUnverifiedRef.current;
+    const ids = Object.keys(marks).filter((id) => id !== openGroupId);
+    if (ids.length === 0) return;
+    const rows = buildRequestMatrix(t).rows;
+    const texts: string[] = [];
+    let tone: 'info' | 'error' = 'info';
+    for (const id of ids) {
+      const row = rows.find((r) => r.group.id === id);
+      const u = marks[id];
+      if (!row || !u) continue;
+      const { verdict } = judgeProxyAfterUnknown(u, groupStateOf(row));
+      setProxyMark(id, null);
+      const name = row.group.name;
+      if (verdict === 'saved') {
+        texts.push(`通信が途切れましたが、${name}の代理入力は保存されていました`);
+        continue;
+      }
+      tone = 'error';
+      texts.push(
+        verdict === 'not_saved'
+          ? `${name}の代理入力は保存されていませんでした（通信できませんでした）。もう一度入力してください`
+          : `${name}の代理入力は、保存されたか決められません（ほかの人がこの団体の申請を保存しました）。表の値を確かめてください`,
+      );
+    }
+    if (texts.length > 0) setProxyNotice({ tone, text: texts.join('。') });
+  };
+
+  const onTablesLoaded = useEffectEvent((t: RequestsTables) => {
+    settleProxyMarks(t, proxyGroupId);
+    rebaseIfNew(t);
+  });
   useEffect(() => {
     if (q.data) onTablesLoaded(q.data);
   }, [q.data]);
@@ -636,6 +691,19 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
               {saveInfo}
             </p>
           ) : null}
+          {proxyNotice ? (
+            <p
+              role={proxyNotice.tone === 'error' ? 'alert' : 'status'}
+              data-testid="proxy-notice"
+              className={
+                proxyNotice.tone === 'error'
+                  ? 'rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive'
+                  : 'rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100'
+              }
+            >
+              {proxyNotice.text}
+            </p>
+          ) : null}
           {matrix.rows.length === 0 ? (
             <EmptyState title="条件に合う団体がありません" />
           ) : (
@@ -654,7 +722,10 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
                 applyMarks({ [cellKey(row.group.id, itemId)]: null });
                 applyPending((p) => setPendingCell(p, row.group.id, itemId, value, cell));
               }}
-              onProxy={(row) => setProxyGroupId(row.group.id)}
+              onProxy={(row) => {
+                setProxyNotice(null);
+                setProxyGroupId(row.group.id);
+              }}
               onMarkSubmitted={(row) => setMarkRow(row)}
             />
           )}
@@ -729,7 +800,22 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
       <ProxySheet
         open={proxyRow !== null}
         onOpenChange={(o) => {
-          if (!o) setProxyGroupId(null);
+          if (o) return;
+          const id = proxyGroupId;
+          setProxyGroupId(null);
+          if (!id || !proxyUnverifiedRef.current[id]) return;
+          // 未確定のまま閉じた：保存されたか分からないと伝えて表を読み直し、送った値が入ったかを確かめる（印は確かめるまで残す）
+          const name = proxyRow?.group.name ?? '';
+          setProxyNotice({ tone: 'error', text: `${name}の代理入力は、保存されたか分かりません。表を読み直して確かめています` });
+          void refetchFresh().then((data) => {
+            if (data) settleProxyMarks(data, null);
+            else if (proxyUnverifiedRef.current[id]) {
+              setProxyNotice({
+                tone: 'error',
+                text: `${name}の代理入力は、保存されたか分かりません（表を読み直せませんでした）。確かめるまで送り直せません。通信が戻ったら、代理入力を開いて「確かめる」を押してください`,
+              });
+            }
+          });
         }}
         row={proxyRow}
         items={tables.items}
@@ -742,6 +828,8 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           await reloadTables();
         }}
         onError={(e, rpc, groupId) => handleWriteError(e, rpc, groupId)}
+        unverified={proxyRow ? (proxyUnverified[proxyRow.group.id] ?? null) : null}
+        onUnverifiedChange={setProxyMark}
       />
     </div>
   );

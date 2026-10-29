@@ -15,6 +15,8 @@ import {
   hasCountChanges,
   isUnknownOutcome,
   proxySavedAfterUnknown,
+  judgeProxyAfterUnknown,
+  sameProxyInput,
   saveSummary,
   hasGroupChanges,
   hasNoRequests,
@@ -549,6 +551,45 @@ describe('proxySavedAfterUnknown（代理入力の送信が途切れた後に、
       expect(proxySavedAfterUnknown(only, { requests: [], submission: subAt(T1, '紙で提出') })).toBe(true);
       expect(proxySavedAfterUnknown(only, { requests: [], submission: subAt(T0, '紙で提出') })).toBe(false);
     });
+  });
+});
+
+describe('judgeProxyAfterUnknown（代理入力の未確定の送信を、読み直した記録で確かめる。2.6）', () => {
+  const g = group(10, '模擬店A', 'stall');
+  const sub = (updated_at: string, note: string | null = null, submitted_at: string | null = T0): SubmissionRow => ({
+    group_id: g.id,
+    submitted_at,
+    note,
+    updated_at,
+  });
+  const before = { requests: [req(g, 'desk', 3, T0)], submission: sub(T0, '電源') };
+  const sent = { rows: [{ itemId: item('desk').id, count: 5 }], note: '電源', submissionUpdatedAt: T0, checkRowVersions: false };
+  it('送った値が入っていれば saved', () => {
+    const r = judgeProxyAfterUnknown({ sent, before }, { requests: [req(g, 'desk', 5, T1)], submission: sub(T1, '電源', T1) });
+    expect(r.verdict).toBe('saved');
+  });
+  it('入っておらず、送る直前に読んだ記録から何も変わっていなければ not_saved', () => {
+    const r = judgeProxyAfterUnknown({ sent, before }, before);
+    expect(r.verdict).toBe('not_saved');
+    expect(r.changes).toEqual({ items: [], submission: false });
+  });
+  it('入っておらず、ほかの人が行か提出の記録を変えていれば others（保存されていないと言い切らない）', () => {
+    const items = judgeProxyAfterUnknown({ sent, before }, { requests: [req(g, 'desk', 4, T1)], submission: sub(T0, '電源') });
+    expect(items.verdict).toBe('others');
+    expect(items.changes.items).toEqual([{ itemId: item('desk').id, from: 3, to: 4 }]);
+    // 提出日時も備考も同じで updated_at だけが進んだ（締切後の保存など）も、ほかの人の保存
+    const touched = judgeProxyAfterUnknown({ sent, before }, { requests: [req(g, 'desk', 3, T0)], submission: sub(T1, '電源') });
+    expect(touched.verdict).toBe('others');
+    expect(touched.changes.submission).toBe(true);
+  });
+});
+
+describe('sameProxyInput（代理入力の入力が同じか）', () => {
+  it('数と、前後の空白を除いた備考で比べる', () => {
+    expect(sameProxyInput({ counts: { a: 1, b: 0 }, note: '電源 ' }, { counts: { a: 1, b: 0 }, note: '電源' })).toBe(true);
+    expect(sameProxyInput({ counts: { a: 1, b: 0 }, note: '電源' }, { counts: { a: 2, b: 0 }, note: '電源' })).toBe(false);
+    expect(sameProxyInput({ counts: { a: 1 }, note: '' }, { counts: { a: 1, b: 0 }, note: '' })).toBe(false);
+    expect(sameProxyInput({ counts: { a: 1 }, note: '' }, { counts: { a: 1 }, note: 'x' })).toBe(false);
   });
 });
 

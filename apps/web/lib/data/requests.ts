@@ -679,6 +679,55 @@ export function proxySavedAfterUnknown(sent: ProxySent, latest: GroupRequestStat
   });
 }
 
+/** 代理入力の入力（入力欄の品目すべての数と、備考の文字列） */
+export interface ProxyInput {
+  counts: Record<string, number>;
+  note: string;
+}
+
+/**
+ * 代理入力の未確定の送信（応答が届かず、保存されたか分からない。2.6）。団体ごとに申請一覧の画面が持つ（シートを閉じても消さず、
+ * 確かめるまで同じ団体の送り直しを止める）。
+ */
+export interface ProxyUnverified {
+  sent: ProxySent;
+  /** 送る直前に読んだ団体の申請と提出の記録（締切前は提出の直前の読み直し、締切後はシートの基準）。ほかの人の保存を見分ける */
+  before: GroupRequestState;
+  /** 送ったときの入力。シートを開き直したときに戻し、その後に入力を変えたかを比べる */
+  input: ProxyInput;
+}
+
+/** 未確定の送信を読み直した記録で確かめた結果。saved：送った値が入った、not_saved：入っておらずほかの人の保存もない、others：ほかの人の保存があり、自分の保存と決められない */
+export interface ProxyJudgement {
+  verdict: 'saved' | 'not_saved' | 'others';
+  /** 送る直前に読んだ記録からの変更（others のときにダイアログに出す。提出の記録は updated_at が進んだだけでも変更にする） */
+  changes: GroupChanges;
+}
+
+/**
+ * 未確定の送信を、読み直した団体の申請と提出の記録で確かめる（2.6。「確かめる」・裏の読み直し・閉じた後の読み直しのどれでも同じ）。
+ * 送った値が入っていれば saved（proxySavedAfterUnknown）。入っておらず、送る直前に読んだ記録から何も変わっていなければ（行と提出の
+ * 記録の updated_at・提出日時・備考）not_saved。変わっていれば、ほかの人の保存があって自分の保存と決められないので others
+ * （「保存されていませんでした」と言い切らない）。
+ */
+export function judgeProxyAfterUnknown(u: Pick<ProxyUnverified, 'sent' | 'before'>, latest: GroupRequestState): ProxyJudgement {
+  const changed = stateChangesSince(u.before, latest);
+  const changes: GroupChanges = {
+    items: changed.items,
+    submission: changed.submission || ms(u.before.submission?.updated_at ?? null) !== ms(latest.submission?.updated_at ?? null),
+  };
+  if (proxySavedAfterUnknown(u.sent, latest)) return { verdict: 'saved', changes };
+  return { verdict: hasGroupChanges(changes) ? 'others' : 'not_saved', changes };
+}
+
+/** 代理入力の入力が同じか（品目ごとの数と、前後の空白を除いた備考） */
+export function sameProxyInput(a: ProxyInput, b: ProxyInput): boolean {
+  if (a.note.trim() !== b.note.trim()) return false;
+  const ids = new Set([...Object.keys(a.counts), ...Object.keys(b.counts)]);
+  for (const id of ids) if (a.counts[id] !== b.counts[id]) return false;
+  return true;
+}
+
 /** 読み込んだ表の行から、ほかの人が変えたもの（品目ごとの数・提出の記録） */
 export interface GroupChanges {
   /** updated_at が変わった（行が増えた・消えたを含む）品目。from は読み込んだときの数、to は読み直した数 */
