@@ -193,7 +193,8 @@ const UNVERIFIED_TEXT = '前に送った代理入力が保存されたか分か�
 const OTHERS_TEXT = '前に送った値が保存されたか決められません（ほかの人がこの団体の申請を保存しました）。最新の値を読み直しました';
 
 /**
- * シートを開いたときの状態。ふつうは表の行が基準で入力はなし。未確定の送信がある団体は送った入力を戻し、「確かめる」まで送れない。
+ * シートを開いたときの状態。ふつうは表の行が基準で入力はなし。未確定の送信がある団体は送る直前に読んだ記録を基準にして
+ * 送った入力（入れた数と書き換えた備考）を戻し、「確かめる」まで送れない。
  * 閉じた後の確かめの結果（leftover）があれば送った入力を戻し、not_saved は確かめた記録を基準に送り直せる状態、others は
  * シートの中で見つけたときと同じく（askOverwrite）、確かめた記録を基準にして入れた数と書き換えた備考だけを残し、上書きするかを確かめる。
  */
@@ -204,7 +205,17 @@ function initialForm(
   leftover: ProxyLeftover | null,
 ): { base: GroupRequestState; edits: Record<string, number>; noteEdit: string | null; error: string | null; overwrite: OverwriteAsk | null } {
   if (unverified) {
-    return { base: groupStateOf(row), edits: { ...unverified.input.counts }, noteEdit: unverified.input.note, error: UNVERIFIED_TEXT, overwrite: null };
+    // 基準は送る直前に読んだ記録（今の表の行ではない。行にほかの人の変更が入っていると、入れていない欄も入れた数に見え、
+    // 確かめで others になったときにその古い値を残してしまう）。入れた数と書き換えた備考だけを戻す（leftover の others と同じ）
+    const { before, input } = unverified;
+    const sentBase = buildRequestForm(items, row.group.category, before.requests);
+    return {
+      base: before,
+      edits: keepTyped(sentBase.fields, input.counts),
+      noteEdit: input.note === (before.submission?.note ?? '') ? null : input.note,
+      error: UNVERIFIED_TEXT,
+      overwrite: null,
+    };
   }
   if (leftover) {
     const { u, latest } = leftover;
@@ -267,7 +278,8 @@ function ProxyForm({
   const group = row.group;
   const [init] = useState(() => initialForm(row, items, unverified, leftover));
   /**
-   * シートの基準（比べる団体の申請と提出の記録）。開いたときの表の行で始め、提出の直前の読み直しと確かめの読み直しのときだけ変える
+   * シートの基準（比べる団体の申請と提出の記録）。開いたときの表の行（未確定の送信がある団体は送る直前に読んだ記録、閉じた後の
+   * 確かめの結果があれば確かめた記録）で始め、提出の直前の読み直しと確かめの読み直しのときだけ変える
    * （裏の表の読み直しでは変えない。入力を黙って置き換えない。2.6）
    */
   const [base, setBase] = useState<GroupRequestState>(init.base);

@@ -966,6 +966,43 @@ describe('代理入力の未確定の送信（応答が届かず、保存され�
     expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(1);
   });
 
+  it('未確定のまま開き直したシートは送る前の記録を基準にする（表の行にほかの人の変更が入っていても、入れていない欄を送った値で上書きしない）', async () => {
+    const user = userEvent.setup();
+    const sheet = await submitUnverified(user, false);
+    // ほかの人が机(木) を 4 にした。表の読み直しだけが通り、シートの団体の読み直しは落ちる（印は残る）
+    state.requests = [{ ...REQUESTS[0]!, count: 4, updated_at: T1 }, REQUESTS[1]!];
+    const reads = groupReads();
+    await lastClient!.invalidateQueries();
+    await waitFor(() => expect(screen.getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '4'));
+    await waitFor(() => expect(groupReads()).toBe(reads + 1));
+    await waitFor(() => expect(within(sheet).getByRole('alert').textContent).toContain('確かめられません'));
+    // 閉じる。閉じたときの表の読み直しも落ちる（印が残る）
+    state.tableDown = true;
+    await user.keyboard('{Escape}');
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '閉じる' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('proxy-notice').textContent).toContain('表を読み直せませんでした'));
+
+    // 開き直す：送った入力（入れた数）を戻すが、入れていない欄は送る前の記録の値のまま
+    await user.click(screen.getAllByRole('button', { name: '代理入力' })[0]!);
+    const s2 = await screen.findByRole('dialog');
+    expect(value('chair')).toBe('1');
+    expect(value('desk')).toBe('3');
+    state.tableDown = false;
+    state.groupDown = false;
+    await user.click(within(s2).getByRole('button', { name: '確かめる' }));
+    const confirm = await screen.findByRole('alertdialog');
+    expect(confirm.textContent).toContain('机(木)（3 → 4）');
+    // 入れていない欄はほかの人の値になり、入れた数だけが残る
+    expect(value('desk')).toBe('4');
+    expect(value('chair')).toBe('1');
+    await user.click(within(confirm).getByRole('button', { name: '上書きして提出する' }));
+    await waitFor(() => expect(submits()).toBe(2));
+    const args = opArgs(state.calls.filter((c) => c.table === 'rpc:submit_requests')[1]!, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] };
+    expect(args.p_rows.find((r) => r.itemId === itemId('desk'))!.count).toBe(4);
+    expect(args.p_rows.find((r) => r.itemId === itemId('chair'))!.count).toBe(1);
+  });
+
   it('閉じた後の表の読み直しが届く前に同じ団体を開き直すと、開いているシートが読み直して確かめる（画面が印を外さない）', async () => {
     const user = userEvent.setup();
     await submitUnverified(user, true);
