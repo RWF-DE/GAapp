@@ -128,6 +128,35 @@ describe('ConfirmDialog', () => {
     finish();
     await vi.waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
+
+  it('開くとフォーカスがダイアログの中（やめるのボタン）に移り、Enter で開いたボタンをもう一度押さない', async () => {
+    const user = userEvent.setup();
+    const onOpen = vi.fn();
+    function Opener() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button
+            onClick={() => {
+              onOpen();
+              setOpen(true);
+            }}
+          >
+            ログアウト
+          </button>
+          <ConfirmDialog open={open} onOpenChange={setOpen} title="移りますか" onConfirm={() => undefined} />
+        </>
+      );
+    }
+    render(<Opener />);
+    await user.click(screen.getByRole('button', { name: 'ログアウト' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await vi.waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'やめる' }));
+    await user.keyboard('{Enter}');
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
 });
 
 describe('YearStatusActions の純粋な部分', () => {
