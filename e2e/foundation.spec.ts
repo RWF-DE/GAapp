@@ -1,0 +1,249 @@
+import { expect, test, type Page } from '@playwright/test';
+import { loginAs, navLabels } from './helpers';
+import { accessToken, restGet, rpc, storageStateFor, type StoredUser } from './support/auth';
+import { createScenario } from './support/db';
+import { SEED_R8, SEED_USER_IDS } from './support/users';
+import { pinYear } from './support/year';
+
+// T09a 画面の共通基盤（画面の設計 7.2 の表の T09a の行）：ナビ・直接開いたときの権限・年度の切り替え・見え方。
+// シナリオの年度（createScenario）は 2001 年の日付なので、seed の利用者の既定の年度は R8 のまま。
+
+/** ナビの項目と、それぞれの画面を作るチケット（lib/navigation.ts の ROUTES と同じ） */
+const TICKET: Record<string, string> = {
+  '/settings/': 'T09',
+  '/stock/': 'T10',
+  '/stocks/': 'T10',
+  '/stocks/qr/': 'T10',
+  '/requests/': 'T11',
+  '/rules/': 'T12',
+  '/allocation/': 'T13',
+  '/swaps/': 'T13',
+  '/history/': 'T14',
+  '/request/': 'T11',
+  '/my/': 'T13',
+};
+const ALL_PAGES = Object.keys(TICKET);
+
+const NAV: Record<StoredUser, string[]> = {
+  admin: ['ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴'],
+  // Q1（D-39）：部員は振り分けをいつでも読み取り専用で開ける
+  staff: ['ホーム', '在庫入力', '在庫一覧', '申請一覧', '振り分け'],
+  // 閲覧のみは振り分けが確定・終了の年度だけ。R8 は申請受付中なのでホームだけ
+  viewer: ['ホーム'],
+  rep: ['ホーム', '申請', '自団体の振り分け'],
+};
+
+/** R8（申請受付中）で開ける画面 */
+const OPENS: Record<StoredUser, string[]> = {
+  admin: ['/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/'],
+  staff: ['/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/allocation/'],
+  viewer: [],
+  rep: ['/request/', '/my/'],
+};
+
+async function expectPlaceholder(page: Page, path: string): Promise<void> {
+  if (!TICKET[path]) throw new Error(`TICKET にないパス：${path}`);
+  await expect(page.getByText(`この画面は準備中です（${TICKET[path]}）`)).toBeVisible();
+  await expect(page.getByText('権限がありません')).toHaveCount(0);
+}
+
+async function expectForbidden(page: Page): Promise<void> {
+  await expect(page.getByRole('alert').filter({ hasText: '権限がありません' })).toBeVisible();
+  await expect(page.getByText(/この画面は準備中です/)).toHaveCount(0);
+}
+
+for (const user of ['admin', 'staff', 'viewer', 'rep'] as const) {
+  test.describe(`T09a ${user}`, () => {
+    test.use({ storageState: storageStateFor(user) });
+
+    test(`T09a ${user} のナビ：全項目が使え、押すと雛形のページが開く`, async ({ page }) => {
+      await page.goto('/');
+      await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
+      expect(await navLabels(page)).toEqual(NAV[user]);
+      const nav = page.getByRole('navigation', { name: 'メインメニュー' });
+      await expect(nav.getByText('準備中')).toHaveCount(0);
+      for (const label of NAV[user].slice(1)) {
+        const link = nav.getByRole('link', { name: label });
+        const path = (await link.getAttribute('href')) ?? '';
+        await link.click();
+        await expect(page).toHaveURL((u) => u.pathname === path);
+        await expectPlaceholder(page, path);
+        await expect(page.getByRole('heading', { level: 1, name: label })).toBeVisible();
+      }
+    });
+
+    test(`T09a ${user}：立場の合わない画面を URL で開くと「権限がありません」`, async ({ page }) => {
+      for (const path of ALL_PAGES) {
+        await page.goto(path);
+        if (OPENS[user].includes(path)) await expectPlaceholder(page, path);
+        else await expectForbidden(page);
+      }
+    });
+  });
+}
+
+test('T09a 未招待：ナビも画面もなく「総務から招待されていません」だけ。画面を URL で開いても同じ', async ({ page }) => {
+  await loginAs(page, 'outsider');
+  await expect(page.getByRole('heading', { name: '総務から招待されていません' })).toBeVisible();
+  await expect(page.getByRole('navigation')).toHaveCount(0);
+  for (const path of ['/settings/', '/requests/', '/request/']) {
+    await page.goto(path);
+    await expect(page.getByRole('heading', { name: '総務から招待されていません' })).toBeVisible();
+    await expect(page.getByText(/この画面は準備中です/)).toHaveCount(0);
+  }
+});
+
+test.describe('T09a 閲覧のみと確定した年度（Q1）', () => {
+  test.use({ storageState: storageStateFor('viewer') });
+
+  test('T09a 閲覧のみ：確定した年度を開くと振り分けがナビに出て開ける。受付中の年度では開けない', async ({ page }) => {
+    const s = await createScenario({ status: 'confirmed', roles: { viewer: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.viewer, s.yearId);
+      await page.goto('/allocation/');
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・確定`);
+      expect(await navLabels(page)).toEqual(['ホーム', '振り分け']);
+      await expectPlaceholder(page, '/allocation/');
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+test.describe('T09a 年度の切り替え', () => {
+  test.use({ storageState: storageStateFor('staff') });
+
+  test('T09a シナリオの年度を選ぶと表示が変わり、同じタブの再読み込みでも残り、新しいタブでは最新の年度で開く', async ({ page, context }) => {
+    const s = await createScenario({ status: 'allocating', roles: { staff: true } });
+    try {
+      await page.goto('/');
+      await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
+      const select = page.getByTestId('year-select');
+      await expect(select.locator('option', { hasText: `${s.label}（振り分け中）` })).toHaveCount(1);
+      await expect(page.getByTestId('not-latest-year-banner')).toHaveCount(0);
+
+      await select.selectOption(s.yearId);
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
+      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      await expect(page.getByTestId('not-latest-year-banner')).toContainText(`最新でない年度（${s.label}・振り分け中）を表示しています`);
+      expect(await navLabels(page)).toEqual(NAV.staff);
+
+      // 別の画面に移っても、同じタブの再読み込みでも、選んだ年度のまま
+      await page.getByRole('navigation', { name: 'メインメニュー' }).getByRole('link', { name: '在庫一覧' }).click();
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
+      await page.reload();
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
+      await expectPlaceholder(page, '/stocks/');
+
+      // 新しいタブ（sessionStorage はタブごと）は最新の年度
+      const tab = await context.newPage();
+      await tab.goto('/');
+      await expect(tab.getByTestId('current-year')).toHaveText('R8・申請受付中');
+      await expect(tab.getByTestId('not-latest-year-banner')).toHaveCount(0);
+      await tab.close();
+
+      // 帯のボタンで最新の年度に戻る
+      await page.getByTestId('not-latest-year-banner').getByRole('button', { name: '最新の年度（R8）に切り替える' }).click();
+      await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
+      await expect(page.getByTestId('not-latest-year-banner')).toHaveCount(0);
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+test.describe('T09a 団体代表の年度の切り替え', () => {
+  test.use({ storageState: storageStateFor('rep') });
+
+  test('T09a 団体代表：シナリオの年度に切り替えると、立場の表示がその年度の団体になる', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', repGroup: 'E2E模擬店1' });
+    try {
+      await page.goto('/');
+      await expect(page.getByTestId('home-roles')).toHaveText(`${SEED_R8.groupName} の団体代表`);
+      await page.getByTestId('year-select').selectOption(s.yearId);
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・申請受付中`);
+      await expect(page.getByTestId('home-roles')).toHaveText('E2E模擬店1 の団体代表');
+      expect(await navLabels(page)).toEqual(NAV.rep);
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+test.describe('T09a 見え方（API を直接呼んでも）', () => {
+  test('T09a 団体代表はほかの団体の申請・提出・振り分け・団体が 0 行（自団体の分は読める）', async ({ request }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'confirmed', allocations: 'reference', repGroup: '模擬店01' });
+    try {
+      const token = await accessToken(request, 'rep');
+      const own = s.ids.groups['模擬店01']!;
+      const others = Object.entries(s.ids.groups)
+        .filter(([name]) => name !== '模擬店01')
+        .map(([, id]) => id);
+      const inOthers = `in.(${others.join(',')})`;
+      for (const table of ['requests', 'request_submissions', 'allocations', 'substitution_consents']) {
+        const theirs = await restGet<unknown[]>(request, token, `${table}?select=group_id&group_id=${inOthers}`);
+        expect(theirs.error, table).toBeNull();
+        expect(theirs.data, `${table}：ほかの団体`).toEqual([]);
+      }
+      for (const table of ['requests', 'request_submissions', 'allocations']) {
+        const mine = await restGet<unknown[]>(request, token, `${table}?select=group_id&group_id=eq.${own}`);
+        expect(mine.data?.length ?? 0, `${table}：自団体`).toBeGreaterThan(0);
+      }
+      const groups = await restGet<{ id: string }[]>(request, token, `groups?select=id&year_id=eq.${s.yearId}`);
+      expect(groups.data?.map((g) => g.id)).toEqual([own]);
+      const stocks = await restGet<unknown[]>(request, token, `stocks?select=room_id&year_id=eq.${s.yearId}`);
+      expect(stocks.data).toEqual([]);
+      const rules = await restGet<unknown[]>(request, token, `rules?select=id&year_id=eq.${s.yearId}`);
+      expect(rules.data).toEqual([]);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09a 未招待は全表 0 行（自分のプロフィールだけ）、RPC は forbidden', async ({ request }) => {
+    const token = await accessToken(request, 'outsider');
+    const tables = [
+      'years', 'rooms', 'room_years', 'items', 'stocks', 'groups', 'year_roles', 'group_members', 'invitations',
+      'request_submissions', 'requests', 'rules', 'substitution_consents', 'allocations', 'distance_overrides', 'slots',
+      'deliveries', 'audit_logs', 'v_remaining',
+    ];
+    for (const table of tables) {
+      const r = await restGet<unknown[]>(request, token, `${table}?select=*&limit=5`);
+      expect(r.error, table).toBeNull();
+      expect(r.data, table).toEqual([]);
+    }
+    const profiles = await restGet<{ user_id: string }[]>(request, token, 'profiles?select=user_id');
+    expect(profiles.data).toEqual([{ user_id: SEED_USER_IDS.outsider }]);
+
+    const calls: [string, Record<string, unknown>][] = [
+      ['set_year_status', { p_year_id: SEED_R8.yearId, p_to: 'allocating' }],
+      ['create_year_from', { p_prev_year_id: SEED_R8.yearId, p_label: 'R9', p_festival_start: '2027-10-16' }],
+      ['submit_requests', { p_group_id: SEED_R8.groupId, p_rows: [] }],
+      ['save_allocation_rows', { p_year_id: SEED_R8.yearId, p_changes: [], p_reason: 'E2E' }],
+      ['invite', { p_year_id: SEED_R8.yearId, p_email: 'someone@example.test', p_role: 'staff' }],
+    ];
+    for (const [name, args] of calls) {
+      const r = await rpc(request, token, name, args);
+      expect(r.error?.code, name).toBe('P0001');
+      expect(r.error?.message, name).toBe('forbidden');
+    }
+  });
+});
+
+test('T09a ログアウトは、その端末のセッションだけを終える（保存したログインは使えるまま）', async ({ page, browser }) => {
+  // 画面からログインし直したセッションでログアウトする（storageState は使わない。設計 7.2）
+  await loginAs(page, 'staff');
+  await page.getByRole('button', { name: 'ログアウト' }).click();
+  await expect(page).toHaveURL(/\/login\/$/);
+  // signOut({ scope: 'local' }) なので、auth-setup が保存した staff のセッションは終わっていない
+  const ctx = await browser.newContext({ storageState: storageStateFor('staff') });
+  try {
+    const other = await ctx.newPage();
+    await other.goto('/stocks/');
+    await expect(other.getByTestId('current-year')).toHaveText('R8・申請受付中');
+    await other.reload();
+    await expectPlaceholder(other, '/stocks/');
+  } finally {
+    await ctx.close();
+  }
+});
