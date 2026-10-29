@@ -323,12 +323,57 @@ test.describe('T09 マスタ設定（開いている年度の管理者が、終�
         await expect(page.getByTestId(add)).toHaveCount(0);
         await expect(page.getByRole('button', { name: '編集', exact: true })).toHaveCount(0);
         await expect(page.getByRole('button', { name: '削除', exact: true })).toHaveCount(0);
-        // 読み取り専用の理由は終了した年度。「開いている年度の管理者でない」とは言わず、最新の年度で直すよう案内する
+        // 読み取り専用の理由は終了した年度。「開いている年度の管理者でない」とは言わず、管理者の年度で直すよう案内する
         await expect(page.getByText(/開いている年度の管理者でないため/)).toHaveCount(0);
-        await expect(page.getByTestId('global-read-only')).toContainText('最新の年度を開いて直してください');
+        await expect(page.getByTestId('global-read-only')).toContainText('管理者の年度を開いて直してください');
+        await expect(page.getByTestId('open-admin-year')).toBeVisible();
       }
     } finally {
       await s.cleanup();
+    }
+  });
+});
+
+test.describe('T09 終了した年度の「年度を開く」の行き先（使い捨てのユーザー）', () => {
+  test('T09 終了した年度：「年度を開く」は自分が admin の終了していない最新の年度だけ。部員の年度しかなければボタンを出さない', async ({ page, browser }) => {
+    const ctxV = await browser.newContext();
+    const u = await createUser({ purpose: 'closed-target' });
+    const v = await createUser({ purpose: 'closed-none' });
+    // 表示する終了した年度（admin）、それより新しい admin の年度、いちばん新しい部員の年度（開いても直せない）
+    const closed = await createScenario({ status: 'closed', dataset: 'small', grants: [{ userId: u.id, role: 'admin' }, { userId: v.id, role: 'admin' }] });
+    const adminOpen = await createScenario({ status: 'requesting', dataset: 'empty', grants: [{ userId: u.id, role: 'admin' }] });
+    const staffOpen = await createScenario({ status: 'preparing', dataset: 'empty', grants: [{ userId: u.id, role: 'staff' }, { userId: v.id, role: 'staff' }] });
+    try {
+      await sql("update public.years set festival_start = date '2001-10-20' where id = $1", [adminOpen.yearId]);
+      await sql("update public.years set festival_start = date '2001-10-27' where id = $1", [staffOpen.yearId]);
+
+      await pinYear(page, u.id, closed.yearId);
+      await loginWith(page, u);
+      await page.goto('/settings/?tab=rooms');
+      await expect(page.getByTestId('current-year')).toHaveText(`${closed.label}・終了`);
+      const note = page.getByTestId('global-read-only');
+      await expect(note).toContainText('管理者の年度を開いて直してください');
+      // 最新の年度（部員）ではなく、admin の年度へ
+      const open = note.getByTestId('open-admin-year');
+      await expect(open).toHaveText(`${adminOpen.label}を開く`);
+      await open.click();
+      await expect(page.getByTestId('current-year')).toContainText(adminOpen.label);
+      await expect(page.getByTestId('room-add')).toBeVisible();
+
+      // 部員の年度しか開いていない人には、ボタンを出さずに開いている年度の管理者が直すと知らせる
+      // （別のコンテキストで、画面からログインし直す）
+      const pageV = await ctxV.newPage();
+      await pinYear(pageV, v.id, closed.yearId);
+      await loginWith(pageV, v);
+      await pageV.goto('/settings/?tab=items');
+      await expect(pageV.getByTestId('current-year')).toHaveText(`${closed.label}・終了`);
+      await expect(pageV.getByTestId('global-read-only-no-target')).toHaveText('この表は、開いている年度の管理者が直します。');
+      await expect(pageV.getByTestId('open-admin-year')).toHaveCount(0);
+      await expect(pageV.getByTestId('item-add')).toHaveCount(0);
+    } finally {
+      await ctxV.close();
+      await Promise.all([closed.cleanup(), adminOpen.cleanup(), staffOpen.cleanup()]);
+      await Promise.all([u.cleanup(), v.cleanup()]);
     }
   });
 });
@@ -370,6 +415,38 @@ test.describe('T09 場所（開いている年度が2つ以上）', () => {
       expect(await sql('select id from public.rooms where name = $1', [SMALL.rooms.storageA])).toHaveLength(1);
     } finally {
       await Promise.all([shown.cleanup(), other.cleanup(), repOnly.cleanup(), closed.cleanup()]);
+      await u.cleanup();
+    }
+  });
+});
+
+test.describe('T09 場所の削除の確かめ（使い捨てのユーザー）', () => {
+  test('T09 場所の削除：一度ルールを読めた後、開き直したときの読み直しに失敗したら、古い結果で削除を押せない', async ({ page }) => {
+    const u = await createUser({ purpose: 'rooms-refetch' });
+    // 終了していない年度はこの1つだけ（admin。ルールなし）なので、1回目は削除を押せる
+    const s = await createScenario({ status: 'requesting', dataset: 'small', rules: 'none', grants: [{ userId: u.id, role: 'admin' }] });
+    try {
+      await pinYear(page, u.id, s.yearId);
+      await loginWith(page, u);
+      await page.goto('/settings/?tab=rooms');
+      await expect(page.getByTestId('current-year')).toContainText(s.label);
+      const dialog = page.getByRole('alertdialog');
+      await rowOf(page, SMALL.rooms.class1).getByRole('button', { name: '削除' }).click();
+      await expect(dialog.getByRole('button', { name: '削除する' })).toBeEnabled();
+      await dialog.getByRole('button', { name: 'やめる' }).click();
+      await expect(dialog).toHaveCount(0);
+
+      // 開き直したときのルールの読み直しだけを失敗させる（キャッシュには前の結果が残る）
+      await page.route('**/rest/v1/rules*', (route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"e2e"}' }));
+      await rowOf(page, SMALL.rooms.class1).getByRole('button', { name: '削除' }).click();
+      await expect(dialog.getByText(/ルールを読め/)).toBeVisible();
+      await expect(dialog.getByRole('button', { name: '削除する' })).toBeDisabled();
+      await expect(dialog.getByTestId('rule-refs-error')).toContainText('確かめられず、削除できません');
+      await dialog.getByRole('button', { name: 'やめる' }).click();
+      expect(await sql('select id from public.rooms where name = $1', [SMALL.rooms.class1])).toHaveLength(1);
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      await s.cleanup();
       await u.cleanup();
     }
   });

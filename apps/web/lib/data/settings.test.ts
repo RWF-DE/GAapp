@@ -5,14 +5,16 @@ import type { GroupCsvRow } from '@/lib/schemas/settings';
 import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
 import {
   createYearFrom,
+  fetchMyYearRoles,
   fetchOpenYearRules,
+  freshDataOf,
+  latestAdminOpenYear,
   openYearsForRoomRefs,
   parseSettingsTab,
   planGroupImport,
   roomRefsAcrossYears,
   rulesReferencing,
   saveGroupImport,
-  saveRoomYear,
   yearPatch,
 } from './settings';
 
@@ -280,50 +282,54 @@ describe('場所の削除の前：終了していない年度のルール（場�
   });
 });
 
-describe('saveRoomYear（今年の使用。楽観ロック）', () => {
-  const Y = '00000000-0000-4000-8000-0000000000b1';
-  const ROW = { year_id: Y, room_id: R1, usable: false, note: '工事', updated_at: T };
+describe('終了した年度の「年度を開く」の行き先（GlobalReadOnlyNote）', () => {
+  const y = (id: string, label: string, status: 'preparing' | 'requesting' | 'allocating' | 'confirmed' | 'closed', festival_start: string) => ({
+    id,
+    label,
+    status,
+    festival_start,
+  });
+  const R7 = y('y7', 'R7', 'closed', '2025-10-18');
+  const R8 = y('y8', 'R8', 'confirmed', '2026-10-17');
+  const R9 = y('y9', 'R9', 'preparing', '2027-10-16');
+  const R10 = y('y10', 'R10', 'requesting', '2028-10-14');
 
-  it('行があれば読み込んだときの updated_at で update する（upsert しない）。メモは前後の空白を除き、空なら null', async () => {
-    const { client, issued } = createFakeSupabase(() => ({ data: { ...ROW, updated_at: 'new' } }));
-    const row = await saveRoomYear(Y, R1, { updated_at: T }, false, '  工事 ', client);
-    expect(row.updated_at).toBe('new');
-    const call = issued[0]!;
-    expect(call.table).toBe('room_years');
-    expect(opArgs(call, 'upsert')).toEqual([]);
-    expect(opArgs(call, 'update')).toEqual([[{ usable: false, note: '工事' }]]);
-    expect(opArgs(call, 'match')).toEqual([[{ year_id: Y, room_id: R1 }]]);
-    expect(opArgs(call, 'eq')).toEqual([['updated_at', T]]);
-    await saveRoomYear(Y, R1, { updated_at: T }, true, '   ', client);
-    expect(opArgs(issued[1]!, 'update')[0]![0]).toEqual({ usable: true, note: null });
+  it('自分が admin の、終了していない最新の年度だけ。部員・閲覧のみ・団体代表だけの年度や終了した年度は行き先にしない', () => {
+    const roles = [
+      { year_id: 'y7', role: 'admin' as const },
+      { year_id: 'y8', role: 'admin' as const },
+      { year_id: 'y9', role: 'staff' as const },
+      { year_id: 'y10', role: 'viewer' as const },
+    ];
+    // 最新の年度（R10）は閲覧のみ、R9 は部員なので、admin の R8 を行き先にする（渡す順によらない）
+    expect(latestAdminOpenYear([R7, R10, R8, R9], roles)?.label).toBe('R8');
+    expect(latestAdminOpenYear([R8, R9, R10], [{ year_id: 'y9', role: 'admin' }, { year_id: 'y10', role: 'admin' }])?.label).toBe('R10');
   });
 
-  it('ほかの人が先に変えて 0 行なら conflict（黙って上書きしない）', async () => {
-    const { client, issued } = createFakeSupabase((call) =>
-      opArgs(call, 'update').length > 0 ? { data: null } : { data: { updated_at: 'other' } },
-    );
-    await expect(saveRoomYear(Y, R1, { updated_at: T }, true, null, client)).rejects.toMatchObject({
-      info: { kind: 'conflict', reason: 'lock_conflict' },
-    });
-    expect(issued).toHaveLength(2);
+  it('admin の終了していない年度がなければ null（ボタンを出さない）', () => {
+    expect(latestAdminOpenYear([R7, R9, R10], [{ year_id: 'y7', role: 'admin' }, { year_id: 'y9', role: 'staff' }])).toBeNull();
+    // 団体代表だけの年度（ロールの行がない）
+    expect(latestAdminOpenYear([R9], [])).toBeNull();
+    // ロールの行があっても、自分の年度（years）にない年度は開けないので行き先にしない
+    expect(latestAdminOpenYear([R7], [{ year_id: 'y9', role: 'admin' }])).toBeNull();
   });
 
-  it('行がなければ insert し、ほかの人が先に足していれば（23505）conflict', async () => {
-    const ok = createFakeSupabase(() => ({ data: ROW }));
-    await saveRoomYear(Y, R1, null, false, '工事', ok.client);
-    expect(opArgs(ok.issued[0]!, 'upsert')).toEqual([]);
-    expect(opArgs(ok.issued[0]!, 'insert')).toEqual([[{ year_id: Y, room_id: R1, usable: false, note: '工事' }]]);
-    const dup = createFakeSupabase(() => ({ error: { code: '23505', message: 'duplicate key value' }, status: 409 }));
-    await expect(saveRoomYear(Y, R1, null, true, null, dup.client)).rejects.toMatchObject({
-      info: { kind: 'conflict', reason: 'lock_conflict' },
-    });
+  it('fetchMyYearRoles：自分の year_roles だけを読む', async () => {
+    const { client, issued } = createFakeSupabase(() => ({ data: [{ year_id: 'y8', role: 'admin' }] }));
+    expect(await fetchMyYearRoles('u1', client)).toEqual([{ year_id: 'y8', role: 'admin' }]);
+    expect(issued[0]!.table).toBe('year_roles');
+    expect(opArgs(issued[0]!, 'eq')).toEqual([['user_id', 'u1']]);
+    const denied = createFakeSupabase(() => ({ error: { code: '42501', message: 'permission denied' }, status: 403 }));
+    await expect(fetchMyYearRoles('u1', denied.client)).rejects.toMatchObject({ info: { kind: 'forbidden' } });
   });
+});
 
-  it('RLS で書けなければ forbidden。id の形が違えば送らない', async () => {
-    const denied = createFakeSupabase(() => ({ error: { code: '42501', message: 'new row violates row-level security policy' }, status: 403 }));
-    await expect(saveRoomYear(Y, R1, null, false, null, denied.client)).rejects.toMatchObject({ info: { kind: 'forbidden' } });
-    const bad = createFakeSupabase(() => ({ data: null }));
-    await expect(saveRoomYear('x', R1, null, false, null, bad.client)).rejects.toMatchObject({ info: { kind: 'input' } });
-    expect(bad.issued).toHaveLength(0);
+describe('freshDataOf（削除の確かめに使う読み込みの結果）', () => {
+  it('読めていて、読み直し中でも読み直しの失敗でもないときだけ data を返す', () => {
+    expect(freshDataOf({ data: [1], isFetching: false, isError: false })).toEqual([1]);
+    expect(freshDataOf({ data: undefined, isFetching: false, isError: false })).toBeNull();
+    expect(freshDataOf({ data: [1], isFetching: true, isError: false })).toBeNull();
+    // 一度読めてキャッシュがあり、開き直したときの読み直しが失敗した（isError で古い data が残る）ときは使わない
+    expect(freshDataOf({ data: [1], isFetching: false, isError: true })).toBeNull();
   });
 });

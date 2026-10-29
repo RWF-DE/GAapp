@@ -2,7 +2,7 @@
 
 // マスタ設定の各タブが使う小さな部品と、書き込みのエラーの扱い（画面の設計 2.5・2.6・3.2。T09）。
 // 2つ目の画面が要るようになったら common/ に移す（docs/prompts/T09.md）。
-import { useQueryClient, type QueryKey } from '@tanstack/react-query';
+import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { createContext, useCallback, useContext, useId } from 'react';
 import { toast } from 'sonner';
 import { Label } from '@/components/ui/label';
@@ -10,7 +10,8 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { useAuth } from '@/lib/auth/auth-provider';
 import { Button } from '@/components/ui/button';
 import { useAuthErrorHandler, useGuardedSetYear } from '@/lib/auth/guarded';
-import { latestWritableYear, type Membership } from '@/lib/auth/membership';
+import type { Membership } from '@/lib/auth/membership';
+import { fetchMyYearRoles, freshDataOf, latestAdminOpenYear } from '@/lib/data/settings';
 import type { YearRow } from '@/lib/db/types';
 import { classifyError, effectOf, messageFor, type MessageContext } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
@@ -37,23 +38,49 @@ export function useSettings(): SettingsContextValue {
 
 /**
  * 年度をまたぐ表（場所・品目・距離）のタブの説明に添える、読み取り専用の理由。終了した年度では、ほかの開いている年度の
- * 管理者でも直せない（04「終了した年度では読み取り専用」）ので、最新の年度を開くよう案内する（開ける最新の年度があればボタンも）。
+ * 管理者でも直せない（04「終了した年度では読み取り専用」）ので、直せる年度を開くよう案内する。行き先は、自分が admin の、
+ * 終了していない最新の年度だけ（部員・閲覧のみ・団体代表の年度は開いても直せない）。なければボタンを出さず、
+ * 開いている年度の管理者が直すと知らせる。
  */
 export function GlobalReadOnlyNote({ what }: { what: '場所' | '品目' | '距離' }) {
   const { year, membership, yearWritable, globalWritable } = useSettings();
+  const { session } = useAuth();
   const setYear = useGuardedSetYear();
+  const userId = session.status === 'signedIn' ? session.session.user.id : null;
+  const closedNote = !globalWritable && !yearWritable;
+  const rolesQ = useQuery({
+    queryKey: settingsKeys.myYearRoles(userId ?? ''),
+    queryFn: () => fetchMyYearRoles(userId!),
+    enabled: closedNote && userId !== null,
+    staleTime: 0,
+  });
   if (globalWritable) return null;
   if (yearWritable) {
     return <span data-testid="global-read-only"> 開いている年度の管理者でないため、{what}は編集できません。</span>;
   }
-  const latest = latestWritableYear(membership);
+  // 読み直し中・失敗では前の結果を使わない（ロールが変わっていれば、直せない年度へ案内してしまうため）
+  const roles = freshDataOf(rolesQ);
+  const target = roles ? latestAdminOpenYear(membership.years, roles) : null;
+  const decided = roles !== null || rolesQ.isError;
   return (
     <span className="mt-1 block" data-testid="global-read-only">
-      終了した年度のため、{what}は直せません（すべての年度で共有の表です）。最新の年度を開いて直してください。
-      {latest && latest.id !== year.id ? (
-        <Button type="button" variant="link" size="sm" className="h-auto px-1 py-0" onClick={() => void setYear(latest.id)}>
-          最新の年度（{latest.label}）を開く
-        </Button>
+      終了した年度のため、{what}は直せません（すべての年度で共有の表です）。
+      {target && target.id !== year.id ? (
+        <>
+          管理者の年度を開いて直してください。
+          <Button
+            type="button"
+            variant="link"
+            size="sm"
+            className="h-auto px-1 py-0"
+            data-testid="open-admin-year"
+            onClick={() => void setYear(target.id)}
+          >
+            {target.label}を開く
+          </Button>
+        </>
+      ) : decided ? (
+        <span data-testid="global-read-only-no-target">この表は、開いている年度の管理者が直します。</span>
       ) : null}
     </span>
   );
@@ -206,4 +233,6 @@ export const settingsKeys = {
   allocationSources: (yearId: string) => queryKeys.yearPart(yearId, 'settings', 'allocation_sources'),
   /** 場所の削除の前に読む、終了していない年度のルール（年度をまたぐので年度を入れない。利用者ごと） */
   openYearRules: (userId: string) => ['settings', 'open_year_rules', userId] as const,
+  /** 自分の年度のロール（終了した年度の「年度を開く」の行き先。利用者ごと） */
+  myYearRoles: (userId: string) => ['settings', 'my_year_roles', userId] as const,
 };

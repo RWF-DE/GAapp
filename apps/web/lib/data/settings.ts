@@ -22,7 +22,6 @@ import { callRpc } from '@/lib/rpc';
 import type { AppRole, YearSummary } from '@/lib/auth/membership';
 import type { GroupCsvRow } from '@/lib/schemas/settings';
 import { nameKey } from '@/lib/schemas/settings';
-import { NOTE_MAX, optionalText, uuidSchema } from '@/lib/schemas/common';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 
 // ---- タブ ----
@@ -194,6 +193,42 @@ export async function fetchOpenYearRules(
     client.from('rules').select(COLUMNS.rules).in('year_id', ids).order('id').range(from, to),
   );
   return { scope, rules: rules as unknown as RuleDbRow[] };
+}
+
+/**
+ * 削除の確かめに使える読み込みの結果。読み直し中（前の結果）と、読み直しの失敗（isError でも前の data が残る）では使わない
+ * （一度読めた後に開き直して読み直しが失敗したとき、古いルールで削除を押せてしまうため）。純粋関数。
+ */
+export function freshDataOf<T>(q: { data: T | undefined; isFetching: boolean; isError: boolean }): T | null {
+  return q.data !== undefined && !q.isFetching && !q.isError ? q.data : null;
+}
+
+// ---- 終了した年度の「年度を開く」の行き先（GlobalReadOnlyNote） ----
+
+/** 自分の年度のロール（year_roles。自分の行だけ） */
+export async function fetchMyYearRoles(
+  userId: string,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<{ year_id: string; role: AppRole }[]> {
+  const res = await client.from('year_roles').select('year_id, role').eq('user_id', userId);
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data ?? []) as { year_id: string; role: AppRole }[];
+}
+
+/**
+ * 終了した年度で、場所・品目・距離を直しに行く年度：自分の年度（years。Membership.years）のうち、自分が admin で終了していない
+ * 最新の年度（1日目の新しい順。同じなら年度名・id の逆順）。部員・閲覧のみ・団体代表だけの年度は開いても直せないので選ばない。
+ * なければ null（ボタンを出さない）。純粋関数。
+ */
+export function latestAdminOpenYear(
+  years: readonly YearSummary[],
+  roles: readonly { year_id: string; role: AppRole }[],
+): YearSummary | null {
+  const admin = new Set(roles.filter((r) => r.role === 'admin').map((r) => r.year_id));
+  const open = years
+    .filter((y) => y.status !== 'closed' && admin.has(y.id))
+    .sort((a, b) => cmp(b.festival_start, a.festival_start) || cmp(b.label, a.label) || cmp(b.id, a.id));
+  return open[0] ?? null;
 }
 
 // ---- 年度 ----
@@ -396,7 +431,7 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
 
 async function insertOne<T>(
   client: AppSupabaseClient,
-  table: 'rooms' | 'room_years' | 'items' | 'groups' | 'distance_overrides',
+  table: 'rooms' | 'items' | 'groups' | 'distance_overrides',
   values: unknown,
   columns: string,
 ): Promise<T> {
@@ -420,44 +455,6 @@ export const updateRoom = (row: Pick<RoomRow, 'id' | 'updated_at'>, patch: Table
   updateWithLock(client, 'rooms', { id: row.id }, row.updated_at, patch);
 export const deleteRoom = (row: Pick<RoomRow, 'id' | 'updated_at'>, client: AppSupabaseClient = getSupabase()) =>
   deleteChecked(client, 'rooms', { id: row.id }, row.updated_at);
-
-const roomYearNoteSchema = optionalText(NOTE_MAX);
-
-/**
- * 今年の使用（room_years）を、読み込んだときの行に対してだけ保存する（2.3。黙って上書きしない）。
- * - current（読み込んだときの行。なければ null）がある → updateWithLock（updated_at が違えば conflict、行が消えていれば not_found）
- * - current が null → insert。ほかの人が先に足していれば（23505）conflict
- * どちらの conflict も、呼び出し側は room_years を読み直し、入力は残す。
- * 書き込みで版が上がるので、成功した後は年度（queryKeys.year）を読み直す。
- *
- * @example
- * await saveRoomYear(year.id, room.id, room.roomYear, false, '工事のため');
- */
-export async function saveRoomYear(
-  yearId: string,
-  roomId: string,
-  current: Pick<RoomYearRow, 'updated_at'> | null,
-  usable: boolean,
-  note: string | null,
-  client: AppSupabaseClient = getSupabase(),
-): Promise<RoomYearRow> {
-  if (!uuidSchema.safeParse(yearId).success || !uuidSchema.safeParse(roomId).success) {
-    throw appError('input', 'client_validation', { field: 'room_id' });
-  }
-  const n = roomYearNoteSchema.safeParse(note);
-  if (!n.success) throw appError('input', 'client_validation', { field: 'note' });
-  const match = { year_id: yearId, room_id: roomId };
-  if (current) {
-    return (await updateWithLock(client, 'room_years', match, current.updated_at, { usable, note: n.data })) as unknown as RoomYearRow;
-  }
-  try {
-    return await insertOne<RoomYearRow>(client, 'room_years', { ...match, usable, note: n.data }, COLUMNS.room_years);
-  } catch (e) {
-    const err = toAppError(e);
-    if (err.info.code === '23505') throw appError('conflict', 'lock_conflict', { table: 'room_years', match });
-    throw err;
-  }
-}
 
 export const insertItem = (v: ItemValues, client: AppSupabaseClient = getSupabase()) =>
   insertOne<ItemRow>(client, 'items', v, COLUMNS.items);

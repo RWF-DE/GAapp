@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { AppLink } from '@/components/common/app-link';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { useAuth } from '@/lib/auth/auth-provider';
-import { fetchOpenYearRules, fetchRules, roomRefsAcrossYears, rulesReferencing, type RoomRuleRefs, type RuleRefs } from '@/lib/data/settings';
+import { fetchOpenYearRules, fetchRules, freshDataOf, roomRefsAcrossYears, rulesReferencing, type RoomRuleRefs, type RuleRefs } from '@/lib/data/settings';
 import { settingsKeys, useSettings } from './shared';
 
 /** 参照している有効なルールがあれば削除を押せない理由と一覧、無効のルールは件数だけ */
@@ -140,16 +140,17 @@ export function DeleteWithRefsDialog({
     staleTime: 0,
   });
   const q = isRoom ? openRulesQ : rulesQ;
-  // 読み直している間は前の結果で判断しない（開いた時点のルールで確かめる）
-  const groupRefs = !isRoom && rulesQ.data && !rulesQ.isFetching ? rulesReferencing(rulesQ.data, target) : null;
-  const roomRefs =
-    'roomId' in target && openRulesQ.data && !openRulesQ.isFetching
-      ? roomRefsAcrossYears(openRulesQ.data.rules, openRulesQ.data.scope, target.roomId)
-      : null;
+  // 読み直している間と、読み直しに失敗したとき（isError でも前の data が残る）は前の結果で判断しない（開いた時点のルールで確かめる）
+  const groupRules = freshDataOf(rulesQ);
+  const openRules = freshDataOf(openRulesQ);
+  const groupRefs = !isRoom && groupRules ? rulesReferencing(groupRules, target) : null;
+  const roomRefs = 'roomId' in target && openRules ? roomRefsAcrossYears(openRules.rules, openRules.scope, target.roomId) : null;
   // 場所は、ルールを読めない終了していない年度が1つでもあれば押せない（その年度のルールが参照していないかを確かめられないため）
-  const blocked = isRoom
-    ? roomRefs === null || roomRefs.enabledCount > 0 || roomRefs.unreadable.length > 0
-    : groupRefs === null || groupRefs.enabled.length > 0;
+  const blocked =
+    q.isError ||
+    (isRoom
+      ? roomRefs === null || roomRefs.enabledCount > 0 || roomRefs.unreadable.length > 0
+      : groupRefs === null || groupRefs.enabled.length > 0);
   return (
     <ConfirmDialog
       open={open}
@@ -163,7 +164,9 @@ export function DeleteWithRefsDialog({
       onConfirm={onConfirm}
     >
       {q.isError ? (
-        <p className="text-sm text-destructive">ルールを読めませんでした。閉じてからもう一度開いてください。</p>
+        <p role="alert" className="text-sm text-destructive" data-testid="rule-refs-error">
+          ルールを読めなかったので、参照しているルールがないかを確かめられず、削除できません。閉じてからもう一度開いてください。
+        </p>
       ) : isRoom ? (
         <RoomRuleRefsNotice refs={roomRefs} currentYearId={year.id} />
       ) : (

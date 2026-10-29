@@ -4,7 +4,7 @@
 import { expect, test, type Route } from '@playwright/test';
 import { loginAs } from '../helpers';
 import { storageStateFor } from '../support/auth';
-import { createScenario, sql } from '../support/db';
+import { createScenario, createUser, sql } from '../support/db';
 import { S05_GROUP, SMALL } from '../support/datasets';
 import { MOBILE, PC, shoot } from '../support/shots';
 import { SEED_USER_IDS } from '../support/users';
@@ -193,8 +193,56 @@ test.describe('T09 マスタ設定（管理者）', () => {
       await page.getByTestId('settings-tab-rooms').click();
       await expect(page.getByRole('row').nth(1)).toBeVisible();
       await expect(page.getByTestId('global-read-only')).toBeVisible();
+      await expect(page.getByTestId('open-admin-year')).toBeVisible();
       await shoot(page, 'T09', 'settings-rooms-closed-pc');
     } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09 マスタ設定：終了した年度で、admin の開いている年度がないとき（ボタンを出さない）', async ({ browser }) => {
+    const u = await createUser({ purpose: 'shots-closed' });
+    const closed = await createScenario({ status: 'closed', dataset: 'small', grants: [{ userId: u.id, role: 'admin' }] });
+    const staffOpen = await createScenario({ status: 'preparing', dataset: 'empty', grants: [{ userId: u.id, role: 'staff' }] });
+    // seed の admin の storageState を使わず、画面からログインし直す
+    const ctx = await browser.newContext({ viewport: PC, storageState: { cookies: [], origins: [] } });
+    try {
+      const page = await ctx.newPage();
+      await pinYear(page, u.id, closed.yearId);
+      await page.goto('/login/');
+      const form = page.getByTestId('test-login-form');
+      await form.getByLabel('メールアドレス').fill(u.email);
+      await form.getByLabel('パスワード').fill(u.password);
+      await form.getByRole('button', { name: 'テスト用ユーザーでログイン' }).click();
+      await expect(page.getByTestId('current-year')).toBeVisible();
+      await page.goto('/settings/?tab=rooms');
+      await expect(page.getByRole('row').nth(1)).toBeVisible();
+      await expect(page.getByTestId('global-read-only-no-target')).toBeVisible();
+      await shoot(page, 'T09', 'settings-rooms-closed-no-target-pc');
+    } finally {
+      await ctx.close();
+      await Promise.all([closed.cleanup(), staffOpen.cleanup()]);
+      await u.cleanup();
+    }
+  });
+
+  test('T09 マスタ設定：場所の削除で、開き直したときのルールの読み直しに失敗したとき（削除を押せない）', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', dataset: 'small', rules: 'none', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=rooms');
+      const row = page.getByRole('row').filter({ has: page.getByRole('cell', { name: SMALL.rooms.class1, exact: true }) });
+      const dialog = page.getByRole('alertdialog');
+      await row.getByRole('button', { name: '削除' }).click();
+      await expect(dialog.getByText('ルールの参照を確かめています…')).toHaveCount(0);
+      await dialog.getByRole('button', { name: 'やめる' }).click();
+      await page.route('**/rest/v1/rules*', (route: Route) => route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"e2e"}' }));
+      await row.getByRole('button', { name: '削除' }).click();
+      await expect(dialog.getByTestId('rule-refs-error')).toBeVisible();
+      await expect(dialog.getByRole('button', { name: '削除する' })).toBeDisabled();
+      await shoot(page, 'T09', 'settings-room-delete-refetch-error-pc');
+    } finally {
+      await page.unrouteAll({ behavior: 'ignoreErrors' });
       await s.cleanup();
     }
   });

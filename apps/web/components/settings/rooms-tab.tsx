@@ -20,7 +20,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { deleteRoom, fetchAllocationSources, fetchRooms, fetchRoomYears, insertRoom, saveRoomYear, updateRoom } from '@/lib/data/settings';
+import { setRoomUsable } from '@/lib/data/room-years';
+import { deleteRoom, fetchAllocationSources, fetchRooms, fetchRoomYears, insertRoom, updateRoom } from '@/lib/data/settings';
 import type { RoomRow, RoomYearRow } from '@/lib/db/types';
 import { ROOM_KIND_LABELS } from '@/lib/labels';
 import { classifyError, messageFor } from '@/lib/errors';
@@ -354,7 +355,8 @@ function UsableDialog({
     }
     setSaving(true);
     try {
-      await saveRoomYear(year.id, room.id, room.roomYear, parsed.data.usable, parsed.data.note);
+      // 楽観ロック（T09a）：読み直した後の room_years.updated_at（行がなければ null）で保存する
+      await setRoomUsable(year.id, room.id, room.roomYear?.updated_at ?? null, parsed.data.usable, parsed.data.note);
       toast.success(`「${room.name}」を今年は${parsed.data.usable ? '使用可' : '使用不可'}にしました`);
       await queryClient.invalidateQueries({ queryKey: queryKeys.year(year.id) });
       onClose();
