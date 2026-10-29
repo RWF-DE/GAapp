@@ -7,22 +7,16 @@ import { pinYear } from './support/year';
 
 // T09a 画面の共通基盤（画面の設計 7.2 の表の T09a の行）：ナビ・直接開いたときの権限・年度の切り替え・見え方。
 // シナリオの年度（createScenario）は 2001 年の日付なので、seed の利用者の既定の年度は R8 のまま。
+//
+// ページの中身（雛形の「この画面は準備中です」か、各チケットの画面か）はここでは確かめない。開ける立場では
+// 「h1 が出て、権限なしでない」、開けない立場では「権限がありません」だけを見る。雛形が各チケットの画面に
+// 置き換わってもこのファイルは直さなくてよい（中身は各チケットの e2e/t10-stock.spec.ts などで確かめる）。
 
-/** ナビの項目と、それぞれの画面を作るチケット（lib/navigation.ts の ROUTES と同じ） */
-const TICKET: Record<string, string> = {
-  '/settings/': 'T09',
-  '/stock/': 'T10',
-  '/stocks/': 'T10',
-  '/stocks/qr/': 'T10',
-  '/requests/': 'T11',
-  '/rules/': 'T12',
-  '/allocation/': 'T13',
-  '/swaps/': 'T13',
-  '/history/': 'T14',
-  '/request/': 'T11',
-  '/my/': 'T13',
-};
-const ALL_PAGES = Object.keys(TICKET);
+/** 全ルート（lib/navigation.ts の ROUTES のホーム以外。末尾の / は静的書き出しの形） */
+const ALL_PAGES = [
+  '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/',
+  '/request/', '/my/',
+];
 
 const NAV: Record<StoredUser, string[]> = {
   admin: ['ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴'],
@@ -33,7 +27,7 @@ const NAV: Record<StoredUser, string[]> = {
   rep: ['ホーム', '申請', '自団体の振り分け'],
 };
 
-/** R8（申請受付中）で開ける画面 */
+/** R8（申請受付中）で開ける画面（lib/navigation.ts の ROUTES の立場から） */
 const OPENS: Record<StoredUser, string[]> = {
   admin: ['/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/'],
   staff: ['/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/allocation/'],
@@ -41,22 +35,21 @@ const OPENS: Record<StoredUser, string[]> = {
   rep: ['/request/', '/my/'],
 };
 
-/** 雛形を中身に置き換えたページ（置き換えたチケットが足す。開けて「権限がありません」が出ないことだけを確かめる） */
-const REPLACED = new Set<string>(['/allocation/', '/swaps/', '/my/']);
+const forbidden = (page: Page) => page.getByText('権限がありません', { exact: true });
 
-async function expectPlaceholder(page: Page, path: string): Promise<void> {
-  if (!TICKET[path]) throw new Error(`TICKET にないパス：${path}`);
-  if (REPLACED.has(path)) {
-    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
-    await expect(page.getByText('権限がありません')).toHaveCount(0);
-    return;
-  }
-  await expect(page.getByText(`この画面は準備中です（${TICKET[path]}）`)).toBeVisible();
-  await expect(page.getByText('権限がありません')).toHaveCount(0);
+/**
+ * 開けた：立場を読み終え（ヘッダーの年度の印が出る）、h1 が出て、「権限がありません」が出ていない。
+ * 雛形のページでも、各チケットの画面でも通る（RequireAudience は立場を読み終えたのと同じ描画で権限なしを出す）。
+ */
+async function expectOpens(page: Page): Promise<void> {
+  await expect(page.getByTestId('current-year')).toBeAttached();
+  await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  await expect(forbidden(page)).toHaveCount(0);
 }
 
+/** 開けない：「権限がありません」（RequireAudience の ForbiddenState）が出て、雛形の中身は出ていない */
 async function expectForbidden(page: Page): Promise<void> {
-  await expect(page.getByRole('alert').filter({ hasText: '権限がありません' })).toBeVisible();
+  await expect(page.getByRole('alert').filter({ has: forbidden(page) })).toBeVisible();
   await expect(page.getByText(/この画面は準備中です/)).toHaveCount(0);
 }
 
@@ -64,7 +57,7 @@ for (const user of ['admin', 'staff', 'viewer', 'rep'] as const) {
   test.describe(`T09a ${user}`, () => {
     test.use({ storageState: storageStateFor(user) });
 
-    test(`T09a ${user} のナビ：全項目が使え、押すと雛形のページが開く`, async ({ page }) => {
+    test(`T09a ${user} のナビ：全項目が使え、押すとそのページが開く`, async ({ page }) => {
       await page.goto('/');
       await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
       expect(await navLabels(page)).toEqual(NAV[user]);
@@ -75,15 +68,14 @@ for (const user of ['admin', 'staff', 'viewer', 'rep'] as const) {
         const path = (await link.getAttribute('href')) ?? '';
         await link.click();
         await expect(page).toHaveURL((u) => u.pathname === path);
-        await expectPlaceholder(page, path);
-        await expect(page.getByRole('heading', { level: 1, name: label })).toBeVisible();
+        await expectOpens(page);
       }
     });
 
     test(`T09a ${user}：立場の合わない画面を URL で開くと「権限がありません」`, async ({ page }) => {
       for (const path of ALL_PAGES) {
         await page.goto(path);
-        if (OPENS[user].includes(path)) await expectPlaceholder(page, path);
+        if (OPENS[user].includes(path)) await expectOpens(page);
         else await expectForbidden(page);
       }
     });
@@ -111,7 +103,7 @@ test.describe('T09a 閲覧のみと確定した年度（Q1）', () => {
       await page.goto('/allocation/');
       await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・確定`);
       expect(await navLabels(page)).toEqual(['ホーム', '振り分け']);
-      await expectPlaceholder(page, '/allocation/');
+      await expectOpens(page);
     } finally {
       await s.cleanup();
     }
@@ -141,7 +133,7 @@ test.describe('T09a 年度の切り替え', () => {
       await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
       await page.reload();
       await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
-      await expectPlaceholder(page, '/stocks/');
+      await expectOpens(page);
 
       // 新しいタブ（sessionStorage はタブごと）は最新の年度
       const tab = await context.newPage();
@@ -274,7 +266,7 @@ test('T09a ログアウトは、その端末のセッションだけを終える
     await other.goto('/stocks/');
     await expect(other.getByTestId('current-year')).toHaveText('R8・申請受付中');
     await other.reload();
-    await expectPlaceholder(other, '/stocks/');
+    await expectOpens(other);
   } finally {
     await ctx.close();
   }
