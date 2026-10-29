@@ -97,6 +97,8 @@ test.describe('T12 管理者', () => {
   test.use({ storageState: storageStateFor('admin') });
 
   test('T12 ルールのない年度で S01〜S08 を画面から入れると、保存した params が合成データの rules.json（id に直したもの）と同じ', async ({ page }) => {
+    // 8つのフォームを順に入れて保存するので、単独でも約 21 秒かかり、ほかのテストと並ぶと 30 秒を超えることがある
+    test.setTimeout(90_000);
     const s = await createScenario({ dataset: 'synthetic', rules: 'none', roles: { admin: true } });
     try {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
