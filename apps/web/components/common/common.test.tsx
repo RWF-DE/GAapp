@@ -157,6 +157,28 @@ describe('ConfirmDialog', () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('alertdialog')).toBeNull();
   });
+  it('閉じると（やめる・Esc）フォーカスが開いた元のボタンに戻る', async () => {
+    const user = userEvent.setup();
+    function Opener() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>削除</button>
+          <ConfirmDialog open={open} onOpenChange={setOpen} title="削除しますか" onConfirm={() => undefined} />
+        </>
+      );
+    }
+    render(<Opener />);
+    const opener = screen.getByRole('button', { name: '削除' });
+    for (const close of [() => user.click(screen.getByRole('button', { name: 'やめる' })), () => user.keyboard('{Escape}')]) {
+      await user.click(opener);
+      const dialog = await screen.findByRole('alertdialog');
+      await vi.waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
+      await close();
+      await vi.waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+      await vi.waitFor(() => expect(document.activeElement).toBe(opener));
+    }
+  });
 });
 
 describe('YearStatusActions の純粋な部分', () => {
