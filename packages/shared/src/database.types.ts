@@ -1,0 +1,1243 @@
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
+export type Database = {
+  public: {
+    Tables: {
+      allocations: {
+        Row: {
+          count: number;
+          created_at: string;
+          group_id: string;
+          id: string;
+          is_keep: boolean;
+          item_id: string;
+          note: string | null;
+          origin: Database["public"]["Enums"]["alloc_origin"];
+          pinned: boolean;
+          requested_item_id: string;
+          source_room_id: string;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          count: number;
+          created_at?: string;
+          group_id: string;
+          id?: string;
+          is_keep?: boolean;
+          item_id: string;
+          note?: string | null;
+          origin: Database["public"]["Enums"]["alloc_origin"];
+          pinned?: boolean;
+          requested_item_id: string;
+          source_room_id: string;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          count?: number;
+          created_at?: string;
+          group_id?: string;
+          id?: string;
+          is_keep?: boolean;
+          item_id?: string;
+          note?: string | null;
+          origin?: Database["public"]["Enums"]["alloc_origin"];
+          pinned?: boolean;
+          requested_item_id?: string;
+          source_room_id?: string;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "allocations_group_id_year_id_fkey";
+            columns: ["group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "allocations_item_id_fkey";
+            columns: ["item_id"];
+            isOneToOne: false;
+            referencedRelation: "items";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "allocations_requested_item_id_fkey";
+            columns: ["requested_item_id"];
+            isOneToOne: false;
+            referencedRelation: "items";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "allocations_source_room_id_fkey";
+            columns: ["source_room_id"];
+            isOneToOne: false;
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "allocations_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      audit_logs: {
+        Row: {
+          action: string;
+          after: Json | null;
+          at: string;
+          before: Json | null;
+          group_id: string | null;
+          id: number;
+          reason: string | null;
+          row_pk: NonNullable<Json>;
+          table_name: string;
+          user_id: string | null;
+          year_id: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          action: string;
+          after?: Json | null;
+          at?: string;
+          before?: Json | null;
+          group_id?: string | null;
+          id?: never;
+          reason?: string | null;
+          row_pk: NonNullable<Json>;
+          table_name: string;
+          user_id?: string | null;
+          year_id?: string | null;
+        };
+        Update: {
+          action?: string;
+          after?: Json | null;
+          at?: string;
+          before?: Json | null;
+          group_id?: string | null;
+          id?: never;
+          reason?: string | null;
+          row_pk?: NonNullable<Json>;
+          table_name?: string;
+          user_id?: string | null;
+          year_id?: string | null;
+        };
+        Relationships: [];
+      };
+      deliveries: {
+        Row: {
+          checked_at: string | null;
+          checked_by: string | null;
+          created_at: string;
+          group_id: string;
+          id: string;
+          kind: Database["public"]["Enums"]["delivery_kind"];
+          problem_note: string | null;
+          returned: boolean;
+          slot_id: string | null;
+          status: Database["public"]["Enums"]["delivery_status"];
+          team: number | null;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          checked_at?: string | null;
+          checked_by?: string | null;
+          created_at?: string;
+          group_id: string;
+          id?: string;
+          kind: Database["public"]["Enums"]["delivery_kind"];
+          problem_note?: string | null;
+          returned?: boolean;
+          slot_id?: string | null;
+          status?: Database["public"]["Enums"]["delivery_status"];
+          team?: number | null;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          checked_at?: string | null;
+          checked_by?: string | null;
+          created_at?: string;
+          group_id?: string;
+          id?: string;
+          kind?: Database["public"]["Enums"]["delivery_kind"];
+          problem_note?: string | null;
+          returned?: boolean;
+          slot_id?: string | null;
+          status?: Database["public"]["Enums"]["delivery_status"];
+          team?: number | null;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "deliveries_group_id_year_id_fkey";
+            columns: ["group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "deliveries_slot_id_year_id_fkey";
+            columns: ["slot_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "slots";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "deliveries_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      distance_overrides: {
+        Row: {
+          building_a: string;
+          building_b: string;
+          cost: number;
+          created_at: string;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          building_a: string;
+          building_b: string;
+          cost: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          building_a?: string;
+          building_b?: string;
+          cost?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      group_members: {
+        Row: {
+          created_at: string;
+          group_id: string;
+          updated_at: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          group_id: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          group_id?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "group_members_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      groups: {
+        Row: {
+          aliases: string[];
+          category: Database["public"]["Enums"]["group_category"];
+          created_at: string;
+          display_name: string | null;
+          id: string;
+          is_food: boolean;
+          location_room_id: string | null;
+          name: string;
+          sort_order: number;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          aliases?: string[];
+          category: Database["public"]["Enums"]["group_category"];
+          created_at?: string;
+          display_name?: string | null;
+          id?: string;
+          is_food?: boolean;
+          location_room_id?: string | null;
+          name: string;
+          sort_order?: number;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          aliases?: string[];
+          category?: Database["public"]["Enums"]["group_category"];
+          created_at?: string;
+          display_name?: string | null;
+          id?: string;
+          is_food?: boolean;
+          location_room_id?: string | null;
+          name?: string;
+          sort_order?: number;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "groups_location_room_id_fkey";
+            columns: ["location_room_id"];
+            isOneToOne: false;
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "groups_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      invitations: {
+        Row: {
+          created_at: string;
+          email: string;
+          group_id: string | null;
+          id: string;
+          role: Database["public"]["Enums"]["app_role"] | null;
+          updated_at: string;
+          used_at: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          email: string;
+          group_id?: string | null;
+          id?: string;
+          role?: Database["public"]["Enums"]["app_role"] | null;
+          updated_at?: string;
+          used_at?: string | null;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          email?: string;
+          group_id?: string | null;
+          id?: string;
+          role?: Database["public"]["Enums"]["app_role"] | null;
+          updated_at?: string;
+          used_at?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "invitations_group_id_year_id_fkey";
+            columns: ["group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "invitations_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      items: {
+        Row: {
+          aliases: string[];
+          code: string;
+          created_at: string;
+          id: string;
+          name: string;
+          requestable_categories: Database["public"]["Enums"]["group_category"][];
+          sort_order: number;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          aliases?: string[];
+          code: string;
+          created_at?: string;
+          id?: string;
+          name: string;
+          requestable_categories?: Database["public"]["Enums"]["group_category"][];
+          sort_order: number;
+          updated_at?: string;
+        };
+        Update: {
+          aliases?: string[];
+          code?: string;
+          created_at?: string;
+          id?: string;
+          name?: string;
+          requestable_categories?: Database["public"]["Enums"]["group_category"][];
+          sort_order?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      profiles: {
+        Row: {
+          created_at: string;
+          display_name: string;
+          updated_at: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          display_name: string;
+          updated_at?: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          display_name?: string;
+          updated_at?: string;
+          user_id?: string;
+        };
+        Relationships: [];
+      };
+      request_submissions: {
+        Row: {
+          created_at: string;
+          group_id: string;
+          note: string | null;
+          submitted_at: string | null;
+          updated_at: string;
+          updated_by: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          group_id: string;
+          note?: string | null;
+          submitted_at?: string | null;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Update: {
+          created_at?: string;
+          group_id?: string;
+          note?: string | null;
+          submitted_at?: string | null;
+          updated_at?: string;
+          updated_by?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "request_submissions_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: true;
+            referencedRelation: "groups";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      requests: {
+        Row: {
+          count: number;
+          created_at: string;
+          group_id: string;
+          item_id: string;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          count: number;
+          created_at?: string;
+          group_id: string;
+          item_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          count?: number;
+          created_at?: string;
+          group_id?: string;
+          item_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "requests_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "requests_item_id_fkey";
+            columns: ["item_id"];
+            isOneToOne: false;
+            referencedRelation: "items";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      room_years: {
+        Row: {
+          created_at: string;
+          note: string | null;
+          room_id: string;
+          updated_at: string;
+          usable: boolean;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          note?: string | null;
+          room_id: string;
+          updated_at?: string;
+          usable?: boolean;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          note?: string | null;
+          room_id?: string;
+          updated_at?: string;
+          usable?: boolean;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "room_years_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "room_years_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      rooms: {
+        Row: {
+          aliases: string[];
+          building: string | null;
+          created_at: string;
+          extra_cost: number;
+          floor: number | null;
+          id: string;
+          is_storage: boolean;
+          kind: Database["public"]["Enums"]["room_kind"];
+          name: string;
+          sort_order: number;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          aliases?: string[];
+          building?: string | null;
+          created_at?: string;
+          extra_cost?: number;
+          floor?: number | null;
+          id?: string;
+          is_storage?: boolean;
+          kind?: Database["public"]["Enums"]["room_kind"];
+          name: string;
+          sort_order?: number;
+          updated_at?: string;
+        };
+        Update: {
+          aliases?: string[];
+          building?: string | null;
+          created_at?: string;
+          extra_cost?: number;
+          floor?: number | null;
+          id?: string;
+          is_storage?: boolean;
+          kind?: Database["public"]["Enums"]["room_kind"];
+          name?: string;
+          sort_order?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      rules: {
+        Row: {
+          code: string;
+          created_at: string;
+          enabled: boolean;
+          id: string;
+          kind: Database["public"]["Enums"]["rule_kind"];
+          memo: string | null;
+          params: NonNullable<Json>;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          code: string;
+          created_at?: string;
+          enabled?: boolean;
+          id?: string;
+          kind: Database["public"]["Enums"]["rule_kind"];
+          memo?: string | null;
+          params: NonNullable<Json>;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          code?: string;
+          created_at?: string;
+          enabled?: boolean;
+          id?: string;
+          kind?: Database["public"]["Enums"]["rule_kind"];
+          memo?: string | null;
+          params?: NonNullable<Json>;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "rules_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      slots: {
+        Row: {
+          created_at: string;
+          day: Database["public"]["Enums"]["festival_day"];
+          ends_at: string | null;
+          id: string;
+          label: string;
+          starts_at: string | null;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          day: Database["public"]["Enums"]["festival_day"];
+          ends_at?: string | null;
+          id?: string;
+          label: string;
+          starts_at?: string | null;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          day?: Database["public"]["Enums"]["festival_day"];
+          ends_at?: string | null;
+          id?: string;
+          label?: string;
+          starts_at?: string | null;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "slots_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      stocks: {
+        Row: {
+          count: number;
+          counted_at: string | null;
+          counted_by: string | null;
+          created_at: string;
+          item_id: string;
+          room_id: string;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          count: number;
+          counted_at?: string | null;
+          counted_by?: string | null;
+          created_at?: string;
+          item_id: string;
+          room_id: string;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          count?: number;
+          counted_at?: string | null;
+          counted_by?: string | null;
+          created_at?: string;
+          item_id?: string;
+          room_id?: string;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "stocks_item_id_fkey";
+            columns: ["item_id"];
+            isOneToOne: false;
+            referencedRelation: "items";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "stocks_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "stocks_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      substitution_consents: {
+        Row: {
+          count: number | null;
+          created_at: string;
+          from_item_id: string;
+          group_id: string;
+          note: string | null;
+          status: Database["public"]["Enums"]["consent_status"];
+          to_item_id: string;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          count?: number | null;
+          created_at?: string;
+          from_item_id: string;
+          group_id: string;
+          note?: string | null;
+          status?: Database["public"]["Enums"]["consent_status"];
+          to_item_id: string;
+          updated_at?: string;
+        };
+        Update: {
+          count?: number | null;
+          created_at?: string;
+          from_item_id?: string;
+          group_id?: string;
+          note?: string | null;
+          status?: Database["public"]["Enums"]["consent_status"];
+          to_item_id?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "substitution_consents_from_item_id_fkey";
+            columns: ["from_item_id"];
+            isOneToOne: false;
+            referencedRelation: "items";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "substitution_consents_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "substitution_consents_to_item_id_fkey";
+            columns: ["to_item_id"];
+            isOneToOne: false;
+            referencedRelation: "items";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      year_roles: {
+        Row: {
+          created_at: string;
+          role: Database["public"]["Enums"]["app_role"];
+          updated_at: string;
+          user_id: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          role: Database["public"]["Enums"]["app_role"];
+          updated_at?: string;
+          user_id: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          role?: Database["public"]["Enums"]["app_role"];
+          updated_at?: string;
+          user_id?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "year_roles_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      years: {
+        Row: {
+          allocation_version: number;
+          auto_allocated_at: string | null;
+          created_at: string;
+          festival_start: string;
+          id: string;
+          label: string;
+          prev_year_id: string | null;
+          request_close_at: string | null;
+          request_open_at: string | null;
+          status: Database["public"]["Enums"]["year_status"];
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          allocation_version?: number;
+          auto_allocated_at?: string | null;
+          created_at?: string;
+          festival_start: string;
+          id?: string;
+          label: string;
+          prev_year_id?: string | null;
+          request_close_at?: string | null;
+          request_open_at?: string | null;
+          status?: Database["public"]["Enums"]["year_status"];
+          updated_at?: string;
+        };
+        Update: {
+          allocation_version?: number;
+          auto_allocated_at?: string | null;
+          created_at?: string;
+          festival_start?: string;
+          id?: string;
+          label?: string;
+          prev_year_id?: string | null;
+          request_close_at?: string | null;
+          request_open_at?: string | null;
+          status?: Database["public"]["Enums"]["year_status"];
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "years_prev_year_id_fkey";
+            columns: ["prev_year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+    };
+    Views: {
+      v_remaining: {
+        Row: {
+          allocated: number | null;
+          item_id: string;
+          remaining: number | null;
+          room_id: string;
+          stock: number;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Relationships: [
+          {
+            foreignKeyName: "stocks_item_id_fkey";
+            columns: ["item_id"];
+            isOneToOne: false;
+            referencedRelation: "items";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "stocks_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "stocks_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+    };
+    Functions: {
+      accept_my_invitations: { Args: Record<PropertyKey, never>; Returns: number };
+      check_delivery: {
+        Args: {
+          p_delivery_id: string;
+          p_problem_note?: string;
+          p_returned?: boolean;
+          p_status: Database["public"]["Enums"]["delivery_status"];
+        };
+        Returns: {
+          checked_at: string | null;
+          checked_by: string | null;
+          created_at: string;
+          group_id: string;
+          id: string;
+          kind: Database["public"]["Enums"]["delivery_kind"];
+          problem_note: string | null;
+          returned: boolean;
+          slot_id: string | null;
+          status: Database["public"]["Enums"]["delivery_status"];
+          team: number | null;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "deliveries";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      create_year_from: {
+        Args: { p_festival_start: string; p_label: string; p_prev_year_id: string };
+        Returns: {
+          allocation_version: number;
+          auto_allocated_at: string | null;
+          created_at: string;
+          festival_start: string;
+          id: string;
+          label: string;
+          prev_year_id: string | null;
+          request_close_at: string | null;
+          request_open_at: string | null;
+          status: Database["public"]["Enums"]["year_status"];
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "years";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      invite: {
+        Args: {
+          p_email: string;
+          p_group_id?: string;
+          p_role?: Database["public"]["Enums"]["app_role"];
+          p_year_id: string;
+        };
+        Returns: Json;
+      };
+      previous_year_requests: {
+        Args: { p_year_id: string };
+        Returns: {
+          count: number;
+          group_name: string;
+          item_id: string;
+        }[];
+      };
+      previous_year_stocks: {
+        Args: { p_year_id: string };
+        Returns: {
+          count: number;
+          item_id: string;
+          room_id: string;
+        }[];
+      };
+      remove_group_member: {
+        Args: { p_group_id: string; p_reason?: string; p_user_id: string };
+        Returns: undefined;
+      };
+      remove_role: {
+        Args: { p_reason?: string; p_user_id: string; p_year_id: string };
+        Returns: undefined;
+      };
+      revoke_invitation: { Args: { p_invitation_id: string }; Returns: undefined };
+      save_allocation_rows: {
+        Args: { p_changes: Json; p_reason: string; p_year_id: string };
+        Returns: Json;
+      };
+      save_auto_allocations: {
+        Args: { p_base_version: number; p_mode: string; p_rows: Json; p_year_id: string };
+        Returns: Json;
+      };
+      set_consent: {
+        Args: {
+          p_from_item: string;
+          p_group_id: string;
+          p_note?: string;
+          p_status: Database["public"]["Enums"]["consent_status"];
+          p_to_item: string;
+        };
+        Returns: {
+          count: number | null;
+          created_at: string;
+          from_item_id: string;
+          group_id: string;
+          note: string | null;
+          status: Database["public"]["Enums"]["consent_status"];
+          to_item_id: string;
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "substitution_consents";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      set_role: {
+        Args: {
+          p_reason?: string;
+          p_role: Database["public"]["Enums"]["app_role"];
+          p_user_id: string;
+          p_year_id: string;
+        };
+        Returns: undefined;
+      };
+      set_year_status: {
+        Args: {
+          p_base_version?: number;
+          p_reason?: string;
+          p_to: Database["public"]["Enums"]["year_status"];
+          p_year_id: string;
+        };
+        Returns: {
+          allocation_version: number;
+          auto_allocated_at: string | null;
+          created_at: string;
+          festival_start: string;
+          id: string;
+          label: string;
+          prev_year_id: string | null;
+          request_close_at: string | null;
+          request_open_at: string | null;
+          status: Database["public"]["Enums"]["year_status"];
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "years";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      submit_requests: {
+        Args: { p_group_id: string; p_note?: string; p_rows: Json };
+        Returns: {
+          created_at: string;
+          group_id: string;
+          note: string | null;
+          submitted_at: string | null;
+          updated_at: string;
+          updated_by: string | null;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "request_submissions";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      update_requests_after_deadline: {
+        Args: { p_group_id: string; p_reason: string; p_rows: Json; p_submission?: Json };
+        Returns: undefined;
+      };
+      update_year: {
+        Args: { p_patch: Json; p_reason?: string; p_year_id: string };
+        Returns: {
+          allocation_version: number;
+          auto_allocated_at: string | null;
+          created_at: string;
+          festival_start: string;
+          id: string;
+          label: string;
+          prev_year_id: string | null;
+          request_close_at: string | null;
+          request_open_at: string | null;
+          status: Database["public"]["Enums"]["year_status"];
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "years";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+    };
+    Enums: {
+      alloc_origin: "auto" | "manual";
+      app_role: "admin" | "staff" | "viewer";
+      consent_status: "not_asked" | "asked" | "accepted" | "declined";
+      delivery_kind: "furniture" | "tent" | "weight" | "side_curtain";
+      delivery_status: "pending" | "done" | "problem";
+      festival_day: "day_minus2" | "day_minus1" | "day1" | "day2";
+      group_category: "stall" | "department" | "company" | "rest_area";
+      room_kind: "room" | "gym" | "outdoor" | "other";
+      rule_kind: "substitute" | "source_restrict" | "fixed_request" | "keep";
+      year_status: "preparing" | "requesting" | "allocating" | "confirmed" | "closed";
+    };
+    CompositeTypes: {
+      [_ in never]: never;
+    };
+  };
+};
+
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">;
+
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">];
+
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals;
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never) = never,
+> = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R;
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] & DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R;
+      }
+      ? R
+      : never
+    : never;
+
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals;
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never) = never,
+> = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I;
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I;
+      }
+      ? I
+      : never
+    : never;
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals;
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never) = never,
+> = DefaultSchemaTableNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U;
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U;
+      }
+      ? U
+      : never
+    : never;
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals;
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never) = never,
+> = DefaultSchemaEnumNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never;
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals;
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never) = never,
+> = PublicCompositeTypeNameOrOptions extends { schema: keyof DatabaseWithoutInternals }
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never;
+
+export const Constants = {
+  public: {
+    Enums: {
+      alloc_origin: ["auto", "manual"],
+      app_role: ["admin", "staff", "viewer"],
+      consent_status: ["not_asked", "asked", "accepted", "declined"],
+      delivery_kind: ["furniture", "tent", "weight", "side_curtain"],
+      delivery_status: ["pending", "done", "problem"],
+      festival_day: ["day_minus2", "day_minus1", "day1", "day2"],
+      group_category: ["stall", "department", "company", "rest_area"],
+      room_kind: ["room", "gym", "outdoor", "other"],
+      rule_kind: ["substitute", "source_restrict", "fixed_request", "keep"],
+      year_status: ["preparing", "requesting", "allocating", "confirmed", "closed"],
+    },
+  },
+} as const;
