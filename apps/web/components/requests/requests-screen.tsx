@@ -406,6 +406,9 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
               onMarkSubmitted={(row) => setMarkRow(row)}
             />
           )}
+          <p className="text-xs text-muted-foreground">
+            「—」はその区分で申請できない品目。※ は申請できない品目に残っている申請（企業以外の長机(3人掛)は長机(2人掛)として扱う。ほかは申請できない品目〔E006〕）。
+          </p>
           {editable ? (
             <div className="sticky bottom-0 z-30 flex flex-wrap items-center gap-2 border-t bg-background py-3">
               <Button disabled={changes.length === 0 || saving} aria-busy={saving || undefined} onClick={onSave}>

@@ -179,15 +179,18 @@ export function RequestsTable({
   );
 }
 
-/** 申請できない品目に残っている数（灰色。管理者は 0 にできる） */
+/** 申請できない品目に残っている数（灰色と印。印の説明は title と読み上げに。管理者は 0 にできる） */
 function NotRequestableCell({ value, note, canZero, onZero }: { value: number; note: string; canZero: boolean; onZero: () => void }) {
   return (
-    <span className="inline-flex items-center justify-end gap-1 px-1 text-muted-foreground" title={note}>
+    <span className="inline-flex items-center justify-end gap-1 px-1 whitespace-nowrap text-muted-foreground" title={note}>
       <span>{value}</span>
-      <span className="rounded bg-muted px-1 text-[10px]">{note}</span>
+      <span aria-hidden className="rounded bg-muted px-1 text-[10px]">
+        ※
+      </span>
+      <span className="sr-only">（{note}）</span>
       {canZero ? (
-        <Button size="xs" variant="ghost" onClick={onZero}>
-          0 にする
+        <Button size="xs" variant="ghost" className="h-6 px-1 text-xs" onClick={onZero}>
+          0にする
         </Button>
       ) : null}
     </span>
