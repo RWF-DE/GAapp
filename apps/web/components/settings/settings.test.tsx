@@ -540,6 +540,56 @@ describe('場所・団体・品目のフォーム（updateWithLock・一意の�
     expect((within(form).getByLabelText('団体名') as HTMLInputElement).value).toBe('企業B');
   });
 
+  // 「読み直す」の結果は、読み直しを始めたときのフォームにだけ当てる。読み直し中に保存を送った・シートを閉じた後に届いた結果は
+  // 捨てる（前のフォームの onSaved が、後から開いた別のシートを閉じて入力を消さないように）
+  async function groupRereadPendingThenNewSheet(user: ReturnType<typeof userEvent.setup>, leave: 'save' | 'close') {
+    data.fetchGroups.mockResolvedValue([otherA]);
+    data.fetchMembers.mockResolvedValue({ members: [], invitations: [], repCount: new Map() });
+    data.insertGroup.mockRejectedValueOnce({ code: '23505', message: 'duplicate key' }).mockResolvedValue(undefined);
+    let resolveReread: (row: unknown) => void = () => {};
+    data.readGroupByName
+      .mockRejectedValueOnce(network())
+      .mockImplementationOnce(() => new Promise((r) => (resolveReread = r)))
+      .mockResolvedValue(null);
+    const form = await groupRejectedThenRename(user);
+    expect(within(form).getByRole('button', { name: '読み直し中…' })).toBeTruthy();
+    if (leave === 'save') {
+      // 読み直し中も保存は押せる（2.6 の (B1)）。送った保存が通ってシートが閉じる
+      await user.click(within(form).getByRole('button', { name: '保存' }));
+      await waitFor(() => expect(screen.queryByTestId('group-form')).toBeNull());
+      expect(toasts.success.mock.calls).toEqual([['「企業B」を足しました']]);
+    } else {
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(screen.queryByTestId('group-form')).toBeNull());
+    }
+    await user.click(await screen.findByTestId('group-add'));
+    const next = await screen.findByTestId('group-form');
+    await user.type(within(next).getByLabelText('団体名'), '企業C');
+    // 遅れて届いた読み直し：前のフォームの入力（企業B）と同じ行
+    resolveReread({ ...otherA, id: 'g3', name: '企業B' });
+    await new Promise((r) => setTimeout(r, 50));
+    return next;
+  }
+
+  it('「読み直す」の途中で保存して閉じ、次の団体を足し始めた後に読み直しが届いても、「保存されていました」と出さず、新しいシートを閉じない', async () => {
+    const user = userEvent.setup();
+    await groupRereadPendingThenNewSheet(user, 'save');
+    expect(toasts.success.mock.calls).toEqual([['「企業B」を足しました']]);
+    expect(toasts.info).not.toHaveBeenCalled();
+    const next = screen.getByTestId('group-form');
+    expect((within(next).getByLabelText('団体名') as HTMLInputElement).value).toBe('企業C');
+    expect(within(next).queryByTestId('locked-save-unread')).toBeNull();
+  });
+
+  it('「読み直す」の途中でシートを閉じ、別のシートを開いた後に読み直しが届いても、新しいシートを閉じない', async () => {
+    const user = userEvent.setup();
+    await groupRereadPendingThenNewSheet(user, 'close');
+    expect(toasts.success).not.toHaveBeenCalled();
+    expect(data.insertGroup).toHaveBeenCalledTimes(1);
+    const next = screen.getByTestId('group-form');
+    expect((within(next).getByLabelText('団体名') as HTMLInputElement).value).toBe('企業C');
+  });
+
   it('品目の insert：23505 → 読み直せず → コードを変えて「読み直す」、新しいコードの行がない → 重複と言わない', async () => {
     data.fetchItems.mockResolvedValue([]);
     data.insertItem.mockRejectedValue({ code: '23505', message: 'duplicate key' });

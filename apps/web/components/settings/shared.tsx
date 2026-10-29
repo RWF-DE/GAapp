@@ -3,7 +3,7 @@
 // マスタ設定の各タブが使う小さな部品と、書き込みのエラーの扱い（画面の設計 2.5・2.6・3.2。T09）。
 // 2つ目の画面が要るようになったら common/ に移す（docs/prompts/T09.md）。
 import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
-import { createContext, useCallback, useContext, useId, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Label } from '@/components/ui/label';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
@@ -195,6 +195,7 @@ export interface LockedSaveRun<Row extends { updated_at: string }> extends Locke
  * データを読み直し、判定が changed なら onRebase で入力の元を付け替える。unknown は unknownOutcomeMessage()。
  * unread は notice（読み直すボタンつき）を出す。not-saved（「読み直す」で、いまの入力が止められたときと別の行を書き、その行に
  * 止めるものがない）は「まだ保存されていません」と出す。確かめるための状態は持たず、保存のボタンは押せるまま（次の保存はまた同じ道を通る）。
+ * 「読み直す」の結果は、読み直している間に保存を送った・フォームが外れた（シートを閉じた）なら捨てる（前のフォームの結果を当てない）。
  * current は、いまの入力で作った呼び出し（入力が正しくなければ null）。「読み直す」で読んだ行は、送った値ではなくいまの入力と
  * 比べる（送った後に入力を変えていれば、前の送信が通っていてもほかの人の変更に見える。2.6 の (B1)）。
  */
@@ -207,6 +208,16 @@ export function useLockedSave<Row extends { updated_at: string }>(opts: {
   const queryClient = useQueryClient();
   const [unread, setUnread] = useState<{ call: LockedSaveRun<Row>; error: unknown } | null>(null);
   const [reloading, setReloading] = useState(false);
+  // 送信と「読み直す」の世代。送るたびと、フォームが外れたとき（シートを閉じた）に進める。「読み直す」の結果は、始めたときから
+  // 世代が変わっていなければ当てる。変わっていれば捨てる（読み直し中に送った保存の結果がもう出ている・前のフォームの onSaved が
+  // 後から開いた別のシートを閉じてしまうため）。保存のボタンは押せるまま（2.6 の (B1)）
+  const generation = useRef(0);
+  useEffect(
+    () => () => {
+      generation.current += 1;
+    },
+    [],
+  );
   const { dataKeys, context } = opts;
 
   const invalidate = useCallback(
@@ -249,7 +260,9 @@ export function useLockedSave<Row extends { updated_at: string }>(opts: {
 
   const run = useCallback(
     async (call: LockedSaveRun<Row>): Promise<LockedWriteResult<Row>> => {
+      generation.current += 1;
       setUnread(null);
+      setReloading(false);
       const r = await runLockedWrite(call);
       await handle(call, r);
       return r;
@@ -260,18 +273,22 @@ export function useLockedSave<Row extends { updated_at: string }>(opts: {
   // 止められて読み直せなかった後の「読み直す」：いまの入力（描画ごとに作り直すので current はいまのもの）で、送った後と同じ判定を通す。
   // いまの入力が止められた書き込みと同じ行を書くなら、その行を読み直していまの入力と比べ、止められたときのエラーで決める。
   // 別の行を書く（insert で一意のキーを変えた）なら、止められた結果はいまの入力に当たらないので、いまの入力が書く行を
-  // 書き込みの後でない読み直し（settleLockedCall の e が null）で決める（行がなければ not-saved。重複とは言わない）
+  // 書き込みの後でない読み直し（settleLockedCall の e が null）で決める（行がなければ not-saved。重複とは言わない）。
+  // 読み直している間に保存を送った・フォームが外れたなら、届いた結果は捨てる（generation）
   const reload = async () => {
     if (!unread) return;
     const call = opts.current() ?? { ...unread.call, matches: () => false };
+    const started = generation.current;
     setReloading(true);
     try {
       const r = await settleLockedCall(call, call.target === unread.call.target ? unread.error : null);
+      if (generation.current !== started) return;
       // また読み直せなければ handle が notice を出し直す（いまの入力の呼び出しで）
       if (r.kind !== 'unread') setUnread(null);
       await handle(call, r);
     } finally {
-      setReloading(false);
+      // 読み直し中に保存を送ったなら、読み直し中の表示は run が戻している（その後に始めた読み直しの表示を消さない）
+      if (generation.current === started) setReloading(false);
     }
   };
 
