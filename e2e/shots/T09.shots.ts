@@ -58,6 +58,11 @@ test.describe('T09 マスタ設定（管理者）', () => {
 
       // 場所の今年の使用（振り分け中で固定・手動の行がなければ使用不可にできる）
       await page.getByTestId('settings-tab-rooms').click();
+      // 場所の削除：終了していない年度のルールの参照（年度名つき）で削除できない確認
+      await page.getByRole('row').filter({ has: page.getByRole('cell', { name: '1-1', exact: true }) }).getByRole('button', { name: '削除' }).click();
+      await expect(page.getByRole('alertdialog').getByTestId('rule-refs')).toContainText(s.label);
+      await shoot(page, 'T09', 'settings-room-delete-blocked-pc');
+      await page.getByRole('alertdialog').getByRole('button', { name: 'やめる' }).click();
       await page.getByRole('row').filter({ has: page.getByRole('cell', { name: '1-1', exact: true }) }).getByRole('button', { name: '1-1の今年の使用を変える' }).click();
       await expect(page.getByRole('dialog')).toBeVisible();
       await shoot(page, 'T09', 'settings-room-usable-pc');
@@ -84,12 +89,36 @@ test.describe('T09 マスタ設定（管理者）', () => {
       });
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       await page.goto('/settings/?tab=groups');
-      await expect(page.getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
+      // アプリ全体の読み込み中ではなく、/settings の題名とタブが出た後の団体のタブの読み込み中を撮る
+      await expect(page.getByRole('heading', { level: 1, name: 'マスタ設定' })).toBeVisible();
+      await expect(page.getByTestId('settings-tab-groups')).toBeVisible();
+      await expect(page.getByRole('main').getByRole('status').filter({ hasText: '読み込み中…' }).first()).toBeVisible();
       await shoot(page, 'T09', 'settings-loading-pc');
       release();
       await expect(page.getByTestId('group-add')).toBeVisible();
     } finally {
       release();
+      await s.cleanup();
+    }
+  });
+
+  test('T09 マスタ設定：今年の使用で振り分けの行を読めなかったとき', async ({ page }) => {
+    const s = await createScenario({ status: 'allocating', dataset: 'small', roles: { admin: true } });
+    try {
+      await page.route('**/rest/v1/allocations*', (route: Route) =>
+        route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"e2e"}' }),
+      );
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/settings/?tab=rooms');
+      await page
+        .getByRole('row')
+        .filter({ has: page.getByRole('cell', { name: SMALL.rooms.class1, exact: true }) })
+        .getByRole('button', { name: `${SMALL.rooms.class1}の今年の使用を変える` })
+        .click();
+      await page.getByRole('dialog').getByLabel('今年は使用する').uncheck();
+      await expect(page.getByTestId('usable-sources-error')).toBeVisible();
+      await shoot(page, 'T09', 'settings-room-usable-error-pc');
+    } finally {
       await s.cleanup();
     }
   });
@@ -104,6 +133,7 @@ test.describe('T09 マスタ設定（管理者）', () => {
       // 終了した年度では、開いている年度（R8）の管理者でも場所・品目・距離は読み取り専用
       await page.getByTestId('settings-tab-rooms').click();
       await expect(page.getByRole('row').nth(1)).toBeVisible();
+      await expect(page.getByTestId('global-read-only')).toBeVisible();
       await shoot(page, 'T09', 'settings-rooms-closed-pc');
     } finally {
       await s.cleanup();
@@ -172,6 +202,23 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await expect(page.getByTestId('dashboard-validation-counts')).toBeVisible();
       await expect(page.getByTestId('dashboard-consent-statuses')).toBeVisible();
       await shoot(page, 'T09', 'dashboard-allocating-pc', { fullPage: true });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09 ダッシュボード：読み直しの失敗の帯（中身は残す）', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/');
+      await expect(page.getByTestId('dashboard-stocks')).toBeVisible();
+      await page.route('**/rest/v1/stocks*', (route: Route) =>
+        route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"e2e"}' }),
+      );
+      await page.getByRole('main').getByRole('button', { name: '読み直す', exact: true }).click();
+      await expect(page.getByTestId('dashboard-reload-error')).toBeVisible();
+      await shoot(page, 'T09', 'dashboard-reload-error-pc');
     } finally {
       await s.cleanup();
     }
