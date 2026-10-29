@@ -41,8 +41,17 @@ const OPENS: Record<StoredUser, string[]> = {
   rep: ['/request/', '/my/'],
 };
 
+/** 雛形を中身に置き換えた画面（雛形の文言は確かめず、開けて権限なしでないことだけを見る。T11 が足した） */
+const READY = new Set(['/requests/', '/request/']);
+
 async function expectPlaceholder(page: Page, path: string): Promise<void> {
   if (!TICKET[path]) throw new Error(`TICKET にないパス：${path}`);
+  if (READY.has(path)) {
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(page.getByText(/この画面は準備中です/)).toHaveCount(0);
+    await expect(page.getByText('権限がありません')).toHaveCount(0);
+    return;
+  }
   await expect(page.getByText(`この画面は準備中です（${TICKET[path]}）`)).toBeVisible();
   await expect(page.getByText('権限がありません')).toHaveCount(0);
 }
