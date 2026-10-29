@@ -1,0 +1,158 @@
+-- 021_rpc_users：invite、set_role、revoke_invitation、remove_group_member、accept_my_invitations（T03）
+-- auth.users のトリガー（0007）は T04。ここではトリガーなしで動く部分（RPC の中での招待の受け入れ）だけを確かめる。
+begin;
+\ir _helpers/personas.psql
+\ir _helpers/fixture.psql
+select plan(57);
+
+-- ================================================================ invite
+select tests.login_anon();
+select throws_ok($$ select public.invite(tests.id('Y1'), 'a@pgtap.test', 'viewer') $$, '42501', null, 'anon は招待できない');
+select tests.logout();
+select tests.login_as('staff');
+select throws_ok($$ select public.invite(tests.id('Y1'), 'a@pgtap.test', 'viewer') $$, 'P0001', 'forbidden', 'staff は招待できない');
+select tests.logout();
+select tests.login_as('rep');
+select throws_ok($$ select public.invite(tests.id('Y1'), 'a@pgtap.test', null, tests.id('G1')) $$, 'P0001', 'forbidden', '団体代表は招待できない');
+select tests.logout();
+select tests.login_as('admin2');
+select throws_ok($$ select public.invite(tests.id('Y1'), 'a@pgtap.test', 'viewer') $$, 'P0001', 'forbidden', '別の年度の admin は招待できない');
+select tests.logout();
+
+select tests.login_as('admin');
+select throws_ok($$ select public.invite(tests.id('Y1'), 'not-an-email', 'viewer') $$, 'P0001', 'invalid_input', 'メールの形でなければ invalid_input');
+select throws_ok($$ select public.invite(tests.id('Y1'), null, 'viewer') $$, 'P0001', 'invalid_input', 'メールが空なら invalid_input');
+select throws_ok(format($$ select public.invite(%L, %L, 'viewer') $$, tests.id('Y1'), repeat('a', 250) || '@pgtap.test'), 'P0001', 'invalid_input', 'メールは 254 字まで');
+select throws_ok($$ select public.invite(tests.id('Y1'), 'a@pgtap.test') $$, 'P0001', 'invalid_input', 'ロールも団体もなければ invalid_input');
+select throws_ok($$ select public.invite(tests.id('Y1'), 'a@pgtap.test', null, tests.id('G3')) $$, 'P0001', 'invalid_input', '別の年度の団体には招待できない');
+select throws_ok($$ select public.invite(tests.id('Y1'), 'staff@pgtap.test', 'viewer') $$, 'P0001', 'conflict', '別のロールを持つ人は set_role で変える');
+-- 既存の確認済みアカウント：その場で付く（大文字小文字と前後の空白はそろえる）
+select is((public.invite(tests.id('Y1'), '  Outsider@PgTap.TEST ', 'viewer') ->> 'applied')::boolean, true, '既存ユーザーはその場で付く');
+select tests.logout();
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('outsider')), 'viewer'::public.app_role, 'outsider に viewer が付く');
+select ok((select used_at is not null from public.invitations where email = 'outsider@pgtap.test' and year_id = tests.id('Y1')), '招待は小文字で保存され、使用済み');
+select is((select reason from public.audit_logs where table_name = 'year_roles' and action = 'insert'
+           and row_pk ->> 'user_id' = tests.id('outsider')::text), '招待', 'ロールの追加の理由は「招待」');
+-- 未登録：招待だけ
+select tests.login_as('admin');
+select is(jsonb_array_length(public.invite(tests.id('Y1'), 'new@pgtap.test', 'staff', tests.id('G1')) -> 'invitation_ids'), 2,
+  'ロールと団体の両方なら招待は2つ');
+select is((public.invite(tests.id('Y1'), 'new@pgtap.test', 'viewer') ->> 'applied')::boolean, false, '未登録は招待だけ（applied: false）');
+select tests.logout();
+select is((select role from public.invitations where email = 'new@pgtap.test' and role is not null and used_at is null), 'viewer'::public.app_role,
+  '未使用のロールの招待は、招待し直すとロールが変わる（1件のまま）');
+-- メール未確認のアカウントにはその場で付けない（他人のメールを名乗った登録に招待を取らせない）
+insert into auth.users (instance_id, id, aud, role, email, email_confirmed_at, raw_user_meta_data, created_at, updated_at)
+values ('00000000-0000-0000-0000-000000000000', '44444444-4444-4444-8444-444444444444', 'authenticated', 'authenticated',
+        'late@pgtap.test', null, '{}', now(), now());
+insert into tests.ids values ('late', '44444444-4444-4444-8444-444444444444');
+select tests.login_as('admin');
+select is((public.invite(tests.id('Y1'), 'late@pgtap.test', 'viewer') ->> 'applied')::boolean, false, 'invite は未確認のアカウントには付けない');
+select tests.logout();
+select is((select count(*)::int from public.year_roles where user_id = tests.id('late')), 0, '未確認のアカウントにロールはない');
+-- closed の年度には招待できない
+select tests.set_scenario('closed');
+select tests.login_as('admin');
+select throws_ok($$ select public.invite(tests.id('Y1'), 'b@pgtap.test', 'viewer') $$, 'P0001', 'invalid_state', 'closed の年度には招待できない');
+select tests.logout();
+select tests.set_scenario('requesting');
+
+-- ================================================================ accept_my_invitations
+select tests.login_anon();
+select throws_ok($$ select public.accept_my_invitations() $$, '42501', null, 'anon は呼べない');
+select tests.logout();
+select tests.login_as('late');
+select is(public.accept_my_invitations(), 0, '未確認なら accept_my_invitations も0件');
+select tests.logout();
+update auth.users set email_confirmed_at = now() where id = tests.id('late');
+select tests.login_as('late');
+select is(public.accept_my_invitations(), 1, '確認済みになれば、未使用の招待を受け入れる');
+select is(public.accept_my_invitations(), 0, '受け入れた招待はもう受け入れない');
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('late')), 'viewer'::public.app_role,
+  '自分のロールを読める');
+select tests.logout();
+-- closed の年度の招待は受け入れない
+insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'outsider@pgtap.test', 'staff');
+update public.years set status = 'closed' where id = tests.id('Y2');
+select tests.login_as('outsider');
+select is(public.accept_my_invitations(), 0, 'closed の年度の招待は受け入れない');
+select tests.logout();
+update public.years set status = 'preparing' where id = tests.id('Y2');
+select tests.login_as('outsider');
+select is(public.accept_my_invitations(), 1, '年度が開いていれば受け入れる（invite と初回ログインの行き違いを拾う）');
+select tests.logout();
+select is((select role from public.year_roles where year_id = tests.id('Y2') and user_id = tests.id('outsider')), 'staff'::public.app_role,
+  'outsider は Y2 の staff');
+
+-- ================================================================ set_role
+select tests.login_as('staff');
+select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), 'staff') $$, 'P0001', 'forbidden', 'staff はロールを変えられない');
+select tests.logout();
+select tests.login_as('admin2');
+select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), 'staff') $$, 'P0001', 'forbidden', '別の年度の admin は変えられない');
+select tests.logout();
+select tests.login_as('admin');
+select throws_ok($$ select public.set_role(tests.id('Y1'), gen_random_uuid(), 'staff') $$, 'P0001', 'not_found', '存在しないユーザーは not_found');
+select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('admin'), 'staff') $$, 'P0001', 'invalid_state', '最後の admin を降格できない');
+select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('admin'), null) $$, 'P0001', 'invalid_state', '最後の admin を外せない');
+select throws_ok(format($$ select public.set_role(%L, %L, 'staff', %L) $$, tests.id('Y1'), tests.id('late'), repeat('x', 501)), 'P0001', 'invalid_input', '理由は 500 字まで');
+select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), 'staff', '手伝い') $$, 'ロールを変える');
+select tests.logout();
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('late')), 'staff'::public.app_role, 'viewer → staff');
+select is((select reason from public.audit_logs where table_name = 'year_roles' and row_pk ->> 'user_id' = tests.id('late')::text order by id desc limit 1),
+  '手伝い', 'ロールの変更の理由が監査に残る');
+select tests.login_as('admin');
+select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), 'admin') $$, '2人目の admin');
+select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('late'), null) $$, '最後でない admin は外せる');
+select tests.logout();
+select is((select count(*)::int from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('late')), 0, '外した');
+-- closed：外すのはできる、付けるのはできない
+select tests.set_scenario('closed');
+select tests.login_as('admin');
+select throws_ok($$ select public.set_role(tests.id('Y1'), tests.id('outsider'), 'staff') $$, 'P0001', 'invalid_state', 'closed ではロールを付け替えられない');
+select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('outsider'), null, '卒業') $$, 'closed でもロールは外せる');
+select tests.logout();
+select tests.set_scenario('requesting');
+
+-- ================================================================ revoke_invitation
+select tests.login_as('staff');
+select throws_ok($$ select public.revoke_invitation((select id from public.invitations where email = 'someone@pgtap.test')) $$,
+  'P0001', 'forbidden', 'staff は招待を取り消せない（自分では見えない招待でも forbidden）');
+select tests.logout();
+select tests.login_as('admin2');
+select throws_ok(format($$ select public.revoke_invitation(%L) $$, (select id from public.invitations where email = 'someone@pgtap.test')),
+  'P0001', 'forbidden', '別の年度の admin は取り消せない');
+select tests.logout();
+select tests.login_as('admin');
+select throws_ok($$ select public.revoke_invitation(gen_random_uuid()) $$, 'P0001', 'forbidden', '存在しない招待は forbidden');
+select throws_ok($$ select public.revoke_invitation((select id from public.invitations where email = 'viewer@pgtap.test')) $$,
+  'P0001', 'invalid_state', '使用済みの招待は取り消せない');
+select lives_ok($$ select public.revoke_invitation((select id from public.invitations where email = 'someone@pgtap.test')) $$, '未使用の招待を取り消す');
+select is((select count(*)::int from public.invitations where email = 'someone@pgtap.test'), 0, '取り消した招待は消える');
+select tests.logout();
+
+-- ================================================================ remove_group_member
+insert into public.invitations (year_id, email, group_id, used_at) values (tests.id('Y1'), 'rep2@pgtap.test', tests.id('G2'), now());
+select tests.login_as('rep2');
+select is((select count(*)::int from public.invitations), 1, '団体代表は自分あての招待を読める');
+select throws_ok($$ select public.remove_group_member(tests.id('G1'), tests.id('rep'), null) $$, 'P0001', 'forbidden', '団体代表は他の代表を外せない');
+select tests.logout();
+select tests.login_as('admin2');
+select throws_ok($$ select public.remove_group_member(tests.id('G2'), tests.id('rep2'), null) $$, 'P0001', 'forbidden', '別の年度の admin は外せない');
+select tests.logout();
+select tests.login_as('admin');
+select throws_ok($$ select public.remove_group_member(gen_random_uuid(), tests.id('rep2'), null) $$, 'P0001', 'forbidden', '存在しない団体は forbidden');
+select throws_ok($$ select public.remove_group_member(tests.id('G2'), tests.id('rep'), null) $$, 'P0001', 'not_found', '代表でない人は not_found');
+select lives_ok($$ select public.remove_group_member(tests.id('G2'), tests.id('rep2'), '交代') $$, '団体代表を外す');
+select tests.logout();
+select tests.login_as('rep2');
+select is((select count(*)::int from public.invitations), 0, '外された人は自分あての使用済みの招待も読めない');
+select is((select count(*)::int from public.groups), 0, '外された人は団体も読めない');
+select tests.logout();
+select tests.set_scenario('closed');
+select tests.login_as('admin');
+select lives_ok($$ select public.remove_group_member(tests.id('G1'), tests.id('rep'), '卒業') $$, 'closed の年度でも団体代表を外せる');
+select tests.logout();
+
+select * from finish();
+rollback;

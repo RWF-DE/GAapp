@@ -1,7 +1,8 @@
 -- テストの補助（T02・T03 で共有）。各テストファイルの begin; の直後に `\ir _helpers/personas.psql` で読み込む。
 -- 拡張子を .sql にしないので、pg_prove はテストとして実行しない。
--- T02 のテストはポリシーがないので、ロールは切り替えず、tests.act_as() で auth.uid() だけを変える。
--- login_as() / try_cell() は T03（ポリシーを入れた後）の権限表のテストで使う。
+-- T02 のテスト（001・002）は、ロールを切り替えず、tests.act_as() で auth.uid() だけを変える（postgres のまま。RLS を通らない）。
+-- T03 のテスト（010〜023）は、tests.login_as() で authenticated に切り替え、ポリシーと grant を通して確かめる。
+-- tests.try_cell() は権限表のセルを副トランザクションの中で試し、結果を返して取り消す（011）。
 create schema tests;
 grant usage on schema tests to authenticated, anon;
 
