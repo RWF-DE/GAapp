@@ -1,7 +1,7 @@
 // 様式のテスト（builder で作る小さな行。allocator は使わない）
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FixtureBuilder, toFixedRow } from '@gaapp/shared/testing';
 import { scenario } from './testing/scenario';
 import {
@@ -14,6 +14,7 @@ import {
   type ExportRow,
   type SheetModel,
 } from './index';
+import { EMAIL_REDACTED } from './json';
 
 const sheet = (sheets: SheetModel[], name: string) => sheets.find((s) => s.name === name)!;
 const val = (c: unknown) => (c !== null && typeof c === 'object' ? (c as { result: unknown }).result : c);
@@ -147,12 +148,29 @@ describe('団体名の確認と出力', () => {
     expect(c.result).toBe(5);
   });
 
-  it('同じ入力なら同じバイト列', async () => {
+  it('同じ入力なら同じバイト列（zip の日付は時刻で変わるので、時刻を固定して2回出力する）', async () => {
     const { data, rows } = scenario();
     const g = new Date('2026-10-29T00:00:00Z');
-    const a = await exportAllocationXlsx({ yearLabel: 'R8', data, rows, generatedAt: g });
-    const b = await exportAllocationXlsx({ yearLabel: 'R8', data, rows: [...rows], generatedAt: g });
-    expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
+    // ExcelJS は zip の各エントリに「その時点の時刻」を入れる（DOS 時刻は2秒単位）。Date だけ止めて、2秒の境目をまたがないようにする
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-29T03:00:00Z'));
+      const a = await exportAllocationXlsx({ yearLabel: 'R8', data, rows, generatedAt: g });
+      vi.setSystemTime(new Date('2026-10-29T03:00:05Z'));
+      const b = await exportAllocationXlsx({ yearLabel: 'R8', data, rows: [...rows], generatedAt: g });
+      // 時刻が違っても、zip の中身（各 XML）は同じ
+      const entries = async (bytes: Uint8Array) => {
+        const zip = await JSZip.loadAsync(bytes);
+        return Promise.all(Object.keys(zip.files).sort().map(async (n) => [n, await zip.files[n]!.async('string')] as const));
+      };
+      expect(await entries(b)).toEqual(await entries(a));
+      // 同じ時刻なら、バイト列まで同じ
+      vi.setSystemTime(new Date('2026-10-29T03:00:00Z'));
+      const c = await exportAllocationXlsx({ yearLabel: 'R8', data, rows: [...rows], generatedAt: g });
+      expect(Buffer.from(c).equals(Buffer.from(a))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -183,8 +201,24 @@ describe('年度データ（JSON）', () => {
     expect(doc.schemaVersion).toBe(1);
     expect(doc.allocations).toHaveLength(rows.length);
     expect(doc.allocations[0]).toMatchObject({ origin: 'auto', pinned: true });
+    expect(doc.allocations[0].note).toBe(`連絡は ${EMAIL_REDACTED} まで`);
     expect(Object.keys(doc)).toEqual([
       'schemaVersion', 'yearLabel', 'items', 'rooms', 'groups', 'stocks', 'requests', 'rules', 'consents', 'distanceOverrides', 'allocations',
+    ]);
+  });
+
+  it('改行・タブ・制御文字の直後にメールアドレスがあっても、JSON として読め、@ を含まない', () => {
+    const { data, rows } = scenario();
+    const notes = ['連絡先:\ntaro@example.test', '連絡先:\ttaro@example.test', '連絡先:\rtaro@example.test', '連絡先:\u0001taro@example.test'];
+    const stored = notes.map((note, i) => ({ ...toFixedRow(rows[0]!, i + 1), note }));
+    const json = exportYearJson({ yearLabel: 'R8', data, rows: stored });
+    expect(json).not.toMatch(/@/);
+    const doc = JSON.parse(json);
+    expect(doc.allocations.map((a: { note: string }) => a.note)).toEqual([
+      `連絡先:\n${EMAIL_REDACTED}`,
+      `連絡先:\t${EMAIL_REDACTED}`,
+      `連絡先:\r${EMAIL_REDACTED}`,
+      `連絡先:\u0001${EMAIL_REDACTED}`,
     ]);
   });
 });

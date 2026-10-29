@@ -34,5 +34,6 @@ export function exportYearJson(input: YearExport): string {
       note: r.note ?? null,
     })),
   };
-  return JSON.stringify(doc, null, 2).replace(EMAIL, EMAIL_REDACTED);
+  // 文字列にしてから置換すると、\n などのエスケープの途中から一致して不正な JSON になる。値ごとに先に伏せる。
+  return JSON.stringify(doc, (_k, v: unknown) => (typeof v === 'string' ? v.replace(EMAIL, EMAIL_REDACTED) : v), 2);
 }
