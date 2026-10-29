@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(96);
+select plan(97);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
 -- provider が google なら Google の identity、email なら email_verified: true の email の identity
@@ -296,12 +296,15 @@ select tests.login_as('sw_email');
 select is(public.accept_my_invitations(), 0, 'email_verified が真偽値でなければ（文字列の "true" も）受け入れない');
 select tests.logout();
 -- 本人のメールでも、メールの変更の途中（email_change が空でない）は受け入れない
-insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'pending@pgtap.test', 'viewer');
+-- （identity を作った時点で招待を受け入れるトリガー（0007）があるので、ユーザーを作って email_change を入れてから招待を作る）
 select tests.user_with_identity('pending', 'google');
 update auth.users set email_change = 'other@pgtap.test' where id = tests.id('pending');
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'pending@pgtap.test', 'viewer');
 select tests.login_as('pending');
 select is(public.accept_my_invitations(), 0, 'メールの変更の途中なら受け入れない');
 select tests.logout();
+select is((select count(*)::int from public.invitations where email = 'pending@pgtap.test' and used_at is null), 1,
+  'メールの変更の途中は、招待が未使用のまま');
 select tests.login_as('admin');
 select is((public.invite(tests.id('Y1'), 'pending@pgtap.test', 'viewer') ->> 'applied')::boolean, false,
   'invite も、メールの変更の途中のアカウントにはその場で付けない');
