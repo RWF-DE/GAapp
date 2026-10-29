@@ -68,7 +68,7 @@ GAapp/
   - **Private vulnerability reporting**（脆弱性を公開の issue ではなく非公開で受け取る。[SECURITY.md](SECURITY.md)）
   - **Dependabot alerts**。Dependabot の version updates（`.github/dependabot.yml`）は入れない（リリースから 7 日たたない版を入れない pnpm の `minimumReleaseAge` と合わないため）。
 - Settings → Actions → General で、次にする。
-  - Fork pull request workflows from outside collaborators を **Require approval for all external contributors** にする（外の人の PR のワークフローは、管理者が承認してから動く）。
+  - Approval for running fork pull request workflows from contributors を **Require approval for all external contributors** にする（外の人の PR のワークフローは、管理者が承認してから動く）。
   - Workflow permissions を **Read repository contents and packages permissions** にし、**Allow GitHub Actions to create and approve pull requests** を外す。
 - 2 の環境（`production`・`github-pages`）と 3 のルールセットを、まだなら設定する。
 
