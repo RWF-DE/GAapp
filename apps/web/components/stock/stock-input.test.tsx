@@ -299,6 +299,30 @@ describe('StockInput：ほかの人の保存', () => {
     expect(upserts()).toHaveLength(0);
   });
 
+  it('ダイアログの「読み直す」で、「前回の入力」もほかの人の名前と日時になる', async () => {
+    serve({
+      stocks: [stock(DESK, 10, 'u-desk', null), stock(CHAIR, 20, 'u-chair', null)],
+      stocksLater: [
+        { ...stock(DESK, 7, 'u-other', id(77)), counted_at: '2026-10-28T03:15:00+00:00' },
+        stock(CHAIR, 20, 'u-chair', null),
+      ],
+    });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    await waitFor(() => expect(screen.getByTestId('last-counted').textContent).toContain('名前を表示できません'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const dialog = await screen.findByTestId('stock-conflict-dialog');
+    await user.click(within(dialog).getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('7'));
+    await waitFor(() => expect(screen.getByTestId('last-counted').textContent).toContain('テスト管理者'));
+    const lastCounted = screen.getByTestId('last-counted').textContent;
+    expect(lastCounted).toContain('2026/10/28 12:15');
+    expect(lastCounted).not.toContain('名前を表示できません');
+    expect(upserts()).toHaveLength(0);
+  });
+
   it('ダイアログを開くとフォーカスが中（やめる）へ移り、やめると「保存」に戻る（送らない）', async () => {
     serve({
       stocks: [stock(DESK, 10), stock(CHAIR, 20)],

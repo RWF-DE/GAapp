@@ -375,10 +375,16 @@ export function StockInput({
     toast.info('ほかの人が保存した数を読み直しました');
   };
 
+  /** ダイアログの「読み直す」。保存の直前に読み直した行はキャッシュに入っていないので、ここで入れる
+   *  （「前回の入力」はキャッシュの行で出す）。一覧（数えたか）も古いので、保存の後と同じく読み直させる */
   const reloadLatest = () => {
     if (!conflict) return;
-    adopt(conflict.latest);
+    const rows = conflict.latest;
+    adopt(rows);
+    setSeen(rows);
     setConflict(null);
+    queryClient.setQueryData(queryKeys.yearPart(yearId, 'stocks', 'room', roomId), rows);
+    for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
   };
 
   useEffect(() => {

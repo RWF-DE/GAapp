@@ -102,6 +102,8 @@ test.describe('T10 部員', () => {
       await page.setViewportSize(MOBILE);
       await page.goto(`/stock/?room=${roomA}`);
       await waitInput(page, 10);
+      // シナリオの行は postgres が入れたので数えた人がいない（読めない）
+      await expect(page.getByTestId('last-counted')).toContainText('名前を表示できません');
 
       // 管理者が別の端末で保存した（数えた人・日時も DB の値として入れる）
       await sql('update public.stocks set count = 7, counted_by = $3, counted_at = now() where year_id = $1 and room_id = $2 and item_id = $4', [
@@ -128,6 +130,9 @@ test.describe('T10 部員', () => {
       await dialog.getByRole('button', { name: '読み直す' }).click();
       await waitInput(page, 7);
       expect((await roomStocks(s.yearId, roomA)).get(desk)!.counted_by).toBe(SEED_USER_IDS.admin);
+      // 「前回の入力」も読み直した行（管理者の保存）で出す
+      await expect(page.getByTestId('last-counted')).toContainText('テスト管理者');
+      await expect(page.getByTestId('last-counted')).not.toContainText('名前を表示できません');
 
       // もう一度ほかの人が保存 → 今度は上書きする
       await plus(page, '机(木)').click();
