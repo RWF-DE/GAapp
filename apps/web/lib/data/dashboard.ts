@@ -264,6 +264,13 @@ export function repGroupCards(src: RepHomeSource, status: YearStatus): RepGroupC
   }));
 }
 
+/** 団体代表が申請を書けるか（02 の「締切前」と同じ：requesting・受付開始が null か過ぎた・締切の前） */
+export function requestWindowOpen(year: Pick<Snapshot['year'], 'status' | 'request_open_at' | 'request_close_at'>, now: number): boolean {
+  if (year.status !== 'requesting' || !year.request_close_at) return false;
+  if (year.request_open_at && new Date(year.request_open_at).getTime() > now) return false;
+  return new Date(year.request_close_at).getTime() > now;
+}
+
 /**
  * 団体代表のホームに要る行（自団体の提出と了承。RLS で自団体の行だけが返る）。
  * 年度の行（締切）は useYearRow で読む。

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { YearStatus } from '@/lib/auth/membership';
 import type { AllocationDbRow, ConsentDbRow } from '@/lib/db/types';
 import { FIXTURE_UPDATED_AT, fixtureSnapshot } from '@/lib/testing/fixture-rows';
-import { DASHBOARD_LIST_LIMIT, repGroupCards, summarizeDashboard, topIssueCodes } from './dashboard';
+import { DASHBOARD_LIST_LIMIT, repGroupCards, requestWindowOpen, summarizeDashboard, topIssueCodes } from './dashboard';
 import type { Snapshot } from './snapshot';
 import { runValidation, type ValidationResult } from './validation';
 import { toStoredRows, toYearData } from './year-data';
@@ -240,5 +240,18 @@ describe('repGroupCards', () => {
     ]);
     expect(repGroupCards({ groups, submissions: [], consents: [] }, 'confirmed').every((c) => c.final)).toBe(true);
     expect(repGroupCards({ groups, submissions: [], consents: [] }, 'closed').every((c) => c.final)).toBe(true);
+  });
+});
+
+describe('requestWindowOpen', () => {
+  const now = Date.parse('2026-10-05T00:00:00Z');
+  const y = (status: YearStatus, open: string | null, close: string | null) => ({ status, request_open_at: open, request_close_at: close });
+  it('受付中・受付開始が null か過ぎた・締切の前のときだけ真', () => {
+    expect(requestWindowOpen(y('requesting', null, '2026-10-06T00:00:00Z'), now)).toBe(true);
+    expect(requestWindowOpen(y('requesting', '2026-10-01T00:00:00Z', '2026-10-06T00:00:00Z'), now)).toBe(true);
+    expect(requestWindowOpen(y('requesting', '2026-10-05T00:00:01Z', '2026-10-06T00:00:00Z'), now)).toBe(false);
+    expect(requestWindowOpen(y('requesting', null, '2026-10-05T00:00:00Z'), now)).toBe(false);
+    expect(requestWindowOpen(y('requesting', null, null), now)).toBe(false);
+    expect(requestWindowOpen(y('allocating', null, '2026-10-06T00:00:00Z'), now)).toBe(false);
   });
 });
