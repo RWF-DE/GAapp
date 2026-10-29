@@ -236,6 +236,7 @@ function GroupForm({
     };
     return base
       ? {
+          target: `id:${base.id}`,
           write: () => updateGroup(base, values),
           reread: () => readGroup(base.id),
           matches: (row) => matchesWritten(row, values),
@@ -244,6 +245,7 @@ function GroupForm({
           onSaved,
         }
       : {
+          target: `name:${values.name}`,
           write: () => insertGroup(year.id, values),
           reread: () => readGroupByName(year.id, values.name),
           matches: (row) => matchesWritten(row, { ...values, year_id: year.id }),

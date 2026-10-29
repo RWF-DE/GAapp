@@ -199,6 +199,7 @@ function DistanceForm({ row, buildings, onDone }: { row: DistanceOverrideRow | n
     // 建物の組は DB が向きをそろえる（D-15）ので、読み直しと比べるのはその向きの組
     const pair = base ? { building_a: base.building_a, building_b: base.building_b } : distancePair(v.building_a, v.building_b);
     return {
+      target: keyOf(pair),
       write: () => (base ? updateDistance(base, v.cost) : insertDistance(v)),
       reread: () => readDistance(pair.building_a, pair.building_b),
       matches: (got) => matchesWritten(got, { ...pair, cost: v.cost }),

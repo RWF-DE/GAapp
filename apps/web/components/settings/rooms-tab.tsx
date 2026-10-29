@@ -275,6 +275,7 @@ function RoomForm({ room, onDone }: { room: RoomRow | null; onDone: () => Promis
     };
     return base
       ? {
+          target: `id:${base.id}`,
           write: () => updateRoom(base, values),
           reread: () => readRoom(base.id),
           matches: (row) => matchesWritten(row, values),
@@ -283,6 +284,7 @@ function RoomForm({ room, onDone }: { room: RoomRow | null; onDone: () => Promis
           onSaved,
         }
       : {
+          target: `name:${values.name}`,
           write: () => insertRoom(values),
           reread: () => readRoomByName(values.name),
           matches: (row) => matchesWritten(row, values),
@@ -394,6 +396,7 @@ function UsableDialog({
   const callFor = (u: boolean, n: string | null): LockedSaveRun<RoomYearRow> => ({
     // 楽観ロック（T09a）：入力の元の room_years.updated_at（行がなければ null）で保存する。応答が届かなかったとき・
     // conflict・not_found のときは (year_id, room_id) で読み直して決める（2.6 の (B1)）
+    target: room.id,
     write: () => setRoomUsable(year.id, room.id, baseVersion, u, n),
     reread: () => readRoomYear(year.id, room.id),
     matches: (row) => roomYearMatches(row, u, n),

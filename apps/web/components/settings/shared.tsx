@@ -161,7 +161,16 @@ export function useWriteErrorHandler(): (e: unknown, opts?: WriteErrorOptions) =
 /** 止められた後に読み直せなかったときの文言（2.6 の (B1) の 3。「読み直しました」とは言わない） */
 export const LOCKED_UNREAD_MESSAGE = 'ほかの人が変えた可能性がありますが、読み直せませんでした';
 
+/** 「読み直す」で、いまの入力が書く行に止めるものがなかったとき（書き込みの後でない読み直しの not-saved）の文言 */
+export const LOCKED_REREAD_NOT_SAVED_MESSAGE = '読み直しました。まだ保存されていません（もう一度「保存」を押してください）';
+
 export interface LockedSaveRun<Row extends { updated_at: string }> extends LockedWriteCall<Row> {
+  /**
+   * reread が読む行（更新は主キー、insert は一意のキー〔団体・場所の名前、品目のコード、距離の建物の組〕）を表す文字列。
+   * 止められて読み直せなかった後の「読み直す」で、いまの入力が止められた書き込みと同じ行を書くかを見る（違えば、止められた
+   * 結果はいまの入力に当たらない）
+   */
+  target: string;
   /**
    * 保存できたとき（判定が saved のときも。earlier が真なら「保存されていました」）。呼ぶ側は文言を出し、閉じて関係するクエリを
    * 読み直す。送った応答のほか、止められて読み直せなかった後の「読み直す」で読んだ行が入力と同じだったときにも呼ぶ
@@ -184,7 +193,8 @@ export interface LockedSaveRun<Row extends { updated_at: string }> extends Locke
  * 送った結果も、止められて読み直せなかった後の「読み直す」で読んだ行も、同じ判定（settleLockedCall → settleLockedWrite）を
  * 通し、同じ扱い（handle）にする：done は onSaved（earlier なら「保存されていました」）、changed は conflict の文言を出して
  * データを読み直し、判定が changed なら onRebase で入力の元を付け替える。unknown は unknownOutcomeMessage()。
- * unread は notice（読み直すボタンつき）を出す。確かめるための状態は持たず、保存のボタンは押せるまま（次の保存はまた同じ道を通る）。
+ * unread は notice（読み直すボタンつき）を出す。not-saved（「読み直す」で、いまの入力が止められたときと別の行を書き、その行に
+ * 止めるものがない）は「まだ保存されていません」と出す。確かめるための状態は持たず、保存のボタンは押せるまま（次の保存はまた同じ道を通る）。
  * current は、いまの入力で作った呼び出し（入力が正しくなければ null）。「読み直す」で読んだ行は、送った値ではなくいまの入力と
  * 比べる（送った後に入力を変えていれば、前の送信が通っていてもほかの人の変更に見える。2.6 の (B1)）。
  */
@@ -227,6 +237,11 @@ export function useLockedSave<Row extends { updated_at: string }>(opts: {
           toast.error(LOCKED_UNREAD_MESSAGE);
           setUnread({ call, error: r.error });
           break;
+        case 'not-saved':
+          // いまの入力が書く行を止めるものはない（入力を残し、次の保存はふつうに送る）。一覧などは読み直す
+          toast.info(LOCKED_REREAD_NOT_SAVED_MESSAGE);
+          await invalidate();
+          break;
       }
     },
     [context, dataKeys, invalidate, onError],
@@ -242,13 +257,16 @@ export function useLockedSave<Row extends { updated_at: string }>(opts: {
     [handle],
   );
 
-  // 止められて読み直せなかった後の「読み直す」：いまの入力で、送った後と同じ判定を通す（描画ごとに作り直すので current はいまのもの）
+  // 止められて読み直せなかった後の「読み直す」：いまの入力（描画ごとに作り直すので current はいまのもの）で、送った後と同じ判定を通す。
+  // いまの入力が止められた書き込みと同じ行を書くなら、その行を読み直していまの入力と比べ、止められたときのエラーで決める。
+  // 別の行を書く（insert で一意のキーを変えた）なら、止められた結果はいまの入力に当たらないので、いまの入力が書く行を
+  // 書き込みの後でない読み直し（settleLockedCall の e が null）で決める（行がなければ not-saved。重複とは言わない）
   const reload = async () => {
     if (!unread) return;
     const call = opts.current() ?? { ...unread.call, matches: () => false };
     setReloading(true);
     try {
-      const r = await settleLockedCall(call, unread.error);
+      const r = await settleLockedCall(call, call.target === unread.call.target ? unread.error : null);
       // また読み直せなければ handle が notice を出し直す（いまの入力の呼び出しで）
       if (r.kind !== 'unread') setUnread(null);
       await handle(call, r);

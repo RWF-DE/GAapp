@@ -571,6 +571,11 @@ export type LockedWriteResult<Row> =
   | { kind: 'unknown'; error: unknown }
   /** 止められたが、読み直せなかった（入力を残し、「読み直せませんでした」と読み直すボタン） */
   | { kind: 'unread'; error: unknown }
+  /**
+   * 書き込みの後でない読み直し（settleLockedCall の e が null）で、判定が not-saved（いまの入力が書く行は入力の元のまま。
+   * insert ならまだ行がない）。いまの入力を止めるものはないので、conflict にしない（入力を残し、次の保存はふつうに送る）
+   */
+  | { kind: 'not-saved' }
   /** それ以外の失敗（forbidden・input など。2.5 の表のとおり） */
   | { kind: 'failed'; error: unknown };
 
@@ -612,15 +617,20 @@ export function lockedRowOutcome<Row extends { updated_at: string }>(
 
 /**
  * 応答が届かなかった（isUnknownOutcome）か止められた（isLockRejection）書き込み e の後に、対象の行を読み直して
- * settleLockedWrite で決める（runLockedWrite の 3。止められて読み直せなかった後の「読み直す」もここを通す）。
+ * settleLockedWrite で決める（runLockedWrite の 3）。止められて読み直せなかった後の「読み直す」もここを通す。
  * saved → done（earlier）。応答が届かなかった後の not-saved・unread → unknown。止められた後の unread → unread。
  * それ以外（changed と、止められた後の not-saved）→ changed（outcome に判定を残す）。
+ *
+ * e が null のときは、書き込みの後でない読み直し（止められて読み直せなかった後に、insert の一意のキーを変えてから「読み直す」。
+ * 止められた結果は前のキーの行のもので、いまの入力には当たらない）。同じ判定で、saved → done（earlier）、unread → unread、
+ * not-saved → not-saved（conflict にしない）、changed → changed（conflict は、応答が届かなかったときと同じく作ったもの）。
  */
 export async function settleLockedCall<Row extends { updated_at: string }>(
   call: LockedSettleCall<Row>,
   e: unknown,
 ): Promise<Exclude<LockedWriteResult<Row>, { kind: 'failed' }>> {
-  const unknown = isUnknownOutcome(e);
+  const written = e !== null;
+  const unknown = written && isUnknownOutcome(e);
   let fresh: Row | null = null;
   const outcome = await settleLockedWrite<Row>({
     reread: async () => (fresh = await call.reread()),
@@ -631,9 +641,10 @@ export async function settleLockedCall<Row extends { updated_at: string }>(
   if (outcome === 'saved') return { kind: 'done', earlier: true };
   if (unknown && (outcome === 'not-saved' || outcome === 'unread')) return { kind: 'unknown', error: e };
   if (outcome === 'unread') return { kind: 'unread', error: e };
+  if (!written && outcome === 'not-saved') return { kind: 'not-saved' };
   const row = fresh as Row | null;
   let conflict: AppError;
-  if (!unknown) conflict = toAppError(e);
+  if (written && !unknown) conflict = toAppError(e);
   else if (row === null) conflict = appError('not_found', 'lock_missing');
   else if (call.insert) conflict = new AppError({ kind: 'conflict', code: '23505', reason: null, details: null, issues: [], status: null });
   else conflict = appError('conflict', 'lock_conflict');

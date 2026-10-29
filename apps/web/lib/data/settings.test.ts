@@ -570,6 +570,18 @@ describe('runLockedWrite（2.6 の (B1) の分かれ道）', () => {
     it('前に送った値の行でも、いまの入力と違えば changed（ほかの人の変更に見える）', async () => {
       expect(await settleLockedCall<Row>(call({ name: '前', updated_at: T1 }, '今'), conflict)).toMatchObject({ kind: 'changed', outcome: 'changed' });
     });
+
+    it('書き込みの後でない読み直し（e が null。insert のキーを変えてから「読み直す」）：行がない → not-saved（conflict にしない）、別の値の行 → 23505、同じ → done、読めない → unread', async () => {
+      const insert = (reread: Row | null | Error) => ({ ...call(reread), baseVersion: null, insert: true });
+      expect(await settleLockedCall<Row>(insert(null), null)).toEqual({ kind: 'not-saved' });
+      expect(await settleLockedCall<Row>(insert({ name: '他', updated_at: T1 }), null)).toMatchObject({
+        kind: 'changed',
+        outcome: 'changed',
+        conflict: { info: { kind: 'conflict', code: '23505' } },
+      });
+      expect(await settleLockedCall<Row>(insert({ name: '新', updated_at: T1 }), null)).toEqual({ kind: 'done', earlier: true });
+      expect(await settleLockedCall<Row>(insert(network()), null)).toEqual({ kind: 'unread', error: null });
+    });
   });
 
   describe('lockedRowOutcome（裏の読み直しで受け取った行の判定）', () => {

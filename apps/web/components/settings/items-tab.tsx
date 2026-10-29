@@ -131,6 +131,7 @@ function ItemForm({ item, onDone }: { item: ItemRow | null; onDone: () => Promis
     };
     return base
       ? {
+          target: `id:${base.id}`,
           write: () => updateItem(base, patch),
           reread: () => readItem(base.id),
           matches: (row) => matchesWritten(row, patch),
@@ -139,6 +140,7 @@ function ItemForm({ item, onDone }: { item: ItemRow | null; onDone: () => Promis
           onSaved,
         }
       : {
+          target: `code:${values.code}`,
           write: () => insertItem(values),
           reread: () => readItemByCode(values.code),
           matches: (row) => matchesWritten(row, values),

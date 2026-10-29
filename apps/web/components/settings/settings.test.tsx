@@ -7,12 +7,13 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { Membership } from '@/lib/auth/membership';
 import type { RoomRow, RoomYearRow, YearRow } from '@/lib/db/types';
 import { appError, unknownOutcomeMessage } from '@/lib/errors';
+import { DistanceTab } from './distance-tab';
 import { fakeAuth, sourceOf } from '@/lib/testing/fake-auth';
 import { TestProviders } from '@/lib/testing/providers';
 import { GroupsTab } from './groups-tab';
 import { ItemsTab } from './items-tab';
 import { RoomsTab } from './rooms-tab';
-import { SettingsContext, type SettingsContextValue } from './shared';
+import { LOCKED_REREAD_NOT_SAVED_MESSAGE, LOCKED_UNREAD_MESSAGE, SettingsContext, type SettingsContextValue } from './shared';
 
 vi.mock('@/lib/supabase/client', async () => (await import('@/lib/testing/fake-auth')).supabaseClientModule);
 vi.mock('@/lib/auth/load-membership', async () => (await import('@/lib/testing/fake-auth')).loadMembershipModule);
@@ -22,7 +23,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn(), refresh: vi.fn() }),
 }));
 
-const toasts = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
+const toasts = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }));
 vi.mock('sonner', () => ({ toast: toasts }));
 
 const data = vi.hoisted(() => ({
@@ -45,6 +46,10 @@ const data = vi.hoisted(() => ({
   updateItem: vi.fn(),
   readItem: vi.fn(),
   readItemByCode: vi.fn(),
+  fetchDistanceOverrides: vi.fn(),
+  insertDistance: vi.fn(),
+  updateDistance: vi.fn(),
+  readDistance: vi.fn(),
 }));
 vi.mock('@/lib/data/settings', async (orig) => ({ ...(await orig<typeof import('@/lib/data/settings')>()), ...data }));
 
@@ -125,7 +130,7 @@ beforeEach(() => {
     years: [{ id: 'y9', label: 'R9', status: 'preparing', festival_start: '2027-10-16' }],
     roles: [{ year_id: 'y9', role: 'admin' }],
   });
-  for (const f of [...Object.values(data), ...Object.values(roomYearsApi), toasts.success, toasts.error]) f.mockReset();
+  for (const f of [...Object.values(data), ...Object.values(roomYearsApi), toasts.success, toasts.error, toasts.info]) f.mockReset();
   data.fetchRooms.mockResolvedValue([room]);
   data.fetchAllocationSources.mockResolvedValue({ all: new Map(), fixed: new Map() });
 });
@@ -480,6 +485,119 @@ describe('場所・団体・品目のフォーム（updateWithLock・一意の�
     expect(data.readItemByCode).toHaveBeenCalledWith('e2e_desk');
     expect(toasts.error.mock.calls.flat()).not.toContain('通信できませんでした。電波の良い所でもう一度');
     expect((within(form).getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // 止められて読み直せなかった後に、insert の一意のキーを変えてから「読み直す」：止められた結果（23505）は前のキーの行のもので、
+  // いまの入力には当たらない。いまの入力が書く行（新しいキー）を読み直して、送った後と同じ判定にする（書き込みの後ではない読み直し）
+  const DUP = '同じものがすでにあります（ほかの人が先に足した可能性があります）';
+  const REREAD_NOT_SAVED = LOCKED_REREAD_NOT_SAVED_MESSAGE;
+  const otherA = { id: 'g2', year_id: 'y9', name: '企業A', display_name: null, aliases: [], category: 'stall', is_food: false, location_room_id: null, sort_order: 0, updated_at: T1 };
+
+  async function groupRejectedThenRename(user: ReturnType<typeof userEvent.setup>) {
+    renderWith(<GroupsTab />);
+    await user.click(await screen.findByTestId('group-add'));
+    const form = await screen.findByTestId('group-form');
+    await user.type(within(form).getByLabelText('団体名'), '企業A');
+    await user.click(within(form).getByRole('button', { name: '保存' }));
+    const unread = await within(form).findByTestId('locked-save-unread');
+    expect(toasts.error.mock.calls).toEqual([[LOCKED_UNREAD_MESSAGE]]);
+    await user.clear(within(form).getByLabelText('団体名'));
+    await user.type(within(form).getByLabelText('団体名'), '企業B');
+    await user.click(within(unread).getByRole('button', { name: '読み直す' }));
+    return form;
+  }
+
+  it('団体の insert：23505 → 読み直せず → 名前を変えて「読み直す」、新しい名前の行がない → 重複と言わず「まだ保存されていません」。次の保存はふつうに送る', async () => {
+    data.fetchGroups.mockResolvedValue([otherA]);
+    data.fetchMembers.mockResolvedValue({ members: [], invitations: [], repCount: new Map() });
+    data.insertGroup.mockRejectedValueOnce({ code: '23505', message: 'duplicate key' }).mockResolvedValue(undefined);
+    data.readGroupByName.mockRejectedValueOnce(network()).mockResolvedValue(null);
+    const user = userEvent.setup();
+    const form = await groupRejectedThenRename(user);
+    await waitFor(() => expect(toasts.info).toHaveBeenCalledWith(REREAD_NOT_SAVED));
+    expect(data.readGroupByName).toHaveBeenLastCalledWith('y9', '企業B');
+    expect(toasts.error.mock.calls).toEqual([[LOCKED_UNREAD_MESSAGE]]);
+    expect(within(form).queryByTestId('locked-save-unread')).toBeNull();
+    expect(within(form).queryByRole('alert')).toBeNull();
+    expect((within(form).getByLabelText('団体名') as HTMLInputElement).value).toBe('企業B');
+    await user.click(within(form).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(screen.queryByTestId('group-form')).toBeNull());
+    expect(data.insertGroup.mock.calls.map((c) => (c[1] as { name: string }).name)).toEqual(['企業A', '企業B']);
+    expect(toasts.success).toHaveBeenCalledWith('「企業B」を足しました');
+  });
+
+  it('団体の insert：名前を変えて「読み直す」と、新しい名前の行が別の値である → その行で決めて「同じものがすでにあります」（前の 23505 を使わない）', async () => {
+    data.fetchGroups.mockResolvedValue([otherA]);
+    data.fetchMembers.mockResolvedValue({ members: [], invitations: [], repCount: new Map() });
+    data.insertGroup.mockRejectedValue({ code: '23505', message: 'duplicate key' });
+    data.readGroupByName.mockRejectedValueOnce(network()).mockResolvedValue({ ...otherA, id: 'g3', name: '企業B', is_food: true });
+    const user = userEvent.setup();
+    const form = await groupRejectedThenRename(user);
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith(DUP));
+    expect(data.readGroupByName).toHaveBeenLastCalledWith('y9', '企業B');
+    expect(toasts.info).not.toHaveBeenCalled();
+    expect(within(form).queryByTestId('locked-save-unread')).toBeNull();
+    expect((within(form).getByLabelText('団体名') as HTMLInputElement).value).toBe('企業B');
+  });
+
+  it('品目の insert：23505 → 読み直せず → コードを変えて「読み直す」、新しいコードの行がない → 重複と言わない', async () => {
+    data.fetchItems.mockResolvedValue([]);
+    data.insertItem.mockRejectedValue({ code: '23505', message: 'duplicate key' });
+    data.readItemByCode.mockRejectedValueOnce(network()).mockResolvedValue(null);
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    await user.click(await screen.findByTestId('item-add'));
+    const form = await screen.findByTestId('item-form');
+    await user.type(within(form).getByLabelText('コード'), 'desk_a');
+    await user.type(within(form).getByLabelText('表示名'), '机');
+    await user.click(within(form).getByRole('button', { name: '保存' }));
+    const unread = await within(form).findByTestId('locked-save-unread');
+    await user.clear(within(form).getByLabelText('コード'));
+    await user.type(within(form).getByLabelText('コード'), 'desk_b');
+    await user.click(within(unread).getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(toasts.info).toHaveBeenCalledWith(REREAD_NOT_SAVED));
+    expect(data.readItemByCode.mock.calls).toEqual([['desk_a'], ['desk_b']]);
+    expect(toasts.error.mock.calls).toEqual([[LOCKED_UNREAD_MESSAGE]]);
+    expect(within(form).queryByTestId('locked-save-unread')).toBeNull();
+  });
+
+  it('品目の insert：コードを変えずに「読み直す」と、行は止められたときのまま別の値 → 今までどおり「同じものがすでにあります」', async () => {
+    data.fetchItems.mockResolvedValue([]);
+    data.insertItem.mockRejectedValue({ code: '23505', message: 'duplicate key' });
+    const theirs = { id: 'i2', code: 'desk_a', name: '長机', aliases: [], requestable_categories: [], sort_order: 0, updated_at: T1 };
+    data.readItemByCode.mockRejectedValueOnce(network()).mockResolvedValue(theirs);
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    await user.click(await screen.findByTestId('item-add'));
+    const form = await screen.findByTestId('item-form');
+    await user.type(within(form).getByLabelText('コード'), 'desk_a');
+    await user.type(within(form).getByLabelText('表示名'), '机');
+    await user.click(within(form).getByRole('button', { name: '保存' }));
+    const unread = await within(form).findByTestId('locked-save-unread');
+    await user.click(within(unread).getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith(DUP));
+    expect(toasts.info).not.toHaveBeenCalled();
+  });
+
+  it('距離の insert：23505 → 読み直せず → 建物の組を変えて「読み直す」、新しい組の行がない → 建物Bの欄に「その組はすでにあります」を出さない', async () => {
+    data.fetchDistanceOverrides.mockResolvedValue([]);
+    data.insertDistance.mockRejectedValue({ code: '23505', message: 'duplicate key' });
+    data.readDistance.mockRejectedValueOnce(network()).mockResolvedValue(null);
+    const user = userEvent.setup();
+    renderWith(<DistanceTab />);
+    await user.click(await screen.findByTestId('distance-add'));
+    const form = await screen.findByTestId('distance-form');
+    await user.type(within(form).getByLabelText('建物A'), 'X');
+    await user.type(within(form).getByLabelText('建物B'), 'Y');
+    await user.click(within(form).getByRole('button', { name: '保存' }));
+    const unread = await within(form).findByTestId('locked-save-unread');
+    await user.clear(within(form).getByLabelText('建物B'));
+    await user.type(within(form).getByLabelText('建物B'), 'Z');
+    await user.click(within(unread).getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(toasts.info).toHaveBeenCalledWith(REREAD_NOT_SAVED));
+    expect(data.readDistance.mock.calls).toEqual([['X', 'Y'], ['X', 'Z']]);
+    expect(within(form).queryByText('その組はすでにあります')).toBeNull();
+    expect(toasts.error.mock.calls).toEqual([[LOCKED_UNREAD_MESSAGE]]);
   });
 });
 
