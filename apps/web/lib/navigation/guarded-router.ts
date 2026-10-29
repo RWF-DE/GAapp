@@ -10,7 +10,8 @@ export interface GuardedRouter {
   /** 未保存の入力があれば確かめてから移る。移ったら true */
   push: (href: string, opts?: { scroll?: boolean }) => Promise<boolean>;
   replace: (href: string, opts?: { scroll?: boolean }) => Promise<boolean>;
-  /** 確かめずに移る（未ログインのときの /login への移動、ログアウトの後など。入力は下書きに残る） */
+  /** 確かめずに移る（もう確かめた後・未ログインのときの /login への移動・ログアウトの後など。入力は下書きに残る） */
+  forcePush: (href: string) => void;
   forceReplace: (href: string) => void;
   refresh: () => void;
 }
@@ -35,6 +36,7 @@ export function useGuardedRouter(): GuardedRouter {
         router.replace(href, opts);
         return true;
       },
+      forcePush: (href) => router.push(href),
       forceReplace: (href) => router.replace(href),
       refresh: () => router.refresh(),
     }),
