@@ -1,6 +1,6 @@
 // T12 ルールのスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep T12` で notes/T12/ に撮る（CI では流さない）。
 // 一覧（PC・スマホ）、?code=S05 で開いた編集のシート、欄の下のエラー、ひな形のメニュー、無効にする確認、有効にできない理由、
-// 空・読み込み中・権限なし・確定中（メモだけ）。
+// 読み直しの失敗（前の一覧を残す帯）、空・読み込み中・権限なし・確定中（メモだけ）。
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
@@ -103,6 +103,24 @@ test.describe('T12 管理者', () => {
       await page.locator(`[data-row-id="${s.ids.rules['S08']}"]`).getByRole('button', { name: 'S08 を編集' }).click();
       await expect(sheet.getByRole('heading', { name: 'ルール S08（残す）を編集' })).toBeVisible();
       await shoot(page, 'T12', 'form-keep-mobile');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T12 読み直しの失敗（前に読んだ一覧を残して帯と toast）', async ({ page }) => {
+    // supabase-js の GET の再試行と React Query の再試行で、失敗が出るまで十数秒かかる
+    test.setTimeout(150_000);
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/');
+      await waitList(page);
+      await page.route('**/rest/v1/rules*', (route: Route) => route.abort('internetdisconnected'));
+      await page.getByRole('button', { name: '読み直す' }).first().click();
+      await expect(page.getByTestId('rules-reload-error')).toBeVisible({ timeout: 90_000 });
+      await expect(page.locator('[data-row-id]').first()).toBeVisible();
+      await shoot(page, 'T12', 'reload-error-pc');
     } finally {
       await s.cleanup();
     }

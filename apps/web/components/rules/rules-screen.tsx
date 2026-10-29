@@ -12,6 +12,7 @@ import { toast } from 'sonner';
 import { RULE_KINDS, type RuleKind } from '@gaapp/shared';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { DataTable } from '@/components/common/data-table';
+import { ErrorBanner } from '@/components/common/error-banner';
 import { PageHeader } from '@/components/common/page-header';
 import { EmptyState, ErrorState, LoadingState, ReadOnlyNotice } from '@/components/states';
 import { Badge } from '@/components/ui/badge';
@@ -66,9 +67,16 @@ export function RulesScreen() {
   const q = useRulesData(yearId);
   const searchParams = useSearchParams();
   const code = parseCodeParam(searchParams.get('code'));
+  // 読んだ後の読み直しの失敗（TanStack Query は前の data を残したまま isError にする）。
+  // 画面を ErrorState に置き換えず（開いているシートの入力を残す。1.3・2.5・2.6）、toast と一覧の上の帯で知らせる
+  const reloadFailed = q.isError && q.data !== undefined;
+  useEffect(() => {
+    if (reloadFailed) toast.error(`${RELOAD_FAILED_MESSAGE}（${messageFor(classifyError(q.error))}）`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 失敗のたびに1回（errorUpdatedAt が変わったとき）だけ知らせる
+  }, [reloadFailed, q.errorUpdatedAt]);
 
   if (!yearId) return <EmptyState title="年度がありません" />;
-  if (q.isError) {
+  if (q.isError && q.data === undefined) {
     return (
       <>
         <PageHeader title="ルール" />
@@ -91,6 +99,7 @@ export function RulesScreen() {
       code={code}
       loadedAt={q.dataUpdatedAt ? new Date(q.dataUpdatedAt) : null}
       reloading={q.isFetching}
+      reloadError={reloadFailed ? q.error : null}
       onReload={() => void q.refetch()}
     />
   );
@@ -101,12 +110,15 @@ function RulesView({
   code,
   loadedAt,
   reloading,
+  reloadError,
   onReload,
 }: {
   data: RulesData;
   code: string | null;
   loadedAt: Date | null;
   reloading: boolean;
+  /** 読み直しの失敗（表示は前に読んだ内容のまま） */
+  reloadError: unknown;
   onReload: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -363,6 +375,12 @@ function RulesView({
         }
       />
       <div className="space-y-3">
+        {reloadError ? (
+          <div data-testid="rules-reload-error" className="space-y-1">
+            <p className="text-sm text-muted-foreground">{RELOAD_FAILED_MESSAGE}</p>
+            <ErrorBanner error={reloadError} onRetry={onReload} />
+          </div>
+        ) : null}
         <p className="text-sm text-muted-foreground">
           振り分けの代替・運び元の制限・固定の申請・残すを決めます。使わなくなったルールは削除せず無効にし、理由をメモに残します。
         </p>
@@ -421,7 +439,16 @@ function RulesView({
           rule={disableTarget}
           onClose={() => setDisableTarget(null)}
           onConfirm={async (memo) => {
-            await setEnabled(disableTarget, false, memo);
+            // 開いた後に読み直していれば、今の行（updated_at）で送る
+            const current = data.rules.find((r) => r.id === disableTarget.id) ?? disableTarget;
+            try {
+              await setEnabled(current, false, memo);
+            } catch (e) {
+              // ほかの人が先に変えた・消した：一覧は読み直したので閉じる（古い行・古いメモで送り続けない。開き直すと今のメモが入る）
+              const kind = classifyError(e).kind;
+              if (kind === 'conflict' || kind === 'not_found') setDisableTarget(null);
+              throw e;
+            }
           }}
         />
       ) : null}
@@ -448,6 +475,9 @@ function RulesView({
     </div>
   );
 }
+
+/** 読んだ後の読み直しに失敗したとき（表示は前に読んだ内容のまま） */
+const RELOAD_FAILED_MESSAGE = 'ルールを読み直せませんでした。表示は前に読んだ内容のままです';
 
 /** 通信の失敗の後、保存されたかを読み直しても確かめられなかったとき（2.6） */
 const UNKNOWN_OUTCOME_MESSAGE = '保存できたか確かめられません。通信が戻ったら「読み直す」で確かめてから、もう一度保存してください';

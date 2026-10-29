@@ -248,6 +248,80 @@ test.describe('T12 管理者', () => {
     }
   });
 
+  test('T12 シートを開いたまま読み直しが通信の失敗になっても、シートと入力が残る（ErrorState に置き換えない）', async ({ page }) => {
+    // supabase-js の GET の再試行と React Query の再試行で、失敗が出るまで十数秒かかる
+    test.setTimeout(150_000);
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/?code=S05');
+      const sheet = page.getByRole('dialog');
+      await expect(sheet.getByRole('heading', { name: 'ルール S05（運び元の制限）を編集' })).toBeVisible();
+      await sheet.getByLabel(/^メモ/).fill('E2E：通信が切れても残るメモ');
+
+      // ここから rules への通信が切れる（保存も、保存されたかの確かめも、一覧の読み直しも通らない）
+      await page.route('**/rest/v1/rules*', (route) => route.abort('internetdisconnected'));
+      await sheet.getByRole('button', { name: '保存', exact: true }).click();
+      const notice = sheet.getByTestId('unknown-outcome');
+      await expect(notice).toBeVisible({ timeout: 60_000 });
+      // 通信が戻らないまま「読み直す」を押す
+      await notice.getByRole('button', { name: '読み直す' }).click();
+      // 読み直しが終わる（失敗の知らせか、画面全体の ErrorState のどちらか）まで待つ
+      await expect(page.getByText(/ルールを読み直せませんでした/).or(page.getByRole('button', { name: 'もう一度読み込む' })).first()).toBeVisible({
+        timeout: 90_000,
+      });
+      // シートと入力は残る。一覧の上に読み直しの失敗の帯が出る
+      await expect(sheet.getByRole('heading', { name: 'ルール S05（運び元の制限）を編集' })).toBeVisible();
+      await expect(sheet.getByLabel(/^メモ/)).toHaveValue('E2E：通信が切れても残るメモ');
+      await expect(page.getByTestId('rules-reload-error')).toBeAttached();
+      await expect(page.getByRole('button', { name: 'もう一度読み込む' })).toHaveCount(0);
+
+      // 通信が戻って読み直すと、帯が消え、入力はそのまま
+      await page.unroute('**/rest/v1/rules*');
+      await notice.getByRole('button', { name: '読み直す' }).click();
+      await expect(page.getByTestId('rules-reload-error')).toHaveCount(0, { timeout: 30_000 });
+      await expect(sheet.getByLabel(/^メモ/)).toHaveValue('E2E：通信が切れても残るメモ');
+      // 保存は届いていない
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S05')!.memo).not.toBe('E2E：通信が切れても残るメモ');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T12 無効にするダイアログを開いている間にほかの人がルールを変えたら、ダイアログを閉じて読み直す（古い行・古いメモで送り続けない）', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/');
+      const s04 = page.locator(`[data-row-id="${s.ids.rules['S04']}"]`);
+      const toggle = s04.getByRole('switch', { name: 'S04 を有効にする' });
+      await toggle.click();
+      const dlg = page.getByRole('alertdialog');
+      await expect(dlg.getByRole('heading', { name: 'ルール S04 を無効にしますか' })).toBeVisible();
+      await dlg.getByLabel('メモ').fill('E2E：古い画面のメモ');
+
+      // ダイアログを開いている間に、ほかの人がメモを直す（updated_at が変わる）
+      await sql(`update public.rules set memo = 'E2E：ほかの人のメモ' where year_id = $1 and code = 'S04'`, [s.yearId]);
+      await dlg.getByRole('button', { name: '無効にする' }).click();
+      // conflict：ダイアログを閉じ、読み直した一覧にほかの人のメモが出る
+      await expect(dlg).toBeHidden();
+      await expect(s04).toContainText('E2E：ほかの人のメモ');
+      await expect(toggle).toBeChecked();
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
+
+      // 開き直すと今のメモが入っていて、無効にできる
+      await toggle.click();
+      await expect(dlg.getByLabel('メモ')).toHaveValue('E2E：ほかの人のメモ');
+      await dlg.getByLabel('メモ').fill('E2E：ほかの人のメモ。今年は使わない');
+      await dlg.getByRole('button', { name: '無効にする' }).click();
+      await expect(dlg).toBeHidden();
+      await expect(toggle).not.toBeChecked();
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: false, memo: 'E2E：ほかの人のメモ。今年は使わない' });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
   test('T12 確定中はメモだけ直せる（追加・有効の切り替え・params は出さない）', async ({ page }) => {
     const s = await createScenario({ dataset: 'synthetic', status: 'confirmed', allocations: 'reference', roles: { admin: true } });
     try {
