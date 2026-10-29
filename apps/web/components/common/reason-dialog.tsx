@@ -15,8 +15,10 @@ export interface ReasonDialogProps {
   /** 理由が必須か（確定・確定の解除・締切後の申請の変更など）。既定 true */
   required?: boolean;
   /**
-   * 理由の欄の初期値（取り込みのファイル名など）。開くたびにこの値から始まる（開いている間に変えても欄は変わらない）。
+   * 理由の欄の初期値（「Googleフォームの回答の取り込み（模擬店）」など）。開くたびにこの値から始まる（開いている間に変えても欄は変わらない）。
    * 既定は空。
+   * 注意：理由は audit_logs に残り続け（消さない）、管理者が履歴の画面で読む。ファイル名（人の名前が入りうる）・メールアドレス・
+   * 個人名など、人が分かるものを初期値に入れない（T11 の取り込みもファイル名を入れないと決めた）。
    */
   defaultValue?: string;
   /** よく使う理由のボタン（「数え直し」「団体の希望」など） */
@@ -53,7 +55,7 @@ export function reasonError(value: string, required: boolean): string | null {
  * @example
  * <ReasonDialog open={open} onOpenChange={setOpen} title="確定を解除する" presets={['数え直し']}
  *   onSubmit={(reason) => m.mutateAsync({ p_reason: reason })} pending={m.isPending} error={reasonFieldError} />
- * <ReasonDialog … defaultValue={`取り込み：${file.name}`} />   // 理由の欄に初期値を入れておく
+ * <ReasonDialog … defaultValue="Googleフォームの回答の取り込み（模擬店）" />   // 理由の欄に初期値を入れておく（ファイル名は入れない）
  */
 export function ReasonDialog(props: ReasonDialogProps) {
   const { open, onOpenChange, pending = false } = props;
