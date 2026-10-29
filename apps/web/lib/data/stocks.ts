@@ -2,6 +2,7 @@
 // 純粋な関数（並べ方・数え方・書けるか・振り分けの合計との比べ方・ほかの人の保存・表の集計・QR の URL）と、
 // 読み書きの関数・React Query のフックを置く。純粋な関数は lib/data/stocks.test.ts で確かめる。
 import { useQuery } from '@tanstack/react-query';
+import { decideAbsoluteSave } from '@/lib/data/absolute-save';
 import { fetchAll } from '@/lib/db/fetch-all';
 import { COLUMNS, type ItemRow, type RoomRow, type RoomYearRow, type StockDbRow, type YearStatus } from '@/lib/db/types';
 import { BASE_PATH } from '@/lib/env';
@@ -9,7 +10,7 @@ import { appError, toAppError } from '@/lib/errors';
 import { ROOM_KIND_LABELS } from '@/lib/labels';
 import { queryKeys } from '@/lib/query';
 import { uuidSchema } from '@/lib/schemas/common';
-import type { StockCounts } from '@/lib/schemas/stock';
+import type { StockBaseStamps, StockCounts } from '@/lib/schemas/stock';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import type { AppRole } from '@/lib/auth/membership';
 
@@ -202,50 +203,75 @@ export function shortfallMessage(mode: Exclude<ShortfallMode, 'none'>, list: rea
     : `確定中は振り分けの合計より少なくできません（${what}）。確定を解除してから直してください`;
 }
 
-// ---- ほかの人の保存（設計 3.3） ----
+// ---- ほかの人の保存と、保存の前の読み直し（設計 2.6 の (A)・3.3） ----
 
 export interface OtherSave {
-  /** 読み込んだ後に変わった品目（数・数えた記録が変わった、行が増えた・消えた） */
+  /** 入力の元の後に自分以外の人が変えた品目（数・数えた記録が変わった、行が増えた・消えた） */
   changedItemIds: string[];
-  /** 変えた人と日時（変わった行のうち counted_at が最も新しいもの。なければ null） */
+  /** 変えた人と日時（その行のうち counted_at が最も新しいもの。なければ null） */
   by: CountedInfo | null;
 }
 
-/**
- * 読み込んだときの行（loaded）と保存の直前に読み直した行（latest）を比べる。updated_at（受け取った文字列のまま）が
- * 違う・行が増えた・消えた品目があれば、ほかの人が保存している。なければ null。
- */
-export function detectOtherSave(loaded: readonly Pick<StockDbRow, 'item_id' | 'updated_at'>[], latest: readonly StockDbRow[]): OtherSave | null {
-  const before = new Map(loaded.map((r) => [r.item_id, r]));
+/** 品目ごとの、入力の元（base）からの変化：読み直した行と、行の記録が変わったか・それが自分以外の人のものか */
+function changesFrom(items: readonly Pick<ItemRow, 'id'>[], base: StockBaseStamps, latest: readonly StockDbRow[], userId: string) {
   const after = new Map(latest.map((r) => [r.item_id, r]));
-  const changed: string[] = [];
-  const changedRows: StockDbRow[] = [];
-  for (const [id, r] of after) {
-    const b = before.get(id);
-    if (!b || b.updated_at !== r.updated_at) {
-      changed.push(id);
-      changedRows.push(r);
-    }
-  }
-  for (const id of before.keys()) if (!after.has(id)) changed.push(id);
-  if (changed.length === 0) return null;
-  return { changedItemIds: changed, by: latestCounted(changedRows) };
+  return items.map((i) => {
+    const row = after.get(i.id);
+    return {
+      itemId: i.id,
+      row,
+      // updated_at は受け取った文字列のまま比べる。行が増えた・消えたのも変わったとする
+      changed: (base[i.id] ?? null) !== (row?.updated_at ?? null),
+      // 自分の書いたもの（前に送って応答が届かなかった保存など）は、ほかの人の変更として扱わない。
+      // counted_by が null・行が消えた（この画面は消さない）は自分でないとする
+      byOther: !row || row.counted_by !== userId,
+    };
+  });
 }
 
 /**
- * 読み直した行の変化が、応答の届かなかった自分の保存だけで説明できるか（設計 2.6「読み直して、値が自分の入れたものなら
- * 『保存されていました』」）。部屋の全品目の行があり、数が送った数（sent）と同じで、変わった行の数えた人がすべて自分なら true。
+ * 入力の元（base。品目の id → updated_at）の後に、読み直した行（latest）で自分以外の人が変えた品目（部屋の全品目 items のうち）。
+ * 変わった（updated_at が違う・行が増えた・消えた）品目のうち、counted_by が自分（userId）でないもの。なければ null。
  */
-export function isOwnSave(
+export function detectOtherSave(
   items: readonly Pick<ItemRow, 'id'>[],
+  base: StockBaseStamps,
   latest: readonly StockDbRow[],
-  other: Pick<OtherSave, 'changedItemIds'>,
-  sent: StockCounts,
   userId: string,
-): boolean {
-  const byItem = new Map(latest.map((r) => [r.item_id, r]));
-  if (!items.every((i) => byItem.get(i.id)?.count === (sent[i.id] ?? 0))) return false;
-  return other.changedItemIds.every((id) => byItem.get(id)?.counted_by === userId);
+): OtherSave | null {
+  const others = changesFrom(items, base, latest, userId).filter((c) => c.changed && c.byOther);
+  if (others.length === 0) return null;
+  return { changedItemIds: others.map((c) => c.itemId), by: latestCounted(others.flatMap((c) => (c.row ? [c.row] : []))) };
+}
+
+export type StockSaveDecision = { kind: 'saved' } | { kind: 'send' } | { kind: 'conflict'; other: OtherSave };
+
+/**
+ * 保存の前に読み直した部屋の行（latest）で、送るか・保存されていたか・ほかの人の保存のダイアログを出すかを決める
+ * （設計 2.6 の (A) の 2〜4。判定は T09a の decideAbsoluteSave）。input は送る数、base は入力の元の updated_at。
+ * - saved：全品目で読み直した数が入力と同じで、どれかの行が入力の元から変わっている（前に送って応答が届かなかった保存が通っていた）
+ * - conflict：入力の元から変わった行に、自分以外の人のものがある
+ * - send：それ以外（どの行も変わっていなければ、同じ数でも送って数え直しの記録を残す。F1-5）
+ */
+export function decideStockSave(
+  items: readonly Pick<ItemRow, 'id'>[],
+  input: StockCounts,
+  base: StockBaseStamps,
+  latest: readonly StockDbRow[],
+  userId: string,
+): StockSaveDecision {
+  const decision = decideAbsoluteSave<number | null>(
+    // byOther を渡すので、base の値は判定に使われない（入力の元は updated_at で持つ）
+    changesFrom(items, base, latest, userId).map((c) => ({
+      input: input[c.itemId] ?? 0,
+      base: null,
+      fresh: c.row?.count ?? null,
+      changed: c.changed,
+      byOther: c.byOther,
+    })),
+  );
+  if (decision !== 'conflict') return { kind: decision };
+  return { kind: 'conflict', other: detectOtherSave(items, base, latest, userId)! };
 }
 
 // ---- 保存 ----

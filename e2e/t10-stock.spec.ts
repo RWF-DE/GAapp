@@ -333,7 +333,7 @@ test.describe('T10 部員', () => {
     }
   });
 
-  test('T10 応答が届かなかった保存：「もう一度」で読み直し、自分の保存が入っていれば「保存されていました」', async ({ page }) => {
+  test('T10 応答が届かなかった保存：知らせを出し、もう一度「保存」で読み直して、自分の保存が入っていれば「保存されていました」', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', roles: { staff: true } });
     try {
       const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
@@ -353,21 +353,25 @@ test.describe('T10 部員', () => {
       });
       await page.getByRole('button', { name: '保存', exact: true }).click();
       await confirmNotLatest(page);
-      const banner = page.getByTestId('error-banner');
-      await expect(banner).toHaveAttribute('data-kind', 'network');
+      const notice = page.getByTestId('stock-unknown-outcome');
+      await expect(notice).toContainText('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります');
+      // 押せないボタン・「確かめる」は出さない。入力は残り、保存は押せる
+      await expect(notice.getByRole('button')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
+      await expect(input(page, '机(木)')).toHaveValue('11');
       expect((await roomStocks(s.yearId, roomA)).get(s.ids.items.desk!)!.count).toBe(11);
-      await banner.getByRole('button', { name: 'もう一度' }).click();
+      await page.getByRole('button', { name: '保存', exact: true }).click();
       await confirmNotLatest(page);
       await expect(page.getByTestId('stock-saved')).toContainText('保存されていました');
       await expect(page.getByTestId('stock-conflict-dialog')).toHaveCount(0);
-      await expect(banner).toHaveCount(0);
+      await expect(notice).toHaveCount(0);
       expect(upserts).toBe(1);
     } finally {
       await s.cleanup();
     }
   });
 
-  test('T10 応答が届かなかった保存：「もう一度」の読み直しも通信できなければ「確かめる」まで送り直せず、確かめて「保存されていました」', async ({ page }) => {
+  test('T10 応答が届かなかった保存：もう一度「保存」の読み直しも通信できなければ送らずに知らせ、通信が戻って押すと「保存されていました」', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', roles: { staff: true } });
     try {
       const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
@@ -391,24 +395,24 @@ test.describe('T10 部員', () => {
         if (offline && req.url().includes('room_id=')) return route.abort('failed');
         return route.fallback();
       });
-      await page.getByRole('button', { name: '保存', exact: true }).click();
+      const save = page.getByRole('button', { name: '保存', exact: true });
+      await save.click();
       await confirmNotLatest(page);
-      const banner = page.getByTestId('error-banner');
-      await expect(banner).toHaveAttribute('data-kind', 'network');
-      await banner.getByRole('button', { name: 'もう一度' }).click();
+      const notice = page.getByTestId('stock-unknown-outcome');
+      await expect(notice).toBeVisible();
+      await save.click();
       await confirmNotLatest(page);
-      const notice = page.getByTestId('stock-unconfirmed');
-      // postgrest-js は通信の失敗した GET を 1・2・4 秒あけて3回送り直すので、知らせが出るまで約7秒かかる
-      await expect(notice).toContainText('保存できたか確かめられません。通信が戻ったら「確かめる」を押してください', { timeout: 20_000 });
-      await expect(page.getByRole('button', { name: '保存', exact: true })).toBeDisabled();
-      await expect(plus(page, '机(木)')).toBeEnabled();
-      await expect(page.getByRole('textbox', { name: '机(木)の数' })).toHaveValue('11');
-      // 通信が戻った → 「確かめる」で読み直し、自分の保存が入っているので送り直さない
+      // postgrest-js は通信の失敗した GET を 1・2・4 秒あけて3回送り直すので、読み直しが諦めるまで約7秒かかる
+      await expect(save).toBeEnabled({ timeout: 20_000 });
+      await expect(notice).toContainText('保存できたか分かりません');
+      await expect(input(page, '机(木)')).toHaveValue('11');
+      expect(upserts).toBe(1);
+      // 通信が戻った → もう一度「保存」で読み直し、自分の保存が入っているので送らない
       offline = false;
-      await notice.getByRole('button', { name: '確かめる' }).click();
+      await save.click();
+      await confirmNotLatest(page);
       await expect(page.getByTestId('stock-saved')).toContainText('保存されていました');
       await expect(notice).toHaveCount(0);
-      await expect(page.getByRole('button', { name: '保存', exact: true })).toBeEnabled();
       expect(upserts).toBe(1);
       expect((await roomStocks(s.yearId, roomA)).get(s.ids.items.desk!)!.count).toBe(11);
     } finally {
@@ -416,7 +420,7 @@ test.describe('T10 部員', () => {
     }
   });
 
-  test('T10 応答が届かなかった保存：確かめられない間にほかの人が保存していれば、「確かめる」で言い切らずに上書きするか読み直すかを選べる', async ({ page }) => {
+  test('T10 応答が届かなかった保存：その後にほかの人が保存していれば、もう一度「保存」で上書きするか読み直すかを選べる', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', roles: { staff: true, admin: true } });
     try {
       const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
@@ -426,52 +430,38 @@ test.describe('T10 部員', () => {
       await page.goto(`/stock/?room=${roomA}`);
       await waitInput(page, 10);
       await plus(page, '机(木)').click();
-      // 1回目の upsert は DB に届かずに切れる。その後は部屋の行の読み込みも通信できない（offline で切る）
+      // 1回目の upsert は DB に届かずに切れる
       let upserts = 0;
-      let offline = false;
       await page.route('**/rest/v1/stocks?*', async (route) => {
-        const req = route.request();
-        if (req.method() === 'POST') {
-          upserts += 1;
-          if (upserts === 1) {
-            offline = true;
-            return route.abort('failed');
-          }
-          return route.fallback();
-        }
-        if (offline && req.url().includes('room_id=')) return route.abort('failed');
+        if (route.request().method() !== 'POST') return route.fallback();
+        upserts += 1;
+        if (upserts === 1) return route.abort('failed');
         return route.fallback();
       });
-      await page.getByRole('button', { name: '保存', exact: true }).click();
+      const save = page.getByRole('button', { name: '保存', exact: true });
+      await save.click();
       await confirmNotLatest(page);
-      const banner = page.getByTestId('error-banner');
-      await expect(banner).toHaveAttribute('data-kind', 'network');
-      await banner.getByRole('button', { name: 'もう一度' }).click();
-      await confirmNotLatest(page);
-      const notice = page.getByTestId('stock-unconfirmed');
-      await expect(notice).toBeVisible({ timeout: 20_000 });
-      // 確かめられない間に、管理者が別の端末で保存した
+      await expect(page.getByTestId('stock-unknown-outcome')).toBeVisible();
+      // その間に、管理者が別の端末で保存した
       await sql('update public.stocks set count = 7, counted_by = $3, counted_at = now() where year_id = $1 and room_id = $2 and item_id = $4', [
         s.yearId,
         roomA,
         SEED_USER_IDS.admin,
         desk,
       ]);
-      offline = false;
-      await notice.getByRole('button', { name: '確かめる' }).click();
-      // 自分の保存が入ったか決められないので「保存されていませんでした」とは言わず、ほかの人の保存のダイアログに回す
+      await save.click();
+      await confirmNotLatest(page);
+      // 黙って上書きせず、ほかの人の保存のダイアログで選ばせる
       const dialog = page.getByTestId('stock-conflict-dialog');
       await expect(dialog).toContainText('テスト管理者さんが');
       await expect(dialog.getByTestId('conflict-row').filter({ hasText: '机(木)' })).toContainText('711');
-      await expect(page.getByText('保存されていませんでした')).toHaveCount(0);
-      await expect(notice).toHaveCount(0);
-      // やめても入力はほかの人の数に置き換わらず、知らせが残る
+      expect(upserts).toBe(1);
+      // やめても入力はほかの人の数に置き換わらない
       await dialog.getByRole('button', { name: 'やめる' }).click();
       await expect(dialog).toBeHidden();
       await expect(input(page, '机(木)')).toHaveValue('11');
-      await expect(page.getByTestId('stock-remote-change')).toContainText('テスト管理者さんが');
       // 「保存」でもう一度選ばせる → 上書きする
-      await page.getByRole('button', { name: '保存', exact: true }).click();
+      await save.click();
       await confirmNotLatest(page);
       await dialog.getByRole('button', { name: '上書きする' }).click();
       await expect(page.getByTestId('stock-saved')).toContainText('保存しました');

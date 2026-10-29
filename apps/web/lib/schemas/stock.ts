@@ -23,18 +23,10 @@ export const stockBaseStampsSchema = z.record(uuidSchema, z.string());
 export type StockBaseStamps = z.output<typeof stockBaseStampsSchema>;
 
 /**
- * 応答の届かなかった（保存されたか分からない）送信：送った数と、送る直前に読んだ部屋の行の updated_at（設計 2.6。
- * notes/T10.md の決めたことの 21）。読み直した行が送った値の入ったものかを、これと比べて決める。
- */
-export const stockSentSchema = z.object({ counts: stockCountsSchema, stamps: stockBaseStampsSchema });
-export type StockSent = z.output<typeof stockSentSchema>;
-
-/**
  * 下書き（lib/drafts.ts）に置く値。入力中の数と、その元にした行の updated_at。壊れた下書きは捨てる。
- * sent は未確定の送信（送っている間と、応答が届かなかった後。決まったら消す）。画面を離れて開き直しても、
- * まず送った値が入ったかを決めるために置く。
+ * 送信の記録は置かない（設計 2.6 の (A) の 5。前の形の下書きの sent は読むときに落とす）。
  */
-export const stockDraftSchema = z.object({ counts: stockCountsSchema, base: stockBaseStampsSchema, sent: stockSentSchema.optional() });
+export const stockDraftSchema = z.object({ counts: stockCountsSchema, base: stockBaseStampsSchema });
 export type StockDraft = z.output<typeof stockDraftSchema>;
 
 /**

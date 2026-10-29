@@ -5,6 +5,7 @@ import {
   buildStockMatrix,
   countedByRoom,
   countsFromRows,
+  decideStockSave,
   detectOtherSave,
   fetchPreviousYearStocks,
   fetchProfileNames,
@@ -12,7 +13,6 @@ import {
   formatCell,
   formatDiff,
   groupByBuilding,
-  isOwnSave,
   latestCounted,
   nextUncountedRoom,
   placeOf,
@@ -178,22 +178,67 @@ describe('shortfalls（振り分けの合計より少なくなる品目）', () 
   });
 });
 
-describe('detectOtherSave（読み込んだ後のほかの人の保存）', () => {
-  const by = { counted_by: 'other', counted_at: '2026-10-05T10:00:00+00:00' };
+describe('detectOtherSave（入力の元の後の、自分以外の人の保存）', () => {
+  const ME = id(9);
+  const OTHER = id(77);
+  const at = '2026-10-05T10:00:00+00:00';
+  const loaded = [stock(1, 1, 5), stock(1, 2, 3)];
+  const base = Object.fromEntries(loaded.map((r) => [r.item_id, r.updated_at]));
+
   it('updated_at が同じなら null', () => {
-    const rows = [stock(1, 1, 5), stock(1, 2, 3)];
-    expect(detectOtherSave(rows, rows.map((r) => ({ ...r })))).toBeNull();
-    expect(detectOtherSave([], [])).toBeNull();
+    expect(detectOtherSave(ITEMS, base, loaded.map((r) => ({ ...r })), ME)).toBeNull();
+    expect(detectOtherSave(ITEMS, {}, [], ME)).toBeNull();
   });
 
   it('updated_at が違う・行が増えた・消えた品目を出し、変えた人と日時を返す', () => {
-    const loaded = [stock(1, 1, 5)];
-    expect(detectOtherSave(loaded, [stock(1, 1, 7, { updated_at: 'u-new', ...by })])).toEqual({
+    expect(detectOtherSave(ITEMS, base, [stock(1, 1, 7, { updated_at: 'u-new', counted_by: OTHER, counted_at: at }), loaded[1]!], ME)).toEqual({
       changedItemIds: [DESK.id],
-      by: { countedBy: 'other', countedAt: by.counted_at },
+      by: { countedBy: OTHER, countedAt: at },
     });
-    expect(detectOtherSave([], [stock(1, 1, 7, by), stock(1, 2, 2, by)])?.changedItemIds).toEqual([DESK.id, CHAIR.id]);
-    expect(detectOtherSave(loaded, [])).toEqual({ changedItemIds: [DESK.id], by: null });
+    expect(detectOtherSave(ITEMS, {}, [stock(1, 1, 7, { counted_by: OTHER }), stock(1, 2, 2, { counted_by: OTHER })], ME)?.changedItemIds).toEqual([DESK.id, CHAIR.id]);
+    expect(detectOtherSave(ITEMS, base, [loaded[1]!], ME)).toEqual({ changedItemIds: [DESK.id], by: null });
+  });
+
+  it('自分の書いたもの（counted_by が自分）は数えない。counted_by が null は自分でないとする', () => {
+    const mine = [stock(1, 1, 11, { updated_at: 'n-1', counted_by: ME }), stock(1, 2, 20, { updated_at: 'n-2', counted_by: ME })];
+    expect(detectOtherSave(ITEMS, base, mine, ME)).toBeNull();
+    expect(detectOtherSave(ITEMS, base, [mine[0]!, stock(1, 2, 3, { updated_at: 'n-2' })], ME)?.changedItemIds).toEqual([CHAIR.id]);
+  });
+});
+
+describe('decideStockSave（保存の前の読み直し。設計 2.6 の (A)）', () => {
+  const ME = id(9);
+  const OTHER = id(77);
+  const loaded = [stock(1, 1, 10), stock(1, 2, 20)];
+  const base = Object.fromEntries(loaded.map((r) => [r.item_id, r.updated_at]));
+  const mine = (desk: number) => [stock(1, 1, desk, { updated_at: 'n-1', counted_by: ME }), stock(1, 2, 20, { updated_at: 'n-2', counted_by: ME })];
+
+  it('DB がすでに入力と同じで、入力の元から行が変わっていれば saved（前に送って応答が届かなかった保存が通っていた）', () => {
+    expect(decideStockSave(ITEMS, { [DESK.id]: 11, [CHAIR.id]: 20 }, base, mine(11), ME)).toEqual({ kind: 'saved' });
+  });
+
+  it('どの行も入力の元から変わっていなければ、同じ数でも send（数え直しの記録を残す）', () => {
+    expect(decideStockSave(ITEMS, { [DESK.id]: 10, [CHAIR.id]: 20 }, base, loaded, ME)).toEqual({ kind: 'send' });
+    expect(decideStockSave(ITEMS, { [DESK.id]: 11, [CHAIR.id]: 20 }, base, loaded, ME)).toEqual({ kind: 'send' });
+  });
+
+  it('自分の保存の後に入力を変えていれば、ほかの人の保存として扱わずに send', () => {
+    expect(decideStockSave(ITEMS, { [DESK.id]: 12, [CHAIR.id]: 20 }, base, mine(11), ME)).toEqual({ kind: 'send' });
+  });
+
+  it('自分以外の人の変更があれば conflict（その人と日時）。行が消えたのも自分以外', () => {
+    const theirs = [stock(1, 1, 7, { updated_at: 'o-1', counted_by: OTHER, counted_at: '2026-10-05T11:00:00+00:00' }), loaded[1]!];
+    expect(decideStockSave(ITEMS, { [DESK.id]: 11, [CHAIR.id]: 20 }, base, theirs, ME)).toEqual({
+      kind: 'conflict',
+      other: { changedItemIds: [DESK.id], by: { countedBy: OTHER, countedAt: '2026-10-05T11:00:00+00:00' } },
+    });
+    expect(decideStockSave(ITEMS, { [DESK.id]: 11, [CHAIR.id]: 20 }, base, [loaded[1]!], ME)).toMatchObject({ kind: 'conflict' });
+  });
+
+  it('行のない品目（入力 0）は、行ができるまで saved にしない', () => {
+    expect(decideStockSave(ITEMS, { [DESK.id]: 10, [CHAIR.id]: 0 }, { [DESK.id]: 'u-1-1' }, [stock(1, 1, 10, { updated_at: 'n-1', counted_by: ME })], ME)).toEqual({
+      kind: 'send',
+    });
   });
 });
 
@@ -274,24 +319,6 @@ describe('読む', () => {
     const none = createFakeSupabase(() => ({ data: [] }));
     await fetchProfileNames([], none.client);
     expect(none.issued).toHaveLength(0);
-  });
-});
-
-describe('isOwnSave（応答の届かなかった自分の保存。設計 2.6）', () => {
-  const ME = id(9);
-  const sent = { [DESK.id]: 11, [CHAIR.id]: 20 };
-  const latest = [stock(1, 1, 11, { counted_by: ME, updated_at: 'new-1' }), stock(1, 2, 20, { counted_by: ME, updated_at: 'new-2' })];
-  const other = { changedItemIds: [DESK.id, CHAIR.id] };
-
-  it('全品目の数が送った数と同じで、変わった行の数えた人が自分なら true', () => {
-    expect(isOwnSave(ITEMS, latest, other, sent, ME)).toBe(true);
-  });
-
-  it('数が違う・ほかの人が数えた・行が欠けていれば false', () => {
-    expect(isOwnSave(ITEMS, latest, other, { ...sent, [DESK.id]: 12 }, ME)).toBe(false);
-    expect(isOwnSave(ITEMS, latest, other, sent, id(77))).toBe(false);
-    expect(isOwnSave(ITEMS, [latest[0]!, { ...latest[1]!, counted_by: null }], other, sent, ME)).toBe(false);
-    expect(isOwnSave(ITEMS, [latest[0]!], other, sent, ME)).toBe(false);
   });
 });
 

@@ -151,30 +151,21 @@ test.describe('T10 部員', () => {
       await page.getByTestId('stock-remote-change').getByRole('button', { name: 'ほかの人の数を読み直す' }).click();
       await expect(input(page, '椅子(木)')).toHaveValue('19');
 
-      // 送った upsert は DB に入ったが応答が届かなかった → 「もう一度」の読み直しも通信できない（確かめられません）
-      // → 通信が戻って「確かめる」で「保存されていました」
+      // 送った upsert は DB に入ったが応答が届かなかった（「保存できたか分かりません…」）
+      // → もう一度「保存」で読み直し、自分の保存が入っているので送らずに「保存されていました」
       await plus(page, '机(木)').click();
-      let offline = false;
       await page.route('**/rest/v1/stocks?*', async (route) => {
-        if (route.request().method() !== 'POST') {
-          if (offline && route.request().url().includes('room_id=')) return route.abort('failed');
-          return route.fallback();
-        }
+        if (route.request().method() !== 'POST') return route.fallback();
         await route.fetch();
-        offline = true;
         await route.abort('failed');
       });
       await save(page).click();
       await confirmNotLatest(page);
-      await expect(page.getByTestId('error-banner')).toHaveAttribute('data-kind', 'network');
-      await page.getByTestId('error-banner').getByRole('button', { name: 'もう一度' }).click();
+      await expect(page.getByTestId('stock-unknown-outcome')).toBeVisible();
+      await expect(save(page)).toBeEnabled();
+      await shoot(page, 'T10', 'stock-unknown-outcome-mobile');
+      await save(page).click();
       await confirmNotLatest(page);
-      // postgrest-js が通信の失敗した GET を3回送り直す（約7秒）まで待つ
-      await expect(page.getByTestId('stock-unconfirmed')).toBeVisible({ timeout: 20_000 });
-      await expect(save(page)).toBeDisabled();
-      await shoot(page, 'T10', 'stock-unconfirmed-mobile');
-      offline = false;
-      await page.getByTestId('stock-unconfirmed').getByRole('button', { name: '確かめる' }).click();
       await expect(page.getByTestId('stock-saved')).toContainText('保存されていました');
       await page.getByTestId('stock-saved').scrollIntoViewIfNeeded();
       await shoot(page, 'T10', 'stock-recovered-mobile');

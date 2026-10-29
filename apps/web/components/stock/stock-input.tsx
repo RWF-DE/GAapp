@@ -2,30 +2,21 @@
 
 // 在庫入力の部屋の画面（画面の設計 3.3、04「在庫入力」。T10）。スマホ（390px）を基本にする。
 // - 表示：場所名、使用不可なら「今年は使用不可」と理由のメモ、前回入力した人と日時、品目ごとの行（品目名・＋－と数字・前年の数）。
-// - 保存：部屋の全品目（0 を含む）を1回の upsert。counted_by・counted_at は DB が入れる。保存の直前に部屋を読み直し、
-//   読み込んだ後にほかの人が保存していれば「上書きする」「読み直す」を選んでもらう。
+// - 保存：部屋の全品目（0 を含む）を1回の upsert。counted_by・counted_at は DB が入れる。
+// - 保存の前の読み直し（設計 2.6 の (A)。notes/T10.md の決めたことの 21）：保存は毎回、送る前にその部屋の stocks を読み直し、
+//   decideStockSave で決める。全品目が入力と同じで、入力の元から行が変わっていれば送らずに「保存されていました」。入力の元から
+//   変わった行に自分以外の人（counted_by）のものがあれば「上書きする」「読み直す」を選んでもらう。それ以外は読み直した行を
+//   入力の元にして送る。応答が届かない・読み直しが通信できないときは、入力を残して unknownOutcomeMessage を出すだけで、
+//   保存できたか分からない状態は持たない（数を絶対値で書くので、もう一度「保存」を押せば同じく読み直して決まる）。
 // - 年度の状態とロールで書けるか（stockAccess）。管理者は振り分け中なら振り分けの合計より少なくなる品目を確かめ、確定中なら止める。
 // - 最新でない年度なら保存の前に確かめる（useNotLatestYearConfirm）。入力の途中で離れるときは確かめ、入力は部屋ごとの下書きに残す。
 //   下書きには入力の元にした行の updated_at も置き、戻した後の保存では、下書きを作った後のほかの人の保存も確かめる。
 //   下書きは 500 ms まとめて書くほか、画面を外れる・pagehide・裏に回った（visibilitychange で hidden）ときにすぐ書き出す。
 // - 読み直し（設計 2.6）：部屋の行を読み直したら、未保存の入力がなければその数で作り直し、入力があれば入力を残して
 //   「ほかの人が保存しました」と知らせる（入力の元の行は変えないので、保存の前のほかの人の保存の確かめが効く）。
-// - 未確定の保存（設計 2.6「通信の失敗の後の書き込み」。notes/T10.md の決めたことの 21）：送った書き込みの応答が届かず、
-//   保存されたか分からない間は、(1) 入力を勝手に置き換えない（裏の読み直し・再接続の読み直しでも）。(2) どの読み直し
-//   （「確かめる」・「保存」「もう一度」の前・裏の読み直し）でも、まず送った値が入ったかを、送る直前に読んだ行と比べて決める
-//   （settleSent）。入っていて入力を変えていなければ「保存されていました」、変えていれば「前に送った値は保存されていました。
-//   その後に変えた値はまだ保存していません」と知らせて保存を押せる状態に戻す。(3) 入っておらず、ほかの人の保存もなければ
-//   「保存されていませんでした」と知らせて送り直せる状態に戻す（「保存」「もう一度」で読み直したときは、押したのが送り直しなので送る）。
-//   (4) ほかの人の保存があって決められなければ、言い切らずにほかの人の保存のダイアログ（裏の読み直しなら知らせ）に回す。
-//   (5) 読み直しも通信できなければ「保存できたか確かめられません」を出し、「確かめる」で読み直せるまで送り直しを押せない。
-//   送った値と送る直前に読んだ行は下書きにも置く（sent）。画面を離れて開き直しても未確定のまま戻し（下書きの数をそのまま
-//   入力にする。「戻す」を待たない）、開いて最初に読んだ行で同じく決める。送っている間に離れて開き直したら、その送信が終わる
-//   まで送信中として待ち、終わった後に読んだ行で決める（離れた画面は知らせも下書きの片づけもしない）。送る直前・送信の失敗の
-//   時点でまだ届いていない部屋の行の読み込みは捨てる（送る前か送っている間に読んだ行なので、決めに使わない）。保存・確かめるの
-//   流れの途中（最新でない年度の確かめを開いている間を含む）は、裏の読み直しでは決めない（流れの中で読み直して決める）。
-import { hashKey, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { AppLink } from '@/components/common/app-link';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
@@ -52,10 +43,10 @@ import type { ItemRow, StockDbRow, YearRow } from '@/lib/db/types';
 import {
   countedByRoom,
   countsFromRows,
+  decideStockSave,
   detectOtherSave,
   fetchRoomAllocated,
   fetchRoomStocks,
-  isOwnSave,
   latestCounted,
   nextUncountedRoom,
   placeOf,
@@ -77,16 +68,9 @@ import {
   type StorageRoom,
 } from '@/lib/data/stocks';
 import { createDraftWriter, draftKey as draftStorageKey, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
-import { appError, classifyError, effectOf, messageFor, type NameLookup } from '@/lib/errors';
+import { appError, classifyError, effectOf, isUnknownOutcome, messageFor, unknownOutcomeMessage, type NameLookup } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
-import {
-  stockCountsSchema,
-  stockDraftSchema,
-  type StockBaseStamps,
-  type StockCounts,
-  type StockDraft,
-  type StockSent,
-} from '@/lib/schemas/stock';
+import { stockCountsSchema, stockDraftSchema, type StockBaseStamps, type StockCounts, type StockDraft } from '@/lib/schemas/stock';
 import { useUnsavedChanges } from '@/lib/unsaved-changes';
 import { cn } from '@/lib/utils';
 import { countedName, knownName, type OpenYear } from './common';
@@ -96,20 +80,9 @@ type Phase = 'idle' | 'checking' | 'saving';
 /** 保存の前の読み直しで 401 になり、セッションを更新できなかった（onAuthError が signOut まで済ませた） */
 class AuthHandled extends Error {}
 
-/** 応答が届かず、保存されたか分からない失敗（設計 2.6 の「通信の失敗の後の書き込み」） */
-function isUncertain(e: unknown): boolean {
-  const kind = classifyError(e).kind;
-  return kind === 'network' || kind === 'unknown';
-}
-
 /** 行の updated_at（品目の id → updated_at） */
 function stampsOf(rows: readonly StockDbRow[]): StockBaseStamps {
   return Object.fromEntries(rows.map((r) => [r.item_id, r.updated_at]));
-}
-
-/** detectOtherSave に渡す「読み込んだときの行」 */
-function loadedOf(stamps: StockBaseStamps) {
-  return Object.entries(stamps).map(([item_id, updated_at]) => ({ item_id, updated_at }));
 }
 
 interface Conflict {
@@ -117,28 +90,16 @@ interface Conflict {
   other: OtherSave;
 }
 
-/** 応答の届かなかった送信：送った数と、送る直前に読んだ部屋の行の updated_at（設計 2.6） */
-type Sent = StockSent;
-
-/** 送っている書き込み（下書きのキー → 送信が終わると解決する Promise）。画面を離れても送信は続くので、開き直した画面は
- *  これが終わるまで待ってから、送った値が入ったかを決める（送信の結果より前に読んだ行で決めない。決めたことの 21） */
-const sendsInFlight = new Map<string, Promise<void>>();
-
-function sameRecord(a: Readonly<Record<string, unknown>>, b: Readonly<Record<string, unknown>>): boolean {
-  const keys = Object.keys(a);
-  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
-}
+/**
+ * 送っている upsert（下書きのキー → 終わると解決する Promise）。画面を離れても送信は続くので、開き直した画面の保存は、
+ * これが終わってから読み直す（前の画面の送信が後から届いて、新しい保存を古い数で上書きしないため。送ったかの記録ではない）。
+ */
+const sendsInFlight = new Map<string, Promise<unknown>>();
 
 /** 入力に下書きの数を重ねる（今の品目にあるものだけ） */
 function withDraft(items: readonly ItemRow[], counts: StockCounts, draftCounts: StockCounts): StockCounts {
   return { ...counts, ...Object.fromEntries(items.filter((i) => i.id in draftCounts).map((i) => [i.id, draftCounts[i.id]!])) };
 }
-
-/** 未確定の送信を読み直した行で決めた結果（settleSent） */
-type Settled = { kind: 'recovered' } | { kind: 'rebased' } | { kind: 'notSaved' } | { kind: 'other'; other: OtherSave };
-
-const REBASED_MESSAGE = '前に送った値は保存されていました。その後に変えた値はまだ保存していません';
-const NOT_SAVED_MESSAGE = '前に送った値は保存されていませんでした。もう一度「保存」を押してください';
 
 /** 保存の前の「振り分けの合計より少なくなります」の確かめ（Promise で答える） */
 function useShortfallAsk() {
@@ -186,8 +147,9 @@ export function StockInput({
   const prevQ = usePreviousYearStocks(yearId, year.prev_year_id);
   const allocQ = useRoomAllocated(yearId, roomId, access.shortfall !== 'none');
   const yearStocksQ = useYearStocks(yearId);
+  const roomKey = queryKeys.yearPart(yearId, 'stocks', 'room', roomId);
 
-  // 読み込んだときの行（ほかの人の保存を見分ける元）と入力中の数
+  // 入力の元にした行（ほかの人の保存を見分ける元）と入力中の数
   const [base, setBase] = useState<StockDbRow[] | null>(null);
   const [counts, setCounts] = useState<StockCounts | null>(null);
   const baseCounts = useMemo(() => (base ? countsFromRows(items, base) : null), [base, items]);
@@ -198,51 +160,13 @@ export function StockInput({
   const [restoredStamps, setRestoredStamps] = useState<StockBaseStamps | null>(null);
   const stamps = useMemo(() => restoredStamps ?? (base ? stampsOf(base) : null), [restoredStamps, base]);
 
-  // 下書き（部屋ごと。カメラで次の QR を読んだ・別のアプリへ行った・タブが捨てられた後に戻せる）
-  const draftKey = useMemo<DraftKey>(() => ({ userId: open.userId, yearId, screen: 'stock', target: roomId }), [open.userId, yearId, roomId]);
-  const writer = useMemo(() => createDraftWriter<StockDraft>(draftKey), [draftKey]);
-  const storageKey = draftStorageKey(draftKey);
-  // 開いたときの下書き。未確定の送信（sent）があれば、未確定のまま開き直したことにする（決めたことの 21）
-  const [stored] = useState(() => {
-    const d = loadDraft<unknown>(draftKey);
-    if (!d) return null;
-    const parsed = stockDraftSchema.safeParse(d.value);
-    if (!parsed.success) {
-      removeDraft(draftKey);
-      return null;
-    }
-    return { savedAt: d.savedAt, ...parsed.data };
-  });
-
-  // 未確定の送信：最後に送った数と、送る直前に読んだ行（送っている間と、応答が届かず保存されたか分からない間だけ残す。
-  // 設計 2.6）。非同期の流れからは ref で読み、描画（入力を置き換えない・知らせを出す）は state で見る
-  const lastSent = useRef<Sent | null>(stored?.sent ?? null);
-  const [pending, setPendingState] = useState<Sent | null>(stored?.sent ?? null);
-  const setPending = (sent: Sent | null) => {
-    lastSent.current = sent;
-    setPendingState(sent);
-  };
-  // 開いたときに、前の画面（離れた画面）の送信がまだ終わっていない（終わるまで送信中として待つ）
-  const [sendOnOpen] = useState(() => (stored?.sent ? sendsInFlight.get(storageKey) : undefined));
-  /** 入力がまだないときの入力：読み込んだ行。未確定の送信のある下書きで開いたなら、下書きの数（送った値・その後に変えた値）を
-   *  そのまま入力にする（離れる前の入力に戻す。「戻す」を待つと、知らせの「保存」で読み込んだ行の数を送ってしまう） */
-  const openingCounts = (rows: readonly StockDbRow[]): StockCounts => {
-    const fromRows = countsFromRows(items, rows);
-    return stored?.sent ? withDraft(items, fromRows, stored.counts) : fromRows;
-  };
-  // 読み直し（設計 2.6）：部屋の行が新しくなったら（ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、
+  // 読み直し（設計 2.6）：部屋の行が新しくなったら（初めて読めた、ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、
   // 自分の保存の後の invalidate など）、未保存の入力がなければその行で作り直す。入力があれば入力も元の行も残し、
-  // ほかの人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
+  // 自分以外の人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
   const [seen, setSeen] = useState<StockDbRow[] | null>(null);
   const [remote, setRemote] = useState<OtherSave | null>(null);
   const data = stocksQ.data;
-  if (data && counts === null) {
-    // 初めて読めた（未確定の送信を下書きから戻して開いたときは、下書きの数を入力にする）
-    setSeen(data);
-    setBase(data);
-    setCounts(openingCounts(data));
-  } else if (!pending && data && (data !== seen || (remote !== null && !dirty))) {
-    // 未確定の間は、ここでは入力も元の行も変えない（裏の読み直しは下の onRoomRows で settleSent に回す）
+  if (data && (data !== seen || (remote !== null && !dirty))) {
     setSeen(data);
     if (base === null || !dirty) {
       setBase(data);
@@ -250,7 +174,7 @@ export function StockInput({
       setRestoredStamps(null);
       setRemote(null);
     } else if (stamps) {
-      const other = detectOtherSave(loadedOf(stamps), data);
+      const other = detectOtherSave(items, stamps, data, open.userId);
       if (other) setRemote(other);
     }
   }
@@ -258,6 +182,10 @@ export function StockInput({
   const saveButtonRef = useRef<HTMLButtonElement>(null);
   const refocusSave = useRef(false);
 
+  // 下書き（部屋ごと。カメラで次の QR を読んだ・別のアプリへ行った・タブが捨てられた後に戻せる）
+  const draftKey = useMemo<DraftKey>(() => ({ userId: open.userId, yearId, screen: 'stock', target: roomId }), [open.userId, yearId, roomId]);
+  const writer = useMemo(() => createDraftWriter<StockDraft>(draftKey), [draftKey]);
+  const storageKey = draftStorageKey(draftKey);
   useEffect(() => () => writer.flush(), [writer]);
   // 次の QR の URL を開く・スマホで裏に回る・タブを閉じるときは、500 ms を待たずに書き出す（unmount だけでは間に合わない）
   useEffect(() => {
@@ -272,39 +200,28 @@ export function StockInput({
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [writer]);
-  // まだ戻していない（捨ててもいない）下書き。入力に触れる・戻す・捨てる・送ると null（null でない間は、入力は読み込んだ行のまま）。
-  // 未確定の送信のある下書きは開いたときに入力にするので、ここには置かない（未確定の間に、戻していない下書きは残らない）
-  const [draft, setDraft] = useState(() =>
-    stored && !stored.sent ? { savedAt: stored.savedAt, counts: stored.counts, base: stored.base } : null,
-  );
+  // まだ戻していない（捨ててもいない）下書き。入力に触れる・戻す・捨てる・送ると null（null でない間は、入力は読み込んだ行のまま）
+  const [draft, setDraft] = useState(() => {
+    const d = loadDraft<unknown>(draftKey);
+    if (!d) return null;
+    const parsed = stockDraftSchema.safeParse(d.value);
+    if (!parsed.success) {
+      removeDraft(draftKey);
+      return null;
+    }
+    return { savedAt: d.savedAt, ...parsed.data };
+  });
   const showDraft = access.writable && !!draft && !!counts && !sameCounts(items, { ...counts, ...draft.counts }, counts);
-  /** 下書きに書く。未確定の送信があれば一緒に置く（開き直しても、まず送った値が入ったかを決めるため） */
-  const writeDraft = (values: StockCounts, baseStamps: StockBaseStamps) => {
-    const sent = lastSent.current;
-    writer.write(sent ? { counts: values, base: baseStamps, sent } : { counts: values, base: baseStamps });
-  };
+  const writeDraft = (values: StockCounts, baseStamps: StockBaseStamps) => writer.write({ counts: values, base: baseStamps });
 
-  // 前の画面の送信がまだ終わっていなければ、送信中から始める（入力も保存も押せない。終わったら読み直して決める）
-  const [phase, setPhase] = useState<Phase>(sendOnOpen ? 'saving' : 'idle');
+  const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<unknown>(null);
   const [blocked, setBlocked] = useState<Shortfall[] | null>(null);
   const [conflict, setConflict] = useState<Conflict | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  /** 保存の表示：saved（今送って保存した）・recovered（前の送信で保存されていた） */
+  /** 保存の表示：saved（今送って保存した）・recovered（読み直したら保存されていた） */
   const [savedKind, setSavedKind] = useState<'saved' | 'recovered'>('saved');
-  // 応答の届かなかった送信があり、確かめる読み直しも通信できなかった（「確かめる」で読み直せるまで送り直さない）
-  const [unconfirmed, setUnconfirmed] = useState(false);
-  // 部屋の行のクエリの何回目の更新まで、未確定の送信の決めに使った（または送信の前後で使えない）か。
-  // 送信が失敗した時点のキャッシュの行は、送る前か送っている間に読んだものかもしれないので決めに使わない
-  const roomKey = queryKeys.yearPart(yearId, 'stocks', 'room', roomId);
-  const roomUpdates = () => queryClient.getQueryState(roomKey)?.dataUpdateCount ?? 0;
-  // 開いたときにキャッシュにある行も、送信の結果より前に読んだものかもしれないので使わない（開いた後に届いた行で決める）
-  const judgedUpdates = useRef(queryClient.getQueryState(roomKey)?.dataUpdateCount ?? 0);
-  // 保存・確かめる・上書きの流れの途中（最新でない年度・在庫超過の確かめを開いている間を含む）と、前の画面の送信を待っている間。
-  // この間に届いた裏の読み直しでは決めない（流れの中・待った後に読み直して決める。流れの古い入力・元の行で続けて、自分の保存を
-  // ダイアログに出したり二重に送ったりしない）。phase は描画の後にしか変わらないので、すぐ変わる ref で見る
-  const flow = useRef(!!sendOnOpen);
-  // 画面を離れた後も送信は続く。離れた後は、送信の結果で知らせたり下書き・キャッシュを変えたりしない（開き直した画面が決める）
+  // 画面を離れた後も送信は続く。離れた後は、送信の結果で知らせたり下書きを変えたりしない（開き直した画面と同じキーの下書きを消さない）
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -331,7 +248,7 @@ export function StockInput({
     setDraft(null);
     setSavedAt(null);
     setBlocked(null);
-    if (!lastSent.current && baseCounts && sameCounts(items, next, baseCounts)) writer.clear();
+    if (baseCounts && sameCounts(items, next, baseCounts)) writer.clear();
     else if (stamps) writeDraft(next, stamps);
   };
 
@@ -342,6 +259,7 @@ export function StockInput({
       await onAuthError(e);
       return;
     }
+    // 応答が届かなかった（保存できたか分からない）失敗も、ここで入れて画面で unknownOutcomeMessage を出す（設計 2.6 の (A) の 1）
     setError(e);
     const eff = effectOf(c);
     if (eff.reload === 'year') {
@@ -352,91 +270,57 @@ export function StockInput({
     }
   };
 
-  /** 読み直した部屋の行をキャッシュに入れ（「前回の入力」はキャッシュの行で出す）、一覧なども読み直させる。
-   *  入れた行は未確定の送信の決めに使い済みにする（裏の読み直しとして二重に決めない） */
-  const showRows = (rows: StockDbRow[]) => {
-    queryClient.setQueryData(roomKey, rows);
-    judgedUpdates.current = roomUpdates();
-    for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
-  };
-
-  /** 保存できた（今送った・前の送信で保存されていた）後の片づけ。rows が今の DB の部屋の行 */
-  const finishSaved = (rows: StockDbRow[], kind: 'saved' | 'recovered') => {
-    setPending(null);
-    setUnconfirmed(false);
-    setError(null);
-    writer.clear();
-    setDraft(null);
+  /** 入力の元を rows（今の DB の部屋の行）にする。キャッシュにも入れる（「前回の入力」はキャッシュの行で出す） */
+  const rebase = (rows: StockDbRow[]) => {
     setBase(rows);
     setSeen(rows);
     setRestoredStamps(null);
     setRemote(null);
+    queryClient.setQueryData(roomKey, rows);
+  };
+  const invalidateStocks = () => {
+    for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
+  };
+
+  /** 保存できた（今送った・読み直したら保存されていた）後の片づけ。rows が今の DB の部屋の行 */
+  const finishSaved = (rows: StockDbRow[], kind: 'saved' | 'recovered') => {
+    setError(null);
+    writer.clear();
+    setDraft(null);
+    rebase(rows);
     setCounts(countsFromRows(items, rows));
     setSavedKind(kind);
     setSavedAt(kind === 'recovered' ? (latestCounted(rows)?.countedAt ?? new Date().toISOString()) : new Date().toISOString());
     toast.success(kind === 'recovered' ? '保存されていました' : '保存しました');
-    showRows(rows);
+    invalidateStocks();
   };
 
-  /** values を送る。sentStamps は送る直前に読んだ部屋の行（応答が届かなかったときに、この後の変化が自分の保存かを見る元） */
-  /** 画面を離れた後に、送信が届いた。下書きがまだこの送信のもの（sent が同じ）なら消す（開き直した画面が書いた下書きは消さない） */
-  const finishSavedAfterLeaving = (values: StockCounts, sentStamps: StockBaseStamps) => {
-    const d = loadDraft<unknown>(draftKey);
-    const parsed = d ? stockDraftSchema.safeParse(d.value) : null;
-    const sent = parsed?.success ? parsed.data.sent : undefined;
-    if (sent && sameRecord(sent.counts, values) && sameRecord(sent.stamps, sentStamps)) removeDraft(draftKey);
-    for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
-  };
-
-  const write = async (values: StockCounts, sentStamps: StockBaseStamps, retried = false): Promise<void> => {
+  /** values を送る。latest は送る前に読み直した部屋の行（入力の元にする。設計 2.6 の (A) の 4） */
+  const write = async (values: StockCounts, latest: StockDbRow[], retried = false): Promise<void> => {
     setPhase('saving');
-    setPending({ counts: values, stamps: sentStamps });
-    // 送る値と送る直前の行を下書きにも置く（送っている間・応答が届かなかった後に画面を離れても、開き直して決められる）。
-    // 戻していない下書きは、今の入力を送ると決めたので使わない
+    rebase(latest);
+    // 戻していない下書きは、今の入力を送ると決めたので使わない。送っている間に離れても入力を戻せるよう、元を latest にして書き切る
     setDraft(null);
-    writeDraft(values, sentStamps);
+    writeDraft(values, stampsOf(latest));
     writer.flush();
-    // 送っている間に画面を離れて開き直したら、開き直した画面はこれが終わるまで待つ
-    let finished: () => void = () => undefined;
-    const flight = new Promise<void>((resolve) => {
-      finished = resolve;
-    });
-    sendsInFlight.set(storageKey, flight);
+    const sending = saveRoomStocks(yearId, roomId, items, values);
+    const inFlight = sending.catch(() => undefined);
+    sendsInFlight.set(storageKey, inFlight);
     try {
-      await sendNow(values, sentStamps, retried);
-    } finally {
-      if (sendsInFlight.get(storageKey) === flight) sendsInFlight.delete(storageKey);
-      finished();
-      setPhase('idle');
-    }
-  };
-
-  const sendNow = async (values: StockCounts, sentStamps: StockBaseStamps, retried: boolean): Promise<void> => {
-    // 送る前に始まった部屋の行の読み込みは捨てる（届く行は送る前に読んだものなので、送った値が入ったかの決めに使えない）
-    await queryClient.cancelQueries({ queryKey: roomKey });
-    try {
-      const rows = await saveRoomStocks(yearId, roomId, items, values);
+      const rows = await sending;
       if (mounted.current) finishSaved(rows, 'saved');
-      else finishSavedAfterLeaving(values, sentStamps);
+      else invalidateStocks();
     } catch (e) {
-      // 画面を離れた後の失敗は、開き直した画面（開き直さなければ次に開いたとき）が下書きの sent から読み直して決める
       if (!mounted.current) return;
-      if (!isUncertain(e)) {
-        // 応答が届いた失敗なら何も保存されていない（応答の届かなかった失敗だけ、送った数を残して後で確かめる）
-        setPending(null);
-        writeDraft(values, sentStamps);
-      } else {
-        // 送っている間に始まって、まだ届いていない読み込みも捨てる。今キャッシュにある行も、送る前か送っている間に
-        // 読んだものかもしれないので使い済みにする（送った値が入っていないとは決めない）
-        await queryClient.cancelQueries({ queryKey: roomKey });
-        judgedUpdates.current = roomUpdates();
-      }
       // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks の upsert は同じ値で何度送っても同じ。2.6）
       if (classifyError(e).kind === 'auth' && !retried) {
-        if ((await onAuthError(e)) === 'retry') return write(values, sentStamps, true);
+        if ((await onAuthError(e)) === 'retry') return write(values, latest, true);
         return;
       }
       await handleError(e);
+    } finally {
+      if (sendsInFlight.get(storageKey) === inFlight) sendsInFlight.delete(storageKey);
+      setPhase('idle');
     }
   };
 
@@ -451,147 +335,8 @@ export function StockInput({
     }
   };
 
-  /**
-   * 未確定の送信（lastSent）が、読み直した部屋の行（latest）に入ったかを決めて片づける（設計 2.6。決めたことの 21）。
-   * 送る直前に読んだ行と比べる（入力の元〔base・下書きの base〕とは比べない）。values は今の入力（入力がまだなければ
-   * openingCounts。どの呼び出しでも同じ入力で決める）。
-   * - recovered：自分の保存が入っていて、その後に入力を変えていない →「保存されていました」で終える
-   * - rebased：自分の保存が入っていて、その後に入力を変えた → 読み直した行を元にして知らせる（送らない。保存は押せる）
-   * - notSaved：入っておらず、ほかの人の保存もない → 送った数を消す（知らせるか送るかは呼ぶ側）
-   * - other：ほかの人の保存があり、自分の保存か決められない → 送った数を残す（入力は置き換えない。選ぶのは呼ぶ側）
-   * 未確定の送信がなければ null。
-   */
-  const settleSent = (latest: StockDbRow[], values: StockCounts): Settled | null => {
-    const sent = lastSent.current;
-    if (!sent) return null;
-    // 読み直せた（通信できた）ので、確かめられない知らせと通信の失敗の表示は下ろす
-    setUnconfirmed(false);
-    setError(null);
-    const changed = detectOtherSave(loadedOf(sent.stamps), latest);
-    if (changed && !isOwnSave(items, latest, changed, sent.counts, open.userId)) return { kind: 'other', other: changed };
-    if (changed && sameCounts(items, values, sent.counts)) {
-      finishSaved(latest, 'recovered');
-      return { kind: 'recovered' };
-    }
-    // 自分の保存が入っていてその後に入力を変えた（rebased）か、送る直前の行から何も変わっていない（notSaved）。
-    // どちらも読み直した行を入力の元にする（入力は変えない。下書きの sent を消し、元を読み直した行にする）
-    setPending(null);
-    setBase(latest);
-    setSeen(latest);
-    setRestoredStamps(null);
-    setRemote(null);
-    // 下書きは今の入力で書き直す（sent を外し、元を読み直した行にする）。未確定の間に戻していない下書きはない（開いたときに入力にした）
-    const latestStamps = stampsOf(latest);
-    if (sameCounts(items, values, countsFromRows(items, latest))) {
-      writer.clear();
-    } else {
-      writer.write({ counts: values, base: latestStamps });
-    }
-    if (!changed) return { kind: 'notSaved' };
-    toast.info(REBASED_MESSAGE);
-    showRows(latest);
-    return { kind: 'rebased' };
-  };
-
-  // 裏の読み直し（通信が戻ったときの読み直し・ErrorBanner の「読み直す」・invalidate の後など）で部屋の行が届いたら、
-  // 未確定の送信を決める（入力は置き換えない）。保存・確かめるの流れの途中（確かめのダイアログを含む）・前の画面の送信を
-  // 待っている間ならその流れが、ほかの人の保存のダイアログを開いている間はその選択が決めるので見送る（流れの後・閉じた後の
-  // 読み直しで決める）
-  const onRoomRows = useEffectEvent(() => {
-    const rows = queryClient.getQueryData<StockDbRow[]>(roomKey);
-    if (!lastSent.current || flow.current || conflict !== null || !rows) return;
-    const n = roomUpdates();
-    if (n <= judgedUpdates.current) return;
-    judgedUpdates.current = n;
-    // 今の入力（開いて初めて読めたときは、入力はまだないので、描画で作るのと同じ openingCounts）
-    const settled = settleSent(rows, counts ?? openingCounts(rows));
-    if (settled?.kind === 'notSaved') {
-      setSeen(rows);
-      toast.info(NOT_SAVED_MESSAGE);
-    } else if (settled?.kind === 'other') {
-      setRemote(settled.other);
-    }
-  });
-  const roomHash = hashKey(roomKey);
-  useEffect(
-    () =>
-      queryClient.getQueryCache().subscribe((event) => {
-        if (event.type === 'updated' && event.action.type === 'success' && event.query.queryHash === roomHash) onRoomRows();
-      }),
-    [queryClient, roomHash],
-  );
-  // 未確定の送信を下書きから戻して開いたとき、キャッシュの行しかなければ読み直す（届いた行で決める）。
-  // 前の画面の送信がまだ終わっていなければ、終わってから読み直す（下）
-  const refetchOnOpen = useEffectEvent(() => {
-    if (stored?.sent && !sendOnOpen && queryClient.getQueryData(roomKey) !== undefined) void queryClient.invalidateQueries({ queryKey: roomKey });
-  });
-  useEffect(() => {
-    refetchOnOpen();
-  }, []);
-  // 前の画面の送信が終わった（届いた・失敗した）。それまでに読んだ行・読んでいる行は送信の結果より前のものかもしれないので
-  // 使わず、この後に始める読み直しで決める
-  const afterSendOnOpen = useEffectEvent(async () => {
-    await queryClient.cancelQueries({ queryKey: roomKey });
-    judgedUpdates.current = roomUpdates();
-    flow.current = false;
-    setPhase('idle');
-    void queryClient.invalidateQueries({ queryKey: roomKey });
-  });
-  useEffect(() => {
-    if (!sendOnOpen) return;
-    let live = true;
-    void sendOnOpen.then(() => {
-      if (live) void afterSendOnOpen();
-    });
-    return () => {
-      live = false;
-    };
-  }, [sendOnOpen]);
-
-  /** 保存・確かめる・上書きの流れ。流れの間に届いて見送った裏の読み直しがあれば、流れの後に読み直して決める */
-  const inFlow = async (run: () => Promise<void>) => {
-    flow.current = true;
-    try {
-      await run();
-    } finally {
-      flow.current = false;
-      if (mounted.current && lastSent.current && roomUpdates() > judgedUpdates.current) void queryClient.invalidateQueries({ queryKey: roomKey });
-    }
-  };
-
-  /** 「確かめる」：応答の届かなかった送信が保存されたかを、部屋の行を読み直して確かめる */
-  const confirmLastSave = () => inFlow(confirmLastSaveNow);
-  const confirmLastSaveNow = async () => {
-    if (!unconfirmed || !counts || phase !== 'idle') return;
-    setError(null);
-    setPhase('checking');
-    try {
-      const latest = await fresh(() => fetchRoomStocks(yearId, roomId));
-      const settled = settleSent(latest, counts);
-      if (!settled || settled.kind === 'recovered' || settled.kind === 'rebased') return;
-      setSeen(latest);
-      if (settled.kind === 'notSaved') {
-        toast.info(NOT_SAVED_MESSAGE);
-      } else {
-        // ほかの人の保存があり、自分の保存が入ったか決められない。「保存されていませんでした」とは言わず、
-        // ほかの人の保存のダイアログで選んでもらう（やめても知らせを残し、入力は置き換えない）
-        setRemote(settled.other);
-        setConflict({ latest, other: settled.other });
-      }
-      showRows(latest);
-    } catch (e) {
-      if (e instanceof AuthHandled) return;
-      if (isUncertain(e)) toast.error('まだ通信できません。通信が戻ったらもう一度「確かめる」を押してください');
-      else await handleError(e);
-    } finally {
-      setPhase('idle');
-    }
-  };
-
-  // 最新でない年度の確かめを待つ間も流れの途中（裏の読み直しで決めない。続けたら、この流れの読み直しで決める）
-  const save = () => inFlow(saveNow);
-  const saveNow = async () => {
-    if (!counts || !base || !stamps || phase !== 'idle' || !access.writable || unconfirmed) return;
+  const save = async () => {
+    if (!counts || !base || !stamps || phase !== 'idle' || !access.writable) return;
     setError(null);
     setBlocked(null);
     const parsed = stockCountsSchema.safeParse(counts);
@@ -602,9 +347,11 @@ export function StockInput({
     writer.flush();
     if (!(await notLatest.confirmBeforeWrite())) return;
     setPhase('checking');
-    // 送る直前に読んだ部屋の行の updated_at（送ると決まったら入る）
-    let sentStamps: StockBaseStamps | null = null;
+    // 送ると決まったら、送る前に読み直した部屋の行が入る
+    let latest: StockDbRow[] | null = null;
     try {
+      // 前の画面（離れた画面）の送信が残っていれば、終わってから読み直す
+      await sendsInFlight.get(storageKey);
       if (access.shortfall !== 'none') {
         // 振り分けの合計は保存の直前に読み直す（DB の確定中の守りと同じ条件を先に確かめる）
         const allocated = await fresh(() => fetchRoomAllocated(yearId, roomId));
@@ -618,66 +365,49 @@ export function StockInput({
           if (!(await shortfallAsk.ask(list))) return;
         }
       }
-      const latest = await fresh(() => fetchRoomStocks(yearId, roomId));
-      // 未確定の送信があれば、まず送った値が入ったかを決める（送る直前の行と比べる）。入っていれば送らない
-      // （入力を変えていれば知らせて、もう一度「保存」を押してもらう）。入っておらずほかの人の保存もなければ、
-      // 押したのが送り直しなのでそのまま送る。ほかの人の保存があればダイアログ。未確定の送信がなければ入力の元と比べる
-      const settled = settleSent(latest, parsed.data);
-      if (settled?.kind === 'recovered' || settled?.kind === 'rebased') return;
-      const other = settled ? (settled.kind === 'other' ? settled.other : null) : detectOtherSave(loadedOf(stamps), latest);
-      if (other) {
-        setConflict({ latest, other });
-        return;
+      // 毎回、送る前に部屋の行を読み直して決める（設計 2.6 の (A) の 2〜4）
+      const rows = await fresh(() => fetchRoomStocks(yearId, roomId));
+      const decision = decideStockSave(items, parsed.data, stamps, rows, open.userId);
+      if (decision.kind === 'saved') {
+        finishSaved(rows, 'recovered');
+      } else if (decision.kind === 'conflict') {
+        setConflict({ latest: rows, other: decision.other });
+      } else {
+        latest = rows;
       }
-      sentStamps = stampsOf(latest);
     } catch (e) {
-      if (e instanceof AuthHandled) return;
-      if (lastSent.current && isUncertain(e)) {
-        // 応答の届かなかった送信があり、確かめる読み直しも通信できない。確かめずに送り直さない（設計 2.6）
-        setError(null);
-        setUnconfirmed(true);
-        return;
-      }
-      await handleError(e);
-      return;
+      // 読み直しが通信できなければ送らない（handleError が入れた失敗で unknownOutcomeMessage を出す。(A) の 4）
+      if (!(e instanceof AuthHandled)) await handleError(e);
     } finally {
-      if (!sentStamps) setPhase('idle');
+      if (!latest) setPhase('idle');
     }
-    if (sentStamps) await write(parsed.data, sentStamps);
+    if (latest) await write(parsed.data, latest);
   };
 
-  const overwrite = () =>
-    inFlow(async () => {
-      if (!conflict || !counts) return;
-      setBase(conflict.latest);
-      setRestoredStamps(null);
-      setRemote(null);
-      setConflict(null);
-      await write(counts, stampsOf(conflict.latest));
-    });
+  /** ダイアログの「上書きする」：読み直した行を入力の元にして、自分の数で送る */
+  const overwrite = async () => {
+    if (!conflict || !counts) return;
+    const latest = conflict.latest;
+    setConflict(null);
+    await write(counts, latest);
+  };
 
-  /** ほかの人の数を入力にする（入力と下書きは捨てる。未確定の送信も、選んで読み直したので片づける） */
+  /** ほかの人の数を入力にする（入力と下書きは捨てる）。rows は今の DB の部屋の行 */
   const adopt = (rows: StockDbRow[]) => {
-    setPending(null);
-    setUnconfirmed(false);
-    setBase(rows);
-    setRestoredStamps(null);
-    setRemote(null);
+    setError(null);
+    rebase(rows);
     setCounts(countsFromRows(items, rows));
     writer.clear();
     setDraft(null);
     toast.info('ほかの人が保存した数を読み直しました');
   };
 
-  /** ダイアログの「読み直す」。保存の直前に読み直した行はキャッシュに入っていないので、ここで入れる
-   *  （「前回の入力」はキャッシュの行で出す）。一覧（数えたか）も古いので、保存の後と同じく読み直させる */
+  /** ダイアログの「読み直す」。保存の直前に読み直した行を入力にする。一覧（数えたか）も古いので、保存の後と同じく読み直させる */
   const reloadLatest = () => {
     if (!conflict) return;
-    const rows = conflict.latest;
-    adopt(rows);
-    setSeen(rows);
+    adopt(conflict.latest);
     setConflict(null);
-    showRows(rows);
+    invalidateStocks();
   };
 
   useEffect(() => {
@@ -765,14 +495,22 @@ export function StockInput({
               setDraft(null);
             }}
             onDiscard={() => {
-              // 未確定の送信は捨てない（開き直しても、まず送った値が入ったかを決める）
-              if (lastSent.current && counts && stamps) writeDraft(counts, stamps);
-              else writer.clear();
+              writer.clear();
               setDraft(null);
             }}
           />
         ) : null}
-        {error ? (
+        {error && isUnknownOutcome(error) ? (
+          // 応答が届かず保存できたか分からない・保存の前の読み直しが通信できない（設計 2.6 の (A) の 1・4）。
+          // 確かめるためのボタンは置かない（「保存」を押せば、送る前に読み直して決まる）
+          <div role="alert" data-testid="stock-unknown-outcome" className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <div className="min-w-0 flex-1 space-y-1">
+              <p className="font-medium text-destructive">{unknownOutcomeMessage()}</p>
+              <p className="text-xs text-muted-foreground">入力はそのまま残しています。</p>
+            </div>
+          </div>
+        ) : error ? (
           <ErrorBanner
             error={error}
             context={{ names }}
@@ -781,22 +519,10 @@ export function StockInput({
               void stocksQ.refetch();
               if (access.shortfall !== 'none') void allocQ.refetch();
             }}
-            onRetry={!unconfirmed && (classifyError(error).kind === 'network' || classifyError(error).kind === 'deadlock') ? () => void save() : undefined}
+            onRetry={classifyError(error).kind === 'deadlock' ? () => void save() : undefined}
           />
         ) : null}
-        {unconfirmed ? (
-          <div role="alert" data-testid="stock-unconfirmed" className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
-            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
-            <div className="min-w-0 flex-1 space-y-2">
-              <p className="font-medium text-destructive">保存できたか確かめられません。通信が戻ったら「確かめる」を押してください</p>
-              <p className="text-xs text-muted-foreground">入力はそのまま残しています。確かめるまで保存は押せません（二重に送らないため）。</p>
-              <Button size="sm" variant="outline" onClick={() => void confirmLastSave()} disabled={busy}>
-                {phase === 'checking' ? '確かめています…' : '確かめる'}
-              </Button>
-            </div>
-          </div>
-        ) : null}
-        {remote && (dirty || pending) ? (
+        {remote && dirty ? (
           <div role="status" data-testid="stock-remote-change" className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
             <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
             <div className="min-w-0 flex-1 space-y-2">
@@ -907,7 +633,7 @@ export function StockInput({
             size="lg"
             className="h-12 w-full text-base"
             onClick={() => void save()}
-            disabled={busy || unconfirmed}
+            disabled={busy}
             aria-busy={busy || undefined}
           >
             {phase === 'saving' ? '保存中…' : phase === 'checking' ? '確かめています…' : '保存'}
