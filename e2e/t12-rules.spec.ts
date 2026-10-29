@@ -297,41 +297,112 @@ test.describe('T12 管理者', () => {
     }
   });
 
-  test('T12 シートを開いたまま読み直しが通信の失敗になっても、シートと入力が残る（ErrorState に置き換えない）', async ({ page }) => {
+  test('T12 通信が切れている間の保存は「保存できたか分かりません」で入力を残し、裏の読み直しが失敗してもシートと入力が残る。通信が戻れば、もう一度「保存」でふつうに送る', async ({ page }) => {
     // supabase-js の GET の再試行と React Query の再試行で、失敗が出るまで十数秒かかる
     test.setTimeout(150_000);
     const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
     try {
+      await page.clock.install();
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       await page.goto('/rules/?code=S05');
       const sheet = page.getByRole('dialog');
       await expect(sheet.getByRole('heading', { name: 'ルール S05（運び元の制限）を編集' })).toBeVisible();
       await sheet.getByLabel(/^メモ/).fill('E2E：通信が切れても残るメモ');
 
-      // ここから rules への通信が切れる（保存も、保存されたかの確かめも、一覧の読み直しも通らない）
+      // ここから rules への通信が切れる（保存も、保存されたかの読み直しも、一覧の読み直しも通らない）
       await page.route('**/rest/v1/rules*', (route) => route.abort('internetdisconnected'));
-      await sheet.getByRole('button', { name: '保存', exact: true }).click();
+      const saveButton = sheet.getByRole('button', { name: '保存', exact: true });
+      await saveButton.click();
+      // 2.6 の (B1)：読み直せないので「分からない」。確かめる・読み直すのボタンはなく、保存は押せるまま
       const notice = sheet.getByTestId('unknown-outcome');
-      await expect(notice).toBeVisible({ timeout: 60_000 });
-      // 通信が戻らないまま「読み直す」を押す
-      await notice.getByRole('button', { name: '読み直す' }).click();
-      // 読み直しが終わる（失敗の知らせか、画面全体の ErrorState のどちらか）まで待つ
-      await expect(page.getByText(/ルールを読み直せませんでした/).or(page.getByRole('button', { name: 'もう一度読み込む' })).first()).toBeVisible({
-        timeout: 90_000,
-      });
-      // シートと入力は残る。一覧の上に読み直しの失敗の帯が出る
+      await expect(notice).toHaveText('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります', { timeout: 60_000 });
+      await expect(notice.getByRole('button')).toHaveCount(0);
+      // 下のメモの欄まで送っていても、知らせが見える所に出る
+      await expect(notice).toBeInViewport();
+      await expect(saveButton).toBeEnabled();
+
+      // 裏で一覧が読み直され（つながり直したときの refetchOnReconnect）、通信の失敗になる
+      await page.clock.fastForward('00:31');
+      await page.context().setOffline(true);
+      await page.context().setOffline(false);
+      await expect(page.getByTestId('rules-reload-error')).toBeAttached({ timeout: 90_000 });
+      // シートと入力は残る（画面全体の ErrorState に置き換えない）
       await expect(sheet.getByRole('heading', { name: 'ルール S05（運び元の制限）を編集' })).toBeVisible();
       await expect(sheet.getByLabel(/^メモ/)).toHaveValue('E2E：通信が切れても残るメモ');
-      await expect(page.getByTestId('rules-reload-error')).toBeAttached();
       await expect(page.getByRole('button', { name: 'もう一度読み込む' })).toHaveCount(0);
-
-      // 通信が戻って読み直すと、帯が消え、入力はそのまま
-      await page.unroute('**/rest/v1/rules*');
-      await notice.getByRole('button', { name: '読み直す' }).click();
-      await expect(page.getByTestId('rules-reload-error')).toHaveCount(0, { timeout: 30_000 });
-      await expect(sheet.getByLabel(/^メモ/)).toHaveValue('E2E：通信が切れても残るメモ');
       // 保存は届いていない
       expect((await rulesOf(s.yearId)).find((r) => r.code === 'S05')!.memo).not.toBe('E2E：通信が切れても残るメモ');
+
+      // 通信が戻ってもう一度「保存」を押すと、開いたときの版でふつうに送り、閉じる。一覧も読み直されて帯が消える
+      await page.unroute('**/rest/v1/rules*');
+      await saveButton.click();
+      await expect(sheet).toBeHidden();
+      await expect(page.getByText('ルール S05 を保存しました')).toBeVisible();
+      await expect(page.getByTestId('rules-reload-error')).toHaveCount(0, { timeout: 30_000 });
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S05')!.memo).toBe('E2E：通信が切れても残るメモ');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T12 追加と更新の応答だけが届かなくても、行を読み直して「保存されていました」で閉じる（ルールは1つだけで、値は入力のとおり）', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    /** 次の method の書き込みを1回だけ DB に届け、応答を落とす（保存できたか分からない） */
+    const dropResponseOnce = async (method: 'POST' | 'PATCH') => {
+      const sent: string[] = [];
+      let dropped = false;
+      await page.route('**/rest/v1/rules*', async (route) => {
+        const req = route.request();
+        if (req.method() !== 'GET') sent.push(req.method());
+        if (!dropped && req.method() === method) {
+          dropped = true;
+          await route.fetch();
+          await route.abort('internetdisconnected');
+          return;
+        }
+        await route.fallback();
+      });
+      return sent;
+    };
+    try {
+      const before = (await rulesOf(s.yearId)).length;
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/');
+      await expect(page.locator(`[data-row-id="${s.ids.rules['S05']}"]`)).toBeVisible();
+
+      // 追加：insert は DB に届くが、応答が落ちる → (year_id, code) で読み直すと入力と同じ
+      let sent = await dropResponseOnce('POST');
+      const add = await openAdd(page, '代替');
+      await fillSubstitute(page, add, { code: 'S09', from: '長机(3人掛)', to: '長机(2人掛)', categories: ['模擬店'], cost: '2', memo: 'E2E：応答が落ちた追加' });
+      await add.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(add).toBeHidden();
+      await expect(page.getByText('保存されていました')).toBeVisible();
+      expect(sent).toEqual(['POST']);
+      const s09 = page.locator('[data-row-id]').filter({ hasText: 'S09' });
+      await expect(s09).toHaveCount(1);
+      let rows = (await rulesOf(s.yearId)).filter((r) => r.code === 'S09');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ kind: 'substitute', enabled: true, memo: 'E2E：応答が落ちた追加', params: { categories: ['stall'], cost: 2 } });
+      await page.unrouteAll({ behavior: 'wait' });
+      // 追加の知らせが消えるのを待つ（次の知らせと見分けるため）
+      await expect(page.getByText('保存されていました')).toHaveCount(0, { timeout: 15_000 });
+
+      // 更新：update は DB に届くが、応答が落ちる → id で読み直すと入力と同じ
+      sent = await dropResponseOnce('PATCH');
+      await s09.getByRole('button', { name: 'S09 を編集' }).click();
+      const edit = page.getByRole('dialog');
+      await expect(edit.getByRole('heading', { name: 'ルール S09（代替）を編集' })).toBeVisible();
+      await edit.getByLabel(/^重さ/).fill('4');
+      await edit.getByLabel(/^メモ/).fill('E2E：応答が落ちた更新');
+      await edit.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(edit).toBeHidden();
+      await expect(page.getByText('保存されていました')).toBeVisible();
+      expect(sent).toEqual(['PATCH']);
+      await expect(s09).toContainText('E2E：応答が落ちた更新');
+      rows = (await rulesOf(s.yearId)).filter((r) => r.code === 'S09');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ enabled: true, memo: 'E2E：応答が落ちた更新', params: { categories: ['stall'], cost: 4 } });
+      expect(await rulesOf(s.yearId)).toHaveLength(before + 1);
     } finally {
       await s.cleanup();
     }
