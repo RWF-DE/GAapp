@@ -1,7 +1,7 @@
 // 振り分け画面の読み書き（画面の設計 3.9。T13）。
 import type { AllocateMode, AllocationRow } from '@gaapp/shared';
 import { callRpc } from '@/lib/rpc';
-import type { SaveAutoAllocationsResult } from '@/lib/rpc/payloads';
+import type { AllocationChange, SaveAllocationRowsResult, SaveAutoAllocationsResult } from '@/lib/rpc/payloads';
 import type { AllocationDbRow } from '@/lib/db/types';
 
 /**
@@ -20,6 +20,14 @@ export function saveAutoAllocations(args: {
     p_mode: args.mode,
     p_base_version: args.baseVersion,
   });
+}
+
+/**
+ * 行の手での変更を保存する（save_allocation_rows。理由は必須、1〜1000 件、update・delete は updatedAt の楽観ロック）。
+ * 全部か何も保存しないか。通れば必ず版が上がる（応答が届かなかったときは版で確かめる。lib/allocation/row-save.ts）。
+ */
+export function saveAllocationRows(args: { yearId: string; changes: AllocationChange[]; reason: string }): Promise<SaveAllocationRowsResult> {
+  return callRpc('save_allocation_rows', { p_year_id: args.yearId, p_changes: args.changes, p_reason: args.reason });
 }
 
 const rowKey = (r: Pick<AllocationRow, 'sourceRoomId' | 'groupId' | 'itemId' | 'requestedItemId' | 'isKeep'>) =>
