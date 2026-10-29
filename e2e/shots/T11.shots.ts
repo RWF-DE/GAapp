@@ -41,7 +41,7 @@ test.describe('T11 団体代表', () => {
       await page.getByRole('button', { name: '机(木)の数を1増やす' }).click();
       await shoot(page, 'T11', 'request-mobile', { fullPage: true });
       await page.getByRole('button', { name: '修正して再提出' }).click();
-      await page.getByRole('alertdialog').getByRole('button', { name: 'この年度に保存する' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'この年度に提出する' }).click();
       await expect(page.getByRole('alertdialog').getByTestId('submit-summary')).toBeVisible();
       await shoot(page, 'T11', 'request-confirm-mobile');
       await page.getByRole('alertdialog').getByRole('button', { name: '提出する' }).click();
@@ -65,7 +65,7 @@ test.describe('T11 団体代表', () => {
       await page.setViewportSize(MOBILE);
       await page.goto('/request/');
       await page.getByRole('button', { name: '修正して再提出' }).click();
-      await page.getByRole('alertdialog').getByRole('button', { name: 'この年度に保存する' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: 'この年度に提出する' }).click();
       await page.getByRole('alertdialog').getByRole('button', { name: '提出する' }).click();
       await expect(page.getByTestId('submit-error')).toBeVisible();
       await shoot(page, 'T11', 'request-clock-skew-mobile');
@@ -134,6 +134,50 @@ test.describe('T11 管理者', () => {
       await sheet.getByRole('button', { name: '提出する' }).click();
       await expect(page.getByRole('alertdialog').getByTestId('proxy-conflicts')).toBeVisible();
       await shoot(page, 'T11', 'requests-proxy-conflict-pc');
+
+      // 未保存の入力があるシートを Esc で閉じようとすると確かめる
+      await page.getByRole('alertdialog').getByRole('button', { name: '提出しないで見直す' }).click();
+      await expect(page.getByRole('alertdialog')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('alertdialog').getByText('入力を捨てて閉じますか')).toBeVisible();
+      await shoot(page, 'T11', 'requests-proxy-close-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 申請一覧（PC）：保存の応答が届かず、読み直しもできないとき（確かめる）', async ({ page }) => {
+    test.setTimeout(120_000);
+    const s = await createScenario({ roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/');
+      const cell = page.getByTestId('requests-table').getByRole('textbox').first();
+      await cell.fill('7');
+      await cell.press('Enter');
+      // 書き込みは DB に届くが応答を落とし、その後の表の読み直しも落とす
+      let down = true;
+      await page.route('**/rest/v1/requests*', async (route: Route) => {
+        const req = route.request();
+        if (req.method() === 'POST' || req.method() === 'PATCH') {
+          await route.fetch();
+          await route.abort('failed');
+          return;
+        }
+        if (down && req.url().includes('groups.year_id')) {
+          await route.abort('failed');
+          return;
+        }
+        await route.continue();
+      });
+      await page.getByRole('button', { name: '保存（1件）' }).click();
+      // 読み直しは supabase-js（GET を 3 回まで送り直す）と TanStack Query（1 回）が送り直してから失敗になるので、待ちを長くする
+      await expect(page.getByTestId('save-error')).toContainText('保存できたか確かめられません', { timeout: 60_000 });
+      await shoot(page, 'T11', 'requests-unverified-pc');
+      down = false;
+      await page.getByRole('button', { name: '確かめる' }).click();
+      await expect(page.getByTestId('save-info')).toContainText('保存されていました');
+      await shoot(page, 'T11', 'requests-saved-after-unknown-pc');
     } finally {
       await s.cleanup();
     }
@@ -176,6 +220,15 @@ test.describe('T11 管理者', () => {
       await dialog.getByRole('button', { name: '取り込む（2 団体）' }).click();
       await expect(dialog.getByTestId('import-results')).toBeVisible();
       await shoot(page, 'T11', 'import-results-pc');
+
+      // 同じ CSV を取り込み直す：取り込んだ団体は「同じ時刻（取り込み済み）」で、既定では上書きしない
+      await dialog.getByRole('button', { name: '閉じる' }).first().click();
+      await expect(dialog).toHaveCount(0);
+      await page.getByRole('button', { name: 'Googleフォームの回答を取り込む' }).click();
+      await page.getByRole('dialog').getByLabel('CSV ファイル').setInputFiles(STALL_CSV);
+      await expect(page.getByRole('dialog').getByTestId('plan-模擬店乙')).toContainText('同じ時刻（取り込み済み）');
+      await page.getByRole('dialog').getByTestId('import-plans').scrollIntoViewIfNeeded();
+      await shoot(page, 'T11', 'import-reimport-pc');
     } finally {
       await s.cleanup();
     }
