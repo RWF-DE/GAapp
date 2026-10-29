@@ -410,6 +410,51 @@ describe('計算中のロックはキーボードで抜けられない（B5）',
     expect(body.hasAttribute('inert')).toBe(false);
     expect(body.hasAttribute('aria-busy')).toBe(false);
   });
+
+  it('ロックの外（アプリのヘッダー・ナビゲーション・後から足されたポータル）も inert にし、閉じたら付けたものだけ外す', async () => {
+    vi.useFakeTimers();
+    const { deps, engine } = makeDeps();
+    await act(async () => {
+      await engine.warmup();
+    });
+    render(
+      <div>
+        <header>
+          <button type="button">ログアウト</button>
+        </header>
+        <nav inert>
+          <button type="button">ホーム</button>
+        </nav>
+        <main>
+          <Harness deps={deps} />
+        </main>
+      </div>,
+    );
+    const header = screen.getByRole('banner');
+    const nav = document.querySelector('nav')!;
+    fireEvent.click(screen.getByRole('button', { name: 'go' }));
+    await flush();
+    await flush();
+    const lock = screen.getByTestId('allocate-lock');
+    expect(lock.closest('[inert]')).toBeNull();
+    expect(header.hasAttribute('inert')).toBe(true);
+    expect(nav.hasAttribute('inert')).toBe(true);
+    // ロックを出している間に body へ足された要素（ポータル）も届かない
+    const portal = document.createElement('div');
+    document.body.appendChild(portal);
+    await flush();
+    expect(portal.hasAttribute('inert')).toBe(true);
+    // 中止できるようになったら止める → 付けた inert だけ外れる（もとから inert の nav は残る）
+    act(() => vi.advanceTimersByTime(CANCEL_AFTER_MS + 500));
+    fireEvent.click(screen.getByRole('button', { name: '中止' }));
+    await flush();
+    await flush();
+    expect(screen.queryByTestId('allocate-lock')).toBeNull();
+    expect(header.hasAttribute('inert')).toBe(false);
+    expect(portal.hasAttribute('inert')).toBe(false);
+    expect(nav.hasAttribute('inert')).toBe(true);
+    portal.remove();
+  });
 });
 
 describe('自動振り分けを押せない理由（autoBlockOf）', () => {

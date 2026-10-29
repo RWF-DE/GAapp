@@ -655,8 +655,9 @@ function AllocationLoaded({
       />
     </RunInert>
     {editable ? (
-      // 未保存の変更のバー（画面の下に固定）も計算中は届かない
-      <div inert={running}>
+      // 未保存の変更のバー（画面の下に固定）も計算中は届かない。包みは箱を作らない（display: contents）：
+      // 箱を作るとバーの sticky がこの包み（バーと同じ高さ）の中でしか効かず、画面の下に固定されなくなる
+      <div inert={running} className="contents">
         <PendingBar api={pend} vm={vm} />
         <SourceDialog
           row={sourceRowId ? (rowById.get(sourceRowId) ?? null) : null}

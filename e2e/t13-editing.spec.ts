@@ -332,6 +332,29 @@ test.describe('T13 PC の 1280px', () => {
       await s.cleanup();
     }
   });
+
+  test('T13 1280px：先頭の行を変えると、スクロールしなくても画面の下に「未保存の変更」のバーが見える', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/allocation/');
+      await page.getByRole('tab', { name: '机(木)', exact: true }).click();
+      const row = page.locator('[data-room-block] [data-row-id]').first();
+      await expect(row).toBeVisible();
+      await row.getByRole('button', { name: /を1増やす$/ }).click();
+      const bar = page.getByTestId('pending-bar');
+      await expect(bar).toHaveAttribute('data-count', '1');
+      // 先頭の行の近くにいる（ページの終わりまでスクロールしていない）
+      const scroll = await page.locator('html').evaluate((el) => ({ y: el.scrollTop, max: el.scrollHeight - el.clientHeight }));
+      expect(scroll.max, 'ページが画面より長い（バーが固定されていることを確かめられる）').toBeGreaterThan(scroll.y + 800);
+      await expect(bar).toBeInViewport();
+      await expect(bar.getByRole('button', { name: '保存…' })).toBeInViewport();
+      const box = (await bar.boundingBox())!;
+      expect(box.y + box.height, 'バーが画面の下端に付いている').toBeGreaterThan(800 - 8);
+    } finally {
+      await s.cleanup();
+    }
+  });
 });
 
 test('T13 検証の一覧：同じ項目をもう一度押してもその行へ移る。未保存の追加の行（仮の id）へも移る', async ({ page }) => {

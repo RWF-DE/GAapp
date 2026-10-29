@@ -337,14 +337,49 @@ function useLockFocus(ref: React.RefObject<HTMLDivElement | null>, shown: boolea
 }
 
 /**
+ * ロックを出している間、ロックの外のすべて（アプリのヘッダー・ナビゲーション・通知を含む）を inert にする。
+ * ロックから body までの祖先をたどり、各段の兄弟の要素に inert を付ける（aria-modal だけではスクリーンリーダーの
+ * ブラウズモードから届くため）。出している間に body へ足された要素（ポータル）にも付ける。
+ * 付けたものだけを外す（RunInert など、もとから inert のものはそのまま）。
+ */
+function useInertOutside(ref: React.RefObject<HTMLDivElement | null>, shown: boolean): void {
+  useEffect(() => {
+    if (!shown) return;
+    const lock = ref.current;
+    if (!lock) return;
+    const added: Element[] = [];
+    const path = new Set<Element>();
+    const mark = (el: Element) => {
+      if (path.has(el) || el.hasAttribute('inert') || el instanceof HTMLScriptElement) return;
+      el.setAttribute('inert', '');
+      added.push(el);
+    };
+    for (let node: Element = lock; node.parentElement && node !== document.body; node = node.parentElement) {
+      path.add(node);
+      for (const sib of node.parentElement.children) if (sib !== node) mark(sib);
+    }
+    const observer = new MutationObserver((records) => {
+      for (const r of records) for (const n of r.addedNodes) if (n instanceof Element) mark(n);
+    });
+    observer.observe(document.body, { childList: true });
+    return () => {
+      observer.disconnect();
+      for (const el of added) el.removeAttribute('inert');
+    };
+  }, [ref, shown]);
+}
+
+/**
  * 計算中のロック（全面のオーバーレイ）。段階と経過秒数を出し、中止できる段階で 10 秒を過ぎたら「中止」を出す。
- * 出したときにフォーカスをロックへ移し、Tab でロックの外へ出さない（背景は RunInert で inert にする）。
+ * 出したときにフォーカスをロックへ移し、Tab でロックの外へ出さない。ロックの外（本体の RunInert に加えて、
+ * アプリのヘッダー・ナビゲーションなど）は inert にし、スクリーンリーダーからも届かなくする（useInertOutside）。
  */
 export function AutoRunLock({ state, onCancel }: { state: AutoRunState; onCancel: () => void }) {
   const elapsed = useElapsed(state.running ? state.startedAt : null);
   const ref = useRef<HTMLDivElement>(null);
   const shown = state.running && state.phase !== null;
   useLockFocus(ref, shown);
+  useInertOutside(ref, shown);
   if (!state.running || !state.phase) return null;
   const current = PHASES.findIndex((p) => p.phase === state.phase);
   const canCancel = CANCELLABLE_PHASES.includes(state.phase) && elapsed >= CANCEL_AFTER_MS;

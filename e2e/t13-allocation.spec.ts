@@ -64,6 +64,25 @@ test.describe('T13 管理者', () => {
         await expect(page.locator('[data-testid="allocate-lock"]:focus-within')).toHaveCount(1);
       }
       await expect(page.getByTestId('run-inert')).toHaveAttribute('inert', '');
+      // ロックの外（アプリのヘッダー・ナビゲーションを含む）はスクリーンリーダーからも届かない（B5）：
+      // 押せるものはどれも inert の祖先の中にあり、アクセシビリティツリーにも出ない
+      await expect(page.locator('header').getByText('ログアウト').first()).toBeAttached();
+      const outside = await page
+        .locator('button, a[href], input, select, textarea, [role="combobox"], [tabindex]')
+        .evaluateAll((els) =>
+          els.filter((el) => !el.closest('[data-testid="allocate-lock"]') && !el.closest('[inert]')).map((el) => el.outerHTML.slice(0, 120)),
+        );
+      expect(outside, 'ロックの外に inert でない押せるものがある').toEqual([]);
+      const cdp = await page.context().newCDPSession(page);
+      const { nodes } = (await cdp.send('Accessibility.getFullAXTree')) as {
+        nodes: { ignored: boolean; name?: { value?: unknown }; role?: { value?: unknown } }[];
+      };
+      const exposed = nodes
+        .filter((n) => !n.ignored)
+        .map((n) => `${String(n.role?.value ?? '')}:${String(n.name?.value ?? '')}`)
+        .filter((n) => /ログアウト|年度を切り替える|最新の年度|ホーム|履歴|確定/.test(n));
+      expect(exposed, 'ロックの外の操作がアクセシビリティツリーに残る').toEqual([]);
+      await cdp.detach();
       await expect(page.locator('[data-testid="year-status-fieldset"] button', { hasText: '確定' })).toBeDisabled();
       release();
       await expect(lock).toBeHidden({ timeout: 30_000 });
