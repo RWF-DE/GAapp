@@ -48,6 +48,40 @@ describe('CountStepper', () => {
     expect(input.value).toBe('10000');
   });
 
+  it('size を渡さなければ今までの大きさ（ボタンは size="icon"、欄は h-9）', () => {
+    render(<Stepper initial={1} />);
+    expect(screen.getByRole('group', { name: '長机の数' }).getAttribute('data-size')).toBe('default');
+    for (const name of ['長机の数を1減らす', '長机の数を1増やす']) {
+      const b = screen.getByRole('button', { name });
+      expect(b.className).toContain('size-9');
+      expect(b.className).not.toContain('size-11');
+    }
+    const input = screen.getByRole('textbox', { name: '長机の数' });
+    expect(input.className.split(' ')).toEqual(expect.arrayContaining(['h-9', 'w-20', 'md:text-sm']));
+    expect(input.className).not.toContain('h-11');
+  });
+
+  it('size="lg" はボタンと欄の高さを 44px（size-11・h-11）にし、className は外側に付く', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<CountStepper size="lg" label="長机の数" value={2} onChange={onChange} className="shrink-0" />);
+    const group = screen.getByRole('group', { name: '長机の数' });
+    expect(group.getAttribute('data-size')).toBe('lg');
+    expect(group.className).toContain('shrink-0');
+    for (const name of ['長机の数を1減らす', '長机の数を1増やす']) {
+      const classes = screen.getByRole('button', { name }).className.split(' ');
+      expect(classes).toContain('size-11');
+      expect(classes).not.toContain('size-9');
+    }
+    const classes = screen.getByRole('textbox', { name: '長机の数' }).className.split(' ');
+    expect(classes).toEqual(expect.arrayContaining(['h-11', 'text-lg', 'md:text-lg']));
+    expect(classes).not.toContain('h-9');
+    expect(classes).not.toContain('md:text-sm');
+    // 動きは同じ
+    await user.click(screen.getByRole('button', { name: '長机の数を1増やす' }));
+    expect(onChange).toHaveBeenCalledWith(3);
+  });
+
   it('parseCount は全角の数字も読み、範囲に収める', () => {
     expect(parseCount('１２', 0, 100)).toBe(12);
     expect(parseCount('-3', 0, 100)).toBe(0);
@@ -104,6 +138,46 @@ describe('ReasonDialog', () => {
     expect(onSubmit).toHaveBeenCalledWith(null);
     expect(onOpenChange).not.toHaveBeenCalled();
     expect((screen.getByRole('button', { name: '開始する' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('defaultValue を渡さなければ理由の欄は空', () => {
+    render(<ReasonDialog open onOpenChange={() => {}} title="確定" onSubmit={() => {}} />);
+    expect((screen.getByRole('textbox', { name: '理由（必須）' }) as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('defaultValue は理由の欄の初期値。そのまま送れ、開き直すと初期値に戻る', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    function Host() {
+      const [open, setOpen] = useState(true);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            開く
+          </button>
+          <ReasonDialog
+            open={open}
+            onOpenChange={setOpen}
+            title="取り込み"
+            defaultValue="  取り込み：requests.csv  "
+            onSubmit={onSubmit}
+            confirmLabel="取り込む"
+          />
+        </>
+      );
+    }
+    render(<Host />);
+    const box = () => screen.getByRole('textbox', { name: '理由（必須）' }) as HTMLTextAreaElement;
+    expect(box().value).toBe('  取り込み：requests.csv  ');
+    // 書き換えてから閉じると、開き直したときは初期値に戻る
+    await user.type(box(), '追記');
+    await user.click(screen.getByRole('button', { name: 'やめる' }));
+    expect(screen.queryByRole('textbox', { name: '理由（必須）' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: '開く' }));
+    expect(box().value).toBe('  取り込み：requests.csv  ');
+    // 初期値のまま送ると前後の空白を除いて送る
+    await user.click(screen.getByRole('button', { name: '取り込む' }));
+    expect(onSubmit).toHaveBeenCalledWith('取り込み：requests.csv');
   });
 
   it('外の送信中（pending）は確定のボタンを押せない', () => {
