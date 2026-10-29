@@ -9,12 +9,15 @@ import {
   describeRule,
   emptyRuleForm,
   errorsUnder,
+  keepRoomAfterGroupChange,
+  keepUnusableMessage,
   missingTemplates,
   parseCodeParam,
   R8_RULE_TEMPLATES,
   ruleEditMode,
   ruleNamesOf,
   ruleProblems,
+  ruleRefMessage,
   ruleToForm,
   sameRuleWrite,
   templateToForm,
@@ -26,7 +29,7 @@ import {
 const r8like = readFixtureDir(fixturePath('synthetic', 'r8like'));
 const MISSING = '99999999-9999-4999-8999-999999999999';
 
-function data(opts: { rules?: RuleDbRow[]; status?: YearRow['status'] } = {}): RulesData {
+function data(opts: { rules?: RuleDbRow[]; status?: YearRow['status']; unusable?: string[] } = {}): RulesData {
   const t = structuredClone(fixtureToTables(r8like));
   const year: YearRow = {
     id: t.groups[0]!.year_id,
@@ -40,7 +43,17 @@ function data(opts: { rules?: RuleDbRow[]; status?: YearRow['status'] } = {}): R
     prev_year_id: null,
     updated_at: FIXTURE_UPDATED_AT,
   };
-  return { year, rules: opts.rules ?? t.rules, items: t.items, rooms: t.rooms, groups: t.groups };
+  const roomYears = [
+    ...t.roomYears,
+    ...(opts.unusable ?? []).map((name) => ({
+      year_id: year.id,
+      room_id: t.rooms.find((r) => r.name === name)!.id,
+      usable: false,
+      note: null,
+      updated_at: FIXTURE_UPDATED_AT,
+    })),
+  ];
+  return { year, rules: opts.rules ?? t.rules, items: t.items, rooms: t.rooms, groups: t.groups, roomYears };
 }
 
 const d = data();
@@ -51,10 +64,10 @@ const roomId = (name: string) => d.rooms.find((r) => r.name === name)!.id;
 
 describe('describeRule', () => {
   it('4種類の内容の文（団体・場所・品目は名前）', () => {
-    expect(describeRule(rule('S01'), names)).toBe('模擬店の机(木)が足りなければ不可机で代える（重さ 0）');
-    expect(describeRule(rule('S02'), names)).toBe(
-      '休憩所・模擬店の椅子(木)が足りなければ不可椅子で代える（重さ 0、同じ距離なら休憩所を先に）',
-    );
+    // 重さ 0 の代替（S01・S02）は、その区分では元の品目と同じに扱う（01 の規則4）
+    expect(describeRule(rule('S01'), names)).toBe('不可机は机(木)と同じに扱う（模擬店）');
+    expect(describeRule(rule('S02'), names)).toBe('不可椅子は椅子(木)と同じに扱う（休憩所・模擬店、同じ距離なら休憩所を先に）');
+    expect(describeRule(rule('S04'), names)).toBe('企業の長机(3人掛)が足りなければ長机(2人掛)で代える（重さ 1）');
     expect(describeRule(rule('S07'), names)).toBe(
       '模擬店の机(木)が足りなければキャスター机で代える（重さ 3、屋内の団体だけ、了承が要る）',
     );
@@ -164,7 +177,7 @@ describe('checkRuleForm（保存の前の確かめ）', () => {
     dup.code = 'S01b';
     const res = checkRuleForm(dup, d, null);
     expect(res.row).toBeNull();
-    expect(errorsUnder(res.errors, 'params.categories')).toEqual(['同じ代替（desk→desk_ng）で区分が重なるルール S01 があります']);
+    expect(errorsUnder(res.errors, 'params.categories')).toEqual(['同じ代替（机(木)→不可机）で区分が重なるルール S01 があります']);
 
     // 編集中の S01 自身とは重ならない
     expect(checkRuleForm(formOf('S01'), d, rule('S01').id).errors).toEqual({});
@@ -201,8 +214,19 @@ describe('checkRuleForm（保存の前の確かめ）', () => {
     fr.code = 'F1';
     fr.fixedRequest = { group: groupId('設営'), item: 'long_desk_3', count: '3' };
     expect(checkRuleForm(fr, d, null).errors['params.item']).toEqual([
-      'この団体の区分は「long_desk_3」を申請できません。読み替え先の「long_desk_2」を選んでください',
+      'この団体の区分は「長机(3人掛)」を申請できません。読み替え先の「長机(2人掛)」を選んでください',
     ]);
+  });
+
+  it('「残す」の場所が今年使用不可なら、場所の欄に知らせる（保存は止めない）', () => {
+    const off = data({ unusable: ['第一多目的室'] });
+    const res = checkRuleForm(formOf('S08'), off, rule('S08').id);
+    expect(res.errors).toEqual({});
+    expect(res.row).not.toBeNull();
+    expect(res.warnings).toEqual({ 'params.room': [keepUnusableMessage('第一多目的室')] });
+    // 使用可なら知らせない。ほかの種別も見ない
+    expect(checkRuleForm(formOf('S08'), d, rule('S08').id).warnings).toEqual({});
+    expect(checkRuleForm(formOf('S05'), data({ unusable: ['1-1'] }), rule('S05').id).warnings).toEqual({});
   });
 
   it('source_restrict の品目と場所は、選んだ順でなく品目・場所の並びで保存する', () => {
@@ -218,7 +242,7 @@ describe('checkEnable・ruleProblems', () => {
   it('有効にする前に、ほかの有効なルールとの重なりを確かめる', () => {
     const extra: RuleDbRow = { ...rule('S01'), id: MISSING, code: 'S01b', enabled: false };
     const withExtra = data({ rules: [...d.rules, extra] });
-    expect(checkEnable(extra, withExtra)).toEqual(['同じ代替（desk→desk_ng）で区分が重なるルール S01 があります']);
+    expect(checkEnable(extra, withExtra)).toEqual(['同じ代替（机(木)→不可机）で区分が重なるルール S01 があります']);
     expect(checkEnable(rule('S04'), d)).toEqual([]);
   });
 
@@ -236,6 +260,49 @@ describe('checkEnable・ruleProblems', () => {
     const broken = data({ rules: d.rules.map((r) => (r.code === 'S01' ? { ...r, params: { from: 'desk' } } : r)) });
     expect(ruleProblems(broken).get(rule('S01').id)!.label).toBe('設定が壊れています');
     expect(ruleProblems(d).size).toBe(0);
+  });
+
+  it('「残す」の場所が今年使用不可の有効なルールに印を出す（無効のルールには出さない）', () => {
+    const off = data({ unusable: ['第一多目的室'] });
+    const p = ruleProblems(off);
+    expect([...p.keys()]).toEqual([rule('S08').id]);
+    expect(p.get(rule('S08').id)).toEqual({ label: '使用不可の場所です', messages: [keepUnusableMessage('第一多目的室')] });
+
+    const disabled = data({ unusable: ['第一多目的室'], rules: d.rules.map((r) => (r.code === 'S08' ? { ...r, enabled: false } : r)) });
+    expect(ruleProblems(disabled).size).toBe(0);
+  });
+});
+
+describe('ruleRefMessage（checkRuleRefs の文言の品目のコードを名前に）', () => {
+  it('「」・（→）・（・）の中の品目のコードを名前にし、知らないコードとルールのコードはそのまま', () => {
+    expect(ruleRefMessage({ path: 'params.categories', message: '同じ代替（desk→desk_ng）で区分が重なるルール S01 があります' }, names)).toBe(
+      '同じ代替（机(木)→不可机）で区分が重なるルール S01 があります',
+    );
+    expect(
+      ruleRefMessage({ path: 'params.rooms', message: '「残す」のルール S08 の部屋が、この制限の場所に入っていません（desk・chair）' }, names),
+    ).toBe('「残す」のルール S08 の部屋が、この制限の場所に入っていません（机(木)・椅子(木)）');
+    expect(ruleRefMessage({ path: 'params.items.desk', message: '同じ団体・部屋・品目（desk）の「残す」のルール S08 があります' }, names)).toBe(
+      '同じ団体・部屋・品目（机(木)）の「残す」のルール S08 があります',
+    );
+    expect(ruleRefMessage({ path: 'params.items.0', message: '品目「unknown_item」がありません' }, names)).toBe('品目「unknown_item」がありません');
+    // コードの重複の文言はルールのコード（品目と同じ文字でも直さない）
+    expect(ruleRefMessage({ path: 'code', message: 'コード「desk」は他のルールで使われています' }, names)).toBe('コード「desk」は他のルールで使われています');
+  });
+});
+
+describe('keepRoomAfterGroupChange（「残す」で団体を選び直したときの場所）', () => {
+  const groups = d.groups;
+  it('場所が空か前の団体の使用場所なら新しい団体の使用場所に、手で選んだ場所はそのまま', () => {
+    const a = groupId('模擬店01');
+    const b = groupId('模擬店02');
+    const exhibit = groupId('学科展示');
+    expect(keepRoomAfterGroupChange({ group: null, room: null }, a, groups)).toBe(roomId('1-1'));
+    expect(keepRoomAfterGroupChange({ group: a, room: roomId('1-1') }, b, groups)).toBe(roomId('1-2'));
+    expect(keepRoomAfterGroupChange({ group: b, room: roomId('1-2') }, exhibit, groups)).toBe(roomId('第一多目的室'));
+    // 手で選んだ場所（前の団体の使用場所でない）は替えない
+    expect(keepRoomAfterGroupChange({ group: a, room: roomId('2-1') }, b, groups)).toBe(roomId('2-1'));
+    // 団体を外すと、使用場所のままだった場所は空に
+    expect(keepRoomAfterGroupChange({ group: a, room: roomId('1-1') }, null, groups)).toBeNull();
   });
 });
 

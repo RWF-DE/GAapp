@@ -2,6 +2,7 @@
 
 // ルールのフォームの欄（種別ごと。画面の設計 3.8。T12）。団体・場所は名前で選んで id を持ち、品目はコードで持つ。
 // エラーは path（`params.rooms` など）ごとに欄の下に出す（lib/data/rules.ts の checkRuleForm）。
+import { AlertTriangle } from 'lucide-react';
 import { useId } from 'react';
 import { GROUP_CATEGORIES, MAX_COUNT, MAX_SUBSTITUTE_COST, type GroupCategory } from '@gaapp/shared';
 import { EntitySelect, type EntityOption } from '@/components/common/entity-select';
@@ -9,7 +10,14 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { GroupRow, ItemRow, RoomRow } from '@/lib/db/types';
-import { errorsUnder, type RuleFieldErrors, type RuleFormValues, type RulesData } from '@/lib/data/rules';
+import {
+  errorsUnder,
+  keepRoomAfterGroupChange,
+  keepUnusableWarning,
+  type RuleFieldErrors,
+  type RuleFormValues,
+  type RulesData,
+} from '@/lib/data/rules';
 import { CATEGORY_LABELS, ROOM_KIND_LABELS } from '@/lib/labels';
 import { cn } from '@/lib/utils';
 
@@ -332,6 +340,8 @@ function KeepFields({ values, onChange, errors, data, disabled }: RuleFieldsProp
   // 入っている品目で、一覧に出ないもの（申請できない・消えた品目）も出す（直せるように）
   const extra = Object.keys(s.items).filter((c) => !shownItems.some((i) => i.code === c));
   const location = group?.location_room_id ? data.rooms.find((r) => r.id === group.location_room_id) : undefined;
+  // 場所が今年使用不可なら知らせる（保存は止めない。振り分けの前処理が E002 で止める）
+  const unusableWarning = keepUnusableWarning({ kind: 'keep', params: { room: s.room } }, data);
   return (
     <>
       <Field label="団体" path="params.group" errors={errors}>
@@ -340,9 +350,8 @@ function KeepFields({ values, onChange, errors, data, disabled }: RuleFieldsProp
           options={withMissing(groupOptions(data.groups), s.group, '（見つからない団体）')}
           value={s.group}
           onChange={(v) => {
-            const g = data.groups.find((x) => x.id === v);
-            // 場所の既定は団体の使用場所（まだ選んでいなければ）
-            set({ group: v, room: s.room ?? g?.location_room_id ?? null });
+            // 場所の既定は団体の使用場所。空か前の団体の使用場所のままなら、新しい団体の使用場所に替える（手で選んだ場所は替えない）
+            set({ group: v, room: keepRoomAfterGroupChange(s, v, data.groups) });
           }}
           disabled={disabled}
         />
@@ -360,6 +369,12 @@ function KeepFields({ values, onChange, errors, data, disabled }: RuleFieldsProp
           onChange={(v) => set({ room: v })}
           disabled={disabled}
         />
+        {unusableWarning ? (
+          <p data-field-warning="params.room" className="flex items-start gap-1.5 text-sm text-amber-800">
+            <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
+            {unusableWarning}
+          </p>
+        ) : null}
       </Field>
       <Field label="残す品目と数（残さない品目は空のまま）" path="params.items" errors={errors} exact>
         <div className="grid gap-2 rounded-md border p-2 sm:grid-cols-2">

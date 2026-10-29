@@ -5,6 +5,7 @@
 // 楽観ロックの版は、シートを開いたときの行の updated_at（baseUpdatedAt）。開いた後に一覧が読み直されても進めない
 // （フォームは開いたときの値のままなので、進めるとほかの人の変更を黙って上書きする）。conflict を見た後だけ、読み直した行の版に進める（2.5）。
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { ErrorBanner } from '@/components/common/error-banner';
 import { UnsavedChangesGuard } from '@/components/common/unsaved-changes-guard';
@@ -16,6 +17,7 @@ import { Textarea } from '@/components/ui/textarea';
 import {
   checkRuleForm,
   errorsUnder,
+  sameRuleWrite,
   toRuleWrite,
   type RuleFieldErrors,
   type RuleFormValues,
@@ -89,6 +91,8 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
     setAdoptAfterConflict(false);
   }
   const dirty = useMemo(() => JSON.stringify(values) !== JSON.stringify(target.initial), [values, target.initial]);
+  // 編集で何も変えていなければ、保存を押しても確かめるだけで送らない（update を送ると、振り分け中の年度の版を無駄に上げる）
+  const unchanged = target.type === 'edit' && !dirty;
   const memoOnly = editMode === 'memo';
   const paramsDisabled = memoOnly || pending;
 
@@ -109,6 +113,16 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
     setSubmitError(null);
     if (target.type === 'edit' && (!rule || !lockUpdatedAt)) return;
     const locked = rule && lockUpdatedAt ? { ...rule, updated_at: lockUpdatedAt } : null;
+    /**
+     * 送らずに閉じるか：入力を開いたときのまま（unchanged）か、送る内容が保存してある行（版も同じ）と同じ（変えて戻したときなど）。
+     * 確かめ（欄の下のエラー）は送るときと同じに通してから閉じる（参照の切れたルールを開いて保存を押すと、エラーが見える）
+     */
+    const noChange = (patch: Partial<RuleWrite>) =>
+      unchanged || (!!rule && rule.updated_at === lockUpdatedAt && sameRuleWrite(rule, patch));
+    const closeUnchanged = () => {
+      toast.info('変更はありません');
+      onClose();
+    };
     let send: () => Promise<SaveOutcome>;
     if (memoOnly) {
       const m = memoSchema.safeParse(values.memo);
@@ -117,12 +131,20 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
         return;
       }
       setErrors({});
+      if (noChange({ memo: m.data })) {
+        closeUnchanged();
+        return;
+      }
       send = () => onUpdate(locked!, { memo: m.data });
     } else {
       const res = checkRuleForm(values, data, rule?.id ?? null);
       setErrors(res.errors);
       if (!res.row) return;
       const write = toRuleWrite(res.row);
+      if (target.type === 'edit' && noChange(write)) {
+        closeUnchanged();
+        return;
+      }
       send = target.type === 'new' ? () => onInsert(write) : () => onUpdate(locked!, write);
     }
     setPending(true);
@@ -229,7 +251,11 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
           <Button variant="outline" onClick={requestClose} disabled={pending}>
             閉じる
           </Button>
-          <Button onClick={() => void save()} disabled={pending || (target.type === 'edit' && !rule)} aria-busy={pending || undefined}>
+          <Button
+            onClick={() => void save()}
+            disabled={pending || (target.type === 'edit' && !rule)}
+            aria-busy={pending || undefined}
+          >
             {pending ? '保存中…' : '保存'}
           </Button>
         </SheetFooter>

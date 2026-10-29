@@ -155,9 +155,18 @@ test.describe('T12 管理者', () => {
       await pick(page, sheet, '団体', '設営');
       await save(page, sheet, 'S06');
 
+      // 残すは、団体を選ぶと場所に使用場所が入る。選び直すと、場所が前の団体の使用場所のままなら新しい団体の使用場所に替わる
       sheet = await openTemplate(page, 'S08');
+      const roomBox = sheet.getByRole('combobox', { name: '場所', exact: true });
+      await pick(page, sheet, '団体', '模擬店01');
+      await expect(roomBox).toHaveText('1-1');
+      await pick(page, sheet, '団体', '模擬店02');
+      await expect(roomBox).toHaveText('1-2');
+      // 手で選んだ場所は、団体を選び直しても替えない
+      await pick(page, sheet, '場所', '2-1');
       await pick(page, sheet, '団体', '学科展示');
-      await expect(sheet.getByRole('combobox', { name: '場所', exact: true })).toHaveText('第一多目的室');
+      await expect(roomBox).toHaveText('2-1');
+      await pick(page, sheet, '場所', '第一多目的室');
       await save(page, sheet, 'S08');
 
       // ひな形は全部入ったので押せない
@@ -187,8 +196,25 @@ test.describe('T12 管理者', () => {
       await expect(sheet.getByRole('heading', { name: 'ルール S05（運び元の制限）を編集' })).toBeVisible();
       await expect(page.locator(`[data-row-id="${s.ids.rules['S05']}"]`)).toHaveAttribute('data-highlighted', 'true');
       await expect(sheet.getByRole('combobox', { name: '団体', exact: true })).toHaveText('設営');
-      await sheet.getByRole('button', { name: '閉じる' }).click();
+      // 何も変えずに保存しても update を送らない（振り分け中の年度の版を上げない）。「変更はありません」で閉じる
+      const versionOf = async () =>
+        (await sql<{ v: number; u: string }>(
+          `select y.allocation_version as v, r.updated_at::text as u from public.years y join public.rules r on r.year_id = y.id where y.id = $1 and r.code = 'S05'`,
+          [s.yearId],
+        ))[0]!;
+      const v0 = await versionOf();
+      await sheet.getByRole('button', { name: '保存', exact: true }).click();
       await expect(sheet).toBeHidden();
+      await expect(page.getByText('変更はありません')).toBeVisible();
+      // 変えて戻したときも送らない
+      await page.locator(`[data-row-id="${s.ids.rules['S05']}"]`).getByRole('button', { name: 'S05 を編集' }).click();
+      const memo = sheet.getByLabel(/^メモ/);
+      const memoBefore = await memo.inputValue();
+      await memo.fill(`${memoBefore}。`);
+      await memo.fill(memoBefore);
+      await sheet.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(sheet).toBeHidden();
+      expect(await versionOf()).toEqual(v0);
 
       // 振り分け中の帯、参照の切れた印
       await expect(page.getByTestId('rules-allocating-notice')).toHaveText('ルールを変えると、振り分け画面で再実行が要ります');
@@ -215,7 +241,7 @@ test.describe('T12 管理者', () => {
       await fillSubstitute(page, add, { code: 'S01b', from: '机(木)', to: '不可机', categories: ['模擬店'], cost: '0', memo: '' });
       await add.getByRole('button', { name: '保存', exact: true }).click();
       await expect(add.locator('[data-field="params.categories"] [data-field-error]')).toHaveText(
-        '同じ代替（desk→desk_ng）で区分が重なるルール S01 があります',
+        '同じ代替（机(木)→不可机）で区分が重なるルール S01 があります',
       );
       // 同じコードも欄の下に出る
       await add.getByLabel('コード').fill('S01');
@@ -249,7 +275,7 @@ test.describe('T12 管理者', () => {
       const s01x = page.locator('[data-row-id]').filter({ hasText: 'S01x' });
       await s01x.getByRole('switch', { name: 'S01x を有効にする' }).click();
       await expect(page.getByRole('alertdialog').getByRole('heading', { name: 'ルール S01x を有効にできません' })).toBeVisible();
-      await expect(page.getByTestId('enable-blocked-messages')).toContainText('同じ代替（desk→desk_ng）で区分が重なるルール S01 があります');
+      await expect(page.getByTestId('enable-blocked-messages')).toContainText('同じ代替（机(木)→不可机）で区分が重なるルール S01 があります');
       await page.getByRole('alertdialog').getByRole('button', { name: '閉じる' }).click();
       expect((await rulesOf(s.yearId)).find((r) => r.code === 'S01x')!.enabled).toBe(false);
 
@@ -398,6 +424,49 @@ test.describe('T12 管理者', () => {
       await expect(dlg).toBeHidden();
       await expect(toggle).toBeChecked();
       expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T12 「残す」の場所が今年使用不可なら、一覧に印、フォームの場所の欄に知らせる（保存は止めない）', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      // S08 の場所（第一多目的室）を今年は使用不可にする
+      await sql(
+        `insert into public.room_years (year_id, room_id, usable, note) values ($1, $2, false, 'E2E：工事')
+         on conflict (year_id, room_id) do update set usable = false, note = excluded.note`,
+        [s.yearId, s.ids.rooms['第一多目的室']],
+      );
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/');
+      const s08 = page.locator(`[data-row-id="${s.ids.rules['S08']}"]`);
+      const problem = s08.getByTestId('rule-problem');
+      await expect(problem).toContainText('使用不可の場所です');
+      await expect(problem).toContainText('第一多目的室は今年使用不可です。このままでは振り分けが止まります（E002）');
+      await expect(page.getByTestId('rules-problem-notice')).toContainText('直す必要のある有効なルールが 1 件あります');
+
+      // フォームでは場所の欄の下に知らせる。保存は止めない（メモを直して保存できる）
+      await s08.getByRole('button', { name: 'S08 を編集' }).click();
+      const sheet = page.getByRole('dialog');
+      const warning = sheet.locator('[data-field="params.room"] [data-field-warning]');
+      await expect(warning).toContainText('第一多目的室は今年使用不可です');
+      // 使用可の場所を選ぶと消える。戻すとまた出る
+      await pick(page, sheet, '場所', '1-1');
+      await expect(warning).toHaveCount(0);
+      await pick(page, sheet, '場所', '第一多目的室');
+      await expect(warning).toBeVisible();
+      await sheet.getByLabel(/^メモ/).fill('E2E：使用不可のまま保存');
+      await sheet.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(sheet).toBeHidden();
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S08')!.memo).toBe('E2E：使用不可のまま保存');
+      await expect(problem).toContainText('使用不可の場所です');
+
+      // 無効のルールには印を出さない
+      await s08.getByRole('switch', { name: 'S08 を有効にする' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '無効にする' }).click();
+      await expect(s08.getByRole('switch', { name: 'S08 を有効にする' })).not.toBeChecked();
+      await expect(problem).toHaveCount(0);
     } finally {
       await s.cleanup();
     }

@@ -26,7 +26,7 @@ import {
 } from '@gaapp/shared';
 import { fetchAll } from '@/lib/db/fetch-all';
 import { updateWithLock } from '@/lib/db/update-with-lock';
-import { COLUMNS, type GroupRow, type ItemRow, type RoomRow, type RuleDbRow, type YearRow } from '@/lib/db/types';
+import { COLUMNS, type GroupRow, type ItemRow, type RoomRow, type RoomYearRow, type RuleDbRow, type YearRow } from '@/lib/db/types';
 import { appError, toAppError } from '@/lib/errors';
 import { CATEGORY_LABELS } from '@/lib/labels';
 import { queryKeys } from '@/lib/query';
@@ -37,7 +37,7 @@ import { fetchYear } from './year';
 // ---------------------------------------------------------------------------------------------
 // 読む
 
-/** ルール画面のデータ（年度の行・その年度のルール〔無効を含む〕・品目・場所・その年度の団体） */
+/** ルール画面のデータ（年度の行・その年度のルール〔無効を含む〕・品目・場所・その年度の団体・その年度の場所の使用） */
 export interface RulesData {
   year: YearRow;
   /** code → id の順 */
@@ -46,6 +46,8 @@ export interface RulesData {
   items: ItemRow[];
   rooms: RoomRow[];
   groups: GroupRow[];
+  /** その年度の room_years（行がない場所は使用可） */
+  roomYears: RoomYearRow[];
 }
 
 const bySortOrder = <T extends { sort_order: number; name: string; id: string }>(rows: readonly T[]): T[] =>
@@ -53,12 +55,13 @@ const bySortOrder = <T extends { sort_order: number; name: string; id: string }>
 
 /** ルール画面のデータを読む（年度の行と表を並行に） */
 export async function fetchRulesData(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<RulesData> {
-  const [year, rules, items, rooms, groups] = await Promise.all([
+  const [year, rules, items, rooms, groups, roomYears] = await Promise.all([
     fetchYear(yearId, client),
     fetchAll((from, to) => client.from('rules').select(COLUMNS.rules).eq('year_id', yearId).order('id').range(from, to)),
     fetchAll((from, to) => client.from('items').select(COLUMNS.items).order('id').range(from, to)),
     fetchAll((from, to) => client.from('rooms').select(COLUMNS.rooms).order('id').range(from, to)),
     fetchAll((from, to) => client.from('groups').select(COLUMNS.groups).eq('year_id', yearId).order('id').range(from, to)),
+    fetchAll((from, to) => client.from('room_years').select(COLUMNS.room_years).eq('year_id', yearId).order('room_id').range(from, to)),
   ]);
   return {
     year,
@@ -66,6 +69,7 @@ export async function fetchRulesData(yearId: string, client: AppSupabaseClient =
     items: bySortOrder(items as unknown as ItemRow[]),
     rooms: bySortOrder(rooms as unknown as RoomRow[]),
     groups: bySortOrder(groups as unknown as GroupRow[]),
+    roomYears: roomYears as unknown as RoomYearRow[],
   };
 }
 
@@ -186,6 +190,55 @@ export function ruleCheckBase(data: Pick<RulesData, 'items' | 'rooms' | 'groups'
 /** 自分以外の有効なルール（形の合わないものは除く）。新規なら excludeId は null */
 export function otherEnabledRules(rules: readonly RuleDbRow[], excludeId: string | null): Rule[] {
   return rules.filter((r) => r.enabled && r.id !== excludeId).flatMap((r) => parseRule(r) ?? []);
+}
+
+/** 今年使用不可の場所の id（room_years.usable = false。行がない場所は使用可） */
+export function unusableRoomIds(data: Pick<RulesData, 'roomYears'>): Set<string> {
+  return new Set(data.roomYears.filter((ry) => !ry.usable).map((ry) => ry.room_id));
+}
+
+/**
+ * 「残す」の場所が今年使用不可のときの知らせ（allocate の前処理が E002 で止める。03 の前処理 3）。
+ * 保存は止めない（場所の使用はマスタ設定で年度ごとに変えるもので、使用可に戻せば直る。メモだけ直す・無効にするのも止めない）。
+ */
+export function keepUnusableMessage(roomName: string): string {
+  return `${roomName}は今年使用不可です。このままでは振り分けが止まります（E002）。マスタ設定で使用可にするか、場所を選び直してください`;
+}
+
+/** 「残す」のルールの場所が今年使用不可なら、その知らせ（ほかの種別・使用可の場所なら null） */
+export function keepUnusableWarning(
+  rule: { kind: string; params: unknown },
+  data: Pick<RulesData, 'rooms' | 'roomYears'>,
+  unusable: ReadonlySet<string> = unusableRoomIds(data),
+): string | null {
+  if (rule.kind !== 'keep' || !isRecord(rule.params)) return null;
+  const room = str(rule.params.room);
+  if (!room || !unusable.has(room)) return null;
+  return keepUnusableMessage(data.rooms.find((r) => r.id === room)?.name ?? '（見つからない場所）');
+}
+
+/**
+ * shared の checkRuleRefs の文言の品目のコード（「desk」・（desk→desk_ng）・（desk・chair）など）を、品目の名前にする。
+ * 品目の一覧にないコード（「品目「x」がありません」）はコードのまま。コードの重複（path が code）の文言はルールのコードなので直さない。
+ */
+export function ruleRefMessage(e: { path: string; message: string }, names: Pick<RuleNames, 'item'>): string {
+  if (e.path === 'code') return e.message;
+  return e.message.replace(/(?<=[「（→・])([a-z][a-z0-9_]*)(?=[」）→・])/g, (c) => names.item(c) ?? c);
+}
+
+/**
+ * 「残す」のフォームで団体を選び直したときの場所。場所が空か、前の団体の使用場所のままなら、新しい団体の使用場所にする
+ * （新しい団体に使用場所がなければ空）。手で選んだ場所（前の団体の使用場所でない場所）は替えない。
+ */
+export function keepRoomAfterGroupChange(
+  keep: Pick<RuleFormValues['keep'], 'group' | 'room'>,
+  nextGroup: string | null,
+  groups: readonly Pick<GroupRow, 'id' | 'location_room_id'>[],
+): string | null {
+  const location = (id: string | null) => groups.find((g) => g.id === id)?.location_room_id ?? null;
+  const prevLocation = location(keep.group);
+  if (keep.room === null || (prevLocation !== null && keep.room === prevLocation)) return location(nextGroup);
+  return keep.room;
 }
 
 /** 欄の path（`code`・`params.group`・`params.rooms.3` など）→ 文言の一覧 */
@@ -390,6 +443,8 @@ export interface RuleCheckResult {
   /** 保存してよい行（errors が空のときだけ） */
   row: RuleRow | null;
   errors: RuleFieldErrors;
+  /** 保存は止めない知らせ（「残す」の場所が今年使用不可など） */
+  warnings: RuleFieldErrors;
 }
 
 /**
@@ -398,6 +453,7 @@ export interface RuleCheckResult {
  */
 export function checkRuleForm(f: RuleFormValues, data: RulesData, editingId: string | null): RuleCheckResult {
   const errors: RuleFieldErrors = {};
+  const warnings = ruleFormWarnings(f, data);
   if (f.memo.trim().length > NOTE_MAX) addError(errors, 'memo', `メモは ${NOTE_MAX} 字までです`);
   const parsed = ruleRowSchema.safeParse(formToCandidate(f));
   if (!parsed.success) {
@@ -405,17 +461,28 @@ export function checkRuleForm(f: RuleFormValues, data: RulesData, editingId: str
       const path = issue.path.map(String).join('.') || 'params';
       addError(errors, path, shapeMessage(f.kind, path, issue.message));
     }
-    return { row: null, errors };
+    return { row: null, errors, warnings };
   }
   const row = normalizeRuleRow(parsed.data, data);
   const code = row.code.trim();
   if (data.rules.some((r) => r.id !== editingId && r.code.trim() === code)) addError(errors, 'code', '同じコードのルールがあります');
   const draft = { code: row.code, kind: row.kind, params: row.params } as RuleDraft;
   const rules = row.enabled ? otherEnabledRules(data.rules, editingId) : [];
+  const names = ruleNamesOf(data);
   for (const e of checkRuleRefs(draft, { ...ruleCheckBase(data), rules })) {
-    addError(errors, e.path, e.path === 'code' ? '同じコードのルールがあります' : e.message);
+    addError(errors, e.path, e.path === 'code' ? '同じコードのルールがあります' : ruleRefMessage(e, names));
   }
-  return Object.keys(errors).length > 0 ? { row: null, errors } : { row, errors };
+  return Object.keys(errors).length > 0 ? { row: null, errors, warnings } : { row, errors, warnings };
+}
+
+/** フォームの知らせ（保存は止めない）。「残す」の場所が今年使用不可なら場所の欄に出す */
+export function ruleFormWarnings(f: RuleFormValues, data: Pick<RulesData, 'rooms' | 'roomYears'>): RuleFieldErrors {
+  const out: RuleFieldErrors = {};
+  if (f.kind === 'keep') {
+    const m = keepUnusableWarning({ kind: 'keep', params: { room: f.keep.room } }, data);
+    if (m) addError(out, 'params.room', m);
+  }
+  return out;
 }
 
 /** 有効にする前の確かめ（3.8）。保存してあるルールを、自分以外の有効なルールと今の団体・場所・品目に当てる */
@@ -424,7 +491,10 @@ export function checkEnable(rule: RuleDbRow, data: RulesData): string[] {
   if (!r) return ['設定が壊れています。編集して直してください'];
   const { id: _id, ...draft } = r;
   void _id;
-  return checkRuleRefs(draft as RuleDraft, { ...ruleCheckBase(data), rules: otherEnabledRules(data.rules, rule.id) }).map((e) => e.message);
+  const names = ruleNamesOf(data);
+  return checkRuleRefs(draft as RuleDraft, { ...ruleCheckBase(data), rules: otherEnabledRules(data.rules, rule.id) }).map((e) =>
+    ruleRefMessage(e, names),
+  );
 }
 
 /** 一覧の印（有効なルールの参照の切れ・重なり・壊れた設定。3.8・2.7） */
@@ -439,10 +509,15 @@ const MISSING: { test: (m: string) => boolean; what: string }[] = [
   { test: (m) => /^品目「.*」がありません$/.test(m), what: '品目' },
 ];
 
-/** 有効なルールの問題（id → 印）。無効のルールは見ない */
+/**
+ * 有効なルールの問題（id → 印）。無効のルールは見ない。
+ * 「残す」の場所が今年使用不可（allocate の前処理が E002 で止める）も印にする。
+ */
 export function ruleProblems(data: RulesData): Map<string, RuleProblem> {
   const out = new Map<string, RuleProblem>();
   const base = ruleCheckBase(data);
+  const names = ruleNamesOf(data);
+  const unusable = unusableRoomIds(data);
   for (const row of data.rules) {
     if (!row.enabled) continue;
     const r = parseRule(row);
@@ -452,11 +527,18 @@ export function ruleProblems(data: RulesData): Map<string, RuleProblem> {
     }
     const { id: _id, ...draft } = r;
     void _id;
-    const messages = checkRuleRefs(draft as RuleDraft, { ...base, rules: otherEnabledRules(data.rules, row.id) }).map((e) => e.message);
+    const messages = checkRuleRefs(draft as RuleDraft, { ...base, rules: otherEnabledRules(data.rules, row.id) }).map((e) => ruleRefMessage(e, names));
+    const unusableMessage = keepUnusableWarning(r, data, unusable);
+    if (unusableMessage) messages.push(unusableMessage);
     if (messages.length === 0) continue;
     const missing = MISSING.filter((x) => messages.some(x.test)).map((x) => x.what);
     out.set(row.id, {
-      label: missing.length > 0 ? `参照が切れています（${missing.join('・')}が見つかりません）` : '要確認',
+      label:
+        missing.length > 0
+          ? `参照が切れています（${missing.join('・')}が見つかりません）`
+          : unusableMessage && messages.length === 1
+            ? '使用不可の場所です'
+            : '要確認',
       messages: [...new Set(messages)],
     });
   }
@@ -482,6 +564,7 @@ export function ruleNamesOf(data: Pick<RulesData, 'items' | 'rooms' | 'groups'>)
 
 /**
  * ルールの内容の文（一覧に出す。3.8）。例「設営の机(木)は 1-1・1-2・1-3・2-1・2-2・2-3 からだけ出す」。
+ * 代替は、重さ 0 なら「不可机は机(木)と同じに扱う（模擬店）」（01 の規則4）、重さ 1 以上なら「模擬店の机(木)が足りなければキャスター机で代える（重さ 3、…）」。
  * 団体・場所が見つからなければ「（見つからない団体）」、品目が見つからなければコードを出す。params の形が合わなければ「設定が壊れています」。
  */
 export function describeRule(rule: { kind: string; params: unknown }, names: RuleNames): string {
@@ -495,13 +578,14 @@ export function describeRule(rule: { kind: string; params: unknown }, names: Rul
       if (!r.success) return BROKEN;
       const p = r.data;
       const who = p.categories.map((c) => CATEGORY_LABELS[c]).join('・');
-      const notes = [
-        `重さ ${p.cost}`,
+      const extras = [
         ...(p.indoorOnly ? ['屋内の団体だけ'] : []),
         ...(p.needsConsent ? ['了承が要る'] : []),
         ...(p.preferCategory ? [`同じ距離なら${CATEGORY_LABELS[p.preferCategory]}を先に`] : []),
       ];
-      return `${who}の${item(p.from)}が足りなければ${item(p.to)}で代える（${notes.join('、')}）`;
+      // 重さ 0 は「足りないときだけ使う代替」でなく、その区分では元の品目と同じに扱う（01 の規則4。S01・S02 の不可机・不可椅子）
+      if (p.cost === 0) return `${item(p.to)}は${item(p.from)}と同じに扱う（${[who, ...extras].join('、')}）`;
+      return `${who}の${item(p.from)}が足りなければ${item(p.to)}で代える（${[`重さ ${p.cost}`, ...extras].join('、')}）`;
     }
     case 'source_restrict': {
       const r = sourceRestrictParams.safeParse(rule.params);
