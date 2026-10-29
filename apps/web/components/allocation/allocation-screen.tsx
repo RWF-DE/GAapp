@@ -29,6 +29,7 @@ import { isFixedRow, isReplaceableRow } from '@/lib/allocation/input';
 import { issueTarget, type IssueTarget } from '@/lib/allocation/issue-target';
 import type { FailureLine } from '@/lib/allocation/failure-view';
 import { describeRule } from '@/lib/allocation/rule-text';
+import { changeRoomUsable, roomUsableBase, type RoomUsableBase } from '@/lib/allocation/room-usable';
 import { unusableChecklist } from '@/lib/allocation/unusable';
 import { itemTabs, tabKeyByItem } from '@/lib/allocation/tabs';
 import { buildViewModel, namesOf } from '@/lib/allocation/view-model';
@@ -182,7 +183,8 @@ function AllocationLoaded({
   audiences,
 }: {
   snapshot: Snapshot;
-  refetch: () => Promise<unknown>;
+  /** 読み直す（react-query の refetch。部屋の使用の conflict で、読み直した room_years を見るために結果を使う） */
+  refetch: () => Promise<{ data?: Snapshot | undefined; isError?: boolean }>;
   fetching: boolean;
   isAdmin: boolean;
   audiences: Audience[];
@@ -360,6 +362,23 @@ function AllocationLoaded({
   const [unusableRoom, setUnusableRoom] = useState<string | null>(null);
   const [usableRoom, setUsableRoom] = useState<string | null>(null);
   const [roomBusy, setRoomBusy] = useState(false);
+  // ダイアログを開いたときの部屋の今年の使用（room_years.updated_at）。setRoomUsable に渡して、ほかの人の変更を黙って上書きしない
+  const [roomBase, setRoomBase] = useState<RoomUsableBase | null>(null);
+  const roomYears = snapshot.roomYears;
+  const openUnusable = useCallback(
+    (roomId: string) => {
+      setRoomBase(roomUsableBase(roomYears, roomId));
+      setUnusableRoom(roomId);
+    },
+    [roomYears],
+  );
+  const openUsable = useCallback(
+    (roomId: string) => {
+      setRoomBase(roomUsableBase(roomYears, roomId));
+      setUsableRoom(roomId);
+    },
+    [roomYears],
+  );
   const [suggestMinimal, setSuggestMinimal] = useState<string | null>(null);
   const rowById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const pendingIds = useMemo(
@@ -378,11 +397,11 @@ function AllocationLoaded({
             revert: pend.revert,
             openSource: setSourceRowId,
             requestDelete: setDeleteRowId,
-            openUnusable: setUnusableRoom,
-            openUsable: setUsableRoom,
+            openUnusable,
+            openUsable,
           }
         : null,
-    [editable, vm, rows, pendingIds, pend.edit, pend.revert],
+    [editable, vm, rows, pendingIds, pend.edit, pend.revert, openUnusable, openUsable],
   );
   const checklist = useMemo(() => {
     if (!unusableRoom) return [];
@@ -397,30 +416,51 @@ function AllocationLoaded({
     else if (op === 'delete') pend.edit({ op: 'delete', id: rowId });
     else setSourceRowId(rowId);
   };
-  const changeRoomUsable = async (roomId: string, usable: boolean, note: string | null) => {
-    setRoomBusy(true);
-    try {
-      await setRoomUsable(yearId, roomId, usable, note);
-      await refetch();
-      const name = vm.roomById.get(roomId)?.name ?? '';
-      if (usable) {
-        toast.success(`${name}を使用可に戻しました`);
-        setSuggestMinimal(null);
-      } else {
-        toast.success(`${name}を今年は使用不可にしました`);
-        setSuggestMinimal(roomId);
-      }
+  const onRoomUsable = async (usable: boolean, note: string | null) => {
+    if (!roomBase) return;
+    const roomId = roomBase.roomId;
+    const close = () => {
       setUnusableRoom(null);
       setUsableRoom(null);
-    } catch (e) {
-      const c = classifyError(e);
-      toast.error(messageFor(c, { names }));
-      const eff = effectOf(c);
-      if (eff.reload === 'year') {
-        await queryClient.invalidateQueries({ queryKey: queryKeys.year(yearId) });
-        reloadMembership();
-      } else if (eff.reload === 'data') {
+      setRoomBase(null);
+    };
+    setRoomBusy(true);
+    try {
+      const out = await changeRoomUsable(
+        { yearId, base: roomBase, usable, note },
+        {
+          save: setRoomUsable,
+          reload: async () => {
+            const r = await refetch();
+            return r.isError ? undefined : r.data;
+          },
+        },
+      );
+      const name = vm.roomById.get(roomId)?.name ?? '';
+      if (out.kind === 'saved') {
         await refetch();
+        if (usable) {
+          toast.success(`${name}を使用可に戻しました`);
+          setSuggestMinimal(null);
+        } else {
+          toast.success(`${name}を今年は使用不可にしました`);
+          setSuggestMinimal(roomId);
+        }
+        close();
+      } else if (out.kind === 'conflict') {
+        // 読み直した。すでに望んだ状態なら閉じ、そうでなければ理由のメモを残して、読み直した版で押し直せるようにする
+        toast.error(out.message);
+        if (out.done || !out.next) close();
+        else setRoomBase(out.next);
+      } else {
+        toast.error(messageFor(out.error, { names }));
+        const eff = effectOf(out.error);
+        if (eff.reload === 'year') {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.year(yearId) });
+          reloadMembership();
+        } else if (eff.reload === 'data') {
+          await refetch();
+        }
       }
     } finally {
       setRoomBusy(false);
@@ -711,7 +751,7 @@ function AllocationLoaded({
             if (!o) setUnusableRoom(null);
           }}
           onOp={onChecklistOp}
-          onConfirm={(note) => (unusableRoom ? changeRoomUsable(unusableRoom, false, note) : Promise.resolve())}
+          onConfirm={(note) => onRoomUsable(false, note)}
         />
         <ConfirmDialog
           open={usableRoom !== null}
@@ -722,7 +762,7 @@ function AllocationLoaded({
           description="今年もこの部屋の在庫を振り分けに使えるようにします。固定を外して保存してから、もう一度使用不可にすることもできます。"
           confirmLabel="使用可に戻す"
           pending={roomBusy}
-          onConfirm={() => (usableRoom ? changeRoomUsable(usableRoom, true, null) : undefined)}
+          onConfirm={() => onRoomUsable(true, null)}
         />
       </div>
     ) : null}

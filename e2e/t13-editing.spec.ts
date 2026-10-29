@@ -271,6 +271,68 @@ test('T13 部屋の見出しの「使用不可にする」：固定・手動の�
   }
 });
 
+test('T13 部屋の見出しの「使用不可にする」：2つの画面で部屋の使用を変えると、古い画面は黙って上書きせず「ほかの人がこの部屋の使用を変えました」と出して読み直す', async ({ page, context }) => {
+  const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+  try {
+    const roomId = s.ids.rooms['MER']!;
+    const [x] = await rowsOf(s.yearId, "r.name = 'MER' and i.code = 'desk' and not a.is_keep");
+    if (!x) throw new Error('MER の机(木)の行が要ります');
+    const roomYear = async () =>
+      (await sql<{ usable: boolean; note: string | null }>(`select usable, note from public.room_years where year_id = $1 and room_id = $2`, [s.yearId, roomId]))[0];
+    await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+    const page2 = await context.newPage();
+    await pinYear(page2, SEED_USER_IDS.admin, s.yearId);
+    await openRow(page, x.id);
+    await openRow(page2, x.id); // 画面2 は MER が使用可のスナップショットのまま
+    const menu = (p: Page) => p.locator(`[data-room-block="${roomId}"]`).getByRole('button', { name: 'MERのメニュー' });
+
+    // 画面1：使用不可にしてから、使用可に戻す（room_years の行ができて updated_at が進む）
+    await menu(page).click();
+    await page.getByRole('menuitem', { name: '今年は使用不可にする' }).click();
+    const d1 = page.getByRole('dialog');
+    await expect(d1.getByTestId('unusable-checklist-empty')).toBeVisible();
+    await d1.getByRole('button', { name: '使用不可にする' }).click();
+    await expect(page.getByTestId('suggest-minimal')).toBeVisible();
+    await menu(page).click();
+    await page.getByRole('menuitem', { name: '使用可に戻す' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: '使用可に戻す' }).click();
+    await expect(page.getByText('MERを使用可に戻しました')).toBeVisible();
+    expect((await roomYear())!.usable).toBe(true);
+
+    // 画面2（古いスナップショット）：使用不可にしようとすると conflict。読み直してもまだ使用可なので、ダイアログとメモは残る
+    await menu(page2).click();
+    await page2.getByRole('menuitem', { name: '今年は使用不可にする' }).click();
+    const d2 = page2.getByRole('dialog');
+    await d2.getByLabel('理由のメモ（任意）').fill('E2E：2つ目の画面');
+    await d2.getByRole('button', { name: '使用不可にする' }).click();
+    await expect(page2.getByText('ほかの人がこの部屋の使用を変えました。読み直しました')).toBeVisible();
+    await expect(d2).toBeVisible();
+    await expect(d2.getByLabel('理由のメモ（任意）')).toHaveValue('E2E：2つ目の画面');
+    expect((await roomYear())!.usable).toBe(true);
+    // 読み直した updated_at で押し直すと通る
+    await d2.getByRole('button', { name: '使用不可にする' }).click();
+    await expect(page2.getByTestId('suggest-minimal')).toBeVisible();
+    await expect(d2).toHaveCount(0);
+    expect(await roomYear()).toEqual({ usable: false, note: 'E2E：2つ目の画面' });
+
+    // 画面1（今は古い）：使用不可にしようとすると conflict。読み直すとすでに使用不可なのでダイアログを閉じ、画面2のメモは上書きしない
+    await menu(page).click();
+    await page.getByRole('menuitem', { name: '今年は使用不可にする' }).click();
+    await d1.getByLabel('理由のメモ（任意）').fill('E2E：1つ目の画面');
+    await d1.getByRole('button', { name: '使用不可にする' }).click();
+    await expect(page.getByText('ほかの人がこの部屋の使用を変えました。読み直しました')).toBeVisible();
+    await expect(d1).toHaveCount(0);
+    expect(await roomYear()).toEqual({ usable: false, note: 'E2E：2つ目の画面' });
+    // 読み直したので、見出しのメニューは「使用可に戻す」になっている
+    await menu(page).click();
+    await expect(page.getByRole('menuitem', { name: '使用可に戻す' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page2.close();
+  } finally {
+    await s.cleanup();
+  }
+});
+
 test('T13 了承を「拒否」にして最小変更で再実行すると、その団体の置き換えが消える', async ({ page }) => {
   const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
   try {
