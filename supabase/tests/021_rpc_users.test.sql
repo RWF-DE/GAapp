@@ -1,10 +1,10 @@
 -- 021_rpc_users：invite、set_role、remove_role、revoke_invitation、remove_group_member、accept_my_invitations（T03）
--- auth.users のトリガー（0007）は T04。ここではトリガーなしで動く部分（RPC の中での招待の受け入れ）だけを確かめる。
+-- auth.users のトリガー（0007）とフックは 030_auth（T04）で確かめる。ここでは RPC の中での招待の受け入れを確かめる。
 -- 招待を付けるのは、今のメールが本人のものと確かめられるアカウントだけ（private.verified_email、D-17a）。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(94);
+select plan(96);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
 -- provider が google なら Google の identity、email なら email_verified: true の email の identity
@@ -86,9 +86,17 @@ select tests.logout();
 select tests.login_as('late');
 select is(public.accept_my_invitations(), 0, '未確認なら accept_my_invitations も0件');
 select tests.logout();
+-- T04 からは、メールの確認で auth.users のトリガー（on_auth_user_confirmed）が招待を受け入れる（詳しくは 030_auth）
 update auth.users set email_confirmed_at = now() where id = tests.id('late');
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('late')), 'viewer'::public.app_role,
+  'メールの確認でトリガーが招待を受け入れる');
 select tests.login_as('late');
-select is(public.accept_my_invitations(), 1, '確認済みになれば、未使用の招待を受け入れる');
+select is(public.accept_my_invitations(), 0, 'トリガーで受け入れ済みなら0件');
+select tests.logout();
+-- invite と初回ログインが行き違って未使用のまま残った招待（ここでは直接入れて作る）を、ログイン時の RPC で拾う
+insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'late@pgtap.test', 'viewer');
+select tests.login_as('late');
+select is(public.accept_my_invitations(), 1, '確認済みなら、残っていた未使用の招待を受け入れる');
 select is(public.accept_my_invitations(), 0, '受け入れた招待はもう受け入れない');
 select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('late')), 'viewer'::public.app_role,
   '自分のロールを読める');
