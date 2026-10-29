@@ -428,6 +428,68 @@ describe('申請 /request', () => {
       expect(submitCalls()).toHaveLength(0);
     });
 
+    /** 送った机(木) の数 */
+    const sentDesk = (call: FakeCall) =>
+      (opArgs(call, 'rpc')[0]![0] as { p_rows: { itemId: string; count: number }[] }).p_rows.find((r) => r.itemId === itemId('desk'))!.count;
+
+    it('応答が落ちる（DB には入っている）→ 机を元の 0 に戻して提出 → また応答が落ちる：欄は 0 のまま（読み直した自分の古い 1 にしない）。もう一度押すと「提出されていました」', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      let n = 0;
+      const base = makeHandler({ requests: rows });
+      state.handler = (call) => {
+        if (call.table === 'rpc:submit_requests') {
+          // 届いたが応答が返らなかった（2回とも）
+          arriveMine(rows, sentDesk(call), n++ === 0 ? T1 : T2);
+          return NETWORK;
+        }
+        return base(call);
+      };
+      renderScreen();
+      await submitDesk(user);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+      await user.click(screen.getByRole('button', { name: '机(木)の数を1減らす' }));
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '0');
+      await submitDesk(user, false);
+      await waitFor(() => expect(submitCalls()).toHaveLength(2));
+      expect(sentDesk(submitCalls()[1]!)).toBe(0);
+      await waitFor(() => expect(screen.getByTestId('submit-error').textContent).toBe(UNKNOWN));
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '0');
+
+      await submitDesk(user, false);
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('提出されていました'));
+      expect(submitCalls()).toHaveLength(2);
+    });
+
+    it('応答が落ちる（DB には入っている）→ 机を元の 0 に戻す → ほかの人が椅子を変える → 提出：確かめのダイアログでも欄の机は 0 のまま。上書きすると机 0 を送る', async () => {
+      const user = userEvent.setup();
+      const rows: RequestDbRow[] = [];
+      let n = 0;
+      const base = makeHandler({ requests: rows });
+      state.handler = (call) => {
+        if (call.table === 'rpc:submit_requests' && n++ === 0) {
+          arriveMine(rows, 1, T1);
+          return NETWORK;
+        }
+        return base(call);
+      };
+      renderScreen();
+      await submitDesk(user);
+      expect((await screen.findByTestId('submit-error')).textContent).toBe(UNKNOWN);
+      await user.click(screen.getByRole('button', { name: '机(木)の数を1減らす' }));
+      // ほかの人が椅子(木) を 3 にした（行だけ）
+      const chair = rows.findIndex((r) => r.item_id === itemId('chair'));
+      rows[chair] = { ...rows[chair]!, count: 3, updated_at: T2 };
+      await submitDesk(user, false);
+      const ask = await screen.findByRole('alertdialog', { name: 'ほかの人がこの団体の申請を変えました。上書きしますか' });
+      expect(within(ask).getByTestId('request-conflicts').textContent).toBe('椅子(木)（0 → 3）');
+      expect(document.getElementById('request-desk')).toHaveProperty('value', '0');
+      expect(document.getElementById('request-chair')).toHaveProperty('value', '3');
+      await user.click(within(ask).getByRole('button', { name: '上書きして提出する' }));
+      await waitFor(() => expect(submitCalls()).toHaveLength(2));
+      expect(sentDesk(submitCalls()[1]!)).toBe(0);
+    });
+
     it('机を 0 → 1 にする → ほかの人が 2 にし椅子を 3 にする → 通信が戻ってクエリが読み直される → 提出：入力の元は変わらず、送らずに確かめる', async () => {
       const user = userEvent.setup();
       const rows: RequestDbRow[] = [];

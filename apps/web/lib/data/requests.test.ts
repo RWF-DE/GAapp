@@ -31,6 +31,7 @@ import {
   normalizeRequestDraft,
   rebaseKeysTo,
   rebasePending,
+  rebaseRequestInput,
   samePending,
   remainingText,
   requestWindowOf,
@@ -189,6 +190,19 @@ describe('受付期間（端末の時計）と DB が判断した印', () => {
     expect(remainingText(null, NOW)).toBeNull();
   });
 
+});
+
+describe('rebaseRequestInput（入力の元を読み直した記録にするときの入力）', () => {
+  const a = group(10, '模擬店A', 'stall');
+  it('読み直した値と同じ入力だけを外し、前の入力の元と同じ値に戻した入力は残す。備考は読み直した備考と同じときだけ null', () => {
+    // 前の入力の元は机 0。応答が届かなかった自分の提出で DB は机 1・備考「電源」。その後に机を 0 に戻し、椅子を 2 にした
+    const fresh = { requests: [req(a, 'desk', 1, T1)], submission: { ...sub(a, T1, '電源'), updated_by: null } };
+    const next = rebaseRequestInput(ITEMS, 'stall', fresh, { edits: { [item('desk').id]: 0, [item('chair').id]: 2, [item('lectern').id]: 0 }, note: '' });
+    expect(next.edits).toEqual({ [item('desk').id]: 0, [item('chair').id]: 2 });
+    expect(next.note).toBe('');
+    expect(rebaseRequestInput(ITEMS, 'stall', fresh, { edits: { [item('desk').id]: 1 }, note: '電源' })).toEqual({ edits: {}, note: null });
+    expect(rebaseRequestInput(ITEMS, 'stall', { requests: [], submission: null }, { edits: {}, note: '' })).toEqual({ edits: {}, note: null });
+  });
 });
 
 describe('stateChangesSince（ほかの人の保存のダイアログに出す変更）', () => {
@@ -353,7 +367,7 @@ describe('申請一覧の表', () => {
     buildRequestMatrix(t).rows.find((r) => r.group.id === g.id)!.cells[item(code).id]!;
   const key = (g: GroupRow, code: string) => cellKey(g.id, item(code).id);
 
-  it('未保存のセル：基準（最初に編集したときの行）の数と同じなら外す。変更の一覧は基準の updated_at を付け、申請できない品目は 0 だけ通す', () => {
+  it('未保存のセル：編集していないセルに今の数を入れても未保存にしない。一度入れたセルは基準の数に戻しても残す。変更の一覧は基準の updated_at を付け、申請できない品目は 0 だけ通す', () => {
     let p = setPendingCell({}, a.id, item('desk').id, 5, cellOfT(a, 'desk'));
     p = setPendingCell(p, b.id, item('chair').id, 2, cellOfT(b, 'chair'));
     p = setPendingCell(p, a.id, item('long_desk_3').id, 0, cellOfT(a, 'long_desk_3'));
@@ -363,7 +377,12 @@ describe('申請一覧の表', () => {
     // 2回目の編集は基準を変えない（今の行が変わっていても、最初に編集したときの行のまま）
     const later = { count: 4, updatedAt: T1 };
     expect(setPendingCell(p, a.id, item('desk').id, 6, later)[key(a, 'desk')]).toEqual({ value: 6, baseCount: 3, baseUpdatedAt: T0 });
-    expect(setPendingCell(p, a.id, item('desk').id, 3, later)).not.toHaveProperty(key(a, 'desk'));
+    // 基準の数（3）に戻しても外さない（表が古いまま DB が変わっていることがある。DB と同じなら当て直しで外れる）
+    expect(setPendingCell(p, a.id, item('desk').id, 3, later)[key(a, 'desk')]).toEqual({ value: 3, baseCount: 3, baseUpdatedAt: T0 });
+    expect(setPendingCell(p, a.id, item('desk').id, 3, cellOfT(a, 'desk'))[key(a, 'desk')]).toEqual({ value: 3, baseCount: 3, baseUpdatedAt: T0 });
+    expect(rebasePending(setPendingCell(p, a.id, item('desk').id, 3, cellOfT(a, 'desk')), tables)).not.toHaveProperty(key(a, 'desk'));
+    // 編集していないセルに今の数を入れても未保存にしない
+    expect(setPendingCell(p, b.id, item('desk').id, 1, cellOfT(b, 'desk'))).toBe(p);
     const changes = pendingChanges(p, tables);
     expect(changes).toEqual(
       [

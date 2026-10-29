@@ -20,11 +20,11 @@ import {
   fetchGroupRequestState,
   hasCountChanges,
   isOutsideFlagActive,
-  keepTyped,
   judgeSubmitFailure,
   nonZeroSummary,
   normalizeRequestDraft,
   outsideFlagOf,
+  rebaseRequestInput,
   remainingText,
   requestWindowOf,
   stateChangesSince,
@@ -210,16 +210,15 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
   };
 
   /**
-   * 入力の元を読み直したものにする（送る前の読み直しのときだけ）。入れていない欄（入力の元の値のままの欄）は読み直した値になり、
-   * 入れた数と書き換えた備考は残る。下書きの入力の元も書き換える。
+   * 入力の元を読み直したものにする（送る前の読み直しのときだけ）。読み直した値と同じ入力だけを外し、ほかの入れた数と
+   * 書き換えた備考は残す（rebaseRequestInput。前の入力の元と同じ値に戻した入力も捨てない）。下書きの入力の元も書き換える。
    */
   const rebaseTo = (fresh: GroupRequestState) => {
-    const nextEdits = keepTyped(model.fields, edits);
-    const nextNote = noteEdit === savedNote ? null : noteEdit;
-    setEdits(nextEdits);
-    setNoteEdit(nextNote);
+    const next = rebaseRequestInput(data.items, data.group.category, fresh, { edits, note: noteEdit });
+    setEdits(next.edits);
+    setNoteEdit(next.note);
     setBase(fresh);
-    if (Object.keys(nextEdits).length > 0 || nextNote !== null) writeDraft(nextEdits, nextNote, fresh);
+    if (Object.keys(next.edits).length > 0 || next.note !== null) writeDraft(next.edits, next.note, fresh);
     queryClient.setQueryData<RepRequestData>(queryKey, (old) => (old ? { ...old, requests: fresh.requests, submission: fresh.submission } : old));
   };
 

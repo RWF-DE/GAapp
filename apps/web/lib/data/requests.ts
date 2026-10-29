@@ -116,10 +116,20 @@ export function hasCountChanges(fields: readonly RequestField[], edits: Readonly
   return fields.some((f) => countOf(f, edits) !== f.current);
 }
 
-/** 入れた数のうち、入力の元の欄の値（fields の current）から変えた品目だけを残す（入力の元を読み直したものにするとき、入れていない欄は読み直した値にする） */
-export function keepTyped(fields: readonly RequestField[], edits: Readonly<Record<string, number>>): Record<string, number> {
-  const current = new Map(fields.map((f) => [f.item.id, f.current]));
-  return Object.fromEntries(Object.entries(edits).filter(([id, v]) => v !== current.get(id)));
+/**
+ * 入力の元（base）を読み直した団体の申請と提出の記録にするときの入力（/request の送る前の読み直し・代理入力。設計 2.6 の (A)）。
+ * 読み直した値と同じ入力だけを外し、ほかは残す（古い入力の元と同じ値でも、入れた数として残す。前に送って応答が届かなかった
+ * 自分の保存の後に元の数へ戻した入力を、読み直した自分の古い値で置き換えないため）。備考も、読み直した備考と同じときだけ null にする。
+ */
+export function rebaseRequestInput(
+  items: readonly ItemRow[],
+  category: GroupCategory,
+  fresh: GroupRequestState,
+  input: { edits: Readonly<Record<string, number>>; note: string | null },
+): { edits: Record<string, number>; note: string | null } {
+  const current = new Map(buildRequestForm(items, category, fresh.requests).fields.map((f) => [f.item.id, f.current]));
+  const edits = Object.fromEntries(Object.entries(input.edits).filter(([id, v]) => v !== current.get(id)));
+  return { edits, note: input.note === (fresh.submission?.note ?? '') ? null : input.note };
 }
 
 /** submit_requests の p_rows：表示した入力欄の品目すべての { itemId, count } */
@@ -337,10 +347,16 @@ export interface PendingCell {
   baseUpdatedAt: string | null;
 }
 
-/** 未保存のセル（セルの鍵 → 入れた数と基準）。基準の数と同じ値は持たない。下書きにもこの形で置く */
+/** 未保存のセル（セルの鍵 → 入れた数と基準）。下書きにもこの形で置く */
 export type PendingCells = Readonly<Record<string, PendingCell>>;
 
-/** セルに数を入れる（最初の編集のときだけ基準を今の行から取る。基準の数と同じなら未保存から外す） */
+/**
+ * セルに数を入れる（最初の編集のときだけ入力の元〔基準〕を今の行から取る）。
+ * 編集を始めていないセルに今の行と同じ数を入れたときだけ、未保存にしない。一度入れたセルは、入力の元と同じ数に戻しても
+ * 未保存（value = baseCount）として残す：表が古いまま（前に送って応答が届かなかった保存の後に、読み直しも落ちたなど）だと、
+ * 戻した数が DB の今の数と違っても画面からは分からないため（設計 2.6 の (A) の (1)。入力を黙って捨てない）。
+ * DB の数と同じなら、表を当て直すとき（rebasePending）と保存のときに外れる。
+ */
 export function setPendingCell(
   pending: PendingCells,
   groupId: string,
@@ -350,12 +366,8 @@ export function setPendingCell(
 ): PendingCells {
   const key = cellKey(groupId, itemId);
   const prev = pending[key];
-  const baseCount = prev ? prev.baseCount : cell.count;
-  const baseUpdatedAt = prev ? prev.baseUpdatedAt : cell.updatedAt;
-  const next = { ...pending };
-  if (value === baseCount) delete next[key];
-  else next[key] = { value, baseCount, baseUpdatedAt };
-  return next;
+  if (!prev && value === cell.count) return pending;
+  return { ...pending, [key]: { value, baseCount: prev ? prev.baseCount : cell.count, baseUpdatedAt: prev ? prev.baseUpdatedAt : cell.updatedAt } };
 }
 
 /** 表示する数（未保存の値があればそれ） */
