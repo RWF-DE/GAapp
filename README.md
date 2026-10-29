@@ -2,6 +2,8 @@
 
 熊本高専の電波祭で、総務部門が机・椅子などの備品を団体に振り分けるための Web アプリ。Next.js の静的書き出しと Supabase で動かし、振り分けの計算と Excel 出力は管理者のブラウザで行う。仕様は [SPEC.md](SPEC.md) と `docs/requirements/` を見る。
 
+毎年の運用（7月の再開と年度の始め方・ルールの変え方・年度末の書き出し・障害時の対応・オーナーの引き継ぎ）は [docs/runbook.md](docs/runbook.md) にまとめた。
+
 ## 開発の始め方
 
 必要なもの：Node 22、pnpm 10（`corepack enable` で `packageManager` の版が入る）、Docker（ローカルの Supabase 用）。
@@ -68,7 +70,17 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<supabase status の PUBLISHABLE_KEY>
 NEXT_PUBLIC_ENABLE_TEST_LOGIN=true
 ```
 
-E2E は `supabase start …` → `pnpm build:e2e` → `pnpm e2e`。3100 番を別のサーバーが使っているときは `E2E_PORT=3101 pnpm e2e`。
+E2E は `supabase start …` → `pnpm build:e2e` → `pnpm e2e`。3100 番を別のサーバーが使っているときは `E2E_PORT=3110 pnpm e2e`。
+
+CI では流さない E2E（環境変数のときだけ playwright.config.ts に入るプロジェクト。どれも `pnpm build:e2e` の後に流す）：
+
+```bash
+pnpm e2e:shots --grep "T14 "   # スクリーンショット（notes/<チケット>/。--grep はチケット ID と空白で絞る）
+pnpm e2e:perf                   # 4G での表示の速さ（/stock・/request・/my。結果は test-results/perf/）
+pnpm e2e:manual                 # 手での確かめ（画面の受け入れ）の年度とユーザーを作り、ログインの情報を出す。片付けは MANUAL_CLEANUP=1
+```
+
+`pnpm build:e2e` の引数（`pnpm build:e2e -- --base-path /GAapp` のように渡す）：`--base-path /GAapp` は basePath つきで書き出して apps/web/out-basepath/GAapp/ に置く（下の「basePath」）。`--supabase-url http://<PC の LAN の IP>:54321` はアプリが呼ぶ Supabase の URL を変える（総務の PC から同じ Wi-Fi のスマホに配って試すとき。手順は notes/T14.md の「LAN で配る手順」）。
 
 Claude Code のクラウドのセッションなど、Docker のデーモンが止まっている環境では、先に `dockerd` を起動してから `supabase start` する（`docker info` が失敗したら `nohup dockerd > /tmp/dockerd.log 2>&1 &`）。手元の PC では Docker Desktop などを起動しておく。ローカルの Supabase は同時に1つしか動かせない。
 
@@ -79,6 +91,16 @@ GitHub Pages では `https://<組織>.github.io/<リポジトリ名>/` で公開
 ```bash
 NEXT_PUBLIC_BASE_PATH=/GAapp pnpm build   # Pages と同じ形で確かめる
 ```
+
+E2E の本体は basePath なしで流れるので、basePath で壊れやすいもの（計算エンジンの wasm の URL・QR の URL・マニフェストとアイコン）は basePath のスモークで確かめる（CI の e2e ジョブでも流す）。basePath のビルドは apps/web/out を移すので、ふつうの `pnpm build:e2e` はその後に作る。
+
+```bash
+pnpm build:e2e -- --base-path /GAapp   # apps/web/out-basepath/GAapp/
+pnpm build:e2e                         # apps/web/out（スモークでも 3100 番に配るので要る）
+pnpm e2e:basepath                      # 3101 番に apps/web/out-basepath を配って確かめる（E2E_BASEPATH_PORT で変えられる）
+```
+
+PWA（D-38）：ホーム画面に追加できるマニフェスト（apps/web/app/manifest.ts。`display: "browser"` で、ホーム画面からは Safari・Chrome で開く）とアイコン（apps/web/app/icon.png・apple-icon.png。絵を変えたら `node scripts/gen-icons.mjs` で作り直す）。Service Worker は入れていない。
 
 ## 構成
 
