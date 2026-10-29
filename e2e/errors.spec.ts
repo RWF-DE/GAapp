@@ -1,31 +1,15 @@
 import { expect, test } from '@playwright/test';
-import { classifyError, messageFor, type ClassifiedError, type ErrorKind, type MessageContext } from '../apps/web/lib/errors';
-import { accessToken, restPost, rpc, type RestResult } from './support/auth';
+import { classifyError } from '../apps/web/lib/errors';
+import { accessToken, restPost, rpc } from './support/auth';
 import { createScenario, sql, type Scenario } from './support/db';
 import { SMALL } from './support/datasets';
+import { expectMessage } from './support/errors';
 import { SEED_USER_IDS } from './support/users';
 
 // T09a エラーの分類を本物の DB の応答で確かめる（画面の設計 2.5・7.2）。
 // supabase-js の error は PostgREST の応答の本文（{ code, message, details, hint }）そのものなので、本文と status を
 // apps/web/lib/errors.ts の classifyError に通し、messageFor の文言が既定（表にないときの文言）に落ちないことを見る。
-
-/** 表にない field・reason のときの文言（これに落ちたら、2.5 の表と DB の details が食い違っている） */
-const GENERIC = ['入力の形が違います', 'この操作はできません', '他の人が先に変更しました。読み直しました', '振り分けに誤りがあります'];
-
-function classified(r: RestResult<unknown>): ClassifiedError {
-  expect(r.error, '失敗するはずの呼び出しが通りました').not.toBeNull();
-  return classifyError(r.error, r.status);
-}
-
-function expectMessage(r: RestResult<unknown>, kind: ErrorKind, ctx: MessageContext, expected: string | RegExp): void {
-  const e = classified(r);
-  expect(e.kind, JSON.stringify(r.error)).toBe(kind);
-  const m = messageFor(e, ctx);
-  expect(GENERIC).not.toContain(m);
-  expect(m).not.toMatch(/^予期しないエラー/);
-  if (typeof expected === 'string') expect(m).toBe(expected);
-  else expect(m).toMatch(expected);
-}
+// 2.5 の対象のうち、create_year_from の details のない invalid_input は最新の年度が要るので e2e/serial/errors.spec.ts で確かめる。
 
 async function version(s: Scenario): Promise<number> {
   const [row] = await sql<{ v: number }>('select allocation_version as v from public.years where id = $1', [s.yearId]);
@@ -127,9 +111,77 @@ test.describe('T09a エラーの分類（本物の DB）', () => {
     }
   });
 
-  test('T09a 認証：トークンが壊れていれば auth（ログインし直す）', async ({ request }) => {
-    const r = await rpc(request, 'not-a-jwt', 'set_year_status', { p_year_id: SEED_USER_IDS.admin, p_to: 'allocating' });
+  test('T09a 取り込み：フォームのタイムスタンプが未来の日時なら invalid_input {field: submittedAt}', async ({ request }) => {
+    const s = await createScenario({ status: 'requesting', requestWindow: 'closed', roles: { admin: true } });
+    try {
+      const groupId = s.ids.groups[SMALL.groups.stall]!;
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      const r = await rpc(request, admin, 'update_requests_after_deadline', {
+        p_group_id: groupId,
+        p_rows: [],
+        p_reason: 'E2E',
+        p_submission: { submittedAt: future },
+      });
+      const names = { group: (id: string) => (id === groupId ? SMALL.groups.stall : undefined) };
+      const e = expectMessage(
+        r,
+        'input',
+        { rpc: 'update_requests_after_deadline', names, groupId },
+        `フォームのタイムスタンプが読めないか、未来の日時です（${SMALL.groups.stall}）`,
+      );
+      expect(e.details).toEqual({ field: 'submittedAt' });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09a 自動振り分けの保存：古い版なら conflict {allocation_version}（save_auto_allocations の文言）', async ({ request }) => {
+    const s = await createScenario({ status: 'allocating', roles: { admin: true } });
+    try {
+      const v = await version(s);
+      const e = expectMessage(
+        await rpc(request, admin, 'save_auto_allocations', { p_year_id: s.yearId, p_rows: [], p_mode: 'full', p_base_version: v - 1 }),
+        'conflict',
+        { rpc: 'save_auto_allocations' },
+        '計算している間に、ほかの人が振り分け・了承・在庫・申請・ルールなどを変えました。読み直しました。もう一度実行してください',
+      );
+      expect(e.details).toEqual({ allocation_version: v });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09a 了承：団体代表が依頼の前に答えると details のない invalid_state', async ({ request }) => {
+    const s = await createScenario({ status: 'allocating', repGroup: SMALL.groups.stall });
+    try {
+      const groupId = s.ids.groups[SMALL.groups.stall]!;
+      const [from, to] = [s.ids.items['desk'], s.ids.items['caster_desk']];
+      // 依頼されていない（行がないか not_asked）ことを先に確かめる
+      const rows = await sql<{ status: string }>(
+        'select status::text from public.substitution_consents where group_id = $1 and from_item_id = $2 and to_item_id = $3',
+        [groupId, from, to],
+      );
+      expect(rows.filter((x) => x.status !== 'not_asked')).toEqual([]);
+      const e = expectMessage(
+        await rpc(request, rep, 'set_consent', { p_group_id: groupId, p_from_item: from, p_to_item: to, p_status: 'accepted' }),
+        'state',
+        { rpc: 'set_consent' },
+        'まだ依頼されていないので回答できません。読み直しました',
+      );
+      expect(e.details).toBeNull();
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09a 認証：署名を壊したトークンは PGRST301 の auth（ログインし直す）', async ({ request }) => {
+    // 形は正しい JWT のまま、署名の1文字目だけを変える（末尾の文字は余りのビットだけが変わることがあるので使わない）
+    const [header, payload, signature] = staff.split('.');
+    expect(signature, 'アクセストークンが JWT の形ではありません').toBeTruthy();
+    const tampered = `${header}.${payload}.${signature![0] === 'A' ? 'B' : 'A'}${signature!.slice(1)}`;
+    const r = await rpc(request, tampered, 'set_year_status', { p_year_id: SEED_USER_IDS.admin, p_to: 'allocating' });
     expect(r.status).toBe(401);
+    expect(classifyError(r.error, r.status).code).toBe('PGRST301');
     expectMessage(r, 'auth', {}, 'ログインし直してください');
   });
 });
