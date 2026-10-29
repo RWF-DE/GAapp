@@ -31,7 +31,6 @@ import {
   myConsents,
   myRequestLines,
   pickMyGroup,
-  sourceText,
   useMyData,
   type MyConsent,
   type MyData,
@@ -53,37 +52,35 @@ export function MyScreen() {
   if (!m?.year) return <LoadingState />;
   const group = pickMyGroup(m.groups, groupParam.parse(params.get('group') ?? undefined));
   if (!group) return <ForbiddenState description="この年度で代表を務める団体がありません。" />;
-  return (
-    <>
-      {m.groups.length > 1 ? (
-        <div className="mb-3 flex items-center gap-2">
-          <Label htmlFor="my-group">団体</Label>
-          <select
-            id="my-group"
-            data-testid="my-group-select"
-            className="h-10 min-w-0 flex-1 rounded-md border bg-background px-2 text-base sm:max-w-xs"
-            value={group.id}
-            onChange={(e) => void router.forceReplace(`/my?group=${encodeURIComponent(e.target.value)}`)}
-          >
-            {m.groups.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      ) : null}
-      <MyBody key={`${m.year.id}:${group.id}`} yearId={m.year.id} groupId={group.id} />
-    </>
-  );
+  const groupSwitch =
+    m.groups.length > 1 ? (
+      <div className="mb-4 flex items-center gap-2">
+        <Label htmlFor="my-group">団体</Label>
+        <select
+          id="my-group"
+          data-testid="my-group-select"
+          className="h-10 min-w-0 flex-1 rounded-md border bg-background px-2 text-base sm:max-w-xs"
+          value={group.id}
+          onChange={(e) => void router.forceReplace(`/my?group=${encodeURIComponent(e.target.value)}`)}
+        >
+          {m.groups.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name}
+            </option>
+          ))}
+        </select>
+      </div>
+    ) : null;
+  return <MyBody key={`${m.year.id}:${group.id}`} yearId={m.year.id} groupId={group.id} groupSwitch={groupSwitch} />;
 }
 
-function MyBody({ yearId, groupId }: { yearId: string; groupId: string }) {
+function MyBody({ yearId, groupId, groupSwitch }: { yearId: string; groupId: string; groupSwitch: React.ReactNode }) {
   const q = useMyData(yearId, groupId);
   if (q.isPending) {
     return (
       <>
         <PageHeader title="自団体の振り分け" />
+        {groupSwitch}
         <LoadingState />
       </>
     );
@@ -92,14 +89,25 @@ function MyBody({ yearId, groupId }: { yearId: string; groupId: string }) {
     return (
       <>
         <PageHeader title="自団体の振り分け" />
+        {groupSwitch}
         <ErrorState message={messageFor(classifyError(q.error))} onRetry={() => void q.refetch()} />
       </>
     );
   }
-  return <MyLoaded data={q.data} refetch={() => q.refetch()} fetching={q.isFetching} />;
+  return <MyLoaded data={q.data} refetch={() => q.refetch()} fetching={q.isFetching} groupSwitch={groupSwitch} />;
 }
 
-function MyLoaded({ data, refetch, fetching }: { data: MyData; refetch: () => Promise<unknown>; fetching: boolean }) {
+function MyLoaded({
+  data,
+  refetch,
+  fetching,
+  groupSwitch,
+}: {
+  data: MyData;
+  refetch: () => Promise<unknown>;
+  fetching: boolean;
+  groupSwitch: React.ReactNode;
+}) {
   const final = isAllocationFinal(data.year.status);
   return (
     <div className="mx-auto max-w-2xl" data-testid="my-screen" data-final={final ? 'true' : 'false'}>
@@ -115,6 +123,7 @@ function MyLoaded({ data, refetch, fetching }: { data: MyData; refetch: () => Pr
         onReload={() => void refetch()}
         reloading={fetching}
       />
+      {groupSwitch}
       {final ? <FinalSection data={data} /> : <BeforeConfirmSection data={data} refetch={refetch} />}
     </div>
   );
@@ -137,13 +146,6 @@ function FinalSection({ data }: { data: MyData }) {
           {lines.map((l) => (
             <li key={l.key} className="rounded-md border p-3" data-testid="my-allocation-line" data-item={l.itemName}>
               <p className="font-medium">{allocationLineText(l)}</p>
-              {l.sources.length > 1 ? (
-                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-muted-foreground">
-                  {l.sources.map((s) => (
-                    <li key={`${s.roomId}:${s.isKeep}`}>{sourceText(s)}</li>
-                  ))}
-                </ul>
-              ) : null}
             </li>
           ))}
         </ul>

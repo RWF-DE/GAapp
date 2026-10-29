@@ -21,7 +21,7 @@ describe('swapOps（キャスター机交換の操作）', () => {
   it('了承：「未依頼に戻す」を出さない（了承で固定した行が固定のまま残るため）', () => {
     expect(ops('accepted', 6, 6)).toEqual(['拒否']);
     expect(ops('accepted', 8, 6)).toEqual(['依頼し直す', '拒否']);
-    expect(ops('accepted', 6, null)).toEqual(['依頼し直す', '拒否']);
+    expect(ops('accepted', 6, null)).toEqual(['拒否']);
     for (const [cur, asked] of [
       [0, null],
       [6, 6],
@@ -31,9 +31,10 @@ describe('swapOps（キャスター机交換の操作）', () => {
     }
   });
 
-  it('拒否：了承・未依頼に戻す（置き換えが残っていれば依頼し直すも）', () => {
+  it('拒否：了承・未依頼に戻す（依頼の後に増えていれば依頼し直すも出て、了承は押せない）', () => {
     expect(ops('declined', 0, 6)).toEqual(['了承', '未依頼に戻す']);
     expect(ops('declined', 6, 6)).toEqual(['了承', '未依頼に戻す']);
+    expect(ops('declined', 8, 6)).toEqual(['依頼し直す', '了承（押せない）', '未依頼に戻す']);
   });
 
   it('振り分け中でなければ何も出さない（読み取り）', () => {

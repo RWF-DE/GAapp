@@ -158,12 +158,18 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
     }
   };
 
+  // 企画名は、どの団体にもなければ列を出さない（PC の幅を注意の列に回す）
+  const hasDisplayName = rows.some((r) => r.displayName);
+  // 交換（元 → 先）が1種類だけなら列にせず、件数の行に書く
+  const pairs = new Set(rows.map((r) => r.pair));
   // 列は描画ごとに作る（操作のボタンが busy・allocating・最新でない年度の確かめを使うため）
   const columns: ColumnDef<SwapView>[] = [
       { accessorKey: 'groupName', header: '団体', cell: ({ row }) => <span className="font-medium">{row.original.groupName}</span> },
-      { accessorKey: 'displayName', header: '企画名', cell: ({ row }) => row.original.displayName ?? '' },
+      ...(hasDisplayName
+        ? [{ accessorKey: 'displayName', header: '企画名', cell: ({ row }) => row.original.displayName ?? '' } satisfies ColumnDef<SwapView>]
+        : []),
       { accessorKey: 'location', header: '使用場所' },
-      { accessorKey: 'pair', header: '交換' },
+      ...(pairs.size > 1 ? [{ accessorKey: 'pair', header: '交換' } satisfies ColumnDef<SwapView>] : []),
       { accessorKey: 'current', header: '今の置き換え台数', meta: { align: 'right' } },
       {
         accessorKey: 'asked',
@@ -188,40 +194,13 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
         ),
       },
       {
-        accessorKey: 'note',
-        header: '備考',
-        enableSorting: false,
-        cell: ({ row }) => <span className="line-clamp-2 max-w-48 whitespace-pre-wrap text-sm">{row.original.note ?? ''}</span>,
-      },
-      {
-        id: 'ops',
-        header: '操作',
-        enableSorting: false,
-        cell: ({ row }) => (
-          <div className="flex flex-wrap gap-1" data-testid="swap-ops">
-            {swapOps(row.original, allocating).map((o) => (
-              <Button
-                key={o.op}
-                size="sm"
-                variant={o.op === 'declined' ? 'outline' : o.op === 'not_asked' ? 'ghost' : 'secondary'}
-                disabled={busy || o.disabledReason !== null}
-                title={o.disabledReason ?? undefined}
-                onClick={() => void open(row.original, o)}
-              >
-                {o.label}
-              </Button>
-            ))}
-          </div>
-        ),
-      },
-      {
         accessorKey: 'attention',
         header: '注意',
         cell: ({ row }) => {
           const a = row.original.attention;
           if (!a) return null;
           return (
-            <span className="text-sm text-amber-700" data-testid="swap-attention" data-attention={a}>
+            <span className="block min-w-44 max-w-60 whitespace-normal text-sm text-amber-700" data-testid="swap-attention" data-attention={a}>
               {a === 'rerun' ? (
                 <>
                   拒否されています。
@@ -236,6 +215,33 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
             </span>
           );
         },
+      },
+      {
+        accessorKey: 'note',
+        header: '備考',
+        enableSorting: false,
+        cell: ({ row }) => <span className="line-clamp-2 block max-w-48 whitespace-pre-wrap text-sm">{row.original.note ?? ''}</span>,
+      },
+      {
+        id: 'ops',
+        header: '操作',
+        enableSorting: false,
+        cell: ({ row }) => (
+          <div className="flex gap-1" data-testid="swap-ops">
+            {swapOps(row.original, allocating).map((o) => (
+              <Button
+                key={o.op}
+                size="sm"
+                variant={o.op === 'declined' ? 'outline' : o.op === 'not_asked' ? 'ghost' : 'secondary'}
+                disabled={busy || o.disabledReason !== null}
+                title={o.disabledReason ?? undefined}
+                onClick={() => void open(row.original, o)}
+              >
+                {o.label}
+              </Button>
+            ))}
+          </div>
+        ),
       },
   ];
 
@@ -279,6 +285,7 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
       ) : (
         <>
           <p className="mb-2 text-sm text-muted-foreground" data-testid="swaps-summary">
+            {pairs.size === 1 ? `${[...pairs][0]}：` : ''}
             {rows.length} 件
             {attentionCount > 0 ? `（注意 ${attentionCount} 件）` : ''}
             ・置き換え 計 {rows.reduce((s, r) => s + r.current, 0)} 台

@@ -13,7 +13,7 @@ export interface SwapOpOption {
 
 /**
  * 振り分け中に出す操作（ほかの状態では何も出さない）。
- * - 依頼：未依頼なら「依頼済みにする」。依頼済み・了承・拒否で、今の置き換え台数が依頼した台数と違えば「依頼し直す」。
+ * - 依頼：未依頼なら「依頼済みにする」。依頼済み・了承・拒否で、今の置き換え台数が依頼した台数より増えていれば「依頼し直す」。
  *   置き換えの行がなければ押せない（set_consent の no_rows）。
  * - 「了承」「拒否」：総務が団体の代わりに記録する。今と同じ状況のものは出さない。
  * - 「未依頼に戻す」：依頼済み・拒否のときだけ。了承のときは出さない（not_asked は行の固定を変えないので、
@@ -23,10 +23,10 @@ export function swapOps(row: Pick<SwapRow, 'status' | 'current' | 'asked'>, allo
   if (!allocating) return [];
   const out: SwapOpOption[] = [];
   const noRows = row.current === 0 ? '置き換えの行がないので依頼できません' : null;
-  if (row.status === 'not_asked') out.push({ op: 'asked', label: '依頼済みにする', disabledReason: noRows });
-  else if (row.current > 0 && row.current !== row.asked) out.push({ op: 'asked', label: '依頼し直す', disabledReason: null });
   // 依頼した台数より増えていると set_consent の accepted は conflict になるので、先に依頼し直してもらう
   const grown = row.asked !== null && row.current > row.asked ? '依頼した台数より増えています。依頼し直してください' : null;
+  if (row.status === 'not_asked') out.push({ op: 'asked', label: '依頼済みにする', disabledReason: noRows });
+  else if (grown) out.push({ op: 'asked', label: '依頼し直す', disabledReason: null });
   if (row.status !== 'accepted') out.push({ op: 'accepted', label: '了承', disabledReason: grown });
   if (row.status !== 'declined') out.push({ op: 'declined', label: '拒否', disabledReason: null });
   if (row.status === 'asked' || row.status === 'declined') out.push({ op: 'not_asked', label: '未依頼に戻す', disabledReason: null });
