@@ -6,27 +6,35 @@
 
 必要なもの：Node 22、pnpm 10（`corepack enable` で `packageManager` の版が入る）、Docker（ローカルの Supabase 用）。
 
+上から順に流せば、何もない状態（clone した直後）から通るように並べてある。DB が要らないもの → ローカルの Supabase → DB が要るもの（画面・E2E）の順。
+
 ```bash
 pnpm install
-pnpm dev            # http://localhost:3100
+pnpm exec playwright install chromium   # 初回だけ（E2E のブラウザ）
+
+# DB が要らないもの
 pnpm lint
 pnpm typecheck
-pnpm test           # Vitest（packages/* と apps/web と scripts）
+pnpm test           # Vitest（packages/* と apps/web と scripts と e2e/support の純粋な部分）
 pnpm build          # apps/web/out に静的ファイルを出す（本番と同じ。テスト用ログインは入らない）
-pnpm build:e2e      # E2E 用のビルド（ローカルの Supabase に向け、テスト用ログインを入れる）
-pnpm e2e            # Playwright。先にローカルの Supabase の起動と pnpm build:e2e が必要
 pnpm check:emails   # 追跡ファイルにメールアドレスが入っていないか
 ```
 
-Playwright のブラウザは初回だけ `pnpm exec playwright install chromium` で入れる。
-
 ### ローカルの Supabase
 
+画面（`pnpm dev`）・E2E（`pnpm build:e2e`・`pnpm e2e`）・pgTAP の前に起動する（`pnpm build:e2e` は起動中の Supabase の URL とキーを読むので、止まっていると失敗する）。
+
 ```bash
-supabase start        # 全部起動（Docker が必要）
-supabase db reset     # マイグレーションと seed を流す
+supabase start        # 全部起動（Docker が必要）。初回はマイグレーションと seed も流れる
+supabase db reset     # マイグレーションと seed を流し直す（マイグレーションを変えた後・データを初期に戻すとき）
 supabase test db      # pgTAP
-supabase stop --no-backup
+
+# DB が要るもの（Supabase を起動したまま）
+pnpm dev              # http://localhost:3100（先に下の「ログインとテストユーザー」の apps/web/.env.local を作る）
+pnpm build:e2e        # E2E 用のビルド（ローカルの Supabase に向け、テスト用ログインを入れる）
+pnpm e2e              # Playwright（chromium の後に serial）。pnpm build:e2e の後に流す
+
+supabase stop --no-backup   # 終わったら止める
 ```
 
 マイグレーションを変えたら、`supabase db reset` のあとに `pnpm gen:types` を実行して packages/shared/src/database.types.ts を作り直す。`pnpm check:types` は生成し直した型とコミット済みの型を比べるので、DB を起動した状態で、CI と同じ版の supabase CLI（2.122.0）で実行する（版が違うと出力がずれる）。
