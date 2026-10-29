@@ -113,6 +113,13 @@ test('T13 キャスター机交換：依頼済みにする・拒否 → 最小�
     expect((await substituted(s.yearId, g02)).pinned).toBe(0);
     const attention = swapRow(page, '模擬店02').getByTestId('swap-attention');
     await expect(attention).toHaveAttribute('data-attention', 'rerun');
+    // PC（1280px）で、注意の文が出ていても操作の列の右端のボタンまで画面の中に収まる（団体へのコメントの列を足した後も）
+    const screenBox = (await page.getByTestId('swaps-screen').boundingBox())!;
+    for (const name of ['模擬店02', '模擬店09']) {
+      const last = swapRow(page, name).getByTestId('swap-ops').getByRole('button').last();
+      const box = (await last.boundingBox())!;
+      expect(box.x + box.width, `${name} の操作の列が切れる`).toBeLessThanOrEqual(screenBox.x + screenBox.width);
+    }
     await expect(swapRow(page, '模擬店02').getByRole('button', { name: '未依頼に戻す' })).toBeVisible();
 
     // 交換依頼一覧（Excel）

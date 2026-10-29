@@ -220,7 +220,14 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
       {
         accessorKey: 'note',
         // substitution_consents.note。団体代表の /my に「コメント：」として出る（総務の内部のメモではない。T13-19）
-        header: '団体へのコメント',
+        // 見出しは2行に折る（PC の 1280px で操作の列まで収めるため）
+        header: () => (
+          <span className="inline-block w-16 whitespace-normal leading-tight">
+            団体への
+            <wbr />
+            コメント
+          </span>
+        ),
         enableSorting: false,
         cell: ({ row }) => <span className="line-clamp-2 block max-w-48 whitespace-pre-wrap text-sm">{row.original.note ?? ''}</span>,
       },
@@ -229,7 +236,7 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
         header: '操作',
         enableSorting: false,
         cell: ({ row }) => (
-          <div className="flex gap-1" data-testid="swap-ops">
+          <div className="flex flex-wrap gap-1" data-testid="swap-ops">
             {swapOps(row.original, allocating).map((o) => (
               <Button
                 key={o.op}
