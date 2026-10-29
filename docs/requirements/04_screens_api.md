@@ -60,7 +60,7 @@
 - 年度：作成（最新の年度からの複製。最新の年度の管理者だけができ、作った人が新しい年度の管理者になる）、申請の受付期間（受付開始の前に締切を入れる）
 - 場所・品目・団体：表で追加・編集。団体は CSV 取り込み可
 - 距離：建物間の距離の上書き、場所ごとの追加コスト
-- ユーザー：招待（メール・ロール・団体）、ロールの変更と外す（年度の最後の管理者は外せない。終了した年度でも外せる）、招待の取り消し（未使用のものだけ）、団体代表を外す
+- ユーザー：招待（メール・ロール・団体）、ロールの変更と外す（年度の最後の管理者は外せない。終了した年度でも外せる）、招待の取り消し（未使用のものだけ。終了した年度でも）、団体代表を外す
 - データの書き出し：年度データ（JSON）と振り分け表（Excel）。年度末のバックアップに使う
 
 ### ルール /rules（PC）
@@ -92,18 +92,19 @@
 | 名前 | 呼べる人 | 動作 |
 | --- | --- | --- |
 | set_year_status(year_id, to, reason, base_version) | admin | 状態遷移の図に合わない遷移はエラー。requesting へは締切が未来のときだけ。confirmed へは、base_version（検証に使った版）が今の版と同じで、E001・E002・E005 がないときだけ。確定と確定の解除は理由必須。遷移のたびに版を増やす |
-| update_year(year_id, patch, reason) | admin | 年度名・1日目・受付期間を変える（patch に入れたキーだけ。ほかのキーは invalid_input）。requesting の間は締切を消せない。終了した年度は変えられない |
+| update_year(year_id, patch, reason) | admin | 年度名・1日目・受付期間を変える（patch に入れたキーだけ。ほかのキーは invalid_input）。1日目は複製元（prev_year_id）より後で、この年度を複製元にした年度より前（違えば invalid_input）。requesting の間は締切を消せない。終了した年度は変えられない |
 | create_year_from(prev_year_id, label, festival_start) | 複製元の年度の admin（複製元が終了していてもよい） | 複製元が最新の年度のときだけ（それを複製元にした年度も、1日目が同じか後の年度もない）。1日目は複製元より後。年度を作り、団体・ルール・場所の状態を複製してルールの団体 id を付け替える。呼んだ人を新しい年度の admin にする |
 | invite(year_id, email, role, group_id) | admin | 招待を作る。メールを確認済みのアカウントがあればその場でロールを付ける（別のロールを持っていればエラー）。終了した年度には招待できない。返り値は招待の id と、その場で付けたか（applied） |
-| set_role(year_id, user_id, role, reason) | admin | ロールを付ける・変える・外す（role が null）。外すのは終了した年度でもできる。最後の admin は外せない |
-| revoke_invitation(invitation_id) | admin | 未使用の招待を取り消す |
+| set_role(year_id, user_id, role, reason) | admin | ロールを付ける・変える（role は必須。null は invalid_input）。終了した年度ではできない。最後の admin は降格できない |
+| remove_role(year_id, user_id, reason) | admin | ロールを外す（終了した年度でも。卒業した admin を外すため）。最後の admin は外せない。ロールがなければ not_found |
+| revoke_invitation(invitation_id) | admin | 未使用の招待を取り消す（終了した年度でも）。招待が見つからなければ forbidden（有無を漏らさない） |
 | remove_group_member(group_id, user_id, reason) | admin | 団体代表を外す（終了した年度でも） |
 | accept_my_invitations() | ログインしている人 | 自分の確認済みのメールあての未使用の招待（終了していない年度）を受け入れ、件数を返す。画面がログインのたびに呼ぶ |
 | save_auto_allocations(year_id, rows, mode, base_version) | admin | 版が base_version と同じときだけ、auto かつ未固定の行を差分で入れ替える。年度の一致・E002・E005 を保存前に、在庫超過を保存後に確かめ、だめなら全体を取り消す。振り分け中のみ（確定中はエラー） |
 | save_allocation_rows(year_id, changes, reason) | admin | 行の追加・変更・削除・固定。データを変えた行は origin = manual。各行の updated_at で楽観ロック。理由必須。ロックした時点の版と保存後の版を返す。振り分け中のみ（確定中はエラー） |
 | set_consent(group_id, from_item, to_item, status, note) | admin、その団体の代表 | 依頼済みにすると、その時点の置き換え台数を count に入れる。了承なら該当の置き換え行を pinned にし、拒否なら pinned を外す。団体代表は依頼済み以降に了承・拒否だけを記録できる。依頼した台数より置き換えが増えていれば了承は conflict。振り分け中のみ |
 | submit_requests(group_id, rows, note) | 団体代表（受付期間内）、admin（準備中と締切前） | 申請（品目ごとの数）と提出（備考、提出日時）を1回で保存する |
-| update_requests_after_deadline(group_id, rows, reason, submission) | admin | 締切後の申請修正（行ごとに updated_at で楽観ロック。新しい品目の行は updated_at なし）。理由必須。submission は `{ submitted: true, note }`（どちらも省略可）で、提出済みにすることと備考を直すことができる。未提出には戻さない（D-07 で需要が fixed_request に変わり、振り分けが変わるため。`submitted: false` はエラー）。準備中・受付中・振り分け中のみ（確定中はエラー） |
+| update_requests_after_deadline(group_id, rows, reason, submission) | admin | 締切後の申請修正（行ごとに updated_at で楽観ロック。新しい品目の行は updated_at なし）。理由必須。submission は `{ submitted: true, submittedAt, note }`（どれも省略可）で、提出済みにすることと備考を直すことができる。submittedAt（オフセットつきの ISO 8601 の日時。未来は不可）を渡すと、提出済みにして提出日時をその値にする（CSV の取り込みでフォームのタイムスタンプを残すため。提出済みでも置き換える。admin だけが呼べるので、団体代表は日時を偽れない。submit_requests と直接の書き込みの提出日時は DB の now()）。未提出には戻さない（D-07 で需要が fixed_request に変わり、振り分けが変わるため。`submitted: false` はエラー）。準備中・受付中・振り分け中のみ（確定中はエラー） |
 | check_delivery(delivery_id, status, problem_note, returned) | admin、staff | 運搬の状態・問題・返却を更新（フェーズ2）。確定中と終了後 |
 | previous_year_stocks(year_id) | admin、staff | 前年度（複製元）の在庫の数を返す（読み取りのみ） |
 | previous_year_requests(year_id) | admin | 前年度の申請の数を団体名つきで返す（休憩所の初期値。読み取りのみ） |
@@ -120,7 +121,7 @@
 | parseFormCsv(kind, csv) | packages/importer | Googleフォーム回答の取り込み（メールアドレスを捨てる） |
 
 - RPC は SECURITY DEFINER にして `search_path = ''` を設定し、関数の最初でロールを確かめる。次に年度の行をロックし（`for no key update`）、ロールをもう一度確かめてから状態を確かめ、入力を確かめてから理由を置いて書き込む。入力はブラウザで zod、DB では関数の中でもう一度確かめる
-- エラーは `raise exception`（SQLSTATE P0001）で返し、message にコード、detail に該当する行の id などを JSON で入れる（メールアドレスは入れない）。PostgREST は HTTP 400 で `{ code: 'P0001', message, details }` を返す。コードは forbidden（ロールがない。対象が見つからないときも）、not_found、invalid_state（状態が違う、確定中に変えられない）、conflict（版・updated_at が違う、重複）、invalid_input（形や参照が違う、上限を超える）、reason_required、検証コード（E001・E002・E005・E006）。形の誤り（uuid・日付など）と CHECK 違反も invalid_input にして、生の SQLSTATE は返さない。画面で日本語に直して表示する
+- エラーは `raise exception`（SQLSTATE P0001）で返し、message にコード、detail に該当する行の id などを JSON で入れる（メールアドレスは入れない）。PostgREST は HTTP 400 で `{ code: 'P0001', message, details }` を返す。コードは forbidden（ロールがない。対象が見つからないときも）、not_found、invalid_state（状態が違う、確定中に変えられない）、conflict（版・updated_at が違う、重複）、invalid_input（形や参照が違う、上限を超える）、reason_required、検証コード（E001・E002・E005・E006）。RPC の中で起きた形の誤り（jsonb の中の uuid・日付など）と CHECK 違反も invalid_input にして、生の SQLSTATE は返さない。ただし、RPC のトップレベルの型つきの引数（uuid・enum・date・integer）は PostgREST が関数の前に変換するので、形が違うと 22P02・22007 などがそのまま返る（関数の中では直せない）。画面は zod で先に確かめ、22 で始まる SQLSTATE は「入力の形が違う」として扱う。画面で日本語に直して表示する
 - 楽観ロックの updated_at は、受け取った文字列をそのまま返す（Date に変換しない）
 - 振り分けの行を渡す JSON は、03 の AllocationRow と同じ camelCase（sourceRoomId、groupId、itemId、requestedItemId、count、isKeep）にする
 - 書き込みがデッドロック（SQLSTATE 40P01。PostgREST は HTTP 500 で返す）で失敗したときは、何も保存されていない（1リクエスト＝1トランザクション）ので、入力を残したまま「ほかの人の保存と重なりました。もう一度保存してください」と出す。HTTP 500 を一律に扱わず、エラーの code で分ける
