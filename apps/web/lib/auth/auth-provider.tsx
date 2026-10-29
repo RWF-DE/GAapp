@@ -42,7 +42,7 @@ export interface AuthContextValue {
   /**
    * ログアウト（その端末のセッションだけ。scope: 'local'）。キャッシュと選んだ年度（sessionStorage とメモリ）は必ず消す。
    * auth-js が error を返してセッションを消さなかったときは、もう一度試し、だめなら localStorage のセッションを消して
-   * ログアウトの状態にする（共用 PC でセッションを残さない）。
+   * ログアウトの状態にする（共用 PC でセッションを残さない。ほかのタブは storage イベントで知ってログアウトの状態になる）。
    * manual（ヘッダーのボタン。確かめは呼ぶ側＝useGuardedSignOut）はその人の下書きも消し、forced（401 など）は下書きを残す（D-33）。
    */
   signOut: (kind?: SignOutKind) => Promise<void>;
@@ -96,9 +96,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void supabase.auth.getSession().then(({ data }) => apply(data.session));
     // コールバックの中で supabase の非同期の関数を呼ばない（supabase-js のロックで止まるため）。状態を置くだけにする
     const { data } = supabase.auth.onAuthStateChange((_event, s) => apply(s));
+    // もう一方のタブが localStorage のセッションを自分で消したとき（signOut が通らなかったときの代わりの処理）。
+    // auth-js は自分で消したときだけ BroadcastChannel で知らせ、storage イベントは見ていないので、ここで拾う
+    const key = authStorageKey();
+    const onStorage = (e: StorageEvent) => {
+      if (e.newValue !== null || (e.key !== key && e.key !== null)) return;
+      if (e.key === null && readStoredSession(key) !== null) return; // clear() でも、セッションが残っていれば何もしない
+      if (active) setSession((prev) => (prev.status === 'signedIn' ? { status: 'signedOut' } : prev));
+    };
+    window.addEventListener('storage', onStorage);
     return () => {
       active = false;
       data.subscription.unsubscribe();
+      window.removeEventListener('storage', onStorage);
     };
   }, [configured]);
 
@@ -111,9 +121,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     prevUserRef.current = userId;
     if (prev === userId) return;
     if (prev) {
-      // (b)・(c)：前の人のキャッシュと選んだ年度を消す（手動のログアウトでは signOut の中で先に消している）
+      // (a)〜(c)：前の人のキャッシュと選んだ年度（sessionStorage とメモリ）を消す。ログアウトでは、セッションが消えた後のここで
+      // メモリの選択を消す（signOut の通信の間に年度が最新に変わり、画面が作り直されてクエリを送り始めないように）。
+      // ほかのタブのログアウト（onAuthStateChange・storage イベント）もここを通るので、同じ人がまたログインしても最新の年度で開く（D-31）
       queryClient.clear();
       clearSelectedYear(prev);
+      setSelected(null);
     }
     if (userId) {
       draftsOnSignIn(userId); // (c)：自分以外の下書きを消す
@@ -195,8 +208,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         draftsOnSignOut(kind, userId);
         clearSelectedYear(userId);
       }
-      // メモリの選択も消す（同じ文書で同じ人がまたログインしたときに、前に選んだ年度で開かないように）
-      setSelected(null);
+      // メモリの選択は、セッションが消えた後に利用者が変わったときの effect で消す（ここで消すと通信の間に最新の年度へ切り替わる）
       const supabase = getSupabase();
       // auth-js は、セッションの読み込み（期限切れのトークンの更新）が通信の失敗になると、セッションを消さずに error を返す。
       // 共用 PC でログアウトしたつもりで残らないように、もう一度試し、それでもだめならその端末のセッションを自分で消す
@@ -233,6 +245,15 @@ async function signOutLocal(supabase: AppSupabaseClient): Promise<boolean> {
     return !error;
   } catch {
     return false;
+  }
+}
+
+/** localStorage のセッションの値（読めなければ null） */
+function readStoredSession(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
   }
 }
 

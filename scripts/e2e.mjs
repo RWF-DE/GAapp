@@ -13,7 +13,10 @@ const extra = process.argv.slice(2);
 
 const RUNS = [
   { run: 'chromium', args: ['--project=chromium'] },
-  // T09a の時点では serial のテストはない（T09・T14 が足す）。ないときは成功にする
+  // serial：並行に流せないテスト（e2e/serial/。最新の年度のシナリオ〔festivalStart: 'latest'〕・年度をまたぐ表を変えるもの）。
+  // T09a の errors・scenario があり、T09・T14 が足す。
+  // --pass-with-no-tests は、引数の --grep などで片方の回に当てはまるテストがないときに、その回を失敗にしないため
+  // （例：pnpm e2e --grep <chromium のテストの名前> で、serial の回が「テストがない」で落ちない）
   { run: 'serial', args: ['--project=serial', '--pass-with-no-tests'] },
 ];
 
