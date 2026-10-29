@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { loginAs, navLabels } from './helpers';
 import { accessToken, restGet, rpc, storageStateFor, type StoredUser } from './support/auth';
-import { createScenario } from './support/db';
+import { createScenario, sql } from './support/db';
 import { SEED_R8, SEED_USER_IDS } from './support/users';
 import { pinYear } from './support/year';
 
@@ -154,6 +154,30 @@ test.describe('T09a 年度の切り替え', () => {
       await page.getByTestId('not-latest-year-banner').getByRole('button', { name: '最新の年度（R8）に切り替える' }).click();
       await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
       await expect(page.getByTestId('not-latest-year-banner')).toHaveCount(0);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T09a スマホ（幅 390px）：年度が2つ以上で年度名が長くても、ヘッダーがはみ出さず、ログアウトのボタンが画面の中にある', async ({ page }) => {
+    const s = await createScenario({ status: 'allocating', roles: { staff: true } });
+    try {
+      // 年度名は 50 字まで入れられる（年度名の上限いっぱいにする）
+      const label = `${s.label}-${'第60回電波祭の年度名'.repeat(5)}`.slice(0, 50);
+      await sql('update public.years set label = $2 where id = $1', [s.yearId, label]);
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto('/');
+      const expectFits = async () => {
+        expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(390);
+        const box = await page.getByRole('button', { name: 'ログアウト' }).boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+      };
+      await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
+      await expectFits();
+      await page.getByTestId('year-select').selectOption(s.yearId);
+      await expect(page.getByTestId('current-year')).toHaveText(`${label}・振り分け中`);
+      await expectFits();
     } finally {
       await s.cleanup();
     }
