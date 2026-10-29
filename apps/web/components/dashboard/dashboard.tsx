@@ -6,6 +6,7 @@ import { AlertTriangle } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { AppLink } from '@/components/common/app-link';
+import { ErrorBanner } from '@/components/common/error-banner';
 import { PageHeader } from '@/components/common/page-header';
 import { StaleBanner } from '@/components/common/stale-banner';
 import { TokyoTime } from '@/components/common/tokyo-time';
@@ -70,6 +71,12 @@ export function Dashboard({ yearId, audiences }: { yearId: string; audiences: re
   return (
     <div className="space-y-4">
       {header}
+      {/* データがあるときの読み直し（読み直す・帯の読み直す・状態の遷移の後）の失敗は、中身を残して帯で知らせる */}
+      {snap.isError ? (
+        <div data-testid="dashboard-reload-error">
+          <ErrorBanner error={snap.error} onRetry={() => void snap.refetch()} />
+        </div>
+      ) : null}
       {stale ? <StaleBanner onReload={() => void snap.refetch()} reloading={snap.isFetching} /> : null}
       <YearCard snapshot={s} summary={summary} validation={v} stale={stale} names={names} onReload={() => snap.refetch()} />
       {summary.problems.length > 0 ? <ProblemsCard summary={summary} /> : null}
@@ -261,9 +268,11 @@ function SubmissionsCard({ summary }: { summary: DashboardSummary }) {
         ) : (
           <p className="text-muted-foreground">
             団体がありません。
-            <AppLink href="/settings?tab=groups" className="ml-1 underline">
-              マスタ設定の団体へ
-            </AppLink>
+            {sub.emptyHref ? (
+              <AppLink href={sub.emptyHref} className="ml-1 underline">
+                マスタ設定の団体へ
+              </AppLink>
+            ) : null}
           </p>
         )}
         {sub.unsubmittedCount > 0 ? (
@@ -300,9 +309,11 @@ function StocksCard({ summary }: { summary: DashboardSummary }) {
         {st.total === 0 ? (
           <p className="text-muted-foreground">
             保管場所がありません。
-            <AppLink href="/settings?tab=rooms" className="ml-1 underline">
-              マスタ設定の場所へ
-            </AppLink>
+            {st.emptyHref ? (
+              <AppLink href={st.emptyHref} className="ml-1 underline">
+                マスタ設定の場所へ
+              </AppLink>
+            ) : null}
           </p>
         ) : st.uncountedCount > 0 ? (
           <div data-testid="dashboard-uncounted">

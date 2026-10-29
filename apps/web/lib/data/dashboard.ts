@@ -70,6 +70,8 @@ export interface DashboardSummary {
     unsubmittedCount: number;
     /** 未提出だけの申請一覧（開けなければ null） */
     unsubmittedHref: string | null;
+    /** 団体がないときの「マスタ設定の団体へ」（開けなければ null） */
+    emptyHref: string | null;
   };
   stocks: {
     /** 在庫を数えた保管場所の数（その年度の stocks の行が1つ以上ある。使用不可は除く） */
@@ -78,6 +80,8 @@ export interface DashboardSummary {
     /** まだ数えていない保管場所（W104 と同じ。場所の並びで DASHBOARD_LIST_LIMIT 件まで。リンクは在庫入力） */
     uncounted: NamedLink[];
     uncountedCount: number;
+    /** 保管場所がないときの「マスタ設定の場所へ」（開けなければ null） */
+    emptyHref: string | null;
   };
   validation: {
     phase: ValidationPhase;
@@ -194,12 +198,14 @@ export function summarizeDashboard(
       unsubmitted: unsubmitted.slice(0, DASHBOARD_LIST_LIMIT).map((g) => ({ id: g.id, name: g.name })),
       unsubmittedCount: unsubmitted.length,
       unsubmittedHref: link('/requests?filter=unsubmitted'),
+      emptyHref: link('/settings?tab=groups'),
     },
     stocks: {
       counted: storages.length - uncounted.length,
       total: storages.length,
       uncounted: uncounted.slice(0, DASHBOARD_LIST_LIMIT).map((r) => ({ id: r.id, name: r.name, href: link(`/stock?room=${r.id}`) })),
       uncountedCount: uncounted.length,
+      emptyHref: link('/settings?tab=rooms'),
     },
     validation: {
       phase,

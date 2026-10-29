@@ -199,6 +199,9 @@ describe('summarizeDashboard：部員に開けない画面へのリンクを出�
     expect(sum.stocks.uncounted.every((r) => r.href?.startsWith('/stock?room='))).toBe(true);
     expect(sum.validation.href).toBe('/allocation');
 
+    expect(sum.submissions.emptyHref).toBeNull();
+    expect(sum.stocks.emptyHref).toBeNull();
+
     const hrefs = JSON.stringify(sum).match(/"\/[a-z]+[^"]*"/g) ?? [];
     for (const h of hrefs) expect(h).not.toMatch(/^"\/(swaps|rules|settings|history)/);
   });
@@ -211,6 +214,9 @@ describe('summarizeDashboard：部員に開けない画面へのリンクを出�
     const sum = summarizeDashboard(snap('allocating'), { status: 'unavailable', issues: [], problems }, ADMIN);
     expect(sum.consents.href).toBe('/swaps');
     expect(sum.problems.map((p) => p.href)).toEqual(['/rules?code=S05', '/settings']);
+    // 団体・保管場所がないときの「マスタ設定の団体へ」「マスタ設定の場所へ」
+    expect(sum.submissions.emptyHref).toBe('/settings?tab=groups');
+    expect(sum.stocks.emptyHref).toBe('/settings?tab=rooms');
   });
 });
 

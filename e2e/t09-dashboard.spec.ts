@@ -95,7 +95,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
     }
   });
 
-  test('T09 確定：別の画面で在庫が変わると検証をやり直し、もう一度押すと確定する。確定の解除は理由が必須', async ({ page, browser }) => {
+  test('T09 確定：別の画面で確定と解除をされた後に確定を押すと検証をやり直し、もう一度押すと確定する。確定の解除は理由が必須', async ({ page, browser }) => {
     const s = await createScenario({ status: 'allocating', dataset: 'synthetic', allocations: 'reference', roles: { admin: true } });
     const other = await openSecondAdmin(browser, s.yearId);
     try {
@@ -103,13 +103,26 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await openDashboard(page);
       await expect(page.getByTestId('dashboard-validation-counts')).toContainText('0error');
       await openDashboard(other);
+      await expect(other.getByTestId('dashboard-validation-counts')).toContainText('0error');
+      const [{ v: before }] = (await sql<{ v: number }>('select allocation_version as v from public.years where id = $1', [s.yearId])) as [
+        { v: number },
+      ];
 
-      // もう1つの画面で在庫が変わった（在庫入力の画面は T10 なので SQL で。版が進む）。見張りが気づく前に、こちらで確定を押す
-      const [st] = await sql<{ room_id: string; item_id: string }>(
-        'select room_id, item_id from public.stocks where year_id = $1 order by room_id, item_id limit 1',
-        [s.yearId],
-      );
-      await sql('update public.stocks set count = count + 1 where year_id = $1 and room_id = $2 and item_id = $3', [s.yearId, st!.room_id, st!.item_id]);
+      // もう1つの画面（別の管理者のブラウザ）で、画面から確定して確定を解除する（状態が2回変わり、版が進む）。
+      // こちらの画面は読み直していないので、見張りが気づく前に確定を押す
+      await actions(other).getByRole('button', { name: '確定', exact: true }).click();
+      await confirmInDialog(other, '別の画面での確定');
+      await expect(other.getByTestId('home-year')).toHaveText(`${s.label}（確定）`);
+      await actions(other).getByRole('button', { name: '確定を解除' }).click();
+      await dialog(other).getByLabel(/理由/).fill('別の画面での確定の解除');
+      await dialog(other).getByRole('button', { name: '確定を解除' }).click();
+      await expect(other.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      expect(await statusOf(s.yearId)).toBe('allocating');
+      const [{ v: after }] = (await sql<{ v: number }>('select allocation_version as v from public.years where id = $1', [s.yearId])) as [
+        { v: number },
+      ];
+      expect(after).toBeGreaterThan(before);
+      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
 
       const confirm = actions(page).getByRole('button', { name: '確定', exact: true });
       await expect(confirm).toBeEnabled();
@@ -139,6 +152,32 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       expect(await statusOf(s.yearId)).toBe('allocating');
     } finally {
       await other.context().close();
+      await s.cleanup();
+    }
+  });
+
+  test('T09 読み直しの失敗：データがあるときは中身を残して帯で知らせ、もう一度で消える', async ({ page }) => {
+    const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await openDashboard(page);
+      await expect(page.getByTestId('dashboard-stocks')).toBeVisible();
+      let fail = true;
+      await page.route('**/rest/v1/stocks*', async (route) => {
+        if (fail) await route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"e2e"}' });
+        else await route.continue();
+      });
+      await page.getByRole('main').getByRole('button', { name: '読み直す', exact: true }).click();
+      const banner = page.getByTestId('dashboard-reload-error');
+      await expect(banner).toBeVisible();
+      await expect(banner.getByRole('alert')).toBeVisible();
+      // 中身は前のまま
+      await expect(page.getByTestId('dashboard-year')).toBeVisible();
+      await expect(page.getByTestId('dashboard-stocks')).toBeVisible();
+      fail = false;
+      await banner.getByRole('button', { name: 'もう一度' }).click();
+      await expect(banner).toHaveCount(0);
+    } finally {
       await s.cleanup();
     }
   });
