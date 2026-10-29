@@ -310,7 +310,7 @@
   - 仕組みは残す：scripts/build-r8-fixtures.ts（`R8_SOURCE_DIR` から fixtures/r8 を作る）とそのテスト、fixtures/r8 があれば同じテストを流し、なければ it.todo を出す扱い、CI の変数 `REQUIRE_R8_FIXTURES`、fixtures/r8/README.md の雛形（scripts/r8/fixtures-readme.template.md）。
   - 00 の予定にある「2027年5〜6月 R8 のデータで検証」と、05 の受け入れ基準の R8 の文はユーザーの計画なので書き換えない（注を足すだけ）。その検証をどうするか（R8 の元データを使うか、合成データで済ませるか）は、そのときにユーザーが決める。
 - **理由**：公開リポジトリで、元データ（個人情報を含む）の受け渡しと匿名化の手間を避けるため（ユーザーの回答）。
-- **反映先**：05_development.md（チケット表の T05 を「完了」、リポジトリ構成の seed・fixtures/r8、「fixtures/r8 の作り方」、受け入れ基準への注）、00_overview.md（技術構成のテストの行と開発スケジュールへの注）、README「R8 の fixtures を作る」、notes/T05.md、fixtures/r8/README.md の雛形、テストの it.todo の文言。
+- **反映先**：05_development.md（チケット表の T05 を「完了」、リポジトリ構成の seed・fixtures/r8、「fixtures/r8 の作り方」、受け入れ基準への注）、00_overview.md（技術構成のテストの行と開発スケジュールへの注）、SPEC.md（受け入れ基準の要点と E2E の検証手順への注）、docs/prompts（T13 の完了基準を合成データに、T05・T08 の依頼文と README の準備の手順 3 に注）、README「R8 の fixtures を作る」、notes/T05.md、fixtures/r8/README.md の雛形、テストの it.todo の文言。
 - **チケット**：T05（T06〜T08 の R8 の分も同じ扱い）。
 - **状態**：要件定義に反映済み（T05 の PR）。
 
