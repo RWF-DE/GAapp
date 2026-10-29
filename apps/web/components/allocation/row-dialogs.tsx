@@ -302,6 +302,7 @@ function AddRowForm({
 /**
  * 部屋の使用を変えようとして止められ（conflict・not_found）、読み直せなかったときの知らせと「読み直す」（2.6 の (B1) の 3）。
  * 確かめるための状態ではない：出ている間も使用不可にする・使用可に戻すのボタンは押せる（次の保存もまた読み直して決める）。
+ * 「読み直す」は、止められた後と同じ判定（settleRoomUsable）を今の入力で通す（保存されていました・ほかの人の変更・また読み直せない）。
  */
 export function RoomReloadNotice({ message, onReload, busy }: { message: string; onReload: () => void; busy: boolean }) {
   return (
@@ -330,8 +331,8 @@ export function UnusableDialog({
   checklist: readonly UnusableCheckItem[];
   pendingCount: number;
   busy: boolean;
-  /** 止められた後に読み直せなかったとき（RoomReloadNotice）。「使用不可にする」は押せるまま */
-  reload?: { message: string; onReload: () => void } | null;
+  /** 止められた後に読み直せなかったとき（RoomReloadNotice）。「使用不可にする」は押せるまま。onReload には今の理由のメモを渡す（同じ判定で比べる） */
+  reload?: { message: string; onReload: (note: string | null) => void } | null;
   onOpenChange: (open: boolean) => void;
   onOp: (op: FixedRowOp, rowId: string) => void;
   onConfirm: (note: string | null) => Promise<void>;
@@ -374,7 +375,7 @@ function UnusableForm({
   checklist: readonly UnusableCheckItem[];
   pendingCount: number;
   busy: boolean;
-  reload: { message: string; onReload: () => void } | null;
+  reload: { message: string; onReload: (note: string | null) => void } | null;
   onCancel: () => void;
   onOp: (op: FixedRowOp, rowId: string) => void;
   onConfirm: (note: string | null) => Promise<void>;
@@ -446,7 +447,7 @@ function UnusableForm({
           {blocker}
         </p>
       ) : null}
-      {reload ? <RoomReloadNotice message={reload.message} onReload={reload.onReload} busy={busy} /> : null}
+      {reload ? <RoomReloadNotice message={reload.message} onReload={() => reload.onReload(text)} busy={busy} /> : null}
       <DialogFooter>
         <Button variant="outline" disabled={busy} onClick={onCancel}>
           閉じる

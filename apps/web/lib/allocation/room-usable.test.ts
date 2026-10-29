@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { setRoomUsable } from '@/lib/data/room-years';
-import { appError, unknownOutcomeMessage } from '@/lib/errors';
+import { appError } from '@/lib/errors';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 import {
   changeRoomUsable,
   ROOM_USABLE_CONFLICT,
   ROOM_USABLE_UNREAD,
+  roomDialogAfter,
   roomUsableBase,
+  roomUsableUnknownMessage,
+  settleRoomUsable,
   type RoomUsableBase,
   type RoomUsableDeps,
 } from './room-usable';
@@ -172,17 +175,16 @@ describe('changeRoomUsable：応答が届かなかったとき（network・コ�
     expect(out).toEqual({ kind: 'saved', recovered: true });
   });
 
-  it('not-saved：insert が通っていなかった（コードのない 503。読み直しても行がなく、版は開いたときのまま）→ unknownOutcomeMessage()', async () => {
+  it('not-saved：insert が通っていなかった（コードのない 503。読み直しても行がなく、版は開いたときのまま）→ 押したボタンに合う「…できたか分かりません」', async () => {
     const { save } = fakeSave(GATEWAY);
     const out = await changeRoomUsable(args({ base: base({ updatedAt: null }) }), { save, reload: reloadTo() });
-    expect(out).toEqual({ kind: 'unknown', message: unknownOutcomeMessage() });
-    expect(unknownOutcomeMessage()).toBe('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります');
+    expect(out).toEqual({ kind: 'unknown', message: roomUsableUnknownMessage(false) });
   });
 
-  it('unread：読み直しも失敗 → unknownOutcomeMessage()（確かめるボタンは出さず、次はふつうに送る）', async () => {
+  it('unread：読み直しも失敗 → 押したボタンに合う「…できたか分かりません」（確かめるボタンは出さず、次はふつうに送る）', async () => {
     const { save } = fakeSave(NETWORK);
     const out = await changeRoomUsable(args(), { save, reload: failingReload });
-    expect(out).toEqual({ kind: 'unknown', message: unknownOutcomeMessage() });
+    expect(out).toEqual({ kind: 'unknown', message: roomUsableUnknownMessage(false) });
   });
 
   it('changed：読み直すと、ほかの人の変更（自分の値でなく版が進んでいる）→ conflict。読み直した updated_at に当て直す', async () => {
@@ -200,12 +202,74 @@ describe('changeRoomUsable：応答が届かなかったとき（network・コ�
   it('応答の届かない送信の後、同じ base で押し直すと、先の送信が後から通っていれば DB が止め（conflict）、読み直して自分の値なら保存されていました', async () => {
     // 1回目：応答が届かず、読み直した時点ではまだ反映されていなかった（unknown。base はそのまま）
     const first = await changeRoomUsable(args(), { save: fakeSave(NETWORK).save, reload: reloadTo(ry(R, true, T0)) });
-    expect(first).toEqual({ kind: 'unknown', message: unknownOutcomeMessage() });
+    expect(first).toEqual({ kind: 'unknown', message: roomUsableUnknownMessage(false) });
     // 2回目：1回目が通って updated_at が進んでいたので 0 行（conflict）。何も上書きされず、読み直すと自分の値
     const second = await changeRoomUsable(args(), {
       save: fakeSave({ data: null }, { data: { updated_at: T2 } }).save,
       reload: reloadTo(ry(R, false, T2, '工事')),
     });
     expect(second).toEqual({ kind: 'saved', recovered: true });
+  });
+});
+
+describe('部屋のダイアログで応答が届かなかったときの文（ボタンの名前に合わせる）', () => {
+  it('使用不可にする・使用可に戻すのボタンの名前で言う（「保存」とは言わない）', () => {
+    expect(roomUsableUnknownMessage(false)).toBe('使用不可にできたか分かりません。もう一度「使用不可にする」を押すと、確かめてから送ります');
+    expect(roomUsableUnknownMessage(true)).toBe('使用可に戻せたか分かりません。もう一度「使用可に戻す」を押すと、確かめてから送ります');
+  });
+
+  it('changeRoomUsable の unknown は押したボタンに合う文', async () => {
+    const off = await changeRoomUsable(args(), { save: fakeSave(NETWORK).save, reload: failingReload });
+    expect(off).toEqual({ kind: 'unknown', message: roomUsableUnknownMessage(false) });
+    const on = await changeRoomUsable(args({ base: base({ usable: false }), usable: true, note: null }), { save: fakeSave(GATEWAY).save, reload: reloadTo(ry(R, false, T0)) });
+    expect(on).toEqual({ kind: 'unknown', message: roomUsableUnknownMessage(true) });
+    expect(on.kind === 'unknown' && on.message).not.toContain('「保存」');
+  });
+});
+
+describe('roomDialogAfter（結果が出るたびに、前の結果の知らせを消してから今の結果の知らせを出す）', () => {
+  const prevUnread = { base: base(), unread: ROOM_USABLE_UNREAD };
+
+  it('止められて読み直せなかった後、次の押下がほかの失敗（forbidden・state・deadlock など）で終わったら、古い「読み直せませんでした」を消す', () => {
+    for (const err of [appError('forbidden', 'lock_unchanged'), appError('state', 'year_not_allocating'), appError('deadlock', '40P01')]) {
+      const out = { kind: 'error' as const, error: err.info };
+      expect(roomDialogAfter(prevUnread, out)).toEqual({ base: base(), unread: null });
+    }
+  });
+
+  it('応答が届かなかった（unknown）・conflict でも古い知らせを消す。conflict だけ入力の元を付け替える', () => {
+    expect(roomDialogAfter(prevUnread, { kind: 'unknown', message: roomUsableUnknownMessage(false) })).toEqual({ base: base(), unread: null });
+    const next = base({ note: '別のメモ', updatedAt: T1 });
+    expect(roomDialogAfter(prevUnread, { kind: 'conflict', message: ROOM_USABLE_CONFLICT, next })).toEqual({ base: next, unread: null });
+  });
+
+  it('今の結果が unread のときだけ知らせを出す。saved・already は閉じる', () => {
+    expect(roomDialogAfter({ base: base(), unread: null }, { kind: 'unread', message: ROOM_USABLE_UNREAD })).toEqual({ base: base(), unread: ROOM_USABLE_UNREAD });
+    expect(roomDialogAfter(prevUnread, { kind: 'saved', recovered: true })).toBeNull();
+    expect(roomDialogAfter(prevUnread, { kind: 'already', message: 'x' })).toBeNull();
+  });
+});
+
+describe('settleRoomUsable（「読み直す」も、止められた後と同じ判定を通す）', () => {
+  const settle = (reload: RoomUsableDeps['reload'], p: { usable?: boolean; note?: string | null } = {}) =>
+    settleRoomUsable({ base: base(), usable: p.usable ?? false, note: p.note === undefined ? '工事' : p.note, roomName: 'MER', unknown: false }, reload);
+
+  it('読み直した行が今の入力と同じ → saved（保存されていました）', async () => {
+    expect(await settle(reloadTo(ry(R, false, T1, '工事')), { note: ' 工事 ' })).toEqual({ kind: 'saved', recovered: true });
+  });
+
+  it('ほかの人が変えていた（版が進んだ）→ conflict。読み直した行を入力の元にする', async () => {
+    expect(await settle(reloadTo(ry(R, true, T1, 'E2E')))).toEqual({ kind: 'conflict', message: ROOM_USABLE_CONFLICT, next: base({ note: 'E2E', updatedAt: T1 }) });
+  });
+
+  it('ほかの人がすでに望んだ状態にしていた（メモだけ違う）→ already', async () => {
+    expect(await settle(reloadTo(ry(R, false, T1, 'ほかの人のメモ')))).toEqual({
+      kind: 'already',
+      message: 'ほかの人がすでにMERを使用不可にしていました（入れたメモは保存していません）',
+    });
+  });
+
+  it('また読み直せなかった → unread（知らせを残す）', async () => {
+    expect(await settle(failingReload)).toEqual({ kind: 'unread', message: ROOM_USABLE_UNREAD });
   });
 });

@@ -215,11 +215,11 @@ test.describe('T13 管理者（段 2：手での編集と使用不可の部屋�
       await expect(page.getByTestId('unusable-checklist-empty')).toBeVisible();
       const dialog = page.getByRole('dialog');
       await dialog.getByLabel('理由のメモ（任意）').fill('工事のため');
-      // 通信が切れた：書き込みも読み直しも届かない → 「保存できたか分かりません…」（メモは残り、押せるまま・上に帯。2.6 の (B1)）
+      // 通信が切れた：書き込みも読み直しも届かない → 「使用不可にできたか分かりません…」（メモは残り、押せるまま・上に帯。2.6 の (B1)）
       const offline = (route: Route) => route.abort();
       await page.route('**/rest/v1/**', offline);
       await dialog.getByRole('button', { name: '使用不可にする' }).click();
-      await expect(page.getByText('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります')).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByText('使用不可にできたか分かりません。もう一度「使用不可にする」を押すと、確かめてから送ります')).toBeVisible({ timeout: 60_000 });
       await expect(page.getByTestId('error-banner')).toBeVisible();
       await expect(dialog.getByRole('button', { name: '使用不可にする' })).toBeEnabled();
       await shoot(page, 'T13', 'allocation-unusable-unknown-pc');

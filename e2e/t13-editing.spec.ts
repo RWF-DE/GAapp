@@ -387,7 +387,7 @@ test('T13 部屋の見出しの「使用不可にする」：応答だけを落�
   }
 });
 
-test('T13 部屋の見出しの「使用不可にする」：conflict の後の読み直しが失敗しても、画面・ダイアログ・メモは残り、「読み直しました」と言わず、押せるまま次の保存でまた読み直す', async ({ page }) => {
+test('T13 部屋の見出しの「使用不可にする」：conflict の後の読み直しが失敗しても、画面・ダイアログ・メモは残り、「読み直しました」と言わず、押せるまま。「読み直す」は同じ判定を通す', async ({ page }) => {
   // 読み直しの GET は、supabase-js（postgrest-js）が通信の失敗を間をあけて数回送り直し、react-query も1回送り直すので、失敗が分かるまで十数秒かかる
   test.setTimeout(120_000);
   const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
@@ -422,14 +422,14 @@ test('T13 部屋の見出しの「使用不可にする」：conflict の後の�
     await expect(page.getByTestId('error-banner')).toBeVisible();
     await expect(block).toBeVisible();
 
-    // 通信が戻って「読み直す」：知らせが消える。base は開いたときのまま（次の保存でまた読み直して決める）
+    // 通信が戻って「読み直す」：止められた後と同じ判定（settleRoomUsable）を通す。ほかの人の変更なので、いつもの conflict（読み直しました）。
+    // 知らせは消え、読み直した行が入力の元になる。まだ使用可なので、メモを残したまま押し直せる
     await page.unroute('**/rest/v1/**', failReads);
     await unread.getByRole('button', { name: '読み直す' }).click();
-    await expect(unread).toHaveCount(0);
-    // 押すと DB が止め（conflict）、読み直して、いつもの conflict（読み直しました）。まだ使用可なので押し直せる
-    await dialog.getByRole('button', { name: '使用不可にする' }).click();
     await expect(page.getByText('ほかの人がこの部屋の使用を変えました。読み直しました')).toBeVisible();
+    await expect(unread).toHaveCount(0);
     await expect(dialog.getByLabel('理由のメモ（任意）')).toHaveValue('E2E：読み直せない');
+    // 入力の元が読み直した行になっているので、押すとそのまま通る（DB に止められない）
     await dialog.getByRole('button', { name: '使用不可にする' }).click();
     await expect(page.getByTestId('suggest-minimal')).toBeVisible();
     await expect(dialog).toHaveCount(0);
