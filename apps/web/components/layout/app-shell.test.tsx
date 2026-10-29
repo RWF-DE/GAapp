@@ -189,6 +189,28 @@ describe('AppShell：年度の選択と最新でない年度の帯（D-31）', (
     expect(screen.queryByTestId('not-latest-year-banner')).toBeNull();
   });
 
+  it('年度を切り替えると画面を作り直す（前の年度の入力を持ち越さない）。同じ年度の読み直しでは入力が残る（1.3.1）', async () => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = twoYears;
+    const user = userEvent.setup();
+    renderShell();
+    const input = (await screen.findByLabelText('メモ')) as HTMLInputElement;
+    await user.type(input, 'R9 の数');
+
+    // 同じ年度の読み直し：同じ要素のまま入力が残る
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await vi.waitFor(() => expect(screen.getByTestId('refreshing').textContent).toBe('no'));
+    expect(screen.getByLabelText('メモ')).toBe(input);
+    expect(input.value).toBe('R9 の数');
+
+    // 年度の切り替え（未保存の印はないので確かめない）：作り直されて空になる
+    await user.selectOptions(screen.getByTestId('year-select'), 'y8');
+    expect(screen.getByTestId('current-year').textContent).toBe('R8・終了');
+    const after = screen.getByLabelText('メモ') as HTMLInputElement;
+    expect(after).not.toBe(input);
+    expect(after.value).toBe('');
+  });
+
   it('同じタブで開き直すと選んだ年度を使い、その年度のロールがなくなっていれば既定に戻す', async () => {
     window.sessionStorage.setItem('gaapp:year:u1', 'y8');
     fakeAuth.session = { user: { id: 'u1' } };
