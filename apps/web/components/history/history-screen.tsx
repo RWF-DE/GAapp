@@ -155,10 +155,22 @@ function HistoryBody({ yearId, yearLabel }: { yearId: string; yearLabel: string 
   );
 }
 
+// 列の幅（PC 1280px〔中身の幅 約 1000px〕で全部の列が横にはみ出さずに見えるよう、table-fixed で幅を決める。T14 のレビュー）。
+// 日時は日付と時刻の2行、した人・対象・変更・理由は折り返す（長い JSON や区切りのない文字列も wrap-anywhere で折る）。
+// 狭い画面（スマホ）では列を潰さないよう表に最小の幅を付け、入れ物の中で横にスクロールする
 function HistoryTable({ rows, lookups }: { rows: readonly AuditLogRow[]; lookups: HistoryLookups }) {
   return (
-    <div className="max-h-[70vh] overflow-auto rounded-lg border">
-      <table className="w-full border-collapse text-sm" data-testid="history-table">
+    <div className="max-h-[70vh] overflow-auto rounded-lg border" data-testid="history-table-scroll">
+      <table className="w-full min-w-[52rem] table-fixed border-collapse text-sm" data-testid="history-table">
+        <colgroup>
+          <col className="w-[6.5rem]" />
+          <col className="w-[4.5rem]" />
+          <col className="w-[6.5rem]" />
+          <col className="w-[16%]" />
+          <col />
+          <col className="w-[13%]" />
+          <col className="w-[8rem]" />
+        </colgroup>
         <thead className="sticky top-0 z-10 bg-background">
           <tr className="border-b text-left">
             <th scope="col" className="px-3 py-2 whitespace-nowrap">
@@ -170,16 +182,16 @@ function HistoryTable({ rows, lookups }: { rows: readonly AuditLogRow[]; lookups
             <th scope="col" className="px-3 py-2 whitespace-nowrap">
               表
             </th>
-            <th scope="col" className="min-w-32 px-3 py-2">
+            <th scope="col" className="px-3 py-2">
               対象
             </th>
-            <th scope="col" className="min-w-56 px-3 py-2">
+            <th scope="col" className="px-3 py-2">
               変更
             </th>
-            <th scope="col" className="min-w-24 px-3 py-2 whitespace-nowrap">
+            <th scope="col" className="px-3 py-2">
               理由
             </th>
-            <th scope="col" className="px-3 py-2 whitespace-nowrap">
+            <th scope="col" className="px-3 py-2 whitespace-nowrap" data-testid="history-actor-header">
               した人
             </th>
           </tr>
@@ -189,30 +201,33 @@ function HistoryTable({ rows, lookups }: { rows: readonly AuditLogRow[]; lookups
             const diff = diffAudit(r.before, r.after);
             return (
               <tr key={r.id} data-testid="history-row" data-row-id={r.id} data-table={r.table_name} className="border-b align-top">
-                <td className="px-3 py-2 whitespace-nowrap tabular-nums">
-                  <TokyoTime value={r.at} />
+                <td className="px-3 py-2 tabular-nums">
+                  {/* 日付と時刻の2行（w-min で空白のところで折る） */}
+                  <TokyoTime value={r.at} className="inline-block w-min" />
                 </td>
                 <td className="px-3 py-2">
                   <Badge variant={ACTION_VARIANT[r.action] ?? 'outline'}>{actionLabel(r.action)}</Badge>
                 </td>
-                <td className="px-3 py-2 whitespace-nowrap">{tableLabel(r.table_name)}</td>
-                <td className="px-3 py-2" data-testid="history-target">
+                <td className="px-3 py-2 wrap-anywhere">{tableLabel(r.table_name)}</td>
+                <td className="px-3 py-2 wrap-anywhere" data-testid="history-target">
                   {auditTarget(r, lookups) || '—'}
                 </td>
                 <td className="px-3 py-2" data-testid="history-diff">
                   {diff.length === 0 ? (
                     <span className="text-muted-foreground">—</span>
                   ) : (
-                    <ul className="max-w-sm space-y-0.5 break-words">
+                    <ul className="space-y-0.5 wrap-anywhere">
                       {diff.map((d) => (
                         <li key={d.key}>{formatDiffEntry(r.table_name, d, lookups)}</li>
                       ))}
                     </ul>
                   )}
                 </td>
-                <td className="max-w-xs px-3 py-2 break-words" data-testid="history-reason">{r.reason ?? <span className="text-muted-foreground">—</span>}</td>
-                <td className="px-3 py-2 whitespace-nowrap" data-testid="history-actor">
-                  {actorLabel(r.user_id, lookups.users)}
+                <td className="px-3 py-2 wrap-anywhere" data-testid="history-reason">
+                  {r.reason ?? <span className="text-muted-foreground">—</span>}
+                </td>
+                <td className="px-3 py-2 wrap-anywhere" data-testid="history-actor">
+                  <ActorName label={actorLabel(r.user_id, lookups.users)} />
                 </td>
               </tr>
             );
@@ -220,5 +235,17 @@ function HistoryTable({ rows, lookups }: { rows: readonly AuditLogRow[]; lookups
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** した人の名前。かっこの部分（「（アプリの外）」など）は途中で折らず、折るときはかっこの前で次の行に送る */
+function ActorName({ label }: { label: string }) {
+  const i = label.indexOf('（');
+  if (i <= 0) return <>{label}</>;
+  return (
+    <>
+      {label.slice(0, i)}
+      <span className="inline-block">{label.slice(i)}</span>
+    </>
   );
 }

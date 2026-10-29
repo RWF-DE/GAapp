@@ -194,6 +194,62 @@ test.describe('T14 履歴（管理者）', () => {
     }
   });
 
+  test('T14 PC 1280px：長い変更・理由の行があっても表は入れ物より広くならず、した人の列まで見える。期間の日付は欄に収まる', async ({
+    page,
+  }) => {
+    const s = await createScenario({ status: 'requesting', roles: { admin: true } });
+    const ids: number[] = [];
+    try {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      // 区切りのない長い文字列・長い JSON・長い理由（折り返さないと列が広がる値）
+      const long = 'x'.repeat(120);
+      ids.push(
+        ...(await insertLogs([
+          {
+            table_name: 'rules',
+            action: 'insert',
+            year_id: s.yearId,
+            before: null,
+            after: {
+              code: `T14-幅-${long}`,
+              memo: 'あ'.repeat(80),
+              params: { to: 'caster_desk', cost: 3, from: 'desk', categories: ['stall', 'department'], needsConsent: true, note: long },
+            },
+            reason: `T14-幅-${'理由'.repeat(40)}${long}`,
+            at: '2001-10-06T03:00:00Z',
+          },
+        ])),
+      );
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/history/?from=2001-10-06&to=2001-10-06');
+      await waitTable(page);
+      await expect(page.getByTestId('history-row')).toHaveCount(1);
+
+      // 表の入れ物は横にスクロールしない（表の幅が入れ物の幅を超えない）。した人の列は入れ物の右の端より内側
+      const scroll = page.getByTestId('history-table-scroll');
+      const sizes = await scroll.evaluate((el) => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }));
+      expect(sizes.scrollWidth).toBeLessThanOrEqual(sizes.clientWidth);
+      const box = (await scroll.boundingBox())!;
+      for (const testId of ['history-actor-header', 'history-actor']) {
+        const cell = (await page.getByTestId(testId).first().boundingBox())!;
+        expect(cell.x + cell.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
+      }
+      // ページも横にスクロールしない
+      expect(await page.locator('html').evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+
+      // 期間の日付の欄は、選んだ日付が欄に収まる幅がある（中身が欄の幅を超えない。最小の幅 9rem）
+      for (const label of ['期間の始め', '期間の終わり']) {
+        const input = page.getByLabel(label);
+        await expect(input).toHaveValue('2001-10-06');
+        const w = await input.evaluate((el) => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, width: el.getBoundingClientRect().width }));
+        expect(w.scrollWidth).toBeLessThanOrEqual(w.clientWidth);
+        expect(w.width).toBeGreaterThanOrEqual(144);
+      }
+    } finally {
+      await cleanupLogs(s, ids);
+    }
+  });
+
   test('T14 さらに読み込む：50 件ずつ、同じ日時の行も id で抜けも重なりもなく、新しい順に最後まで', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', roles: { admin: true } });
     const ids: number[] = [];

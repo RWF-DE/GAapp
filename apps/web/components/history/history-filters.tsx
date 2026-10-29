@@ -114,7 +114,9 @@ export function HistoryFilters({
 
   return (
     <section aria-label="絞り込み" className="mb-4 rounded-lg border p-4" data-testid="history-filters">
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      {/* PC（xl）は 5 列で、期間だけ 2 列分（日付の欄を 2 つ並べても選んだ日付が全部見えるように。T14 のレビュー）。
+          狭いときは日付の欄が最小の幅を割らないよう、期間の中で折り返す */}
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <div className="min-w-0 space-y-1">
           <span className="text-sm font-medium">表</span>
           <TableSelect value={filter.tables} onChange={(update) => onChange((f) => ({ ...f, tables: update(f.tables) }))} />
@@ -130,18 +132,32 @@ export function HistoryFilters({
             allowClear
           />
         </div>
-        <div className="min-w-0 space-y-1">
+        <div className="min-w-0 space-y-1 xl:col-span-2" data-testid="history-period">
           <span className="text-sm font-medium">期間（日付。その日を含む）</span>
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Label htmlFor={fromId} className="sr-only">
               期間の始め
             </Label>
-            <Input id={fromId} type="date" value={filter.from ?? ''} max={filter.to ?? undefined} onChange={(e) => setDate('from', e.target.value)} />
+            <Input
+              id={fromId}
+              type="date"
+              className="w-auto min-w-36 flex-1"
+              value={filter.from ?? ''}
+              max={filter.to ?? undefined}
+              onChange={(e) => setDate('from', e.target.value)}
+            />
             <span aria-hidden>〜</span>
             <Label htmlFor={toId} className="sr-only">
               期間の終わり
             </Label>
-            <Input id={toId} type="date" value={filter.to ?? ''} min={filter.from ?? undefined} onChange={(e) => setDate('to', e.target.value)} />
+            <Input
+              id={toId}
+              type="date"
+              className="w-auto min-w-36 flex-1"
+              value={filter.to ?? ''}
+              min={filter.from ?? undefined}
+              onChange={(e) => setDate('to', e.target.value)}
+            />
           </div>
         </div>
         <div className="min-w-0 space-y-1">

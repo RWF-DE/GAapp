@@ -1,5 +1,5 @@
 // T14 履歴のスクリーンショット（画面の設計 7.4）。`pnpm e2e:shots --grep "T14 "` で notes/T14/ に撮る（CI では流さない）。
-// 一覧（PC・スマホ）、絞り込んだ一覧、表の選び・した人の選び（ポップオーバー）、さらに読み込んだ後、空・読み込み中・権限なし。
+// 一覧（PC・スマホ）、絞り込んだ一覧（表・期間）、表の選び・した人の選び（ポップオーバー）、さらに読み込んだ後、空・読み込み中・権限なし。
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
@@ -114,6 +114,13 @@ test.describe('T14 履歴 管理者', () => {
       await page.keyboard.press('Escape');
       await waitList(page);
       await shoot(page, 'T14', 'list-filtered-pc');
+
+      // 期間で絞った一覧（選んだ日付が欄に全部見えること。前日〜今日〔Asia/Tokyo〕）
+      const tokyoDay = (ms: number) => new Date(ms + 9 * 3_600_000).toISOString().slice(0, 10);
+      await page.goto(`/history/?from=${tokyoDay(now - 86_400_000)}&to=${tokyoDay(now)}`);
+      await waitList(page);
+      await expect(page.getByLabel('期間の始め')).toHaveValue(tokyoDay(now - 86_400_000));
+      await shoot(page, 'T14', 'list-period-pc');
 
       // した人の選び
       await page.goto('/history/');
