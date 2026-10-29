@@ -134,7 +134,7 @@ function RulesView({
   // 開いたときの1回だけ（code が変われば、呼ぶ側の key で作り直す）
   const [codeRule] = useState(() => (code ? (data.rules.find((x) => x.code.trim() === code) ?? null) : null));
   const [sheet, setSheet] = useState<RuleSheetTarget | null>(() =>
-    codeRule ? { type: 'edit', ruleId: codeRule.id, initial: ruleToForm(codeRule) } : null,
+    codeRule ? { type: 'edit', ruleId: codeRule.id, initial: ruleToForm(codeRule), baseUpdatedAt: codeRule.updated_at } : null,
   );
   const [highlight, setHighlight] = useState<string | null>(codeRule?.id ?? null);
   const [toggling, setToggling] = useState<string | null>(null);
@@ -257,7 +257,7 @@ function RulesView({
 
   const openEdit = (r: RuleDbRow) => {
     setHighlight(r.id);
-    setSheet({ type: 'edit', ruleId: r.id, initial: ruleToForm(r) });
+    setSheet({ type: 'edit', ruleId: r.id, initial: ruleToForm(r), baseUpdatedAt: r.updated_at });
   };
   const openNew = (kind: RuleKind) => setSheet({ type: 'new', initial: emptyRuleForm(kind) });
   const openTemplate = (t: RuleTemplate) => setSheet({ type: 'new', initial: templateToForm(t), template: t.code });
@@ -439,10 +439,10 @@ function RulesView({
           rule={disableTarget}
           onClose={() => setDisableTarget(null)}
           onConfirm={async (memo) => {
-            // 開いた後に読み直していれば、今の行（updated_at）で送る
-            const current = data.rules.find((r) => r.id === disableTarget.id) ?? disableTarget;
+            // 開いたときの行（updated_at）で送る。開いた後に一覧が読み直されても版を進めない
+            // （メモの欄は開いたときのメモから作ったので、進めるとほかの人のメモを黙って上書きする）
             try {
-              await setEnabled(current, false, memo);
+              await setEnabled(disableTarget, false, memo);
             } catch (e) {
               // ほかの人が先に変えた・消した：一覧は読み直したので閉じる（古い行・古いメモで送り続けない。開き直すと今のメモが入る）
               const kind = classifyError(e).kind;

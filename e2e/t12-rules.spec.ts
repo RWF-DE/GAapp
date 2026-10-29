@@ -56,6 +56,20 @@ async function openTemplate(page: Page, code: string): Promise<Locator> {
   return sheet;
 }
 
+/**
+ * 開いているシート・ダイアログの裏で、一覧が読み直されるのを起こす（つながり直したときの refetchOnReconnect。
+ * staleTime の 30 秒を過ぎた後だけ読み直すので、page.clock で時計を進める。page.clock.install() を goto の前に呼んでおく）。
+ * 一覧の行に、読み直した内容（expectInRow）が出るまで待つ。
+ */
+async function refetchBehind(page: Page, row: Locator, expectInRow: string): Promise<void> {
+  await page.clock.fastForward('00:31');
+  const reloaded = page.waitForResponse((r) => r.url().includes('/rest/v1/rules') && r.request().method() === 'GET');
+  await page.context().setOffline(true);
+  await page.context().setOffline(false);
+  await reloaded;
+  await expect(row).toContainText(expectInRow);
+}
+
 async function save(page: Page, sheet: Locator, code: string): Promise<void> {
   await sheet.getByRole('button', { name: '保存', exact: true }).click();
   await expect(sheet).toBeHidden();
@@ -317,6 +331,73 @@ test.describe('T12 管理者', () => {
       await expect(dlg).toBeHidden();
       await expect(toggle).not.toBeChecked();
       expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: false, memo: 'E2E：ほかの人のメモ。今年は使わない' });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T12 シートを開いた後に一覧が読み直されても、開いたときの版で保存する（ほかの人の変更を黙って上書きせず conflict。もう一度保存すると上書き）', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      await page.clock.install();
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/?code=S05');
+      const sheet = page.getByRole('dialog');
+      await expect(sheet.getByRole('heading', { name: 'ルール S05（運び元の制限）を編集' })).toBeVisible();
+      const rooms = sheet.getByRole('group', { name: '運び元の場所' });
+      await expect(rooms.getByRole('checkbox', { name: '2-3', exact: true })).toBeChecked();
+
+      // シートを開いている間に、ほかの人が S05 の運び元の場所から 2-3 を外し、メモを直す。裏で一覧が読み直される
+      await sql(`update public.rules set params = jsonb_set(params, '{rooms}', (params->'rooms') - 5), memo = 'E2E：ほかの人が 2-3 を外した' where year_id = $1 and code = 'S05'`, [
+        s.yearId,
+      ]);
+      const s05 = page.locator(`[data-row-id="${s.ids.rules['S05']}"]`);
+      await refetchBehind(page, s05, 'E2E：ほかの人が 2-3 を外した');
+      // シートは開いたときの値のまま
+      await expect(rooms.getByRole('checkbox', { name: '2-3', exact: true })).toBeChecked();
+
+      // メモだけ直して保存すると、開いたときの版で送るので conflict（ほかの人の変更を黙って戻さない）。入力は残る
+      await sheet.getByLabel(/^メモ/).fill('E2E：古いシートのメモ');
+      await sheet.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(sheet.getByText('他の人が先に変更しました。読み直しました')).toBeVisible();
+      await expect(sheet.getByLabel(/^メモ/)).toHaveValue('E2E：古いシートのメモ');
+      const afterConflict = (await rulesOf(s.yearId)).find((r) => r.code === 'S05')!;
+      expect(afterConflict.memo).toBe('E2E：ほかの人が 2-3 を外した');
+      expect((afterConflict.params as { rooms: string[] }).rooms).toHaveLength(5);
+
+      // conflict を見た後にもう一度保存すると、読み直した版で送り、シートの内容で上書きする（2.5）
+      await sheet.getByRole('button', { name: '保存', exact: true }).click();
+      await expect(sheet).toBeHidden();
+      const overwritten = (await rulesOf(s.yearId)).find((r) => r.code === 'S05')!;
+      expect(overwritten.memo).toBe('E2E：古いシートのメモ');
+      expect((overwritten.params as { rooms: string[] }).rooms).toHaveLength(6);
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T12 無効にするダイアログを開いた後に一覧が読み直されても、開いたときの版で送る（ほかの人のメモを黙って上書きしない）', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', roles: { admin: true } });
+    try {
+      await page.clock.install();
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/rules/');
+      const s04 = page.locator(`[data-row-id="${s.ids.rules['S04']}"]`);
+      const toggle = s04.getByRole('switch', { name: 'S04 を有効にする' });
+      await toggle.click();
+      const dlg = page.getByRole('alertdialog');
+      await expect(dlg.getByRole('heading', { name: 'ルール S04 を無効にしますか' })).toBeVisible();
+      await dlg.getByLabel('メモ').fill('E2E：古い画面のメモ');
+
+      // ダイアログを開いている間に、ほかの人がメモを直し、裏で一覧が読み直される
+      await sql(`update public.rules set memo = 'E2E：ほかの人のメモ' where year_id = $1 and code = 'S04'`, [s.yearId]);
+      await refetchBehind(page, s04, 'E2E：ほかの人のメモ');
+
+      // 開いたときの版で送るので conflict：ダイアログを閉じ、ほかの人のメモが残る
+      await dlg.getByRole('button', { name: '無効にする' }).click();
+      await expect(dlg).toBeHidden();
+      await expect(toggle).toBeChecked();
+      expect((await rulesOf(s.yearId)).find((r) => r.code === 'S04')).toMatchObject({ enabled: true, memo: 'E2E：ほかの人のメモ' });
     } finally {
       await s.cleanup();
     }

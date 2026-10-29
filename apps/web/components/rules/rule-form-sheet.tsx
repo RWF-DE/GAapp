@@ -2,6 +2,8 @@
 
 // ルールの追加・編集のシート（画面の設計 3.8。T12）。保存の前に ruleRowSchema と checkRuleRefs で確かめ、エラーを欄の下に出す。
 // 確定中・終了の年度はメモだけ直せる。保存は rules への直接の書き込み（insert・updated_at で楽観ロックの update）。
+// 楽観ロックの版は、シートを開いたときの行の updated_at（baseUpdatedAt）。開いた後に一覧が読み直されても進めない
+// （フォームは開いたときの値のままなので、進めるとほかの人の変更を黙って上書きする）。conflict を見た後だけ、読み直した行の版に進める（2.5）。
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { ErrorBanner } from '@/components/common/error-banner';
@@ -21,12 +23,18 @@ import {
   type RuleWrite,
 } from '@/lib/data/rules';
 import type { RuleDbRow } from '@/lib/db/types';
+import { classifyError } from '@/lib/errors';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { NOTE_MAX, optionalText } from '@/lib/schemas/common';
 import { CheckOne, FieldErrors, RuleParamsFields } from './rule-fields';
 
-/** 開いているシート（新規はひな形のコードを持つことがある） */
-export type RuleSheetTarget = { type: 'new'; initial: RuleFormValues; template?: string } | { type: 'edit'; ruleId: string; initial: RuleFormValues };
+/**
+ * 開いているシート（新規はひな形のコードを持つことがある）。
+ * 編集の baseUpdatedAt は initial を作った行の updated_at（楽観ロックの版）。
+ */
+export type RuleSheetTarget =
+  | { type: 'new'; initial: RuleFormValues; template?: string }
+  | { type: 'edit'; ruleId: string; initial: RuleFormValues; baseUpdatedAt: string };
 
 /**
  * 保存の結果。失敗は入力を残す。fieldErrors は欄の下に出すもの（コードの重複など）、
@@ -42,7 +50,7 @@ export interface RuleFormSheetProps {
   editMode: 'full' | 'memo';
   /** 新規の保存 */
   onInsert: (row: RuleWrite) => Promise<SaveOutcome>;
-  /** 既存の保存（メモだけのときは patch が memo だけ） */
+  /** 既存の保存（メモだけのときは patch が memo だけ。rule.updated_at が楽観ロックの版） */
   onUpdate: (rule: RuleDbRow, patch: Partial<RuleWrite>) => Promise<SaveOutcome>;
   /** エラーの後に「読み直す」 */
   onReload: () => void;
@@ -72,6 +80,14 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
   const memoId = useId();
 
   const rule = target.type === 'edit' ? (data.rules.find((r) => r.id === target.ruleId) ?? null) : null;
+  // 楽観ロックの版（開いたときの行の updated_at）。読み直しでは進めず、conflict を見た後だけ読み直した行の版に進める
+  const [lockUpdatedAt, setLockUpdatedAt] = useState(target.type === 'edit' ? target.baseUpdatedAt : null);
+  const [adoptAfterConflict, setAdoptAfterConflict] = useState(false);
+  if (adoptAfterConflict && rule && rule.updated_at !== lockUpdatedAt) {
+    // conflict の後に読み直した行が来た：もう一度の保存は、その版での意図した上書きになる（描画中に state を合わせる）
+    setLockUpdatedAt(rule.updated_at);
+    setAdoptAfterConflict(false);
+  }
   const dirty = useMemo(() => JSON.stringify(values) !== JSON.stringify(target.initial), [values, target.initial]);
   const memoOnly = editMode === 'memo';
   const paramsDisabled = memoOnly || pending;
@@ -91,7 +107,8 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
   const save = async () => {
     if (pending) return;
     setSubmitError(null);
-    if (target.type === 'edit' && !rule) return;
+    if (target.type === 'edit' && (!rule || !lockUpdatedAt)) return;
+    const locked = rule && lockUpdatedAt ? { ...rule, updated_at: lockUpdatedAt } : null;
     let send: () => Promise<SaveOutcome>;
     if (memoOnly) {
       const m = memoSchema.safeParse(values.memo);
@@ -100,13 +117,13 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
         return;
       }
       setErrors({});
-      send = () => onUpdate(rule!, { memo: m.data });
+      send = () => onUpdate(locked!, { memo: m.data });
     } else {
       const res = checkRuleForm(values, data, rule?.id ?? null);
       setErrors(res.errors);
       if (!res.row) return;
       const write = toRuleWrite(res.row);
-      send = target.type === 'new' ? () => onInsert(write) : () => onUpdate(rule!, write);
+      send = target.type === 'new' ? () => onInsert(write) : () => onUpdate(locked!, write);
     }
     setPending(true);
     try {
@@ -116,7 +133,10 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
         return;
       }
       if (out.fieldErrors) setErrors(out.fieldErrors);
-      else setSubmitError({ error: out.error, notice: out.notice });
+      else {
+        setSubmitError({ error: out.error, notice: out.notice });
+        if (target.type === 'edit' && classifyError(out.error).kind === 'conflict') setAdoptAfterConflict(true);
+      }
     } finally {
       setPending(false);
     }
