@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { EntitySelect, matchesEntity, type EntityOption } from './entity-select';
 
 // jsdom にないもの（Radix の Popover と cmdk が使う）
@@ -15,7 +15,10 @@ beforeAll(() => {
   Element.prototype.scrollIntoView ??= function scrollIntoView() {};
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 // id は本物と同じ UUID の形（16 進の文字・数字と '-' を含む）。検索が id に当たらないことを確かめるため
 const OPTIONS: EntityOption[] = [
@@ -94,6 +97,101 @@ describe('EntitySelect の検索', () => {
     expect(shown()).toEqual(['選ばない', '2-3', '1-1', '1-2', '第一セミナー']);
     await user.type(input, '1-1');
     expect(shown()).toEqual(['1-1']);
+  });
+});
+
+/**
+ * jsdom は CSS のアニメーションを動かさないので、Radix の Presence が閉じるアニメーションの終わりを待つように、
+ * ポップオーバーの中身の animationName を開いているとき 'enter'、閉じたとき 'exit' に見せる。
+ * 閉じきる（中身が外れる）のは、テストが animationend を投げたとき。
+ */
+function animatePopovers() {
+  const real = window.getComputedStyle.bind(window);
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
+    const styles = real(el, pseudo);
+    if (!(el instanceof HTMLElement) || el.dataset.slot !== 'popover-content') return styles;
+    return new Proxy(styles, {
+      get(target, key) {
+        if (key === 'animationName') return el.dataset.state === 'closed' ? 'exit' : 'enter';
+        const v: unknown = Reflect.get(target, key, target);
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+  });
+}
+
+/** 閉じるアニメーションを終わらせ、中身が外れた後の FocusScope の setTimeout（onCloseAutoFocus を呼ぶ）まで待つ */
+async function finishCloseAnimation(content: Element) {
+  act(() => {
+    const ev = new Event('animationend');
+    Object.defineProperty(ev, 'animationName', { value: 'exit' });
+    content.dispatchEvent(ev);
+  });
+  await act(() => new Promise((r) => setTimeout(r, 10)));
+}
+
+function TwoSelects() {
+  const [a, setA] = useState<string | null>(null);
+  const [b, setB] = useState<string | null>(null);
+  return (
+    <>
+      <EntitySelect label="部屋A" options={OPTIONS} value={a} onChange={setA} />
+      <EntitySelect label="部屋B" options={OPTIONS} value={b} onChange={setB} />
+    </>
+  );
+}
+
+describe('EntitySelect：閉じるアニメーションの間に別の EntitySelect を開く', () => {
+  it('前のポップオーバーが閉じきっても、フォーカスを前のボタンに戻さず、新しいポップオーバーは開いたまま', async () => {
+    animatePopovers();
+    const user = userEvent.setup();
+    render(<TwoSelects />);
+    const a = screen.getByRole('combobox', { name: '部屋A' });
+    const b = screen.getByRole('combobox', { name: '部屋B' });
+
+    await user.click(a);
+    await user.keyboard('{Enter}'); // 先頭（2-3）を選んで閉じる
+    expect(a.getAttribute('aria-expanded')).toBe('false');
+    const closing = document.querySelector('[data-slot="popover-content"][data-state="closed"]');
+    expect(closing).not.toBeNull(); // まだ閉じるアニメーションの間
+
+    // B を押して開く（フォーカスは B の検索の欄に移る）。
+    // A の DismissableLayer が B を押したことを「外の操作」と数えると、Radix は自分ではフォーカスを戻さない。
+    // E2E（T12）では数えられずに前のボタンへ戻ったので、その形を作る：外の pointerdown は click まで持ち越され
+    // （deferPointerDownOutside）、click が document まで届かないと外の操作として扱われない。
+    const stop = (e: Event) => e.stopPropagation();
+    document.body.addEventListener('click', stop);
+    try {
+      await user.click(b);
+      await act(() => new Promise((r) => setTimeout(r, 10)));
+    } finally {
+      document.body.removeEventListener('click', stop);
+    }
+    expect(b.getAttribute('aria-expanded')).toBe('true');
+    const bInput = document.querySelector('[data-slot="popover-content"][data-state="open"] input');
+    expect(bInput).not.toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(bInput));
+
+    // A の閉じるアニメーションが終わる（FocusScope は setTimeout の後に onCloseAutoFocus を呼ぶ）
+    await finishCloseAnimation(closing!);
+    expect(closing!.isConnected).toBe(false);
+    expect(document.activeElement).toBe(bInput);
+    expect(document.activeElement).not.toBe(a);
+    expect(b.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('ほかへフォーカスが移っていなければ、閉じきったときに開いたボタンへ戻す（今までどおり）', async () => {
+    animatePopovers();
+    const user = userEvent.setup();
+    render(<TwoSelects />);
+    const a = screen.getByRole('combobox', { name: '部屋A' });
+    await user.click(a);
+    await user.keyboard('{Enter}');
+    const closing = document.querySelector('[data-slot="popover-content"][data-state="closed"]');
+    expect(closing).not.toBeNull();
+    await finishCloseAnimation(closing!);
+    expect(closing!.isConnected).toBe(false);
+    expect(document.activeElement).toBe(a);
   });
 });
 
