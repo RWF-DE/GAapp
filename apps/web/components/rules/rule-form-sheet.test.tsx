@@ -230,6 +230,30 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('保存できたか分からない後、開いたときの値に戻して保存しても送る（前の送信が通っていれば DB が conflict で止める。「変更はありません」で閉じない）', async () => {
+    const user = userEvent.setup();
+    const original = s05.memo ?? '';
+    const onUpdate = vi
+      .fn<RuleFormSheetProps['onUpdate']>()
+      .mockResolvedValueOnce({ ok: false, error: new TypeError('Failed to fetch'), notice: unknownOutcomeMessage() })
+      .mockResolvedValue({ ok: true });
+    const { onClose } = setup({ onUpdate });
+    await user.clear(memoBox());
+    await user.type(memoBox(), 'わたしのメモ');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+
+    await user.clear(memoBox());
+    if (original) await user.type(memoBox(), original);
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    const [rule, patch] = onUpdate.mock.calls[1]!;
+    expect(rule.updated_at).toBe(s05.updated_at);
+    expect(patch.memo).toBe(original === '' ? null : original);
+    expect(toast.info).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('止められた後に読み直せなかった：「読み直しました」と言わず、読み直すボタンを出す。開いたときの値に戻しても送る', async () => {
     const user = userEvent.setup();
     const onUpdate = vi

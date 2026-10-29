@@ -26,7 +26,7 @@ import {
   type RuleWrite,
 } from '@/lib/data/rules';
 import type { RuleDbRow } from '@/lib/db/types';
-import { classifyError } from '@/lib/errors';
+import { classifyError, unknownOutcomeMessage } from '@/lib/errors';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { NOTE_MAX, optionalText } from '@/lib/schemas/common';
 import { CheckOne, FieldErrors, RuleParamsFields } from './rule-fields';
@@ -98,8 +98,14 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
   // 比べる相手は読み直した行（save の noChange の sameRuleWrite）。開いたときの値に戻した入力も、読み直した行と違えば送る。
   // conflict を見た後、読み直した行をまだ入力の元にしていない間（adoptAfterConflict）は、送らずに閉じる分かれ道を使わない
   // （DB にはほかの人の値があるので、黙って閉じると入力が捨てられる。送れば今の版で conflict がもう一度返り、そのときに読み直す）
+  // 応答が届かなかった後（保存できたか分からない）も同じ：前の送信が DB に入っているかもしれないので、送らずに閉じる分かれ道を使わない
+  // （送れば、前の送信が通っていたときは conflict が返り、読み直して比べる。2.6 の (B1) の 2。新しい状態は足さず、今の submitError から決める）
+  const afterUnknownOutcome =
+    !!submitError &&
+    (submitError.notice === unknownOutcomeMessage() || ['network', 'unknown'].includes(classifyError(submitError.error).kind));
+  const mustSend = adoptAfterConflict || afterUnknownOutcome;
   const lockAdvanced = target.type === 'edit' && lockUpdatedAt !== target.baseUpdatedAt;
-  const unchanged = target.type === 'edit' && !dirty && !lockAdvanced && !adoptAfterConflict;
+  const unchanged = target.type === 'edit' && !dirty && !lockAdvanced && !mustSend;
   const memoOnly = editMode === 'memo';
   const paramsDisabled = memoOnly || pending;
 
@@ -128,11 +134,12 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
     /**
      * 送らずに閉じるか：入力を開いたときのまま（unchanged。版が開いたときのままの間だけ）か、
      * 送る内容が保存してある行（版も同じ。conflict の後は読み直した行）と同じ（変えて戻したときなど）。
+     * conflict の後で読み直した行をまだ元にしていない間と、応答が届かなかった後（mustSend）は、閉じずに必ず送る。
      * 確かめ（欄の下のエラー）は送るときと同じに通してから閉じる（参照の切れたルールを開いて保存を押すと、エラーが見える）
      */
     const savedRow = rebasedRow && rebasedRow.updated_at === lockUpdatedAt ? rebasedRow : rule;
     const noChange = (patch: Partial<RuleWrite>) =>
-      !adoptAfterConflict && (unchanged || (!!savedRow && savedRow.updated_at === lockUpdatedAt && sameRuleWrite(savedRow, patch)));
+      !mustSend && (unchanged || (!!savedRow && savedRow.updated_at === lockUpdatedAt && sameRuleWrite(savedRow, patch)));
     const closeUnchanged = () => {
       toast.info('変更はありません');
       onClose();
