@@ -14,11 +14,11 @@ import {
   type ResolvedForm,
 } from '@gaapp/importer';
 import { rewriteRequestedItem, type GroupCategory, type Item } from '@gaapp/shared';
-import type { GroupRow, ItemRow } from '@/lib/db/types';
-import { AppError, toAppError } from '@/lib/errors';
+import type { GroupRow, ItemRow, SubmissionRow } from '@/lib/db/types';
+import { AppError, appError, toAppError } from '@/lib/errors';
 import { callRpc } from '@/lib/rpc';
 import { NOTE_MAX } from '@/lib/schemas/common';
-import { isRequestable, sortGroups, sortItems, type RequestsTables } from './requests';
+import { fetchSubmission, isRequestable, sortGroups, sortItems, type RequestsTables } from './requests';
 
 export type { FormKind, RejectReason };
 
@@ -183,6 +183,11 @@ export interface ImportPlan {
   blocked: { item: ItemRow; count: number }[];
   /** 今の DB の提出日時（未提出は null） */
   dbSubmittedAt: string | null;
+  /**
+   * プレビューを作ったときの提出の記録（記録がなければ null）。保存の直前に読み直して比べ、変わっていればその団体は送らない
+   * （p_rows の楽観ロックは requests の行にしかかからず、数を変えない出し直し・備考だけの変更・「提出済みにする」はすり抜けるため。2.3・Q2）
+   */
+  dbSubmission: SubmissionRow | null;
   /** 今の DB に備考があるか */
   dbHasNote: boolean;
   /** 上書きの既定（Q2：CSV のタイムスタンプが DB の提出日時より新しい、または未提出なら上書き） */
@@ -303,6 +308,7 @@ export function buildImportPreview(
       rewritten: kept ? hasRewrite(kept, category, importItems) : false,
       blocked,
       dbSubmittedAt,
+      dbSubmission: sub,
       dbHasNote: !!sub?.note?.trim(),
       defaultOverwrite: defaultOverwriteOf(s.submittedAt, dbSubmittedAt),
       sameTimestamp: sameTimestampOf(s.submittedAt, dbSubmittedAt),
@@ -360,14 +366,47 @@ export function defaultImportReason(kind: FormKind): string {
 
 export type ImportResult = { groupId: string; ok: true } | { groupId: string; ok: false; error: AppError };
 
+const msOf = (iso: string | null | undefined): number | null => {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? null : t;
+};
+
+/** 提出の記録が変わったか（記録ができた・消えた、updated_at・提出日時・備考のどれかが違う。時刻の書き方の違いは同じとみなす） */
+export function submissionChanged(
+  base: Pick<SubmissionRow, 'submitted_at' | 'note' | 'updated_at'> | null,
+  fresh: Pick<SubmissionRow, 'submitted_at' | 'note' | 'updated_at'> | null,
+): boolean {
+  if (!base || !fresh) return base !== fresh;
+  return (
+    msOf(base.updated_at) !== msOf(fresh.updated_at) ||
+    msOf(base.submitted_at) !== msOf(fresh.submitted_at) ||
+    (base.note ?? null) !== (fresh.note ?? null)
+  );
+}
+
+export interface SaveImportDeps {
+  /** 提出の記録を読み直す（テストで差し替える） */
+  fetchSubmission?: (groupId: string) => Promise<SubmissionRow | null>;
+}
+
 /**
  * 団体ごとに順に update_requests_after_deadline を呼ぶ（締切の前後によらない。提出日時を残すため。D-29）。
+ * 各団体を送る直前に提出の記録を読み直し、プレビューを作ったときから変わっていれば送らずに conflict とする（2.3・Q2。
+ * p_submission には楽観ロックがないので、数を変えない出し直しや「提出済みにする」を黙って CSV の値に戻さないため。
+ * 読み直した表でプレビューを作り直すと、Q2 の既定がその記録で決め直される）。
  * forbidden・state（権限・年度の状態が変わった）が出たら、残りは送らずに止める（止めた団体は結果に入らない）。
  */
-export async function saveImport(plans: readonly ImportPlan[], reason: string): Promise<ImportResult[]> {
+export async function saveImport(plans: readonly ImportPlan[], reason: string, deps: SaveImportDeps = {}): Promise<ImportResult[]> {
+  const readSubmission = deps.fetchSubmission ?? ((groupId: string) => fetchSubmission(groupId));
   const out: ImportResult[] = [];
   for (const plan of plans) {
     try {
+      const fresh = await readSubmission(plan.group.id);
+      if (submissionChanged(plan.dbSubmission, fresh)) {
+        out.push({ groupId: plan.group.id, ok: false, error: appError('conflict', 'submission_changed') });
+        continue;
+      }
       await callRpc('update_requests_after_deadline', toImportArgs(plan, reason));
       out.push({ groupId: plan.group.id, ok: true });
     } catch (e) {

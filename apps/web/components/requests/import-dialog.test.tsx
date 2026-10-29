@@ -14,6 +14,12 @@ vi.mock('@/components/common/app-link', () => ({
   AppLink: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a>,
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// 取り込みは送る直前に提出の記録を読み直す。既定では renderDialog に渡した表の記録を返す（プレビューの後に変わっていない）
+const dbSubmissions = vi.hoisted(() => ({ rows: [] as SubmissionRow[] }));
+vi.mock('@/lib/data/requests', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/data/requests')>()),
+  fetchSubmission: vi.fn(async (groupId: string) => dbSubmissions.rows.find((s) => s.group_id === groupId) ?? null),
+}));
 
 const { callRpc } = await import('@/lib/rpc');
 const { ImportDialog } = await import('./import-dialog');
@@ -67,6 +73,7 @@ function renderDialog(t: Partial<RequestsTables> = {}) {
   const onImported = vi.fn();
   const onError = vi.fn(async () => 'エラー');
   const tables: RequestsTables = { groups: [KOU, OTSU, HEI], items: ITEMS, requests: [], submissions: [], ...t };
+  dbSubmissions.rows = tables.submissions;
   render(<ImportDialog open onOpenChange={vi.fn()} tables={tables} onImported={onImported} onError={onError} />);
   return { onImported, onError };
 }
@@ -178,6 +185,22 @@ describe('取り込みのダイアログ（stall.csv）', () => {
     const results = await screen.findByTestId('import-results');
     expect(results.textContent).toContain('模擬店甲：取り込みました');
     expect(results.textContent).toContain('模擬店乙：取り込みの前に、ほかの人がこの団体の申請を変えました');
+  });
+
+  it('プレビューの後に提出の記録だけが変わった団体は送らず、conflict の文言を出す（数を変えない出し直し。2.3・Q2）', async () => {
+    const user = userEvent.setup();
+    const submissions: SubmissionRow[] = [{ group_id: OTSU.id, submitted_at: '2026-10-01T00:00:00+09:00', note: null, updated_at: T0 }];
+    const { onImported } = renderDialog({ submissions });
+    vi.mocked(callRpc).mockResolvedValue(undefined as never);
+    await upload(user);
+    // プレビューを作った後に、模擬店乙の代表が数を変えずに出し直した（requests の updated_at は変わらない）
+    dbSubmissions.rows = [{ ...submissions[0]!, submitted_at: '2026-10-29T11:00:00+09:00', note: '新しい備考', updated_at: '2026-10-29T02:00:00+00:00' }];
+    await user.click(screen.getByRole('button', { name: '取り込む（2 団体）' }));
+    const results = await screen.findByTestId('import-results');
+    expect(results.textContent).toContain('模擬店甲：取り込みました');
+    expect(results.textContent).toContain('模擬店乙：取り込みの前に、ほかの人がこの団体の申請を変えました');
+    expect(vi.mocked(callRpc).mock.calls.map((c) => (c[1] as { p_group_id: string }).p_group_id)).toEqual([KOU.id]);
+    expect(onImported).toHaveBeenCalledTimes(1);
   });
 
   it('送った団体がすべて conflict でも申請一覧を読み直す（古い updatedAt で同じ conflict を繰り返さない）', async () => {

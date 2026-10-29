@@ -122,4 +122,38 @@ test.describe('T11 取り込み（管理者）', () => {
       await s.cleanup();
     }
   });
+
+  test('T11 取り込み：プレビューの後に提出の記録だけが変わった団体は送らない（ほかの人の変更を黙って上書きしない）', async ({ page }) => {
+    const s = await createScenario({
+      roles: { admin: true },
+      extraGroups: [
+        { name: '模擬店甲', category: 'stall' },
+        { name: '模擬店乙', category: 'stall' },
+      ],
+    });
+    try {
+      const otsu = s.ids.groups['模擬店乙']!;
+      // 模擬店乙は未提出で備考だけある（既定で上書きする）
+      await sql("insert into public.request_submissions (group_id, note) values ($1, '前の備考')", [otsu]);
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/');
+      await page.getByRole('button', { name: 'Googleフォームの回答を取り込む' }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('CSV ファイル').setInputFiles(STALL_CSV);
+      await expect(dialog.getByRole('checkbox', { name: '模擬店乙を上書きする' })).toBeChecked();
+      // プレビューを作った後に、代表が数を変えずに備考だけを書き換えた（requests の updated_at は変わらない）
+      await sql("update public.request_submissions set note = '代表が書き換えた備考' where group_id = $1", [otsu]);
+      await dialog.getByRole('button', { name: '取り込む（2 団体）' }).click();
+      await expect(dialog.getByTestId('import-results')).toContainText('模擬店甲：取り込みました');
+      await expect(dialog.getByTestId('import-results')).toContainText('模擬店乙：取り込みの前に、ほかの人がこの団体の申請を変えました');
+      const rows = await sql<{ note: string | null; submitted_at: string | null }>(
+        'select note, submitted_at from public.request_submissions where group_id = $1',
+        [otsu],
+      );
+      expect(rows[0]).toEqual({ note: '代表が書き換えた備考', submitted_at: null });
+      expect(await countsOf(otsu)).toEqual({});
+    } finally {
+      await s.cleanup();
+    }
+  });
 });

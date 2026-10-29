@@ -301,12 +301,89 @@ describe('saveImport', () => {
     mock.mockReset();
     mock.mockResolvedValueOnce(undefined as never).mockRejectedValueOnce(appError('forbidden', '42501'));
     const p = buildImportPreview(parsedStall(), 'stall', tables(), { 8: HEI.id });
-    const res = await saveImport(p.plans, '理由');
+    const res = await saveImport(p.plans, '理由', { fetchSubmission: async () => null });
     expect(mock).toHaveBeenCalledTimes(2);
     expect(mock.mock.calls[0]![0]).toBe('update_requests_after_deadline');
     expect(res.map((r) => [r.groupId, r.ok])).toEqual([
       [KOU.id, true],
       [OTSU.id, false],
     ]);
+  });
+
+  describe('プレビューの後に提出の記録だけが変わったら送らない（2.3・Q2。submit_requests は数が同じ行の updated_at を変えない）', () => {
+    const T1 = '2026-10-29T02:00:00+00:00';
+    const KOU_SUB: SubmissionRow = { group_id: KOU.id, submitted_at: '2026-10-01T00:00:00+09:00', note: '古い備考', updated_at: T0 };
+
+    it('団体代表が数を変えずに出し直した（submitted_at・備考・updated_at が変わった）団体は送らずに conflict', async () => {
+      const mock = vi.mocked(callRpc);
+      mock.mockReset();
+      mock.mockResolvedValue(undefined as never);
+      const p = buildImportPreview(parsedStall(), 'stall', tables({ submissions: [KOU_SUB] }));
+      const kou = p.plans.find((x) => x.group.id === KOU.id)!;
+      expect(kou.dbSubmission).toEqual(KOU_SUB);
+      const fetchSubmission = vi.fn(async (gid: string) =>
+        gid === KOU.id ? { ...KOU_SUB, submitted_at: '2026-10-29T11:00:00+09:00', note: '新しい備考', updated_at: T1 } : null,
+      );
+      const res = await saveImport(p.plans, '理由', { fetchSubmission });
+      expect(fetchSubmission).toHaveBeenCalledWith(KOU.id);
+      expect(mock.mock.calls.map((c) => (c[1] as { p_group_id: string }).p_group_id)).toEqual([OTSU.id]);
+      const r = res.find((x) => x.groupId === KOU.id)!;
+      expect(r.ok).toBe(false);
+      expect(r.ok === false && r.error.info.kind).toBe('conflict');
+      expect(res.find((x) => x.groupId === OTSU.id)?.ok).toBe(true);
+    });
+
+    it('備考だけが変わった（updated_at だけでも）団体も送らない', async () => {
+      const mock = vi.mocked(callRpc);
+      mock.mockReset();
+      mock.mockResolvedValue(undefined as never);
+      const p = buildImportPreview(parsedStall(), 'stall', tables({ submissions: [KOU_SUB] }));
+      const kou = p.plans.filter((x) => x.group.id === KOU.id);
+      const noteOnly = await saveImport(kou, '理由', { fetchSubmission: async () => ({ ...KOU_SUB, note: '書き換えた備考' }) });
+      expect(noteOnly[0]!.ok).toBe(false);
+      const touched = await saveImport(kou, '理由', { fetchSubmission: async () => ({ ...KOU_SUB, updated_at: T1 }) });
+      expect(touched[0]!.ok).toBe(false);
+      expect(mock).not.toHaveBeenCalled();
+    });
+
+    it('プレビューの後にほかの管理者が「提出済みにする」を押した（記録ができた）団体は送らない', async () => {
+      const mock = vi.mocked(callRpc);
+      mock.mockReset();
+      mock.mockResolvedValue(undefined as never);
+      const p = buildImportPreview(parsedStall(), 'stall', tables());
+      const kou = p.plans.filter((x) => x.group.id === KOU.id);
+      expect(kou[0]!.dbSubmission).toBeNull();
+      const res = await saveImport(kou, '理由', {
+        fetchSubmission: async () => ({ group_id: KOU.id, submitted_at: '2026-10-29T11:00:00+09:00', note: null, updated_at: T1 }),
+      });
+      expect(res[0]!.ok).toBe(false);
+      expect(mock).not.toHaveBeenCalled();
+    });
+
+    it('提出の記録が変わっていなければ送る（時刻の書き方の違いは同じとみなす）', async () => {
+      const mock = vi.mocked(callRpc);
+      mock.mockReset();
+      mock.mockResolvedValue(undefined as never);
+      const p = buildImportPreview(parsedStall(), 'stall', tables({ submissions: [KOU_SUB] }));
+      const kou = p.plans.filter((x) => x.group.id === KOU.id);
+      const res = await saveImport(kou, '理由', {
+        fetchSubmission: async () => ({ ...KOU_SUB, submitted_at: '2026-09-30T15:00:00.000Z', updated_at: '2026-10-29T10:02:03.123456+09:00' }),
+      });
+      expect(res[0]!.ok).toBe(true);
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+
+    it('読み直しが forbidden なら残りは送らずに止める', async () => {
+      const mock = vi.mocked(callRpc);
+      mock.mockReset();
+      const p = buildImportPreview(parsedStall(), 'stall', tables());
+      const res = await saveImport(p.plans, '理由', {
+        fetchSubmission: async () => {
+          throw appError('forbidden', '42501');
+        },
+      });
+      expect(res).toHaveLength(1);
+      expect(mock).not.toHaveBeenCalled();
+    });
   });
 });
