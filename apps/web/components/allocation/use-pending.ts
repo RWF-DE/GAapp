@@ -30,6 +30,21 @@ import {
 } from '@/lib/allocation/pending';
 import { applySaveResult, checkAfterUnknown, saveRows, type RowSaveDeps } from '@/lib/allocation/row-save';
 
+/** 行の保存が conflict で拒まれ、読み直して当て直したとき */
+export const CONFLICT_REAPPLIED = '他の人が変更しました。読み直して、ぶつからない変更を当て直しました';
+/** 行の保存が conflict で拒まれたが、読み直せなかったとき（当て直したとは言わない。変更は残す） */
+export const CONFLICT_UNREAD = '他の人が変更しました。読み直せませんでした。「読み直す」を押してください';
+
+/** refetch して、読み直せたか（isError でなく、投げなかった） */
+async function refetchOk(refetch: () => Promise<{ isError?: boolean } | undefined>): Promise<boolean> {
+  try {
+    const r = await refetch();
+    return !r?.isError;
+  } catch {
+    return false;
+  }
+}
+
 /** スナップショットの見分け（同じ版・同じ読み込みなら当て直さない） */
 const snapKey = (s: Snapshot) => `${s.version}|${s.loadedAt}`;
 
@@ -81,7 +96,8 @@ export function usePendingRows({
   editable,
 }: {
   snapshot: Snapshot;
-  refetch: () => Promise<unknown>;
+  /** 読み直す（react-query の refetch。結果の isError で読み直せたかを見る） */
+  refetch: () => Promise<{ isError?: boolean } | undefined>;
   editable: boolean;
 }): PendingApi {
   const yearId = snapshot.year.id;
@@ -177,14 +193,17 @@ export function usePendingRows({
     async (error: unknown) => {
       const c = classifyError(error);
       const eff = effectOf(c);
+      // 読み直せたか（読み直さなかったときは true）。読み直せなければ、当て直したとは言わない
+      let reloaded = true;
       if (eff.reload === 'year') {
         await queryClient.invalidateQueries({ queryKey: queryKeys.year(yearId) });
         reloadMembership();
       } else if (eff.reload === 'data') {
-        await refetch();
+        reloaded = await refetchOk(refetch);
       }
       if (c.kind === 'conflict') {
-        toast.warning('他の人が変更しました。読み直して、ぶつからない変更を当て直しました');
+        if (reloaded) toast.warning(CONFLICT_REAPPLIED);
+        else toast.error(CONFLICT_UNREAD);
         setNotice(null);
         return;
       }
