@@ -182,8 +182,8 @@ export function editPending(
   tempId: () => string = newTempId,
 ): PendingChange[] {
   if (edit.op === 'insert') {
-    const { op: _op, ...rest } = edit;
-    return [...pending, { op: 'insert', tempId: tempId(), ...rest }];
+    const { groupId, sourceRoomId, itemId, requestedItemId, count, note, pinned } = edit;
+    return [...pending, { op: 'insert', tempId: tempId(), groupId, sourceRoomId, itemId, requestedItemId, count, note, pinned }];
   }
   if (isTempId(edit.id)) {
     const i = pending.findIndex((c) => c.op === 'insert' && c.tempId === edit.id);

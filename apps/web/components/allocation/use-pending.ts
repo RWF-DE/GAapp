@@ -1,0 +1,320 @@
+'use client';
+
+// 振り分けの行の未保存の変更を持つ（画面の設計 3.9 の「行の操作」、D-33・D-34。T13 の段 2）。
+// - スナップショットが変わったら（読み直し・ほかの人の変更・保存の後）、rebasePending で当て直す。外れた変更は一覧で知らせる。
+// - 下書き（lib/drafts.ts）：変更のたびに 500 ms まとめて写す。開いたときに下書きがあれば DraftNotice（戻すと当て直す）。
+// - 保存：lib/allocation/row-save.ts の saveRows（応答が届かなければ版で確かめる。確かめるまで送り直させない）。
+import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { useAuth } from '@/lib/auth/auth-provider';
+import { saveAllocationRows } from '@/lib/data/allocation';
+import { loadSnapshot, type Snapshot } from '@/lib/data/snapshot';
+import { fetchYearVersion } from '@/lib/data/year';
+import { toStoredRows, type StoredRows } from '@/lib/data/year-data';
+import { createDraftWriter, loadDraft, removeDraft, type Draft, type DraftKey } from '@/lib/drafts';
+import { classifyError, effectOf } from '@/lib/errors';
+import { queryKeys } from '@/lib/query';
+import { useUnsavedChanges } from '@/lib/unsaved-changes';
+import {
+  applyPending,
+  editPending,
+  MAX_CHANGES,
+  pendingListSchema,
+  pendingSummary,
+  rebasePending,
+  revertRow,
+  type DroppedChange,
+  type PendingChange,
+  type PendingEdit,
+} from '@/lib/allocation/pending';
+import { applySaveResult, checkAfterUnknown, saveRows, type RowSaveDeps } from '@/lib/allocation/row-save';
+
+/** スナップショットの見分け（同じ版・同じ読み込みなら当て直さない） */
+const snapKey = (s: Snapshot) => `${s.version}|${s.loadedAt}`;
+
+export type PendingNotice =
+  /** 応答が届かず、版が同じだった（保存されていない）。もう一度保存してよい */
+  | { kind: 'not-saved' }
+  /** 版を読めない。「確かめる」まで保存を押せない */
+  | { kind: 'unverified'; pending: PendingChange[]; heldVersion: number; before: StoredRows }
+  /** 一部だけが反映済みに見える。選んでもらうまで保存を押せない */
+  | { kind: 'partial'; applied: PendingChange[]; remaining: PendingChange[] }
+  /** ほかの人の変更で版が進んでいた（保存されていない）。当て直したので、もう一度保存してもらう */
+  | { kind: 'other-change' }
+  /** 拒まれた（文言は ErrorBanner） */
+  | { kind: 'rejected'; error: unknown };
+
+interface State {
+  baseKey: string;
+  pending: PendingChange[];
+}
+
+export interface PendingApi {
+  pending: PendingChange[];
+  /** 未保存の変更を当てた行（画面と検証に使う） */
+  rows: ReturnType<typeof applyPending>;
+  /** 今の DB の行（updated_at つき） */
+  stored: StoredRows;
+  edit: (e: PendingEdit) => void;
+  revert: (rowId: string) => void;
+  discardAll: () => void;
+  /** 保存する（理由は必須）。理由の誤りのときは例外（ReasonDialog を開いたままにする） */
+  save: (reason: string) => Promise<void>;
+  saving: boolean;
+  /** 保存を押せないときの理由（null なら押せる） */
+  saveBlock: string | null;
+  notice: PendingNotice | null;
+  dismissNotice: () => void;
+  /** 読み直しで外した変更（「ほかの人の変更とぶつかったので外しました」） */
+  dropped: DroppedChange[];
+  dismissDropped: () => void;
+  recheck: () => Promise<void>;
+  /** 部分的に反映済みのときの選択：残りを残す・すべて取り消す */
+  resolvePartial: (keepRemaining: boolean) => void;
+  draft: { savedAt: number; restore: () => void; discard: () => void } | null;
+}
+
+export function usePendingRows({
+  snapshot,
+  refetch,
+  editable,
+}: {
+  snapshot: Snapshot;
+  refetch: () => Promise<unknown>;
+  editable: boolean;
+}): PendingApi {
+  const yearId = snapshot.year.id;
+  const queryClient = useQueryClient();
+  const { session, reloadMembership } = useAuth();
+  const userId = session.status === 'signedIn' ? session.session.user.id : null;
+
+  const stored = useMemo(() => toStoredRows(snapshot), [snapshot]);
+  const locationOf = useMemo(() => {
+    const loc = new Map(snapshot.groups.map((g) => [g.id, g.location_room_id]));
+    return (groupId: string) => loc.get(groupId);
+  }, [snapshot.groups]);
+
+  // ---- 変更とスナップショットの組（スナップショットが変われば当て直す） ----
+  const [state, setState] = useState<State>(() => ({ baseKey: snapKey(snapshot), pending: [] }));
+  const [dropped, setDropped] = useState<DroppedChange[]>([]);
+  const key = snapKey(snapshot);
+  if (state.baseKey !== key) {
+    // 描画の中で前の値から決め直す（React の「前の props を state に持つ」形）
+    const r = state.pending.length > 0 ? rebasePending(state.pending, stored) : { pending: [], dropped: [] };
+    setState({ baseKey: key, pending: r.pending });
+    if (r.dropped.length > 0) setDropped((d) => [...d, ...r.dropped]);
+  }
+  const pending = state.pending;
+  const setPending = useCallback((f: (p: PendingChange[]) => PendingChange[]) => setState((s) => ({ ...s, pending: f(s.pending) })), []);
+
+  const rows = useMemo(() => applyPending(stored.rows, pending, locationOf), [stored, pending, locationOf]);
+  useUnsavedChanges(pending.length > 0);
+
+  // ---- 下書き ----
+  const draftKey = useMemo<DraftKey | null>(() => (userId ? { userId, yearId, screen: 'allocation' } : null), [userId, yearId]);
+  const writer = useMemo(() => (draftKey ? createDraftWriter<{ pending: PendingChange[] }>(draftKey) : null), [draftKey]);
+  // 開いたときの下書き（あれば DraftNotice。戻すか捨てるかを決めるまで、下書きを上書きしない）
+  const [draftState, setDraftState] = useState<{ draft: Draft<{ pending: PendingChange[] }> | null; decided: boolean }>(() => {
+    if (!draftKey || !editable) return { draft: null, decided: true };
+    const d = loadDraft<{ pending: PendingChange[] }>(draftKey);
+    if (d && pendingListSchema.safeParse(d.value?.pending).success && d.value.pending.length > 0) return { draft: d, decided: false };
+    if (d) removeDraft(draftKey);
+    return { draft: null, decided: true };
+  });
+  const draft = draftState.draft;
+  const draftDecided = draftState.decided;
+  useEffect(() => {
+    if (!writer || !draftDecided) return;
+    if (pending.length > 0) writer.write({ pending });
+    else writer.clear();
+  }, [writer, pending, draftDecided]);
+  useEffect(() => () => writer?.flush(), [writer]);
+
+  const restoreDraft = useCallback(() => {
+    if (!draft) return;
+    const parsed = pendingListSchema.safeParse(draft.value.pending);
+    const list = parsed.success ? (parsed.data as PendingChange[]) : [];
+    const r = rebasePending(list, stored);
+    setState({ baseKey: snapKey(snapshot), pending: r.pending });
+    setDraftState({ draft: null, decided: true });
+    toast.info(`保存していない変更 ${r.pending.length} 件を戻しました（当て直せなかったもの ${r.dropped.length} 件）`);
+    if (r.dropped.length > 0) setDropped(r.dropped);
+  }, [draft, stored, snapshot]);
+  const discardDraft = useCallback(() => {
+    if (draftKey) removeDraft(draftKey);
+    setDraftState({ draft: null, decided: true });
+  }, [draftKey]);
+
+  // ---- 編集 ----
+  const edit = useCallback(
+    (e: PendingEdit) => {
+      setPending((p) => editPending(p, e, stored));
+    },
+    [setPending, stored],
+  );
+  const revert = useCallback((rowId: string) => setPending((p) => revertRow(p, rowId)), [setPending]);
+  const [notice, setNotice] = useState<PendingNotice | null>(null);
+  const discardAll = useCallback(() => {
+    setPending(() => []);
+    setDropped([]);
+    setNotice(null);
+  }, [setPending]);
+
+  // ---- 保存 ----
+  const [saving, setSaving] = useState(false);
+  const deps: RowSaveDeps = useMemo(
+    () => ({
+      save: (changes, reason) => saveAllocationRows({ yearId, changes, reason }),
+      readVersion: () => fetchYearVersion(yearId),
+      loadFresh: () => loadSnapshot(yearId, 'full'),
+    }),
+    [yearId],
+  );
+  const publish = useCallback((s: Snapshot) => queryClient.setQueryData(queryKeys.snapshot(yearId, 'full'), s), [queryClient, yearId]);
+
+  const afterReject = useCallback(
+    async (error: unknown) => {
+      const c = classifyError(error);
+      const eff = effectOf(c);
+      if (eff.reload === 'year') {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.year(yearId) });
+        reloadMembership();
+      } else if (eff.reload === 'data') {
+        await refetch();
+      }
+      if (c.kind === 'conflict') {
+        toast.warning('他の人が変更しました。読み直して、ぶつからない変更を当て直しました');
+        setNotice(null);
+        return;
+      }
+      setNotice({ kind: 'rejected', error });
+    },
+    [queryClient, yearId, reloadMembership, refetch],
+  );
+
+  /** 確かめた結果を画面に当てる（保存の後と「確かめる」の後で共通） */
+  const applyCheck = useCallback(
+    (out: Awaited<ReturnType<typeof checkAfterUnknown>>, sent: PendingChange[], heldVersion: number, before: StoredRows) => {
+      switch (out.kind) {
+        case 'not-saved':
+          setNotice({ kind: 'not-saved' });
+          return;
+        case 'unverified':
+          setNotice({ kind: 'unverified', pending: sent, heldVersion, before });
+          return;
+        case 'was-saved':
+          setState({ baseKey: snapKey(out.snapshot), pending: [] });
+          publish(out.snapshot);
+          setNotice(null);
+          toast.success('保存されていました（応答が届かなかったので、読み直して確かめました）');
+          return;
+        case 'other-change': {
+          const r = rebasePending(sent, toStoredRows(out.snapshot));
+          setState({ baseKey: snapKey(out.snapshot), pending: r.pending });
+          if (r.dropped.length > 0) setDropped((d) => [...d, ...r.dropped]);
+          publish(out.snapshot);
+          setNotice({ kind: 'other-change' });
+          return;
+        }
+        case 'partial': {
+          const r = rebasePending(out.remaining, toStoredRows(out.snapshot));
+          setState({ baseKey: snapKey(out.snapshot), pending: r.pending });
+          if (r.dropped.length > 0) setDropped((d) => [...d, ...r.dropped]);
+          publish(out.snapshot);
+          setNotice({ kind: 'partial', applied: out.applied, remaining: r.pending });
+          return;
+        }
+      }
+    },
+    [publish],
+  );
+
+  const save = useCallback(
+    async (reason: string) => {
+      if (pending.length === 0 || saving) return;
+      const sent = pending;
+      const heldVersion = snapshot.version;
+      const before = stored;
+      setSaving(true);
+      setNotice(null);
+      try {
+        const out = await saveRows(deps, { pending: sent, reason, heldVersion, before });
+        if (out.kind === 'saved') {
+          const s = toastCounts(sent);
+          const next = applySaveResult(snapshot, out.result);
+          setState((st) => ({ baseKey: next ? snapKey(next) : st.baseKey, pending: [] }));
+          setDropped([]);
+          if (next) publish(next);
+          else await refetch();
+          toast.success(`保存しました（${s}）`);
+          return;
+        }
+        if (out.kind === 'rejected') {
+          if (classifyError(out.error).kind === 'reason') {
+            setNotice({ kind: 'rejected', error: out.error });
+            throw out.error; // 理由の欄に戻す（ReasonDialog を開いたまま）
+          }
+          await afterReject(out.error);
+          return;
+        }
+        applyCheck(out, sent, heldVersion, before);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [pending, saving, snapshot, stored, deps, publish, refetch, afterReject, applyCheck],
+  );
+
+  const recheck = useCallback(async () => {
+    if (notice?.kind !== 'unverified') return;
+    setSaving(true);
+    try {
+      const out = await checkAfterUnknown(deps, notice.pending, notice.heldVersion, notice.before);
+      applyCheck(out, notice.pending, notice.heldVersion, notice.before);
+    } finally {
+      setSaving(false);
+    }
+  }, [notice, deps, applyCheck]);
+
+  const resolvePartial = useCallback(
+    (keepRemaining: boolean) => {
+      if (!keepRemaining) setPending(() => []);
+      setNotice(null);
+    },
+    [setPending],
+  );
+
+  const saveBlock =
+    notice?.kind === 'unverified'
+      ? '保存できたか確かめるまで、もう一度保存できません'
+      : notice?.kind === 'partial'
+        ? '反映済みに見える変更があります。残りをどうするか選んでください'
+        : pending.length > MAX_CHANGES
+          ? '変更が多すぎます。保存してから続けてください（1000 件まで）'
+          : null;
+
+  return {
+    pending,
+    rows,
+    stored,
+    edit,
+    revert,
+    discardAll,
+    save,
+    saving,
+    saveBlock,
+    notice,
+    dismissNotice: () => setNotice(null),
+    dropped,
+    dismissDropped: () => setDropped([]),
+    recheck,
+    resolvePartial,
+    draft: draft && !draftDecided ? { savedAt: draft.savedAt, restore: restoreDraft, discard: discardDraft } : null,
+  };
+}
+
+function toastCounts(p: readonly PendingChange[]): string {
+  const s = pendingSummary(p);
+  return `追加 ${s.inserts}・変更 ${s.updates}・削除 ${s.deletes}`;
+}

@@ -5,7 +5,9 @@
 //   この画面を開いたときだけ読み込み始める。
 // - 部員はいつでも読み取り専用（在庫・余り・検証・Excel 出力つき。書き込みのボタンは出さない。Q1）。
 // - 閲覧のみは確定後だけ、行の一覧（運び元・運び先・団体・品目・数）。在庫・申請は RLS で読めないので、余り・検証・団体別は出さない（Q1）。
-// 段 1：読み込みと表示・自動振り分け・検証の一覧・確定・Excel。行の手での編集と部屋の「使用不可にする」は段 2。
+// 段 1：読み込みと表示・自動振り分け・検証の一覧・確定・Excel。
+// 段 2：行の手での編集（未保存の変更に溜めて save_allocation_rows で保存）、部屋の見出しからの「今年は使用不可にする」、
+// precheck の E002 の操作（運び元の変更と削除だけ）。
 import type { AllocateMode, Issue } from '@gaapp/shared';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
@@ -14,6 +16,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import { AppLink } from '@/components/common/app-link';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
+import { DraftNotice } from '@/components/common/draft-notice';
 import { PageHeader } from '@/components/common/page-header';
 import { StaleBanner } from '@/components/common/stale-banner';
 import { TokyoTime } from '@/components/common/tokyo-time';
@@ -25,13 +28,16 @@ import { getAllocatorEngine, useEngineState, type AllocatorEngine } from '@/lib/
 import { groupViews } from '@/lib/allocation/group-view';
 import { isReplaceableRow } from '@/lib/allocation/input';
 import { issueTarget, type IssueTarget } from '@/lib/allocation/issue-target';
+import type { FailureLine } from '@/lib/allocation/failure-view';
 import { describeRule } from '@/lib/allocation/rule-text';
+import { unusableChecklist } from '@/lib/allocation/unusable';
 import { itemTabs, tabKeyByItem } from '@/lib/allocation/tabs';
 import { buildViewModel, namesOf } from '@/lib/allocation/view-model';
 import { useAuth } from '@/lib/auth/auth-provider';
 import { audiencesOf, type Audience } from '@/lib/auth/membership';
 import { saveAutoAllocations } from '@/lib/data/allocation';
 import { downloadAllocationXlsx, ExportBlockedError, isBeforeConfirm } from '@/lib/data/export';
+import { setRoomUsable, type FixedRowOp } from '@/lib/data/room-years';
 import { loadSnapshot, useSnapshot, type Snapshot, type SnapshotPart } from '@/lib/data/snapshot';
 import { useValidation } from '@/lib/data/validation';
 import { useVersionWatch } from '@/lib/data/version-watch';
@@ -46,6 +52,10 @@ import { AutoRunLock, MODE_LABELS, useAutoAllocation, type AutoRunDeps } from '.
 import { GroupViewList } from './group-view';
 import { ItemTabView } from './item-tab-view';
 import { IssuesPanel, ProblemsList } from './issues-panel';
+import { PendingBar, PendingNotices } from './pending-bar';
+import { AddRowDialog, rowLabel, SourceDialog, UnusableDialog } from './row-dialogs';
+import { RowEditProvider, type RowEditApi } from './row-edit';
+import { usePendingRows } from './use-pending';
 
 /** URL のクエリ（合わない値は無視して既定にする。画面の設計 1.1） */
 const querySchema = z.object({
@@ -123,6 +133,7 @@ function Toolbar({
   onAuto,
   onExport,
   autoHint,
+  emphasizeMinimal = false,
 }: {
   disabled?: boolean;
   isAdmin: boolean;
@@ -134,6 +145,8 @@ function Toolbar({
   onAuto?: (mode: AllocateMode) => void;
   onExport?: () => void;
   autoHint?: string | null;
+  /** 部屋を使用不可にした後：「最小変更で再実行」を目立たせる */
+  emphasizeMinimal?: boolean;
 }) {
   return (
     <div className="mb-3 space-y-1 print:hidden" data-testid="allocation-toolbar">
@@ -143,7 +156,13 @@ function Toolbar({
             <Button disabled={disabled || autoDisabled} onClick={() => onAuto?.('full')}>
               自動振り分け
             </Button>
-            <Button variant="outline" disabled={disabled || minimalDisabled} onClick={() => onAuto?.('minimal_change')}>
+            <Button
+              variant={emphasizeMinimal ? 'default' : 'outline'}
+              className={cn(emphasizeMinimal && 'ring-2 ring-amber-400 ring-offset-2')}
+              data-emphasized={emphasizeMinimal ? 'true' : undefined}
+              disabled={disabled || minimalDisabled}
+              onClick={() => onAuto?.('minimal_change')}
+            >
               最小変更で再実行
             </Button>
           </>
@@ -205,10 +224,15 @@ function AllocationLoaded({
 
   const vm = useMemo(() => buildViewModel(snapshot), [snapshot]);
   const stored = useMemo(() => toStoredRows(snapshot).rows, [snapshot]);
-  const validation = useValidation(full ? snapshot : undefined);
+  // 行の手での編集（管理者・振り分け中だけ。確定中・終了・部員・閲覧のみは読み取り）
+  const editable = isAdmin && allocating && full;
+  const pend = usePendingRows({ snapshot, refetch, editable });
+  const dirty = pend.pending.length > 0;
+  const rows = pend.rows;
+  const validation = useValidation(full ? snapshot : undefined, dirty ? rows : undefined);
   const tabs = useMemo(() => itemTabs(vm.items), [vm]);
   const tabByItem = useMemo(() => tabKeyByItem(tabs), [tabs]);
-  const rowItem = useMemo(() => new Map(stored.map((r) => [r.id, r.itemId])), [stored]);
+  const rowItem = useMemo(() => new Map(rows.map((r) => [r.id, r.itemId])), [rows]);
   const names = useMemo(() => namesOf(vm), [vm]);
   const rulesByCode = useMemo(() => new Map(snapshot.rules.map((r) => [r.code, r])), [snapshot.rules]);
   const ruleText = useCallback((code: string) => {
@@ -216,8 +240,8 @@ function AllocationLoaded({
     return r ? describeRule(r, vm) : undefined;
   }, [rulesByCode, vm]);
   const groups = useMemo(
-    () => (full && validation.yearData ? groupViews(vm, validation.yearData.data, stored) : []),
-    [full, validation.yearData, vm, stored],
+    () => (full && validation.yearData ? groupViews(vm, validation.yearData.data, rows) : []),
+    [full, validation.yearData, vm, rows],
   );
 
   // 計算エンジン：管理者が振り分け中に開いたときだけ（部員・閲覧のみと、振り分け中以外は Worker を作らない）
@@ -337,6 +361,8 @@ function AllocationLoaded({
     ? null
     : running
       ? null
+      : dirty
+        ? '保存していない変更があります。先に保存するか取り消してください'
       : problems.length > 0
         ? '入力に誤りがあるので、自動振り分けはできません（下の一覧を直してください）'
         : unverified
@@ -344,7 +370,7 @@ function AllocationLoaded({
           : engineState === 'loading' || engineState === 'idle'
             ? '計算エンジンを読み込み中（初回だけ。約 1.2 MB）'
             : null;
-  const autoDisabled = !allocating || running || problems.length > 0 || unverified || engineState === 'loading' || engineState === 'idle';
+  const autoDisabled = !allocating || running || dirty || problems.length > 0 || unverified || engineState === 'loading' || engineState === 'idle';
   const engineNote = isAdmin && allocating && engineState === 'failed' ? '計算エンジンを読み込めませんでした。「自動振り分け」を押すと、もう一度読み込みます。' : null;
 
   // ---- Excel 出力（Q3：確定前は確かめて、ファイル名に「_確定前」） ----
@@ -363,6 +389,121 @@ function AllocationLoaded({
     }
   };
   const onExport = () => (isBeforeConfirm(status) ? setXlsxConfirm(true) : void doExport());
+
+  // ---- 行の操作（段 2） ----
+  const [sourceRowId, setSourceRowId] = useState<string | null>(null);
+  const [deleteRowId, setDeleteRowId] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [unusableRoom, setUnusableRoom] = useState<string | null>(null);
+  const [usableRoom, setUsableRoom] = useState<string | null>(null);
+  const [roomBusy, setRoomBusy] = useState(false);
+  const [suggestMinimal, setSuggestMinimal] = useState<string | null>(null);
+  const rowById = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
+  const pendingIds = useMemo(
+    () => new Set(pend.pending.map((c) => (c.op === 'insert' ? c.tempId : c.id))),
+    [pend.pending],
+  );
+  const editApi = useMemo<RowEditApi | null>(
+    () =>
+      editable
+        ? {
+            vm,
+            rows,
+            pendingIds,
+            isUsable: (roomId) => vm.roomById.get(roomId)?.usable ?? true,
+            edit: pend.edit,
+            revert: pend.revert,
+            openSource: setSourceRowId,
+            requestDelete: setDeleteRowId,
+            openUnusable: setUnusableRoom,
+            openUsable: setUsableRoom,
+          }
+        : null,
+    [editable, vm, rows, pendingIds, pend.edit, pend.revert],
+  );
+  const checklist = useMemo(() => {
+    if (!unusableRoom) return [];
+    const order = new Map(vm.items.map((it, k) => [it.id, k]));
+    const gOrder = new Map(vm.groups.map((g, k) => [g.id, k]));
+    return unusableChecklist(rows, unusableRoom).sort(
+      (a, b) => (order.get(a.row.itemId) ?? 0) - (order.get(b.row.itemId) ?? 0) || (gOrder.get(a.row.groupId) ?? 0) - (gOrder.get(b.row.groupId) ?? 0),
+    );
+  }, [rows, unusableRoom, vm]);
+  const onChecklistOp = (op: FixedRowOp, rowId: string) => {
+    if (op === 'unpin') pend.edit({ op: 'update', id: rowId, patch: { pinned: false } });
+    else if (op === 'delete') pend.edit({ op: 'delete', id: rowId });
+    else setSourceRowId(rowId);
+  };
+  const changeRoomUsable = async (roomId: string, usable: boolean, note: string | null) => {
+    setRoomBusy(true);
+    try {
+      await setRoomUsable(yearId, roomId, usable, note);
+      await refetch();
+      const name = vm.roomById.get(roomId)?.name ?? '';
+      if (usable) {
+        toast.success(`${name}を使用可に戻しました`);
+        setSuggestMinimal(null);
+      } else {
+        toast.success(`${name}を今年は使用不可にしました`);
+        setSuggestMinimal(roomId);
+      }
+      setUnusableRoom(null);
+      setUsableRoom(null);
+    } catch (e) {
+      const c = classifyError(e);
+      toast.error(messageFor(c, { names }));
+      const eff = effectOf(c);
+      if (eff.reload === 'year') {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.year(yearId) });
+        reloadMembership();
+      } else if (eff.reload === 'data') {
+        await refetch();
+      }
+    } finally {
+      setRoomBusy(false);
+    }
+  };
+
+  // precheck の E002：運び元の変更と削除だけ（固定を外すは出さない。部屋がすでに使用不可なので E002 で拒否されるため）
+  const lineActions = (line: FailureLine) => {
+    const issue = line.issue;
+    if (!editApi || !issue || issue.code !== 'E002') return null;
+    const ids = issue.refs.rowIds ?? [];
+    return (
+      <div className="ml-6 mt-1 space-y-1" data-testid="e002-actions">
+        {ids.map((id) => {
+          const r = rowById.get(id);
+          if (!r || r.sourceRoomId !== issue.refs.roomId) {
+            return (
+              <p key={id} className="text-muted-foreground">
+                （未保存の変更で直しました。保存してから、もう一度実行してください）
+              </p>
+            );
+          }
+          return (
+            <div key={id} className="flex flex-wrap items-center gap-2">
+              <span>{rowLabel(vm, r)}</span>
+              <Button size="xs" variant="outline" onClick={() => setSourceRowId(id)}>
+                運び元を変える
+              </Button>
+              <Button size="xs" variant="ghost" className="text-destructive" onClick={() => pend.edit({ op: 'delete', id })}>
+                行を削除
+              </Button>
+            </div>
+          );
+        })}
+        {issue.refs.roomId ? (
+          <p className="text-muted-foreground">
+            固定を外して最小変更に任せたいときは、部屋を使用可に戻し、固定を外して保存してから使用不可にし直します（
+            <button type="button" className="underline underline-offset-2" onClick={() => goTo({ destination: { kind: 'room', roomId: issue.refs.roomId!, tab: null }, rule: null })}>
+              部屋の見出しのメニューへ
+            </button>
+            ）。
+          </p>
+        ) : null}
+      </div>
+    );
+  };
 
   const errorsAfter = auto.state.outcome?.kind === 'saved' ? validation.issues.filter((i) => i.severity === 'error').length : 0;
   const hasRows = stored.length > 0;
@@ -392,11 +533,12 @@ function AllocationLoaded({
           canExport={full}
           autoDisabled={autoDisabled}
           minimalDisabled={autoDisabled || autoRows === 0}
-          exportDisabled={running}
+          exportDisabled={running || dirty}
           exporting={exporting}
           onAuto={(mode) => setConfirmMode(mode)}
           onExport={onExport}
           autoHint={isAdmin ? (autoBlock ?? engineNote) : null}
+          emphasizeMinimal={suggestMinimal !== null && !dirty && !running}
         />
       ) : null}
 
@@ -407,7 +549,7 @@ function AllocationLoaded({
             snapshotVersion={snapshot.version}
             validation={validation}
             stale={stale}
-            unsaved={false}
+            unsaved={dirty}
             onReloadSnapshot={() => refetch()}
             names={names}
             closeExtras={
@@ -425,6 +567,13 @@ function AllocationLoaded({
         ) : null}
         {isAdmin && status === 'confirmed' ? <ReadOnlyNotice>確定中です。直すときは「確定を解除」してください。</ReadOnlyNotice> : null}
         {status === 'closed' ? <ReadOnlyNotice status="closed" /> : null}
+        {pend.draft ? <DraftNotice savedAt={pend.draft.savedAt} onRestore={pend.draft.restore} onDiscard={pend.draft.discard} /> : null}
+        {suggestMinimal && editable ? (
+          <div role="status" data-testid="suggest-minimal" className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-950">
+            {vm.roomById.get(suggestMinimal)?.name ?? ''}を今年は使用不可にしました。「最小変更で再実行」で、この部屋からの自動の行をほかの部屋に移してください。
+          </div>
+        ) : null}
+        <PendingNotices api={pend} vm={vm} onReload={() => void refetch()} />
         {auto.state.outcome ? (
           <AutoResult
             outcome={auto.state.outcome}
@@ -433,6 +582,7 @@ function AllocationLoaded({
             onIssue={(issue) => goTo(targetOf(issue))}
             onRecheck={auto.recheck}
             onReload={() => void refetch()}
+            lineActions={lineActions}
           />
         ) : null}
         {!hasRows ? (
@@ -447,18 +597,24 @@ function AllocationLoaded({
       <div className={cn('grid gap-6', full && 'lg:grid-cols-[minmax(0,1fr)_380px]')}>
         <div className="min-w-0 space-y-3">
           {full ? (
-            <div className="flex gap-1" role="group" aria-label="表示の切り替え">
+            <div className="flex flex-wrap gap-1" role="group" aria-label="表示の切り替え">
               <Button size="sm" variant={query.view === 'item' ? 'default' : 'outline'} aria-pressed={query.view === 'item'} onClick={() => setQuery({ view: 'item', tab: currentTab?.key })}>
                 品目別
               </Button>
               <Button size="sm" variant={query.view === 'group' ? 'default' : 'outline'} aria-pressed={query.view === 'group'} onClick={() => setQuery({ view: 'group' })}>
                 団体別
               </Button>
+              {editable ? (
+                <Button size="sm" variant="outline" className="ml-auto" onClick={() => setAddOpen(true)}>
+                  行を追加
+                </Button>
+              ) : null}
             </div>
           ) : null}
           {query.view === 'group' && full ? (
             <GroupViewList views={groups} highlightGroupId={query.group ?? null} />
           ) : currentTab ? (
+            <RowEditProvider value={editApi}>
             <Tabs value={currentTab.key} onValueChange={(v) => setQuery({ view: 'item', tab: v })}>
               <div className="overflow-x-auto">
                 <TabsList aria-label="品目">
@@ -471,13 +627,14 @@ function AllocationLoaded({
               </div>
               <ItemTabView
                 vm={vm}
-                rows={stored}
+                rows={rows}
                 tab={currentTab}
                 highlightRowId={query.row ?? null}
                 highlightRoomId={highlightRoom}
                 readOnlyList={!full}
               />
             </Tabs>
+            </RowEditProvider>
           ) : null}
         </div>
         {full ? (
@@ -520,6 +677,76 @@ function AllocationLoaded({
         }}
       />
     </div>
+    {editable ? (
+      <>
+        <PendingBar api={pend} vm={vm} />
+        <SourceDialog
+          row={sourceRowId ? (rowById.get(sourceRowId) ?? null) : null}
+          vm={vm}
+          rows={rows}
+          onOpenChange={(o) => {
+            if (!o) setSourceRowId(null);
+          }}
+          onPick={(roomId) => {
+            if (sourceRowId) pend.edit({ op: 'update', id: sourceRowId, patch: { sourceRoomId: roomId } });
+            setSourceRowId(null);
+          }}
+        />
+        <ConfirmDialog
+          open={deleteRowId !== null}
+          onOpenChange={(o) => {
+            if (!o) setDeleteRowId(null);
+          }}
+          title="行を削除しますか"
+          description={
+            deleteRowId && rowById.get(deleteRowId)
+              ? `${rowLabel(vm, rowById.get(deleteRowId)!)}を削除します（未保存の変更に入れます。保存するまで DB は変わりません）。`
+              : ''
+          }
+          destructive
+          confirmLabel="削除する"
+          onConfirm={() => {
+            if (deleteRowId) pend.edit({ op: 'delete', id: deleteRowId });
+            setDeleteRowId(null);
+          }}
+        />
+        <AddRowDialog
+          open={addOpen}
+          onOpenChange={setAddOpen}
+          vm={vm}
+          data={validation.yearData?.data ?? null}
+          rows={rows}
+          initialItemId={currentTab?.items[0]?.id}
+          onAdd={(f) => {
+            pend.edit({ op: 'insert', ...f });
+            setAddOpen(false);
+          }}
+        />
+        <UnusableDialog
+          roomId={unusableRoom}
+          vm={vm}
+          checklist={checklist}
+          pendingCount={pend.pending.length}
+          busy={roomBusy}
+          onOpenChange={(o) => {
+            if (!o) setUnusableRoom(null);
+          }}
+          onOp={onChecklistOp}
+          onConfirm={(note) => (unusableRoom ? changeRoomUsable(unusableRoom, false, note) : Promise.resolve())}
+        />
+        <ConfirmDialog
+          open={usableRoom !== null}
+          onOpenChange={(o) => {
+            if (!o) setUsableRoom(null);
+          }}
+          title={`${usableRoom ? (vm.roomById.get(usableRoom)?.name ?? '') : ''}を使用可に戻しますか`}
+          description="今年もこの部屋の在庫を振り分けに使えるようにします。固定を外して保存してから、もう一度使用不可にすることもできます。"
+          confirmLabel="使用可に戻す"
+          pending={roomBusy}
+          onConfirm={() => (usableRoom ? changeRoomUsable(usableRoom, true, null) : undefined)}
+        />
+      </>
+    ) : null}
     <AutoRunLock state={auto.state} onCancel={auto.cancel} />
     </>
   );

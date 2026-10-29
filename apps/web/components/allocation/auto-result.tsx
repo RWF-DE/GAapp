@@ -7,7 +7,7 @@ import { AlertTriangle, CheckCircle2, Info } from 'lucide-react';
 import { AppLink } from '@/components/common/app-link';
 import { ErrorBanner } from '@/components/common/error-banner';
 import { Button } from '@/components/ui/button';
-import { failureView, type FailureView } from '@/lib/allocation/failure-view';
+import { failureView, type FailureLine, type FailureView } from '@/lib/allocation/failure-view';
 import { ruleHref } from '@/lib/allocation/issue-target';
 import type { ViewModel } from '@/lib/allocation/view-model';
 import { namesOf } from '@/lib/allocation/view-model';
@@ -27,7 +27,16 @@ function RuleLink({ code }: { code: string }) {
 }
 
 /** ok: false のパネル（reason ごとの見出し）。precheck の項目は押すと該当の行・ルールへ */
-export function FailurePanel({ view, onIssue }: { view: FailureView; onIssue?: (issue: Issue) => void }) {
+export function FailurePanel({
+  view,
+  onIssue,
+  lineActions,
+}: {
+  view: FailureView;
+  onIssue?: (issue: Issue) => void;
+  /** 項目の横に出す操作（precheck の E002 の「運び元を変える」「行を削除」。段 2） */
+  lineActions?: (line: FailureLine) => React.ReactNode;
+}) {
   return (
     <section
       role="alert"
@@ -59,6 +68,7 @@ export function FailurePanel({ view, onIssue }: { view: FailureView; onIssue?: (
                     （<RuleLink code={l.ruleCode} />）
                   </span>
                 ) : null}
+                {lineActions ? lineActions(l) : null}
                 {l.details && l.details.length > 0 ? (
                   <ul className="ml-6 list-[circle] space-y-0.5 text-muted-foreground">
                     {l.details.map((d, i) => (
@@ -105,18 +115,20 @@ export function AutoResult({
   onIssue,
   onRecheck,
   onReload,
+  lineActions,
 }: {
   outcome: AutoOutcome;
   vm: ViewModel;
   errorsAfter: number;
   onIssue?: (issue: Issue) => void;
+  lineActions?: (line: FailureLine) => React.ReactNode;
   onRecheck: () => void;
   onReload: () => void;
 }) {
   const label = MODE_LABELS[outcome.mode];
   switch (outcome.kind) {
     case 'failure':
-      return <FailurePanel view={failureView(outcome.result, vm)} {...(onIssue ? { onIssue } : {})} />;
+      return <FailurePanel view={failureView(outcome.result, vm)} {...(onIssue ? { onIssue } : {})} {...(lineActions ? { lineActions } : {})} />;
     case 'problems':
       return (
         <FailurePanel

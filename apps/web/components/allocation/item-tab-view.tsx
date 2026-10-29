@@ -1,16 +1,20 @@
 'use client';
 
 // 品目別の表示（画面の設計 3.9 の「左：品目別」。T13）。運び元ごとのまとまりと余り。
-// 段 1 は読み取りだけ（行の操作・部屋の見出しの「使用不可にする」は段 2）。
+// 管理者が振り分け中のときは、行の操作（row-edit.tsx）と部屋の見出しのメニュー（今年は使用不可にする・使用可に戻す）を出す（段 2）。
 import type { StoredAllocationRow } from '@gaapp/shared';
-import { Pin } from 'lucide-react';
+import { MoreHorizontal, Pin } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { itemTabBlocks, type RoomBlock } from '@/lib/allocation/item-view';
 import type { ItemTab } from '@/lib/allocation/tabs';
 import type { ViewModel } from '@/lib/allocation/view-model';
+import { UNUSABLE_ROW_NOTE } from '@/lib/allocation/pending';
 import { ORIGIN_LABELS } from '@/lib/labels';
 import { cn } from '@/lib/utils';
+import { ActionsCell, CountCell, NoteCell, PinCell, useRowEdit, type RowEditApi } from './row-edit';
 
 export function stockText(block: RoomBlock): string {
   return block.cells.map((c) => (block.cells.length > 1 ? `${c.name} ${c.stock ?? '—'}` : String(c.stock ?? '—'))).join('・');
@@ -53,6 +57,7 @@ export function ItemTabView({
   /** viewer（Q1）：行の一覧だけ（在庫・余り・備考・自動／手動・固定を出さない） */
   readOnlyList?: boolean;
 }) {
+  const edit = useRowEdit();
   const blocks = itemTabBlocks(vm, rows, tab);
   const two = tab.items.length > 1;
   if (blocks.length === 0) {
@@ -72,6 +77,12 @@ export function ItemTabView({
             <h3 className="font-semibold">{b.room.name}</h3>
             {!b.room.usable ? <Badge variant="outline">使用不可</Badge> : null}
             {vm.hasStock ? <span className="text-sm text-muted-foreground">在庫 {stockText(b)}</span> : null}
+            {edit ? <RoomMenu api={edit} roomId={b.room.id} roomName={b.room.name} usable={b.room.usable} /> : null}
+            {edit && !b.room.usable && b.rows.length > 0 ? (
+              <p className="basis-full text-xs text-amber-800" data-testid="unusable-row-note">
+                {UNUSABLE_ROW_NOTE}
+              </p>
+            ) : null}
           </header>
           <div className="overflow-x-auto">
             <Table>
@@ -87,6 +98,7 @@ export function ItemTabView({
                       <TableHead>備考</TableHead>
                       <TableHead>自動／手動</TableHead>
                       <TableHead>固定</TableHead>
+                      {edit ? <TableHead>操作</TableHead> : null}
                     </>
                   ) : null}
                 </TableRow>
@@ -97,14 +109,19 @@ export function ItemTabView({
                     key={v.row.id}
                     data-row-id={v.row.id}
                     data-highlighted={highlightRowId === v.row.id ? 'true' : undefined}
-                    className={cn(highlightRowId === v.row.id && 'bg-amber-100')}
+                    data-pending={edit?.pendingIds.has(v.row.id) ? 'true' : undefined}
+                    className={cn(edit?.pendingIds.has(v.row.id) && 'bg-sky-50', highlightRowId === v.row.id && 'bg-amber-100')}
                   >
                     <TableCell>{v.dest || '—'}</TableCell>
                     <TableCell>{v.group?.name ?? '（不明な団体）'}</TableCell>
                     {two || readOnlyList ? <TableCell>{v.itemName}</TableCell> : null}
                     <TableCell className="text-muted-foreground">{v.requestedName ? `${v.requestedName}の代わり` : ''}</TableCell>
-                    <TableCell className="text-right tabular-nums">{v.row.count}</TableCell>
-                    {!readOnlyList ? (
+                    <TableCell className="text-right tabular-nums">
+                      {edit ? <CountCell api={edit} row={v.row} groupName={v.group?.name ?? ''} itemName={v.itemName} /> : v.row.count}
+                    </TableCell>
+                    {!readOnlyList && edit ? (
+                      <EditCells api={edit} row={v.row} label={`${v.group?.name ?? ''}の${v.itemName}（${b.room.name}から）`} />
+                    ) : !readOnlyList ? (
                       <>
                         <TableCell className="max-w-64 truncate" title={v.row.note ?? undefined}>
                           {v.row.note ?? ''}
@@ -127,7 +144,7 @@ export function ItemTabView({
                 {vm.hasStock && !readOnlyList ? (
                   <TableRow className="bg-muted/20" data-surplus-row={b.room.id}>
                     <TableCell className="font-medium">余り</TableCell>
-                    <TableCell colSpan={two ? 7 : 6}>
+                    <TableCell colSpan={(two ? 7 : 6) + (edit ? 1 : 0)}>
                       <SurplusCell block={b} />
                     </TableCell>
                   </TableRow>
@@ -138,5 +155,49 @@ export function ItemTabView({
         </section>
       ))}
     </div>
+  );
+}
+
+function EditCells({ api, row, label }: { api: RowEditApi; row: StoredAllocationRow; label: string }) {
+  return (
+    <>
+      <TableCell>
+        <NoteCell api={api} row={row} />
+      </TableCell>
+      <TableCell>
+        {ORIGIN_LABELS[row.origin]}
+        {api.pendingIds.has(row.id) ? (
+          <Badge variant="outline" className="ml-1 border-sky-400 text-sky-900">
+            未保存
+          </Badge>
+        ) : null}
+      </TableCell>
+      <TableCell>
+        <PinCell api={api} row={row} />
+      </TableCell>
+      <TableCell>
+        <ActionsCell api={api} row={row} label={label} />
+      </TableCell>
+    </>
+  );
+}
+
+/** 部屋の見出しのメニュー（今年は使用不可にする・使用可に戻す。管理者・振り分け中） */
+function RoomMenu({ api, roomId, roomName, usable }: { api: RowEditApi; roomId: string; roomName: string; usable: boolean }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="icon-xs" variant="ghost" className="ml-auto" aria-label={`${roomName}のメニュー`}>
+          <MoreHorizontal aria-hidden />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {usable ? (
+          <DropdownMenuItem onSelect={() => api.openUnusable(roomId)}>今年は使用不可にする</DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem onSelect={() => api.openUsable(roomId)}>使用可に戻す</DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
