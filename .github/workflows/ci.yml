@@ -103,7 +103,8 @@ jobs:
   e2e:
     name: e2e (Playwright)
     runs-on: ubuntu-latest
-    # 起動 1〜2 分＋build 1 分＋Playwright の取得 1 分＋テスト（chromium と serial の2回）。画面のテストが増える分を見込む（画面の設計 7.5）
+    # 起動 1〜2 分＋build 1 分＋Playwright の取得 1 分＋LibreOffice の取得 1〜2 分＋テスト（chromium と serial の2回）。
+    # 画面のテストと通しの流れ（e2e/serial/full-flow.spec.ts）の分を見込む（画面の設計 7.5、T14）
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,9 +125,15 @@ jobs:
       # ローカルの Supabase に向け、テスト用ログインを有効にした静的書き出し（basePath なし）。公開はしない
       - run: pnpm build:e2e
       - run: pnpm exec playwright install --with-deps chromium
+      # 通しの流れが出力した Excel を LibreOffice で再計算する（数式エラー・「在庫超過」「要確認」が0件。設計 7.3 の手順 6）。
+      # 再計算のためだけに Calc と python3-uno だけを入れる（recalc ジョブと同じ。--no-install-recommends で取る量を抑える）
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libreoffice-calc python3-uno
       # scripts/e2e.mjs が Playwright を2回呼ぶ（chromium の後に、結果によらず serial）。どちらかが落ちればこのステップが落ちる。
       # setup（db-setup・auth-setup）はそれぞれの回で依存として走る（シナリオの年度は DB_URL のローカルの DB に pg で作る）
       - run: pnpm e2e
+        env:
+          # LibreOffice がなければ通しの流れを失敗にする（ローカルでは、ないときは再計算の段だけを飛ばして記録する）
+          REQUIRE_LIBREOFFICE: '1'
       # レポートと結果は回ごとのフォルダ（playwright-report/<回>・test-results/<回>）。両方を成果物に残す
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
