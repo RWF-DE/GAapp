@@ -66,6 +66,8 @@ test.describe('T09a 部員', () => {
       await page.setViewportSize(MOBILE);
       await page.reload();
       await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
+      // 年度が2つあってもヘッダーがはみ出さない（ページが横にスクロールしない）
+      expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(MOBILE.width);
       await shoot(page, 'T09a', 'year-switched-mobile');
     } finally {
       await s.cleanup();

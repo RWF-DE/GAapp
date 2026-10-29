@@ -18,6 +18,7 @@ import {
 } from '@/lib/auth/membership';
 import { navItemsFor } from '@/lib/navigation';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
+import { cn } from '@/lib/utils';
 import { AppNav } from './app-nav';
 import { NotInvited } from './not-invited';
 
@@ -83,12 +84,12 @@ function YearSelect({ membership }: { membership: Membership }) {
   const setYear = useGuardedSetYear();
   if (membership.years.length < 2 || !membership.year) return null;
   return (
-    <label className="flex items-center gap-1 text-xs">
+    <label className="flex min-w-0 items-center gap-1 text-xs">
       <span className="sr-only">年度を切り替える</span>
       <select
         data-testid="year-select"
         aria-label="年度を切り替える"
-        className="h-8 max-w-36 rounded-md border bg-background px-1 text-xs"
+        className="h-8 min-w-0 max-w-36 truncate rounded-md border bg-background px-1 text-xs"
         // 確かめてやめたときは今の年度のまま（制御された select なので元に戻る）
         value={membership.year.id}
         onChange={(e) => void setYear(e.target.value)}
@@ -109,6 +110,8 @@ function Frame({ membership, onSignOut, children }: { membership: Membership; on
   const year = membership.year;
   const items = navItemsFor(audiencesOf(membership), year?.status);
   const roles = roleSummary(membership);
+  // スマホ（md 未満）では年度の選択があれば印を隠す（選択に今の年度が出る。幅 390px でヘッダーがはみ出さないように）
+  const hasYearSelect = membership.years.length >= 2 && !!year;
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -128,7 +131,10 @@ function Frame({ membership, onSignOut, children }: { membership: Membership; on
           <span className="hidden sm:inline">電波祭 総務 </span>机椅子管理
         </span>
         {year ? (
-          <span className="shrink-0 rounded-full border px-2 py-0.5 text-xs" data-testid="current-year">
+          <span
+            className={cn('min-w-0 truncate rounded-full border px-2 py-0.5 text-xs', hasYearSelect && 'max-md:sr-only')}
+            data-testid="current-year"
+          >
             {year.label}・{YEAR_STATUS_LABELS[year.status]}
           </span>
         ) : null}
@@ -136,12 +142,12 @@ function Frame({ membership, onSignOut, children }: { membership: Membership; on
         {isRefreshing ? (
           <Loader2 aria-label="立場を読み直しています" role="status" className="size-4 shrink-0 animate-spin text-muted-foreground" />
         ) : null}
-        <div className="ml-auto flex min-w-0 items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2 md:min-w-0 md:shrink">
           <div className="hidden min-w-0 text-right text-xs leading-tight md:block">
             <div className="truncate font-medium">{membership.displayName ?? '名前未設定'}</div>
             <div className="truncate text-muted-foreground">{roles.join('・')}</div>
           </div>
-          <Button variant="outline" size="sm" onClick={onSignOut}>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={onSignOut}>
             <LogOut aria-hidden />
             <span className="hidden sm:inline">ログアウト</span>
             <span className="sr-only sm:hidden">ログアウト</span>
