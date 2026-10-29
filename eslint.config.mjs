@@ -86,6 +86,7 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/.next/**',
       '**/out/**',
+      '**/out-basepath/**',
       '**/coverage/**',
       'spikes/**',
       'supabase/**',
