@@ -28,6 +28,8 @@ supabase test db      # pgTAP
 supabase stop --no-backup
 ```
 
+マイグレーションを変えたら、`supabase db reset` のあとに `pnpm gen:types` を実行して packages/shared/src/database.types.ts を作り直す。`pnpm check:types` は生成し直した型とコミット済みの型を比べるので、DB を起動した状態で、CI と同じ版の supabase CLI（2.122.0）で実行する（版が違うと出力がずれる）。
+
 Claude Code のクラウドのセッションなど、Docker のデーモンが止まっている環境では、先に `dockerd` を起動してから `supabase start` する（`docker info` が失敗したら `nohup dockerd > /tmp/dockerd.log 2>&1 &`）。手元の PC では Docker Desktop などを起動しておく。ローカルの Supabase は同時に1つしか動かせない。
 
 ### basePath

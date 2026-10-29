@@ -125,6 +125,14 @@
 - **チケット**：T02、T03・T09。
 - **状態**：要件定義に反映済み（T02 の PR）。
 
+## D-16 年度・団体の付け替えを止める（2026-10-29）
+
+- **決定**：年度を持つ表の year_id（room_years・stocks・groups・year_roles・invitations・allocations・slots・deliveries）と、団体を主キーに含む表の group_id（group_members・request_submissions・requests・substitution_consents）は、更新で変えられない（BEFORE UPDATE のトリガー `check_immutable`、`invalid_input`）。rules.year_id は D-15 のとおり別のトリガー。allocations・deliveries・invitations の group_id は、複合外部キーで年度が固定されるので同じ年度の別の団体にだけ動かせる。anon・authenticated には public・private の表・シーケンス・関数の権限を与えない（シーケンスの revoke を足し、PUBLIC の execute も含めて pgTAP で棚卸しする）。
+- **理由**：D-13 の確定中・closed の守りと D-12 の版の増分は、更新後の行の年度しか見ない。年度と団体を一緒に書き換えると複合外部キーも通るので、確定中の年度から振り分けを抜き出せた。old table と new table の両方を見る案より、列を固定するほうが単純で、年度をまたぐ書き換えの用途もない。
+- **反映先**：02_data.md「設計上の決めごと」。
+- **チケット**：T02、T03（RPC は year_id・group_id を更新しない）。
+- **状態**：要件定義に反映済み（T02 の PR）。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：RPC を足す（update_year、set_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。

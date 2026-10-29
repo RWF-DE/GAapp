@@ -282,6 +282,36 @@ end $$;
 create trigger guard_rules before update on public.rules
   for each row execute function private.tg_rules_guard();
 
+-- 年度・団体の付け替えを止める：行を別の年度（や団体）へ動かすと、確定中・closed の守りと版の増分が新しい行の年度しか見ず、
+-- 確定中の年度から振り分けを抜き出せる。年度を持つ表の year_id と、団体を主キーに含む表の group_id は作った後に変えられない
+-- （rules.year_id と同じ。rules は下の tg_rules_guard）。allocations・deliveries・invitations の group_id は、複合外部キーで
+-- 年度が固定されるので同じ年度の中でしか動かせない。トリガーは名前順に動くので、名前を check_ で始めて guard_confirmed より先に止める。
+create function private.tg_immutable_columns()
+returns trigger language plpgsql set search_path = '' as $$
+declare c text;
+begin
+  foreach c in array tg_argv loop
+    if to_jsonb(new) -> c is distinct from to_jsonb(old) -> c then
+      perform private.fail('invalid_input', jsonb_build_object('column', c, 'reason', 'immutable'));
+    end if;
+  end loop;
+  return new;
+end $$;
+
+do $$
+declare r record;
+begin
+  for r in select * from (values
+      ('room_years', 'year_id'), ('stocks', 'year_id'), ('groups', 'year_id'), ('year_roles', 'year_id'),
+      ('invitations', 'year_id'), ('allocations', 'year_id'), ('slots', 'year_id'), ('deliveries', 'year_id'),
+      ('group_members', 'group_id'), ('request_submissions', 'group_id'), ('requests', 'group_id'),
+      ('substitution_consents', 'group_id')
+    ) as v(t, col) loop
+    execute format('create trigger check_immutable before update of %I on public.%I
+                    for each row execute function private.tg_immutable_columns(%L)', r.col, r.t, r.col);
+  end loop;
+end $$;
+
 -- allocation_version の増分（P-01）。allocate の入力と結果になる表が、振り分け中（allocating）の年度で変わるたびに増やす。
 -- 文単位・遷移表で、1文につき年度ごとに1回だけ増やす。allocating 以外の年度は増やさない（受付中の大量の書き込みで年度の行を取り合わない）。
 -- allocations は確定中・終了の年度では変えられない（RPC の状態確認に加えた、最後の守り）。

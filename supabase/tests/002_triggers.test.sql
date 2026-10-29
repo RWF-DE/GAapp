@@ -3,15 +3,19 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(132);
+select plan(148);
 
 -- ---------------------------------------------------------------- 時刻（created_at・updated_at）
 select lives_ok($$ insert into public.rooms (name, created_at, updated_at) values ('pgtap-T', '2000-01-01', '2000-01-01') $$, '時刻を指定した insert');
 select ok((select created_at = now() and updated_at = now() from public.rooms where name = 'pgtap-T'), 'insert の時刻は DB が入れる（クライアントの値は使わない）');
-select lives_ok($$ update public.rooms set created_at = '2000-01-01', updated_at = '2000-01-01', sort_order = 5 where name = 'pgtap-T' $$, '時刻を指定した update');
-select ok((select created_at = now() and updated_at = now() from public.rooms where name = 'pgtap-T'), 'update で created_at は元のまま、updated_at は now()');
+-- テスト全体が1つのトランザクションなので now() は変わらない。トリガーを止めて過去の時刻を入れ、update で守られるかを見る
+alter table public.rooms disable trigger set_timestamps;
 update public.rooms set created_at = '2000-01-01', updated_at = '2000-01-01' where name = 'pgtap-T';
-select ok((select created_at <> '2000-01-01'::timestamptz from public.rooms where name = 'pgtap-T'), 'created_at は更新で書き換えられない');
+alter table public.rooms enable trigger set_timestamps;
+select ok((select created_at = '2000-01-01' and updated_at = '2000-01-01' from public.rooms where name = 'pgtap-T'), '準備：過去の created_at・updated_at の行');
+select lives_ok($$ update public.rooms set created_at = '2010-01-01', updated_at = '2010-01-01', sort_order = 5 where name = 'pgtap-T' $$, '時刻を指定した update');
+select ok((select created_at = '2000-01-01' and updated_at = now() from public.rooms where name = 'pgtap-T'),
+  'update で created_at は元のまま（指定した値は使わない）、updated_at は now()');
 
 -- ---------------------------------------------------------------- v_remaining
 select is((select count(*)::int from public.v_remaining where year_id = tests.id('Y1')), 3,
@@ -113,7 +117,7 @@ select throws_ok(format($$ insert into public.allocations (year_id, source_room_
   values (%L, %L, %L, %L, %L, 1, 'manual') $$, tests.id('Y2'), tests.id('R1'), tests.id('G1'), tests.id('desk'), tests.id('desk')),
   '23503', null, '振り分けの year_id は団体の year_id と一致する');
 select throws_ok(format($$ update public.allocations set year_id = %L where id = %L $$, tests.id('Y2'), tests.id('A_G1_SWAP')),
-  '23503', null, '振り分けの年度を団体と違う年度に変えられない');
+  'P0001', 'invalid_input', '振り分けの年度を団体と違う年度に変えられない（年度は変えられない）');
 select throws_ok(format($$ insert into public.deliveries (year_id, group_id, kind) values (%L, %L, 'tent') $$, tests.id('Y2'), tests.id('G1')),
   '23503', null, '受け渡しの year_id は団体の year_id と一致する');
 select throws_ok(format($$ insert into public.invitations (year_id, email, group_id) values (%L, 'wrong@pgtap.test', %L) $$, tests.id('Y2'), tests.id('G1')),
@@ -214,6 +218,39 @@ select throws_ok(format($$ update public.rules set year_id = %L where id = %L $$
   'P0001', 'invalid_input', 'ルールの year_id は変えられない');
 select lives_ok(format($$ update public.rules set memo = 'メモ', enabled = false where id = %L $$, tests.id('RULE1')), 'ほかの列は変えられる（受付中）');
 
+-- ---------------------------------------------------------------- 年度・団体は付け替えられない（check_immutable）
+select throws_ok(format($$ update public.room_years set year_id = %L where year_id = %L and room_id = %L $$, tests.id('Y2'), tests.id('Y1'), tests.id('R3')),
+  'P0001', 'invalid_input', 'room_years.year_id は変えられない');
+select throws_ok(format($$ update public.stocks set year_id = %L where year_id = %L and room_id = %L and item_id = %L $$, tests.id('Y2'), tests.id('Y1'), tests.id('R1'), tests.id('desk')),
+  'P0001', 'invalid_input', 'stocks.year_id は変えられない');
+select throws_ok(format($$ update public.groups set year_id = %L where id = %L $$, tests.id('Y2'), tests.id('G4')),
+  'P0001', 'invalid_input', 'groups.year_id は変えられない');
+select throws_ok(format($$ update public.year_roles set year_id = %L where year_id = %L and user_id = %L $$, tests.id('Y2'), tests.id('Y1'), tests.id('staff')),
+  'P0001', 'invalid_input', 'year_roles.year_id は変えられない');
+select throws_ok(format($$ update public.invitations set year_id = %L where email = 'someone@pgtap.test' $$, tests.id('Y2')),
+  'P0001', 'invalid_input', 'invitations.year_id は変えられない');
+select throws_ok(format($$ update public.allocations set year_id = %L, group_id = %L where id = %L $$, tests.id('Y2'), tests.id('G3'), tests.id('A_G1_SWAP')),
+  'P0001', 'invalid_input', 'allocations は年度と団体を一緒に変えても別の年度へ動かせない（複合外部キーを通る抜け道）');
+select throws_ok(format($$ update public.slots set year_id = %L where label = 'Y2 の時間枠' $$, tests.id('Y1')),
+  'P0001', 'invalid_input', 'slots.year_id は変えられない');
+select throws_ok(format($$ update public.deliveries set year_id = %L, group_id = %L where id = %L $$, tests.id('Y2'), tests.id('G3'), tests.id('D_G1')),
+  'P0001', 'invalid_input', 'deliveries は年度と団体を一緒に変えても別の年度へ動かせない');
+select throws_ok(format($$ update public.group_members set group_id = %L where group_id = %L and user_id = %L $$, tests.id('G3'), tests.id('G1'), tests.id('rep')),
+  'P0001', 'invalid_input', 'group_members.group_id は変えられない');
+select throws_ok(format($$ update public.request_submissions set group_id = %L where group_id = %L $$, tests.id('G3'), tests.id('G1')),
+  'P0001', 'invalid_input', 'request_submissions.group_id は変えられない');
+select throws_ok(format($$ update public.requests set group_id = %L where group_id = %L and item_id = %L $$, tests.id('G3'), tests.id('G1'), tests.id('desk')),
+  'P0001', 'invalid_input', 'requests.group_id は変えられない（別の年度の団体へも）');
+select throws_ok(format($$ update public.substitution_consents set group_id = %L where group_id = %L $$, tests.id('G3'), tests.id('G1')),
+  'P0001', 'invalid_input', 'substitution_consents.group_id は変えられない');
+select throws_ok(format($$ update public.allocations set group_id = %L where id = %L $$, tests.id('G3'), tests.id('A_G1_SWAP')),
+  '23503', null, 'allocations.group_id を別の年度の団体へは変えられない（複合外部キー）');
+select lives_ok(format($$ update public.allocations set group_id = %L where id = %L $$, tests.id('G4'), tests.id('A_G1_SWAP')),
+  'allocations.group_id は同じ年度の別の団体へ変えられる');
+update public.allocations set group_id = tests.id('G1') where id = tests.id('A_G1_SWAP');
+select lives_ok(format($$ update public.groups set year_id = year_id, name = name where id = %L $$, tests.id('G4')),
+  '値が同じなら year_id を指定した update も通る');
+
 -- ---------------------------------------------------------------- lock_year_guard
 select is(private.lock_year_guard(tests.id('Y1')), 'requesting'::public.year_status, 'lock_year_guard は状態を返す');
 select is(private.lock_year_guard(gen_random_uuid()), null, 'lock_year_guard は年度がなければ null');
@@ -267,7 +304,9 @@ update public.years set status = 'confirmed' where id = tests.id('Y1');
 select throws_ok($$ delete from public.groups where id = tests.id('G1') $$, 'P0001', 'invalid_state', '確定中は団体を消せない（振り分けが連鎖で消えない）');
 select throws_ok($$ update public.groups set location_room_id = tests.id('R2') where id = tests.id('G1') $$, 'P0001', 'invalid_state', '確定中は使用場所を変えられない（E005）');
 select throws_ok($$ update public.groups set category = 'company' where id = tests.id('G1') $$, 'P0001', 'invalid_state', '確定中は区分を変えられない');
-select throws_ok($$ update public.groups set year_id = tests.id('Y2') where id = tests.id('G4') $$, 'P0001', 'invalid_state', '確定中は年度を変えられない');
+select throws_ok($$ update public.groups set year_id = tests.id('Y2') where id = tests.id('G4') $$, 'P0001', 'invalid_input', '確定中は年度を変えられない（そもそも変えられない）');
+select throws_ok($$ update public.allocations set year_id = tests.id('Y2'), group_id = tests.id('G3') where id = tests.id('A_G1_SWAP') $$,
+  'P0001', 'invalid_input', '確定中の年度から振り分けを別の年度へ抜き出せない');
 select lives_ok($$ update public.groups set display_name = '表示名だけ', sort_order = 9 where id = tests.id('G1') $$, '確定中でも表示名・並び順は直せる');
 select throws_ok($$ update public.stocks set count = 0 where year_id = tests.id('Y1') and room_id = tests.id('R2') and item_id = tests.id('caster_desk') $$,
   'P0001', 'invalid_state', '確定中は振り分けより少ない在庫にできない（E001）');

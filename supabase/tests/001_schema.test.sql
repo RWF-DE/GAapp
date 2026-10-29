@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(133);
+select plan(136);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -191,15 +191,46 @@ select ok((select 'security_invoker=true' = any (reloptions) from pg_class where
 -- RLS を全表で有効にし、anon・authenticated には何の権限も与えていない（権限は T03 で表ごとに与える）
 select is((select count(*)::int from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind = 'r' and not c.relrowsecurity), 0,
   'public の全表で RLS が有効');
-select is((select count(*)::int from information_schema.role_table_grants
-           where table_schema = 'public' and grantee in ('anon', 'authenticated', 'public')), 0,
-  'anon・authenticated に表・ビューの権限がない');
-select is((select count(*)::int from information_schema.role_routine_grants
-           where routine_schema in ('public', 'private') and grantee in ('anon', 'authenticated', 'public')
-             and routine_name not like 'pg_%'), 0,
-  'anon・authenticated に public・private の関数の execute がない');
-select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schema_privilege('authenticated', 'private', 'usage'),
+-- 権限の棚卸し：public・private スキーマの全オブジェクトを、anon・authenticated・public（PUBLIC への付与。関数の既定の execute）に当てる。
+-- information_schema の grantee は小文字の public と比べても PUBLIC を拾えないので、has_*_privilege で実効の権限を見る。
+-- 拡張が持つオブジェクト（pg_depend の deptype = 'e'）は対象外。失敗したときは対象の一覧が差分に出る。
+create temporary view pg_temp.priv_roles as select r from unnest(array['anon', 'authenticated', 'public']) as r;
+select is((select coalesce(string_agg(format('%s %s %s', c.oid::regclass, r.r, p.p), ', ' order by c.oid::regclass::text, r.r, p.p), '')
+           from pg_class c
+           cross join pg_temp.priv_roles r
+           cross join unnest(array['select', 'insert', 'update', 'delete', 'truncate', 'references', 'trigger']) as p(p)
+           where c.relnamespace in ('public'::regnamespace, 'private'::regnamespace) and c.relkind in ('r', 'v', 'm', 'f', 'p')
+             and (has_table_privilege(r.r, c.oid, p.p)
+                  or (p.p in ('select', 'insert', 'update', 'references') and has_any_column_privilege(r.r, c.oid, p.p)))), '',
+  'anon・authenticated・public に public・private の表・ビューの権限がない');
+select is((select coalesce(string_agg(format('%s %s %s', c.oid::regclass, r.r, p.p), ', ' order by c.oid::regclass::text, r.r, p.p), '')
+           from pg_class c
+           cross join pg_temp.priv_roles r
+           cross join unnest(array['usage', 'select', 'update']) as p(p)
+           where c.relnamespace in ('public'::regnamespace, 'private'::regnamespace) and c.relkind = 'S'
+             and has_sequence_privilege(r.r, c.oid, p.p)), '',
+  'anon・authenticated・public に public・private のシーケンスの権限がない（audit_logs_id_seq など）');
+select is((select coalesce(string_agg(format('%s %s', p.oid::regprocedure, r.r), ', ' order by p.oid::regprocedure::text, r.r), '')
+           from pg_proc p
+           cross join pg_temp.priv_roles r
+           where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
+             and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+             and has_function_privilege(r.r, p.oid, 'execute')), '',
+  'anon・authenticated・public に public・private の関数の execute がない（PUBLIC の既定の execute を含む）');
+select ok((select count(*) filter (where relkind in ('r', 'v')) >= 20 and count(*) filter (where relkind = 'S') >= 1
+           from pg_class where relnamespace = 'public'::regnamespace)
+          and exists (select 1 from pg_proc where pronamespace = 'private'::regnamespace),
+  '棚卸しの対象が空でない（表・ビュー・シーケンス・private の関数）');
+select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schema_privilege('authenticated', 'private', 'usage')
+          and not has_schema_privilege('public', 'private', 'usage')
+          and not has_schema_privilege('anon', 'private', 'create') and not has_schema_privilege('authenticated', 'private', 'create'),
   'private スキーマは API のロールから使えない');
+
+-- 年度・団体の付け替えを止めるトリガーが 12 表にある
+select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where t.tgname = 'check_immutable' and c.relnamespace = 'public'::regnamespace),
+  'allocations deliveries group_members groups invitations request_submissions requests room_years slots stocks substitution_consents year_roles',
+  'check_immutable が 12 表にある');
 
 -- 時刻のトリガーが audit_logs 以外の 18 表にある
 select is((select count(distinct c.relname)::int from pg_trigger t join pg_class c on c.oid = t.tgrelid
@@ -221,7 +252,7 @@ select is((select string_agg(distinct t.tgname, ' ' order by t.tgname) from pg_t
                                'public.groups'::regclass, 'public.room_years'::regclass, 'public.rules'::regclass,
                                'public.distance_overrides'::regclass, 'public.request_submissions'::regclass)
              and not t.tgisinternal and t.tgname not like 'bump_version_%' and t.tgname not in ('audit', 'set_timestamps')),
-  'check_keep check_requestable guard_confirmed guard_rules normalize_pair set_actor set_counted',
+  'check_immutable check_keep check_requestable guard_confirmed guard_rules normalize_pair set_actor set_counted',
   '検査・守りのトリガーの名前');
 
 -- private の関数：SECURITY DEFINER はすべて search_path = ''、API のロールは実行できない
