@@ -219,10 +219,12 @@ end $$;
 -- 次をすべて満たすときだけ返す：
 -- - 削除されていない・email がある・email_confirmed_at がある
 -- - メールの変更の途中でない（email_change が空）
--- - auth.identities に、今の email と同じメールの、Google の identity（Google が持ち主を確かめたアドレス）か、
---   email_verified が true の email の identity がある。identity_data は利用者が書き換えられない（user_metadata と違う）
+-- - auth.identities に、今の email と同じメールの、email_verified が真の Google の identity（Google が持ち主を確かめた
+--   アドレス。真偽値の true と文字列の "true" を真とみる）か、email_verified が真偽値の true の email の identity がある。
+--   identity_data は利用者が書き換えられない（user_metadata と違う）
 -- - Google の identity があるアカウントは、Google の identity のメールだけを信じる（email の identity は見ない）
--- これは二重目の守りで、Auth の設定の Confirm email と Secure email change が有効であることを前提にする（D-17a）。
+-- これは二重目の守りで、本番の Auth の設定（Google だけでログイン、Confirm email と Secure email change は有効、
+-- Allow manual linking は無効。Google の identity を外して email だけのアカウントにさせない）を前提にする（D-17a）。
 -- 有効なら GoTrue は、新しいアドレスを受信箱で確かめた変更のときだけ email の identity を新しいアドレスと
 -- email_verified: true に書き換える。無効（ローカルの enable_confirmations = false、GOTRUE_MAILER_AUTOCONFIRM=true）だと、
 -- double_confirm_changes が有効でも、GoTrue は古いアドレスに届いたリンクだけで変更を終え、email の identity を
@@ -242,7 +244,7 @@ returns text language sql stable security definer set search_path = '' as $$
       select 1 from auth.identities i
       where i.user_id = u.id
         and lower(i.identity_data ->> 'email') = lower(u.email)
-        and (i.provider = 'google'
+        and ((i.provider = 'google' and i.identity_data ->> 'email_verified' = 'true')
              or (i.provider = 'email' and jsonb_typeof(i.identity_data -> 'email_verified') = 'boolean'
                  and (i.identity_data ->> 'email_verified')::boolean
                  and not exists (select 1 from auth.identities g where g.user_id = u.id and g.provider = 'google'))))

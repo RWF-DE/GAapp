@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(84);
+select plan(94);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
 -- provider が google なら Google の identity、email なら email_verified: true の email の identity
@@ -241,6 +241,37 @@ update auth.users set email = 'sw_gmix@pgtap.test' where id = tests.id('sw_gmix'
 select tests.login_as('sw_gmix');
 select is(private.my_verified_email(), 'sw_gmix@pgtap.test', 'Google の identity と同じメールなら、ほかの email の identity があっても本人のメールとみる');
 select tests.logout();
+-- Google の identity でも、Google がメールの持ち主を確かめていない（identity_data の email_verified が真でない）なら信じない。
+-- email_verified は真偽値の true と文字列の "true" を真とみる（GoTrue の版で形が違う）。読めるかを確かめるため、ほかの権限を持たせる
+select tests.user_with_identity('sw_gunv', 'google');
+update auth.identities set identity_data = identity_data || '{"email_verified": false}' where user_id = tests.id('sw_gunv');
+insert into public.group_members (group_id, user_id) values (tests.id('G1'), tests.id('sw_gunv'));
+select tests.login_as('admin');
+select is((public.invite(tests.id('Y1'), 'sw_gunv@pgtap.test', 'viewer') ->> 'applied')::boolean, false,
+  'invite は、Google の identity の email_verified が false のアカウントにはその場で付けない');
+select tests.logout();
+select tests.login_as('sw_gunv');
+select is(private.my_verified_email(), null, 'Google の identity の email_verified が false なら、メールが同じでも本人のメールとみない');
+select is((select count(*)::int from public.invitations where email = 'sw_gunv@pgtap.test'), 0,
+  'Google の identity の email_verified が false なら、そのメールあての招待を読めない');
+select is(public.accept_my_invitations(), 0, 'Google の identity の email_verified が false なら、招待を受け入れられない');
+select tests.logout();
+update auth.identities set identity_data = identity_data || '{"email_verified": "false"}' where user_id = tests.id('sw_gunv');
+select tests.login_as('sw_gunv');
+select is(private.my_verified_email(), null, 'Google の identity の email_verified が文字列の "false" でも本人のメールとみない');
+select tests.logout();
+update auth.identities set identity_data = identity_data - 'email_verified' where user_id = tests.id('sw_gunv');
+select tests.login_as('sw_gunv');
+select is(private.my_verified_email(), null, 'Google の identity に email_verified がなければ本人のメールとみない');
+select tests.logout();
+update auth.identities set identity_data = identity_data || '{"email_verified": "true"}' where user_id = tests.id('sw_gunv');
+select tests.login_as('sw_gunv');
+select is(private.my_verified_email(), 'sw_gunv@pgtap.test', 'Google の identity の email_verified が文字列の "true" なら本人のメールとみる');
+select is((select count(*)::int from public.invitations where email = 'sw_gunv@pgtap.test'), 1, 'そのメールあての招待を読める');
+select is(public.accept_my_invitations(), 1, 'そのメールあての招待を受け入れる');
+select tests.logout();
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('sw_gunv')), 'viewer'::public.app_role,
+  'email_verified が "true" の Google のユーザーに招待のロールが付く');
 -- メールの identity（seed の形）：identity のメールは自分のまま、または変えたアドレスでも email_verified でない
 select tests.user_with_identity('sw_email', 'email');
 update auth.users set email = 'victim@pgtap.test' where id = tests.id('sw_email');
