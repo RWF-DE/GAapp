@@ -68,6 +68,7 @@ export function StockScreen() {
       </>
     );
   }
-  // 部屋を変えたら入力を作り直す（前の部屋の入力を持ち越さない。入力は部屋ごとの下書きに残る）
-  return <StockInput key={target.room.id} open={open} year={year} target={target} storage={storage} items={master.items} />;
+  // 部屋か年度を変えたら入力を作り直す（前の部屋・前の年度の入力と入力の元を持ち越さない。入力は年度・部屋ごとの下書きに残る）。
+  // 年度の行と場所・品目がキャッシュにあると、年度を切り替えても読み込み中を挟まずにここへ来るので、キーに年度も入れる
+  return <StockInput key={`${year.id}:${target.room.id}`} open={open} year={year} target={target} storage={storage} items={master.items} />;
 }
