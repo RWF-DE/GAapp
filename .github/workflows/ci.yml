@@ -103,8 +103,8 @@ jobs:
   e2e:
     name: e2e (Playwright)
     runs-on: ubuntu-latest
-    # 起動 1〜2 分＋build 1 分＋Playwright の取得 1 分＋LibreOffice の取得 1〜2 分＋テスト（chromium と serial の2回）。
-    # 画面のテストと通しの流れ（e2e/serial/full-flow.spec.ts）の分を見込む（画面の設計 7.5、T14）
+    # 起動 1〜2 分＋build 2 回（basePath つきとなし）2 分＋Playwright の取得 1 分＋LibreOffice の取得 1〜2 分＋テスト（chromium と
+    # serial の2回）＋basePath のスモーク 1 分未満。画面のテストと通しの流れ（e2e/serial/full-flow.spec.ts）の分を見込む（画面の設計 7.5、T14）
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,6 +122,9 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # basePath（/GAapp）つきの書き出しを先に作る（apps/web/out-basepath/GAapp/。basePath のスモーク用。設計 7.2、T14）。
+      # build:e2e は書き出し先の apps/web/out を移すので、ふつうの書き出しはこの後に作る
+      - run: pnpm build:e2e -- --base-path /GAapp
       # ローカルの Supabase に向け、テスト用ログインを有効にした静的書き出し（basePath なし）。公開はしない
       - run: pnpm build:e2e
       - run: pnpm exec playwright install --with-deps chromium
@@ -134,6 +137,10 @@ jobs:
         env:
           # LibreOffice がなければ通しの流れを失敗にする（ローカルでは、ないときは再計算の段だけを飛ばして記録する）
           REQUIRE_LIBREOFFICE: '1'
+      # basePath のスモーク（/GAapp の下で計算エンジンの wasm・QR の URL・マニフェストとアイコン。e2e/basepath/。T14）。
+      # pnpm e2e の結果によらず流す
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:basepath
       # レポートと結果は回ごとのフォルダ（playwright-report/<回>・test-results/<回>）。両方を成果物に残す
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -151,6 +158,15 @@ jobs:
           path: |
             playwright-report/serial/
             test-results/serial/
+          if-no-files-found: ignore
+          retention-days: 7
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-basepath
+          path: |
+            playwright-report/basepath/
+            test-results/basepath/
           if-no-files-found: ignore
           retention-days: 7
       - if: ${{ always() }}
