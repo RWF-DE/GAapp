@@ -25,12 +25,12 @@
 - 同じ指摘を2回受けたら手を止めて、やり方を見直す。
 
 ## コマンド
-T01 で整備したら、ここを実際のコマンドに書き換える。
 - 依存関係：`pnpm install`
-- 開発サーバー：`pnpm dev`
-- ローカル DB：`supabase start` → `supabase db reset`（マイグレーションと seed）
-- チェック：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`supabase test db`、`pnpm e2e`
-- ビルド：`pnpm build`（静的書き出し）
+- 開発サーバー：`pnpm dev`（http://localhost:3100）
+- ローカル DB：`supabase start` → `supabase db reset`（マイグレーションと seed）。終わったら `supabase stop --no-backup`。Docker のデーモンが止まっていれば先に `dockerd` を起動する
+- チェック：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`supabase test db`（DB だけなら `supabase db start`）、`pnpm e2e`（先に `pnpm build`）、`pnpm check:emails`
+- ビルド：`pnpm build`（apps/web/out に静的書き出し。GitHub Pages 用は `NEXT_PUBLIC_BASE_PATH=/GAapp pnpm build`）
+- spikes/ は workspace・lint・typecheck・test の対象外
 
 ## 設計上の約束（破らない）
 - サーバーを持たない。Next.js は `output: 'export'`。Route Handler・Server Action・middleware・動的セグメント（`[id]`）は使わず、id はクエリ文字列で渡す。

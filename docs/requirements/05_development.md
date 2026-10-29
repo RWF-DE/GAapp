@@ -5,7 +5,7 @@
 GitHub の組織の公開リポジトリにする。pnpm workspace のモノレポで、振り分けロジックを画面から切り離して単体テストできるようにする。コードに秘密情報は入れず、テストデータ（fixtures）にも個人情報を入れない。
 
 ```
-denpa-somu/
+GAapp/
 ├─ apps/web/                 Next.js（App Router、output: 'export'）
 │   ├─ app/(auth)/login
 │   ├─ app/(staff)/          総務向け：dashboard, allocation, swaps, requests, stocks, stock, rules, settings, history
