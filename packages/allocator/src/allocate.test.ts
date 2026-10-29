@@ -31,7 +31,7 @@ describe('allocate：ok: false の形（設計 9 章、D-25）', () => {
     const input = b.input();
     const unknown = '00000000-0000-4000-8000-000000000099';
     const paths = (x: unknown) => {
-      const r = allocate(x, solver);
+      const r = allocate(x as AllocateInput, solver);
       return !r.ok && r.reason === 'invalid_input' ? r.inputErrors.map((e) => e.path) : r;
     };
     expect(paths({ ...input, requests: [...input.requests, { groupId: unknown, itemId: ix.itemId('desk'), count: 1 }] })).toEqual([

@@ -1,5 +1,5 @@
 // 入力から LP までを組み立てる（設計 4 章 buildModel）。allocate・diagnose・テストが使う
-import type { InputError } from '@gaapp/shared';
+import type { AllocateInput, InputError } from '@gaapp/shared';
 import { buildCandidates, type Candidates } from './candidates';
 import { createContext, type CreateContextOptions, type Ctx } from './context';
 import { varName, writeLp } from './lp';
@@ -28,7 +28,7 @@ export type Model =
       names: string[];
     };
 
-export function buildModel(input: unknown, opts: BuildModelOptions = {}): Model {
+export function buildModel(input: AllocateInput, opts: BuildModelOptions = {}): Model {
   const c = createContext(input, opts);
   if (!c.ok) return { stage: 'invalid_input', inputErrors: c.inputErrors };
   const ctx = c.ctx;

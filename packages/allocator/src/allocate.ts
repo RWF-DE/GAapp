@@ -1,5 +1,5 @@
 // allocate() の全体の流れ（設計 4 章）
-import type { AllocateFailureReason, AllocateResult, AllocateStats, Cause, InputError, Issue, Shortage } from '@gaapp/shared';
+import type { AllocateFailureReason, AllocateInput, AllocateResult, AllocateStats, Cause, InputError, Issue, Shortage } from '@gaapp/shared';
 import { diagnose, DIAGNOSE_PENDING_MESSAGE } from './diagnose';
 import { buildModel, type BuildModelOptions, type Model } from './model';
 import { toRows } from './rows';
@@ -59,7 +59,7 @@ function fail(
  * 振り分けを計算する（同期）。solver は highs の読み込んだインスタンス（呼ぶ側が渡す）。
  * rows は固定行を含まず、残すの行を含む。
  */
-export function allocate(input: unknown, solver: LpSolver, opts: BuildModelOptions = {}): AllocateResult {
+export function allocate(input: AllocateInput, solver: LpSolver, opts: BuildModelOptions = {}): AllocateResult {
   const t0 = now();
   let m: Model;
   try {
