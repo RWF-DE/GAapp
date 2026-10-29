@@ -362,6 +362,7 @@ function RulesView({
     <div data-testid="rules-screen">
       <PageHeader
         title="ルール"
+        description="振り分けの代替・運び元の制限・固定の申請・残すを決めます。使わなくなったルールは削除せず無効にし、理由をメモに残します。"
         loadedAt={loadedAt}
         onReload={onReload}
         reloading={reloading}
@@ -381,9 +382,6 @@ function RulesView({
             <ErrorBanner error={reloadError} onRetry={onReload} />
           </div>
         ) : null}
-        <p className="text-sm text-muted-foreground">
-          振り分けの代替・運び元の制限・固定の申請・残すを決めます。使わなくなったルールは削除せず無効にし、理由をメモに残します。
-        </p>
         {data.year.status === 'allocating' ? (
           <Notice icon={<Info aria-hidden className="size-4 shrink-0" />} testId="rules-allocating-notice">
             ルールを変えると、振り分け画面で再実行が要ります
