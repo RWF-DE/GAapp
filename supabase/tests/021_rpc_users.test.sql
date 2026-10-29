@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(78);
+select plan(84);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
 -- provider が google なら Google の identity、email なら email_verified: true の email の identity
@@ -217,6 +217,30 @@ select is((select count(*)::int from public.year_roles where user_id = tests.id(
   'email を変えた Google のユーザーには、admin の招待も団体代表の招待も付かない');
 select is((select count(*)::int from public.invitations where email = 'victim@pgtap.test' and used_at is null), 2, 'その招待は未使用のまま');
 update auth.users set email = 'sw_google@pgtap.test' where id = tests.id('sw_google');   -- 元に戻す（email は一意）
+-- Auth の Confirm email が無効だと、GoTrue は古いアドレスのリンクだけで変更を終え、Google だけのユーザーにも
+-- email_verified: true の email の identity を新しく作る（GoTrue v2.197 で確かめた）。Google の identity があるアカウントは
+-- Google の identity のメールだけを信じるので、設定が崩れていても受け入れない
+select tests.user_with_identity('sw_gmix', 'google');
+update auth.users set email = 'victim@pgtap.test' where id = tests.id('sw_gmix');
+insert into auth.identities (provider_id, user_id, identity_data, provider, created_at, updated_at)
+values (tests.id('sw_gmix')::text, tests.id('sw_gmix'),
+        jsonb_build_object('sub', tests.id('sw_gmix')::text, 'email', 'victim@pgtap.test', 'email_verified', true), 'email', now(), now());
+select tests.login_as('sw_gmix');
+select is(private.my_verified_email(), null, 'Google の identity があれば、email_verified が true の email の identity でも本人のメールとみない');
+select is(public.accept_my_invitations(), 0, 'Google のユーザーが確かめずに足した email の identity では、その人あての招待を受け入れられない');
+select tests.logout();
+select tests.login_as('admin');
+select is((public.invite(tests.id('Y1'), 'victim@pgtap.test', 'admin') ->> 'applied')::boolean, false,
+  'invite も、Google の identity と違うメールのアカウントにはその場で付けない');
+select tests.logout();
+select is((select count(*)::int from public.year_roles where user_id = tests.id('sw_gmix'))
+          + (select count(*)::int from public.group_members where user_id = tests.id('sw_gmix')), 0,
+  'Google の identity と違うメールのアカウントには、admin の招待も団体代表の招待も付かない');
+select is((select count(*)::int from public.invitations where email = 'victim@pgtap.test' and used_at is null), 2, 'その招待も未使用のまま');
+update auth.users set email = 'sw_gmix@pgtap.test' where id = tests.id('sw_gmix');   -- 元に戻す（email は一意）
+select tests.login_as('sw_gmix');
+select is(private.my_verified_email(), 'sw_gmix@pgtap.test', 'Google の identity と同じメールなら、ほかの email の identity があっても本人のメールとみる');
+select tests.logout();
 -- メールの identity（seed の形）：identity のメールは自分のまま、または変えたアドレスでも email_verified でない
 select tests.user_with_identity('sw_email', 'email');
 update auth.users set email = 'victim@pgtap.test' where id = tests.id('sw_email');

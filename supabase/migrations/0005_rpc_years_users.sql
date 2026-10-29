@@ -220,8 +220,15 @@ end $$;
 -- - 削除されていない・email がある・email_confirmed_at がある
 -- - メールの変更の途中でない（email_change が空）
 -- - auth.identities に、今の email と同じメールの、Google の identity（Google が持ち主を確かめたアドレス）か、
---   email_verified が true の email の identity（GoTrue は受信箱で確かめた変更のときだけ、email の identity を新しいアドレスと
---   email_verified: true に書き換える）がある。identity_data は利用者が書き換えられない（user_metadata と違う）
+--   email_verified が true の email の identity がある。identity_data は利用者が書き換えられない（user_metadata と違う）
+-- - Google の identity があるアカウントは、Google の identity のメールだけを信じる（email の identity は見ない）
+-- これは二重目の守りで、Auth の設定の Confirm email と Secure email change が有効であることを前提にする（D-17a）。
+-- 有効なら GoTrue は、新しいアドレスを受信箱で確かめた変更のときだけ email の identity を新しいアドレスと
+-- email_verified: true に書き換える。無効（ローカルの enable_confirmations = false、GOTRUE_MAILER_AUTOCONFIRM=true）だと、
+-- double_confirm_changes が有効でも、GoTrue は古いアドレスに届いたリンクだけで変更を終え、email の identity を
+-- email_verified: true で書き換えるか、新しく作る（Email プロバイダーが無効でも。GoTrue v2.197 で確かめた）。
+-- 本番は全員が Google の identity を持つので、最後の条件でその場合も止まる。Google の identity のない email だけの
+-- アカウント（ローカルのテストユーザー）は、設定に頼る
 create function private.verified_email(p_user_id uuid)
 returns text language sql stable security definer set search_path = '' as $$
   select lower(u.email)
@@ -237,7 +244,8 @@ returns text language sql stable security definer set search_path = '' as $$
         and lower(i.identity_data ->> 'email') = lower(u.email)
         and (i.provider = 'google'
              or (i.provider = 'email' and jsonb_typeof(i.identity_data -> 'email_verified') = 'boolean'
-                 and (i.identity_data ->> 'email_verified')::boolean)))
+                 and (i.identity_data ->> 'email_verified')::boolean
+                 and not exists (select 1 from auth.identities g where g.user_id = u.id and g.provider = 'google'))))
 $$;
 
 create function private.apply_invitations(p_user_id uuid, p_email text)
