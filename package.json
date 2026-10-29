@@ -14,6 +14,7 @@
     "test": "vitest run",
     "e2e": "playwright test",
     "check:emails": "node scripts/check-emails.mjs",
+    "build:r8-fixtures": "tsx scripts/build-r8-fixtures.ts",
     "gen:synthetic": "tsx scripts/gen-synthetic-fixtures.ts",
     "gen:synthetic-reference": "tsx scripts/gen-synthetic-reference.ts"
   },
