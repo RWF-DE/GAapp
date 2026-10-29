@@ -109,7 +109,7 @@ test.describe('T10 部員', () => {
     }
   });
 
-  test('T10 ほかの人が保存したことの知らせ・前年の数の失敗・確かめられません・保存されていました', async ({ page }) => {
+  test('T10 ほかの人が保存したことの知らせ・前年の数の失敗・保存できたか分かりません・保存されていました', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', roles: { staff: true, admin: true }, prevYear: { dataset: 'small' } });
     try {
       const roomA = s.ids.rooms[SMALL.rooms.storageA]!;
