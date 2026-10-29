@@ -23,6 +23,9 @@ describe('在庫の数', () => {
     expect(stockDraftSchema.safeParse({ counts: { [A]: 3 } }).success).toBe(false);
     expect(stockDraftSchema.safeParse({ counts: { [A]: 3 }, base: { x: 't' } }).success).toBe(false);
     expect(stockDraftSchema.safeParse('壊れた値').success).toBe(false);
+    // 未確定の送信（送った数と送る直前の行）も置ける。形が違えば下書きごと捨てる
+    expect(stockDraftSchema.safeParse({ counts: { [A]: 3 }, base: {}, sent: { counts: { [A]: 3 }, stamps: { [A]: 't' } } }).success).toBe(true);
+    expect(stockDraftSchema.safeParse({ counts: { [A]: 3 }, base: {}, sent: { counts: { [A]: 3 } } }).success).toBe(false);
   });
 });
 
