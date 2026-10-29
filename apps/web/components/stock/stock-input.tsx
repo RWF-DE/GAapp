@@ -14,6 +14,8 @@
 //   下書きは 500 ms まとめて書くほか、画面を外れる・pagehide・裏に回った（visibilitychange で hidden）ときにすぐ書き出す。
 // - 読み直し（設計 2.6）：部屋の行を読み直したら、未保存の入力がなければその数で作り直し、入力があれば入力を残して
 //   「ほかの人が保存しました」と知らせる（入力の元の行は変えないので、保存の前のほかの人の保存の確かめが効く）。
+//   「保存できたか分かりません」を出している間・保存の途中・ほかの人の保存のダイアログを開いている間は、入力の元と同じ数でも
+//   入力があるものとして扱う（押した数をそのまま残す。読み直した行で黙って置き換えない）。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -88,6 +90,14 @@ function stampsOf(rows: readonly StockDbRow[]): StockBaseStamps {
 interface Conflict {
   latest: StockDbRow[];
   other: OtherSave;
+  /** 「保存」を押したときに確かめた数（「上書きする」はこれを送る。ダイアログの「あなた」もこれ） */
+  values: StockCounts;
+}
+
+/** 入力の元の updated_at が同じか */
+function sameStamps(a: StockBaseStamps, b: StockBaseStamps): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k]);
 }
 
 /**
@@ -160,15 +170,24 @@ export function StockInput({
   const [restoredStamps, setRestoredStamps] = useState<StockBaseStamps | null>(null);
   const stamps = useMemo(() => restoredStamps ?? (base ? stampsOf(base) : null), [restoredStamps, base]);
 
+  const [phase, setPhase] = useState<Phase>('idle');
+  const [error, setError] = useState<unknown>(null);
+  const [blocked, setBlocked] = useState<Shortfall[] | null>(null);
+  const [conflict, setConflict] = useState<Conflict | null>(null);
+  // 入力の元と同じ数でも読み直した行で置き換えないとき：保存できたか分からない（押した数を残す。2.6 の (A) の 1）・
+  // 保存の途中・ほかの人の保存のダイアログを開いている（押した数で上書きするか選んでいる）
+  const unknownOutcome = !!error && isUnknownOutcome(error);
+  const keepInput = dirty || unknownOutcome || phase !== 'idle' || conflict !== null;
+
   // 読み直し（設計 2.6）：部屋の行が新しくなったら（初めて読めた、ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、
-  // 自分の保存の後の invalidate など）、未保存の入力がなければその行で作り直す。入力があれば入力も元の行も残し、
+  // 自分の保存の後の invalidate など）、未保存の入力がなければその行で作り直す。入力があれば（keepInput）入力も元の行も残し、
   // 自分以外の人が保存していれば知らせる（保存のときに元の行と読み直した行を比べるので、上書きするか選べる）
   const [seen, setSeen] = useState<StockDbRow[] | null>(null);
   const [remote, setRemote] = useState<OtherSave | null>(null);
   const data = stocksQ.data;
-  if (data && (data !== seen || (remote !== null && !dirty))) {
+  if (data && (data !== seen || (remote !== null && !keepInput))) {
     setSeen(data);
-    if (base === null || !dirty) {
+    if (base === null || !keepInput) {
       setBase(data);
       setCounts(countsFromRows(items, data));
       setRestoredStamps(null);
@@ -214,10 +233,6 @@ export function StockInput({
   const showDraft = access.writable && !!draft && !!counts && !sameCounts(items, { ...counts, ...draft.counts }, counts);
   const writeDraft = (values: StockCounts, baseStamps: StockBaseStamps) => writer.write({ counts: values, base: baseStamps });
 
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [error, setError] = useState<unknown>(null);
-  const [blocked, setBlocked] = useState<Shortfall[] | null>(null);
-  const [conflict, setConflict] = useState<Conflict | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   /** 保存の表示：saved（今送って保存した）・recovered（読み直したら保存されていた） */
   const [savedKind, setSavedKind] = useState<'saved' | 'recovered'>('saved');
@@ -309,7 +324,16 @@ export function StockInput({
     try {
       const rows = await sending;
       if (mounted.current) finishSaved(rows, 'saved');
-      else invalidateStocks();
+      else {
+        // 離れた後に届いた：下書きがこの送信で書いたまま（送った数と、送る前に読み直した行）なら、保存できたので消す。
+        // 違えば開き直した画面が書き直した下書きなので残す
+        const d = loadDraft<unknown>(draftKey);
+        const parsedDraft = d ? stockDraftSchema.safeParse(d.value) : null;
+        if (parsedDraft?.success && sameCounts(items, parsedDraft.data.counts, values) && sameStamps(parsedDraft.data.base, stampsOf(latest))) {
+          removeDraft(draftKey);
+        }
+        invalidateStocks();
+      }
     } catch (e) {
       if (!mounted.current) return;
       // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks の upsert は同じ値で何度送っても同じ。2.6）
@@ -337,7 +361,6 @@ export function StockInput({
 
   const save = async () => {
     if (!counts || !base || !stamps || phase !== 'idle' || !access.writable) return;
-    setError(null);
     setBlocked(null);
     const parsed = stockCountsSchema.safeParse(counts);
     if (!parsed.success) {
@@ -346,6 +369,9 @@ export function StockInput({
     }
     writer.flush();
     if (!(await notLatest.confirmBeforeWrite())) return;
+    // 前の失敗（保存できたか分からない、など）は、確かめ始めるときに消す。同じときに 'checking' にするので、
+    // その間に裏の読み直しが届いても入力は置き換わらない（keepInput）
+    setError(null);
     setPhase('checking');
     // 送ると決まったら、送る前に読み直した部屋の行が入る
     let latest: StockDbRow[] | null = null;
@@ -371,7 +397,7 @@ export function StockInput({
       if (decision.kind === 'saved') {
         finishSaved(rows, 'recovered');
       } else if (decision.kind === 'conflict') {
-        setConflict({ latest: rows, other: decision.other });
+        setConflict({ latest: rows, other: decision.other, values: parsed.data });
       } else {
         latest = rows;
       }
@@ -384,12 +410,12 @@ export function StockInput({
     if (latest) await write(parsed.data, latest);
   };
 
-  /** ダイアログの「上書きする」：読み直した行を入力の元にして、自分の数で送る */
+  /** ダイアログの「上書きする」：読み直した行を入力の元にして、「保存」を押したときの数で送る */
   const overwrite = async () => {
-    if (!conflict || !counts) return;
-    const latest = conflict.latest;
+    if (!conflict) return;
+    const { latest, values } = conflict;
     setConflict(null);
-    await write(counts, latest);
+    await write(values, latest);
   };
 
   /** ほかの人の数を入力にする（入力と下書きは捨てる）。rows は今の DB の部屋の行 */
@@ -500,7 +526,7 @@ export function StockInput({
             }}
           />
         ) : null}
-        {error && isUnknownOutcome(error) ? (
+        {unknownOutcome ? (
           // 応答が届かず保存できたか分からない・保存の前の読み直しが通信できない（設計 2.6 の (A) の 1・4）。
           // 確かめるためのボタンは置かない（「保存」を押せば、送る前に読み直して決まる）
           <div role="alert" data-testid="stock-unknown-outcome" className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
@@ -522,7 +548,7 @@ export function StockInput({
             onRetry={classifyError(error).kind === 'deadlock' ? () => void save() : undefined}
           />
         ) : null}
-        {remote && dirty ? (
+        {remote && keepInput ? (
           <div role="status" data-testid="stock-remote-change" className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
             <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
             <div className="min-w-0 flex-1 space-y-2">
@@ -685,7 +711,7 @@ export function StockInput({
               上書きするか、ほかの人の数を読み直すかを選んでください。
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {conflict && counts ? (
+          {conflict ? (
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-muted-foreground">
@@ -697,7 +723,7 @@ export function StockInput({
               <tbody>
                 {items.map((i) => {
                   const theirs = conflict.latest.find((r) => r.item_id === i.id)?.count;
-                  const mine = counts[i.id] ?? 0;
+                  const mine = conflict.values[i.id] ?? 0;
                   return (
                     <tr key={i.id} data-testid="conflict-row" className={cn('border-b last:border-0', theirs !== mine && 'font-semibold')}>
                       <td className="py-1">{i.name}</td>
