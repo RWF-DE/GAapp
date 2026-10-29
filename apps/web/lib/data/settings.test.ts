@@ -4,6 +4,7 @@ import type { GroupRow, RuleDbRow } from '@/lib/db/types';
 import type { GroupCsvRow } from '@/lib/schemas/settings';
 import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
 import { appError, unknownOutcomeMessage } from '@/lib/errors';
+import { settleLockedWrite } from '@/lib/data/locked-save';
 import {
   createYearFrom,
   distancePair,
@@ -14,7 +15,9 @@ import {
   readItemByCode,
   readRoom,
   readRoomByName,
+  lockedRowOutcome,
   runLockedWrite,
+  settleLockedCall,
   fetchMyYearRoles,
   fetchOpenYearRules,
   freshDataOf,
@@ -535,6 +538,62 @@ describe('runLockedWrite（2.6 の (B1) の分かれ道）', () => {
     it('unread：読み直せない → unread（「読み直しました」と言わず、読み直すボタン）', async () => {
       const { result } = run(() => Promise.reject(conflict), network());
       expect(await result).toMatchObject({ kind: 'unread' });
+    });
+
+    it('changed の outcome：版が進んだときだけ changed（入力の元を付け替える）。版が入力の元のままなら not-saved（付け替えない）', async () => {
+      expect(await run(() => Promise.reject(conflict), { name: '他', updated_at: T1 }).result).toMatchObject({ kind: 'changed', outcome: 'changed' });
+      expect(await run(() => Promise.reject(conflict), { name: '元', updated_at: T0 }).result).toMatchObject({ kind: 'changed', outcome: 'not-saved' });
+      expect(await run(() => Promise.reject(network()), { name: '他', updated_at: T1 }).result).toMatchObject({ kind: 'changed', outcome: 'changed' });
+    });
+  });
+
+  describe('settleLockedCall（止められて読み直せなかった後の「読み直す」も同じ判定）', () => {
+    const conflict = appError('conflict', 'lock_conflict');
+    const call = (reread: Row | null | Error, input = '新') => ({
+      reread: () => (reread instanceof Error ? Promise.reject(reread) : Promise.resolve(reread)),
+      matches: (r: Row) => r.name === input,
+      baseVersion: T0,
+    });
+
+    it('読んだ行がいまの入力と同じ → done（earlier）、ほかの人の値 → changed、版が元のまま → changed（not-saved）、また読めない → unread', async () => {
+      expect(await settleLockedCall<Row>(call({ name: '新', updated_at: T1 }), conflict)).toEqual({ kind: 'done', earlier: true });
+      expect(await settleLockedCall<Row>(call({ name: '他', updated_at: T1 }), conflict)).toMatchObject({
+        kind: 'changed',
+        outcome: 'changed',
+        row: { name: '他' },
+        conflict: { info: { reason: 'lock_conflict' } },
+      });
+      expect(await settleLockedCall<Row>(call({ name: '元', updated_at: T0 }), conflict)).toMatchObject({ kind: 'changed', outcome: 'not-saved' });
+      expect(await settleLockedCall<Row>(call(network()), conflict)).toMatchObject({ kind: 'unread', error: conflict });
+    });
+
+    it('前に送った値の行でも、いまの入力と違えば changed（ほかの人の変更に見える）', async () => {
+      expect(await settleLockedCall<Row>(call({ name: '前', updated_at: T1 }, '今'), conflict)).toMatchObject({ kind: 'changed', outcome: 'changed' });
+    });
+
+    it('書き込みの後でない読み直し（e が null。insert のキーを変えてから「読み直す」）：行がない → not-saved（conflict にしない）、別の値の行 → 23505、同じ → done、読めない → unread', async () => {
+      const insert = (reread: Row | null | Error) => ({ ...call(reread), baseVersion: null, insert: true });
+      expect(await settleLockedCall<Row>(insert(null), null)).toEqual({ kind: 'not-saved' });
+      expect(await settleLockedCall<Row>(insert({ name: '他', updated_at: T1 }), null)).toMatchObject({
+        kind: 'changed',
+        outcome: 'changed',
+        conflict: { info: { kind: 'conflict', code: '23505' } },
+      });
+      expect(await settleLockedCall<Row>(insert({ name: '新', updated_at: T1 }), null)).toEqual({ kind: 'done', earlier: true });
+      expect(await settleLockedCall<Row>(insert(network()), null)).toEqual({ kind: 'unread', error: null });
+    });
+  });
+
+  describe('lockedRowOutcome（裏の読み直しで受け取った行の判定）', () => {
+    it('settleLockedWrite と同じ判定になる（行のあり・なし × 入力と同じ・違う × 版が元のまま・進んだ）', async () => {
+      const rows: (Row | null)[] = [null, { name: '新', updated_at: T0 }, { name: '新', updated_at: T1 }, { name: '他', updated_at: T0 }, { name: '他', updated_at: T1 }];
+      for (const base of [T0, null]) {
+        for (const row of rows) {
+          const matches = (r: Row) => r.name === '新';
+          const want = await settleLockedWrite<Row>({ reread: async () => row, matches, baseVersion: base, versionOf: (r) => r.updated_at });
+          expect(lockedRowOutcome<Row>(row, { matches, baseVersion: base }), JSON.stringify({ base, row })).toBe(want);
+        }
+      }
     });
   });
 

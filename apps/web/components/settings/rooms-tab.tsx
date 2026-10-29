@@ -27,6 +27,7 @@ import {
   fetchRooms,
   fetchRoomYears,
   insertRoom,
+  lockedRowOutcome,
   matchesWritten,
   readRoom,
   readRoomByName,
@@ -40,7 +41,7 @@ import { BUILDING_MAX, NAME_MAX, NOTE_MAX } from '@/lib/schemas/common';
 import { joinAliases, roomFormSchema, roomUsableSchema, type RoomFormInput, type RoomFormOutput } from '@/lib/schemas/settings';
 import { MAX_DISTANCE_COST } from '@gaapp/shared';
 import { DeleteWithRefsDialog } from './rule-refs';
-import { Field, FormSheet, GlobalReadOnlyNote, selectClass, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler } from './shared';
+import { Field, FormSheet, GlobalReadOnlyNote, selectClass, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler, type LockedSaveRun } from './shared';
 
 interface RoomView extends RoomRow {
   usable: boolean;
@@ -236,7 +237,6 @@ export function RoomsTab() {
 function RoomForm({ room, onDone }: { room: RoomRow | null; onDone: () => Promise<void> }) {
   // 入力の元（更新で送る updated_at）。conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
   const [base, setBase] = useState(room);
-  const locked = useLockedSave({ dataKeys: [queryKeys.rooms()] });
   const form = useForm<RoomFormInput, unknown, RoomFormOutput>({
     resolver: zodResolver(roomFormSchema),
     defaultValues: {
@@ -255,41 +255,56 @@ function RoomForm({ room, onDone }: { room: RoomRow | null; onDone: () => Promis
   useUnsavedChanges(formState.isDirty);
   const [saving, setSaving] = useState(false);
 
+  // 入力（zod の後）から、送る・読み直す・比べる呼び出しを作る（保存と、読み直せなかった後の「読み直す」で同じものを使う）
+  const callFor = (v: RoomFormOutput): LockedSaveRun<RoomRow> => {
+    // 送る値（zod で前後の空白を除き、空なら null にした後）。読み直した行もこの値で比べる
+    const values = {
+      name: v.name,
+      aliases: v.aliases,
+      kind: v.kind,
+      building: v.building,
+      floor: v.floor,
+      is_storage: v.is_storage,
+      extra_cost: v.extra_cost,
+      sort_order: v.sort_order,
+    };
+    const onSaved = async (earlier: boolean) => {
+      toast.success(earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
+      form.reset(form.getValues());
+      await onDone();
+    };
+    return base
+      ? {
+          target: `id:${base.id}`,
+          write: () => updateRoom(base, values),
+          reread: () => readRoom(base.id),
+          matches: (row) => matchesWritten(row, values),
+          baseVersion: base.updated_at,
+          onRebase: (row) => row && setBase(row),
+          onSaved,
+        }
+      : {
+          target: `name:${values.name}`,
+          write: () => insertRoom(values),
+          reread: () => readRoomByName(values.name),
+          matches: (row) => matchesWritten(row, values),
+          baseVersion: null,
+          insert: true,
+          onSaved,
+        };
+  };
+  const locked = useLockedSave<RoomRow>({
+    dataKeys: [queryKeys.rooms()],
+    current: () => {
+      const p = roomFormSchema.safeParse(form.getValues());
+      return p.success ? callFor(p.data) : null;
+    },
+  });
+
   const onSubmit = handleSubmit(async (v) => {
     setSaving(true);
     try {
-      // 送る値（zod で前後の空白を除き、空なら null にした後）。読み直した行もこの値で比べる
-      const values = {
-        name: v.name,
-        aliases: v.aliases,
-        kind: v.kind,
-        building: v.building,
-        floor: v.floor,
-        is_storage: v.is_storage,
-        extra_cost: v.extra_cost,
-        sort_order: v.sort_order,
-      };
-      const r = await locked.run<RoomRow>(
-        base
-          ? {
-              write: () => updateRoom(base, values),
-              reread: () => readRoom(base.id),
-              matches: (row) => matchesWritten(row, values),
-              baseVersion: base.updated_at,
-              onRebase: (row) => row && setBase(row),
-            }
-          : {
-              write: () => insertRoom(values),
-              reread: () => readRoomByName(values.name),
-              matches: (row) => matchesWritten(row, values),
-              baseVersion: null,
-              insert: true,
-            },
-      );
-      if (r.kind !== 'done') return;
-      toast.success(r.earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
-      form.reset(form.getValues());
-      await onDone();
+      await locked.run(callFor(v));
     } finally {
       setSaving(false);
     }
@@ -372,15 +387,45 @@ function UsableDialog({
   // 入力の元（開いたときの room_years の行。行がなければ null）。setRoomUsable にはこの行の updated_at を渡し、
   // conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
   const [base, setBase] = useState<RoomYearRow | null>(room.roomYear);
-  // conflict の後に読み直した設定（ほかの人の変更として出す。次の保存で消す）
+  // 判定が changed（ほかの人が変えた）で入力の元にした行の設定（ほかの人の変更として出す。次の保存で消す）
   const [changedTo, setChangedTo] = useState<{ usable: boolean; note: string | null } | null>(null);
   const roomNames = { names: { room: (id: string) => (id === room.id ? room.name : undefined) } };
-  const locked = useLockedSave({ dataKeys: [settingsKeys.roomYears(year.id)], context: roomNames });
-  // 裏の読み直しで、入力の元から版が進み、いまの設定が入力と違う（ほかの人が変えた）。自分の保存が後から通った行は
-  // 入力と同じなので出さない（成功したら閉じてから読み直すので、成功の後にも出ない）
-  const liveVersion = room.roomYear?.updated_at ?? null;
-  const liveDiffers = liveVersion !== (base?.updated_at ?? null) && !roomYearMatches({ usable: room.usable, note: room.usableNote }, usable, note);
-  const otherSetting = changedTo ?? (liveDiffers ? { usable: room.usable, note: room.usableNote } : null);
+  const baseVersion = base?.updated_at ?? null;
+
+  // 入力（zod の後）から、送る・読み直す・比べる呼び出しを作る（保存と、読み直せなかった後の「読み直す」で同じものを使う）
+  const callFor = (u: boolean, n: string | null): LockedSaveRun<RoomYearRow> => ({
+    // 楽観ロック（T09a）：入力の元の room_years.updated_at（行がなければ null）で保存する。応答が届かなかったとき・
+    // conflict・not_found のときは (year_id, room_id) で読み直して決める（2.6 の (B1)）
+    target: room.id,
+    write: () => setRoomUsable(year.id, room.id, baseVersion, u, n),
+    reread: () => readRoomYear(year.id, room.id),
+    matches: (row) => roomYearMatches(row, u, n),
+    baseVersion,
+    onRebase: (row) => {
+      setBase(row);
+      setChangedTo(row ? { usable: row.usable, note: row.note } : { usable: true, note: null });
+    },
+    onSaved: async (earlier) => {
+      toast.success(earlier ? `「${room.name}」の今年の使用は保存されていました` : `「${room.name}」を今年は${u ? '使用可' : '使用不可'}にしました`);
+      // 閉じてから読み直す（開いたまま読み直すと、自分の保存がほかの人の変更に見えるため）
+      onClose();
+      await queryClient.invalidateQueries({ queryKey: queryKeys.year(year.id) });
+    },
+  });
+  const locked = useLockedSave<RoomYearRow>({
+    dataKeys: [settingsKeys.roomYears(year.id)],
+    context: roomNames,
+    current: () => {
+      const p = roomUsableSchema.safeParse({ usable, note });
+      return p.success ? callFor(p.data.usable, p.data.note) : null;
+    },
+  });
+  // 裏の読み直し（invalidate）で受け取った行も、保存の後の読み直しと同じ判定（lockedRowOutcome。settleLockedWrite と同じ比べ方）を
+  // 通す。changed（入力の元から版が進み、いまの入力と違う）のときだけ、ほかの人の変更として出す。saved（自分の前の送信が後から
+  // 通っていた・同じ値）と not-saved（誰も変えていない）では出さない
+  const liveOutcome = lockedRowOutcome(room.roomYear, { matches: (row) => roomYearMatches(row, usable, note), baseVersion });
+  // 入力の元を付け替えた直後は、裏の読み直しが届くまで古い行が changed に見えるので、付け替えた行（changedTo）を先に使う
+  const otherSetting = changedTo ?? (liveOutcome === 'changed' ? { usable: room.usable, note: room.usableNote } : null);
   useUnsavedChanges(usable !== room.usable || note !== (room.usableNote ?? ''));
 
   // 使用不可にするときの守り（3.2・3.9）：振り分け中は固定・手動の行、確定中は振り分けの行があれば、ここでは押せない
@@ -395,31 +440,10 @@ function UsableDialog({
       setNoteError(parsed.error.issues[0]?.message ?? '入力が正しくありません');
       return;
     }
-    const { usable: u, note: n } = parsed.data;
     setSaving(true);
     setChangedTo(null);
     try {
-      // 楽観ロック（T09a）：入力の元の room_years.updated_at（行がなければ null）で保存する。応答が届かなかったとき・
-      // conflict・not_found のときは (year_id, room_id) で読み直して決める（2.6 の (B1)）
-      const r = await locked.run<RoomYearRow>({
-        write: () => setRoomUsable(year.id, room.id, base?.updated_at ?? null, u, n),
-        reread: () => readRoomYear(year.id, room.id),
-        matches: (row) => roomYearMatches(row, u, n),
-        baseVersion: base?.updated_at ?? null,
-        onRebase: (row) => {
-          setBase(row);
-          setChangedTo(row ? { usable: row.usable, note: row.note } : { usable: true, note: null });
-        },
-      });
-      if (r.kind !== 'done') return;
-      toast.success(
-        r.earlier
-          ? `「${room.name}」の今年の使用は保存されていました`
-          : `「${room.name}」を今年は${u ? '使用可' : '使用不可'}にしました`,
-      );
-      // 閉じてから読み直す（開いたまま読み直すと、自分の保存がほかの人の変更に見えるため）
-      onClose();
-      await queryClient.invalidateQueries({ queryKey: queryKeys.year(year.id) });
+      await locked.run(callFor(parsed.data.usable, parsed.data.note));
     } finally {
       setSaving(false);
     }

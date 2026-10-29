@@ -17,7 +17,7 @@ import {
 } from '@/lib/db/types';
 import { updateWithLock } from '@/lib/db/update-with-lock';
 import { AppError, appError, isUnknownOutcome, toAppError } from '@/lib/errors';
-import { isLockRejection, settleLockedWrite } from '@/lib/data/locked-save';
+import { isLockRejection, settleLockedWrite, type LockedWriteOutcome } from '@/lib/data/locked-save';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { callRpc } from '@/lib/rpc';
 import type { AppRole, YearSummary } from '@/lib/auth/membership';
@@ -561,23 +561,29 @@ export type LockedWriteResult<Row> =
   /** 保存できた（earlier：応答が届かなかった・止められたが、読み直すと入力のとおりだった＝「保存されていました」） */
   | { kind: 'done'; earlier: boolean }
   /**
-   * 今までの conflict の扱い（読み直した行を入力の元にして入力を残す）。row は読み直した行（なくなっていれば null）、
-   * conflict は文言に使うエラー（止められたときはそのエラー、応答が届かなかったときは作ったもの）
+   * 今までの conflict の扱い（入力を残す）。row は読み直した行（なくなっていれば null）、
+   * conflict は文言に使うエラー（止められたときはそのエラー、応答が届かなかったときは作ったもの）。
+   * outcome は settleLockedWrite の判定：'changed'（版が進んだ・行ができた・なくなった）のときだけ、ほかの人の変更として
+   * 読み直した行を入力の元にする（帯を出す）。'not-saved'（止められたが版は入力の元のまま）は入力の元を付け替えない
    */
-  | { kind: 'changed'; row: Row | null; conflict: AppError }
+  | { kind: 'changed'; row: Row | null; conflict: AppError; outcome: 'changed' | 'not-saved' }
   /** 応答が届かず、保存されたか決められない（入力を残して unknownOutcomeMessage()） */
   | { kind: 'unknown'; error: unknown }
   /** 止められたが、読み直せなかった（入力を残し、「読み直せませんでした」と読み直すボタン） */
   | { kind: 'unread'; error: unknown }
+  /**
+   * 書き込みの後でない読み直し（settleLockedCall の e が null）で、判定が not-saved（いまの入力が書く行は入力の元のまま。
+   * insert ならまだ行がない）。いまの入力を止めるものはないので、conflict にしない（入力を残し、次の保存はふつうに送る）
+   */
+  | { kind: 'not-saved' }
   /** それ以外の失敗（forbidden・input など。2.5 の表のとおり） */
   | { kind: 'failed'; error: unknown };
 
-export interface LockedWriteCall<Row extends { updated_at: string }> {
-  /** 書き込み（updateWithLock・insert・setRoomUsable） */
-  write: () => Promise<unknown>;
+/** 楽観ロックの書き込みの、読み直しと判定に使う部分（write を除く） */
+export interface LockedSettleCall<Row extends { updated_at: string }> {
   /** 対象の行を1行読む（更新は主キー、insert は一意のキー。なければ null。失敗は投げる） */
   reread: () => Promise<Row | null>;
-  /** 読み直した行の書いた列が入力と同じか */
+  /** 読み直した行の書いた列が入力と同じか（いまの入力で比べる） */
   matches: (row: Row) => boolean;
   /** 入力の元の updated_at（insert は null） */
   baseVersion: string | null;
@@ -588,12 +594,68 @@ export interface LockedWriteCall<Row extends { updated_at: string }> {
   insert?: boolean;
 }
 
+export interface LockedWriteCall<Row extends { updated_at: string }> extends LockedSettleCall<Row> {
+  /** 書き込み（updateWithLock・insert・setRoomUsable） */
+  write: () => Promise<unknown>;
+}
+
+/**
+ * 画面が受け取った「新しい行」（裏の読み直し・invalidate で届いた行）を、いまの入力と入力の元で判定する（2.6 の (B1)）。
+ * settleLockedWrite の 2〜4 と同じ比べ方（行があり matches なら 'saved'、行の版〔なければ null〕が入力の元と同じなら
+ * 'not-saved'、それ以外は 'changed'）を、読み直しを待たずに描画の中で使うためのもの（settleLockedWrite は読み直しを
+ * 待つ async なので描画の中では使えない）。同じ比べ方であることは settings.test.ts で settleLockedWrite と突き合わせて
+ * 確かめる（T09a で locked-save.ts に同期の判定を置けば、それに置き換える。notes/T09.md の申し送り）。純粋関数。
+ * 画面は、ほかの人の変更の帯を 'changed' のときだけ出す（'saved' は自分の前の送信か同じ値。'not-saved' は誰も変えていない）。
+ */
+export function lockedRowOutcome<Row extends { updated_at: string }>(
+  row: Row | null,
+  call: Pick<LockedSettleCall<Row>, 'matches' | 'baseVersion'>,
+): Exclude<LockedWriteOutcome, 'unread'> {
+  if (row !== null && call.matches(row)) return 'saved';
+  return (row === null ? null : row.updated_at) === call.baseVersion ? 'not-saved' : 'changed';
+}
+
+/**
+ * 応答が届かなかった（isUnknownOutcome）か止められた（isLockRejection）書き込み e の後に、対象の行を読み直して
+ * settleLockedWrite で決める（runLockedWrite の 3）。止められて読み直せなかった後の「読み直す」もここを通す。
+ * saved → done（earlier）。応答が届かなかった後の not-saved・unread → unknown。止められた後の unread → unread。
+ * それ以外（changed と、止められた後の not-saved）→ changed（outcome に判定を残す）。
+ *
+ * e が null のときは、書き込みの後でない読み直し（止められて読み直せなかった後に、insert の一意のキーを変えてから「読み直す」。
+ * 止められた結果は前のキーの行のもので、いまの入力には当たらない）。同じ判定で、saved → done（earlier）、unread → unread、
+ * not-saved → not-saved（conflict にしない）、changed → changed（conflict は、応答が届かなかったときと同じく作ったもの）。
+ */
+export async function settleLockedCall<Row extends { updated_at: string }>(
+  call: LockedSettleCall<Row>,
+  e: unknown,
+): Promise<Exclude<LockedWriteResult<Row>, { kind: 'failed' }>> {
+  const written = e !== null;
+  const unknown = written && isUnknownOutcome(e);
+  let fresh: Row | null = null;
+  const outcome = await settleLockedWrite<Row>({
+    reread: async () => (fresh = await call.reread()),
+    matches: call.matches,
+    baseVersion: call.baseVersion,
+    versionOf: (row) => row.updated_at,
+  });
+  if (outcome === 'saved') return { kind: 'done', earlier: true };
+  if (unknown && (outcome === 'not-saved' || outcome === 'unread')) return { kind: 'unknown', error: e };
+  if (outcome === 'unread') return { kind: 'unread', error: e };
+  if (!written && outcome === 'not-saved') return { kind: 'not-saved' };
+  const row = fresh as Row | null;
+  let conflict: AppError;
+  if (written && !unknown) conflict = toAppError(e);
+  else if (row === null) conflict = appError('not_found', 'lock_missing');
+  else if (call.insert) conflict = new AppError({ kind: 'conflict', code: '23505', reason: null, details: null, issues: [], status: null });
+  else conflict = appError('conflict', 'lock_conflict');
+  return { kind: 'changed', row, conflict, outcome };
+}
+
 /**
  * 楽観ロックの更新・一意のキーの insert を送り、失敗したら 2.6 の (B1) で決める。
  * 1. 成功 → done。
  * 2. isUnknownOutcome でも isLockRejection でもない失敗 → failed。
- * 3. 対象の行を読み直して settleLockedWrite：saved → done（earlier）。応答が届かなかった後の not-saved・unread → unknown。
- *    止められた後の unread → unread。それ以外（changed と、止められた後の not-saved）→ changed。
+ * 3. settleLockedCall（対象の行を読み直して settleLockedWrite）。
  * 画面の状態には触らない（呼ぶ側が文言・入力の元の付け替え・閉じるを決める）。
  */
 export async function runLockedWrite<Row extends { updated_at: string }>(call: LockedWriteCall<Row>): Promise<LockedWriteResult<Row>> {
@@ -601,25 +663,8 @@ export async function runLockedWrite<Row extends { updated_at: string }>(call: L
     await call.write();
     return { kind: 'done', earlier: false };
   } catch (e) {
-    const unknown = isUnknownOutcome(e);
-    if (!unknown && !isLockRejection(e)) return { kind: 'failed', error: e };
-    let fresh: Row | null = null;
-    const outcome = await settleLockedWrite<Row>({
-      reread: async () => (fresh = await call.reread()),
-      matches: call.matches,
-      baseVersion: call.baseVersion,
-      versionOf: (row) => row.updated_at,
-    });
-    if (outcome === 'saved') return { kind: 'done', earlier: true };
-    if (unknown && (outcome === 'not-saved' || outcome === 'unread')) return { kind: 'unknown', error: e };
-    if (outcome === 'unread') return { kind: 'unread', error: e };
-    const row = fresh as Row | null;
-    let conflict: AppError;
-    if (!unknown) conflict = toAppError(e);
-    else if (row === null) conflict = appError('not_found', 'lock_missing');
-    else if (call.insert) conflict = new AppError({ kind: 'conflict', code: '23505', reason: null, details: null, issues: [], status: null });
-    else conflict = appError('conflict', 'lock_conflict');
-    return { kind: 'changed', row, conflict };
+    if (!isUnknownOutcome(e) && !isLockRejection(e)) return { kind: 'failed', error: e };
+    return settleLockedCall(call, e);
   }
 }
 
