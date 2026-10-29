@@ -352,7 +352,8 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
 function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '入力の形が違います';
   if (e.code === '23514') return '入力が範囲を超えています';
-  if (e.code !== 'P0001') return generic;
+  // 22xxx などの SQLSTATE は details を持たない。code が null は画面の層が送る前に止めたもの（lib/rpc の zod）
+  if (e.code !== null && e.code !== 'P0001') return generic;
   const d = e.details;
   if (!isRecord(d)) {
     if (ctx.rpc === 'create_year_from') {
