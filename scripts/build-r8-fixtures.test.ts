@@ -341,6 +341,6 @@ describe('fixtures とスクリプトの出力に個人情報がない', () => {
   it('fixtures/r8 があれば、fixtures の読み込み（strictObject）を通る', () => {
     const dir = path.join(repoRoot(), 'fixtures', 'r8');
     if (existsSync(path.join(dir, 'meta.json'))) expect(readFixtureDir(dir).meta.kind).toBe('r8');
-    else expect(existsSync(dir)).toBe(false); // R8 の元データが届くまでは作らない
+    else expect(existsSync(dir)).toBe(false); // D-40：R8 の元データは使わないので作らない（使うことになったら build-r8-fixtures で作る）
   });
 });

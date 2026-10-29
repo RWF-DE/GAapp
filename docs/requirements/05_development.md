@@ -18,8 +18,8 @@ GAapp/
 ├─ packages/shared/          zod スキーマ、型、定数（品目コードなど）。testing/ に fixtures の読み書きと合成データ（Node 専用）
 ├─ supabase/migrations/      DDL、RLS、トリガー、RPC
 ├─ supabase/tests/           pgTAP による RLS・RPC のテスト（_helpers/ にペルソナと権限表のテストの補助）
-├─ supabase/seed.sql         品目・テスト用の場所（T02）→ R8 の年度・テスト用の団体とユーザー（T04）→ R8 のデータ（T05。fixtures/r8 から scripts/build-seed-r8.ts で生成した区間。個人情報なし）
-├─ fixtures/r8/              R8 の在庫・正規化した申請・ルール、手作業の振り分け（reference/。テスト用）
+├─ supabase/seed.sql         品目・テスト用の場所（T02）→ R8 の年度・テスト用の団体とユーザー（T04）→ R8 のデータ（T05。fixtures/r8 から scripts/build-seed-r8.ts で生成した区間。個人情報なし。D-40 で R8 の元データを使わないことにしたので、今は作らない）
+├─ fixtures/r8/              R8 の在庫・正規化した申請・ルール、手作業の振り分け（reference/。テスト用。D-40 により今は作らない。仕組みだけ残す）
 ├─ fixtures/synthetic/       R8 と合計が同じ合成データ（scripts で生成。シード固定。reference/ は振り分けの結果から生成）
 └─ .github/workflows/        ci.yml、deploy.yml（GitHub Pages）、migrate.yml
 ```
@@ -33,7 +33,7 @@ GAapp/
 | NEXT_PUBLIC_ENABLE_TEST_LOGIN | .env.local、E2E のビルド（pnpm build:e2e） | ローカル専用のメール＋パスワードのテスト用ログイン。本番のビルドには設定しない（設定しても Supabase がローカルでなければ出ない） |
 | SUPABASE_ACCESS_TOKEN、SUPABASE_DB_PASSWORD | GitHub Actions の secrets | migrate.yml で本番 DB にマイグレーションを適用するときだけ |
 
-seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DATA` の間で、手で直さない。R8 の年度は T04 の部分が固定の id で作り、R8 の区間はその年度に足す。品目は code で引く。
+seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DATA` の間で、手で直さない。R8 の年度は T04 の部分が固定の id で作り、R8 の区間はその年度に足す。品目は code で引く。R8 の区間は、R8 の元データを使わないことにした（D-40）ので今は作らない。
 
 アプリは secret（旧 service_role）キーを使わない。GitHub Pages は組織名.github.io/リポジトリ名/ で公開されるので、Next.js の basePath をリポジトリ名に合わせ、Supabase Auth のリダイレクト URL にも登録する。ローカルは `supabase start`（Docker）で DB を立ち上げ、`supabase db reset` でマイグレーションと seed を流す。.env ファイルはコミットしない。
 
@@ -63,7 +63,7 @@ seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DA
 | T02 | DDL・列挙型・ビュー・監査トリガーのマイグレーション | T01 | M | Claude | 完了 |
 | T03 | RLS、権限の関数、RPC、pgTAP テスト | T02 | L | Claude | 完了 |
 | T04 | Google ログイン、ドメイン制限のフック（学校の Google ドメインだけを許す）、招待と受け入れのトリガー、テスト用ログイン（テストユーザーは seed で作り、フックを通らない。D-02）、共通レイアウト（ナビゲーション、ロールによる表示の切り替え、読み込み中・空・権限なしの3状態。P-03） | T03 | M | Claude | 完了 |
-| T05 | importer：Googleフォーム回答の取り込みと、R8 の fixtures（正規化した申請と変換表） | T02 | M | Claude | 進行中（importer は完了、fixtures/r8 は元データ待ち） |
+| T05 | importer：Googleフォーム回答の取り込みと、R8 の fixtures（正規化した申請と変換表） | T02 | M | Claude | 完了 |
 | T06 | allocator：前処理、LP の組み立て、highs-js の実行、ルール4種、最小変更モード | T00、T05 の importer と共通基盤（fixtures/r8 は不要。共通基盤〔packages/shared の型・スキーマ・需要の組み立て、shared/testing、合成データ〕は T05 と T06 のうち先に着手した方が入れる） | L | Claude | 完了 |
 | T07 | allocator：validate()、解けないときの診断 | T06 | M | Claude | 完了 |
 | T08 | exporter：R8 様式の xlsx、交換依頼一覧、年度データの JSON、再計算テスト | T05 | M | Claude | 完了 |
@@ -74,13 +74,18 @@ seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DA
 | T13 | 画面：振り分け（表・編集・固定・検証パネル・確定・出力）、キャスター机交換、/my | T07、T08 | L |  | 未着手 |
 | T14 | 画面：履歴。通しの E2E テスト。README（7月の再開と年度の始め方、ルールの変え方、年度末の書き出し、障害時の対応） | T13 | M |  | 未着手 |
 
-T06 は fixtures/r8 がなくても、合成データ fixtures/synthetic/r8like で不変条件を確かめて進められる。fixtures/r8 が入った PR で同じテストを流す。T06〜T08 と T09〜T11 は並行して進められる。2〜3人なら「ロジック担当（T00、T05〜T08）」と「画面担当（T09〜T12）」に分けると衝突が少ない。T02〜T04 は全員の土台なので、最初に管理者役がまとめて作る。
+T06 は fixtures/r8 がなくても、合成データ fixtures/synthetic/r8like で不変条件を確かめて進められる。R8 の元データは使わず、fixtures/r8 は作らない（D-40）ので、R8 を前提にした完了基準は合成データで確かめる（fixtures/r8 を作ることになれば、同じテストがそちらにも流れる）。T06〜T08 と T09〜T11 は並行して進められる。2〜3人なら「ロジック担当（T00、T05〜T08）」と「画面担当（T09〜T12）」に分けると衝突が少ない。T02〜T04 は全員の土台なので、最初に管理者役がまとめて作る。
 
 ## 受け入れ基準とR8テストデータ
 
 フェーズ1の完了条件は、R8 の正規化した申請で自動振り分けをしたとき、下の条件をすべて満たすこと。R8 の手作業の振り分け表と、運び元や置き換え先が一致しなくてよい（不可机・不可椅子の使い方も、距離で決めるので R8 とは変わる）。[概要](00_overview.md) の開発スケジュールの判断ポイントも、この基準で判断する。
 
+（注：D-40 により R8 の元データは使わない。下の不変条件は合成データ fixtures/synthetic/r8like で確かめ、R8 の実績との一致〔R8 の103台以下、代替が起きない品目の合計が R8 と同じ、R8 の振り分け表から出した xlsx など、R8 の元データでしか確かめられないもの〕は確かめない。2027年5〜6月の R8 のデータでの検証をどうするかは、そのときにユーザーが決める。）
+
 **fixtures/r8 の作り方**
+
+R8 の元データは使わず、合成データ fixtures/synthetic/r8like で代用する（D-40、2026-10-29）。fixtures/r8 と seed の R8 の区間は今は作らない。次は、R8 の元データを使うことになったときの作り方で、仕組み（scripts/build-r8-fixtures.ts・`REQUIRE_R8_FIXTURES`）は残してある。
+
 
 - 在庫：R8 の「机・椅子数え」の最終値。第一セミナーは使用不可
 - 申請：R8 のフォーム回答に、R8 で決めた読み替えを当てた後・代替の前の数。例：SE企画の長机(3人掛)→キャスター机6、剣道部の机2・椅子1の追加、設営241、四役・休憩所・企業の代理入力分、企業以外の長机(3人掛)→長机(2人掛)。変換の一覧は fixtures/r8/README.md に書く
@@ -88,7 +93,7 @@ T06 は fixtures/r8 がなくても、合成データ fixtures/synthetic/r8like 
 - 参考として、R8 の手作業の振り分け表（行と団体別集計）も reference/ に入れておく
 - 形式：UTF-8 の CSV（場所・団体・在庫・申請・了承〔依頼した台数を含む〕・距離の上書き）と JSON（ルール。団体・場所は名前で書く）。列は packages/shared の zod スキーマで決め、知らない列があれば読み込みを失敗にする。場所・団体・ルールの id は名前から決まる UUIDv5（名前空間の値は packages/shared）で、seed と Vitest で同じ id になる（品目と年度の id は DB の値。品目は code で対応させる）
 - 個人情報：備考・氏名・学籍番号・連絡先の列は持たない。団体名に個人名（研究室名の教員名など）があれば仮名にし、対応表はリポジトリの外（`R8_SOURCE_DIR`）にだけ置く。fixtures と seed にメールアドレス（予約ドメインのテスト用を除く）がないことをテストで確かめる
-- 合成データ（fixtures/synthetic/r8like）：T00 のダミーの作り方を移したもの。在庫と需要の合計を R8 にそろえる（在庫は下の表、需要の合計 1,295）。fixtures/r8 ができるまでは不変条件をこちらで確かめ、できた後も両方に流す。reference/（振り分けの行と団体別集計）は振り分けの結果から scripts で生成してコミットし、Excel 出力のテストに使う
+- 合成データ（fixtures/synthetic/r8like）：T00 のダミーの作り方を移したもの。在庫と需要の合計を R8 にそろえる（在庫は下の表、需要の合計 1,295）。不変条件はこちらで確かめる（D-40。fixtures/r8 を作ったときは両方に流す）。reference/（振り分けの行と団体別集計）は振り分けの結果から scripts で生成してコミットし、Excel 出力のテストに使う
 - fixtures/r8 がないときは、R8 の不変条件のテストを飛ばし、飛ばしたことをテストの出力に残す。fixtures/r8 を入れた後は、CI の変数（`REQUIRE_R8_FIXTURES`）で、見つからなければ失敗にする
 - 元データにないもの（場所の建物・階・種類・並び、団体の区分・使用場所・並び・提出のしかた、ルール、R8 で決めた読み替えと代理入力の数）は手で書いてコミットし、根拠を README に書く。元データから決まるもの（提出日時、在庫、申請、手作業の振り分け）は scripts/build-r8-fixtures.ts が `R8_SOURCE_DIR` から生成する。どのファイルがどちらかと列は、T06 の設計書（notes/T06-design/logic-design.md の 3.8）のとおり。団体名の匿名化の対応表は `R8_SOURCE_DIR` にだけ置く
 - 提出日時：フォームで提出した団体はフォームのタイムスタンプ（同じ団体の最後の回答）、総務が代理入力した団体（企業・休憩所・四役・設営など）は R8 の申請締切の日時、未提出の団体は空（W105）

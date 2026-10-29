@@ -303,6 +303,17 @@
 - **チケット**：T05〜T08、T12。
 - **状態**：T06 の PR で要件定義に反映済み。
 
+## D-40 R8 の元データは使わず、合成データで代用する（2026-10-29、ユーザーの回答）
+
+- **決定**：R8 の元データ（フォームの回答・机椅子数え・振り分け表）は渡さない。fixtures/r8 と、seed の R8 のデータの区間（`-- BEGIN R8 DATA`〜`-- END R8 DATA`、scripts/build-seed-r8.ts）は作らない。
+  - R8 を前提にした完了基準・受け入れ基準・テスト（05「受け入れ基準とR8テストデータ」の不変条件、T05〜T08 の完了基準）は、合成データ fixtures/synthetic/r8like で確かめる。R8 の実績との一致（R8 の在庫の合計、キャスター机への置き換えが R8 の103台以下、代替が起きない品目の合計が R8 と同じ、R8 の振り分け表から出した xlsx の再計算など、R8 の元データでしか確かめられないもの）は確かめない。
+  - 仕組みは残す：scripts/build-r8-fixtures.ts（`R8_SOURCE_DIR` から fixtures/r8 を作る）とそのテスト、fixtures/r8 があれば同じテストを流し、なければ it.todo を出す扱い、CI の変数 `REQUIRE_R8_FIXTURES`、fixtures/r8/README.md の雛形（scripts/r8/fixtures-readme.template.md）。
+  - 00 の予定にある「2027年5〜6月 R8 のデータで検証」と、05 の受け入れ基準の R8 の文はユーザーの計画なので書き換えない（注を足すだけ）。その検証をどうするか（R8 の元データを使うか、合成データで済ませるか）は、そのときにユーザーが決める。
+- **理由**：公開リポジトリで、元データ（個人情報を含む）の受け渡しと匿名化の手間を避けるため（ユーザーの回答）。
+- **反映先**：05_development.md（チケット表の T05 を「完了」、リポジトリ構成の seed・fixtures/r8、「fixtures/r8 の作り方」、受け入れ基準への注）、00_overview.md（技術構成のテストの行と開発スケジュールへの注）、README「R8 の fixtures を作る」、notes/T05.md、fixtures/r8/README.md の雛形、テストの it.todo の文言。
+- **チケット**：T05（T06〜T08 の R8 の分も同じ扱い）。
+- **状態**：要件定義に反映済み（T05 の PR）。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。

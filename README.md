@@ -159,7 +159,9 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
 
 SQL Editor は postgres で動くので RLS を通らず、監査の user_id は null になる。
 
-## R8 の fixtures を作る（R8 の元データが届いたら。ユーザーの PC で実行する）
+## R8 の fixtures を作る（R8 の元データを使うことになったら。ユーザーの PC で実行する）
+
+今は R8 の元データを使わず、合成データ fixtures/synthetic/r8like で代用している（D-40）。fixtures/r8 と seed の R8 の区間は作っていない。R8 の元データを使うことになったときのために、次の仕組みを残してある（fixtures/r8 があれば、R8 の不変条件と再計算のテストが自動でそちらにも流れる。入れたら CI に `REQUIRE_R8_FIXTURES=1` を足す）。
 
 fixtures/r8 は、元データから決まるものを `scripts/build-r8-fixtures.ts` が作り、元データにないものは手で書いてコミットする（分け方は fixtures/r8/README.md の雛形 [scripts/r8/fixtures-readme.template.md](scripts/r8/fixtures-readme.template.md) と、設計書の 3.8）。元データ（Google フォームの回答・Excel・PDF）はリポジトリに入れない。
 
