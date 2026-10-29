@@ -47,7 +47,8 @@ export function CountCell({ api, row, groupName, itemName }: { api: RowEditApi; 
       min={1}
       value={row.count}
       onChange={(count) => api.edit({ op: 'update', id: row.id, patch: { count } })}
-      className="justify-end"
+      // 表の中では詰める（－＋は 28px、入力は 3 桁ぶん。PC の 1280px で操作の列まで収めるため。B6）
+      className="justify-end gap-0.5 [&_button]:size-7 [&_input]:h-7 [&_input]:w-11 [&_input]:px-1"
     />
   );
 }

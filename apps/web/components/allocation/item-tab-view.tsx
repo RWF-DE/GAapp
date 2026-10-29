@@ -85,13 +85,15 @@ export function ItemTabView({
             ) : null}
           </header>
           <div className="overflow-x-auto">
-            <Table>
+            {/* セルの左右の余白を詰める（PC の 1280px で「固定・操作」の列まで収めるため。B6） */}
+            <Table className="[&_td]:px-1.5 [&_th]:px-1.5">
               <TableHeader>
                 <TableRow>
                   <TableHead>運び先</TableHead>
                   <TableHead>団体</TableHead>
+                  {/* 申請品目（品目と違うときだけ「…の代わり」）は列にせず、品目のセル（品目の列がなければ団体のセル）の2行目に
+                      たたむ（PC の 1280px で「固定・操作」の列まで部屋のまとまりに収めるため。B6） */}
                   {two || readOnlyList ? <TableHead>品目</TableHead> : null}
-                  <TableHead>申請品目</TableHead>
                   <TableHead className="text-right">数</TableHead>
                   {!readOnlyList ? (
                     <>
@@ -112,9 +114,16 @@ export function ItemTabView({
                     className={cn(edit?.pendingIds.has(v.row.id) && 'bg-sky-50', highlightRowId === v.row.id && 'bg-amber-100')}
                   >
                     <TableCell>{v.dest || '—'}</TableCell>
-                    <TableCell>{v.group?.name ?? '（不明な団体）'}</TableCell>
-                    {two || readOnlyList ? <TableCell>{v.itemName}</TableCell> : null}
-                    <TableCell className="text-muted-foreground">{v.requestedName ? `${v.requestedName}の代わり` : ''}</TableCell>
+                    <TableCell>
+                      {v.group?.name ?? '（不明な団体）'}
+                      {!(two || readOnlyList) ? <RequestedLine name={v.requestedName} /> : null}
+                    </TableCell>
+                    {two || readOnlyList ? (
+                      <TableCell>
+                        {v.itemName}
+                        <RequestedLine name={v.requestedName} />
+                      </TableCell>
+                    ) : null}
                     <TableCell className="text-right tabular-nums">
                       {edit ? <CountCell api={edit} row={v.row} groupName={v.group?.name ?? ''} itemName={v.itemName} /> : v.row.count}
                     </TableCell>
@@ -143,7 +152,7 @@ export function ItemTabView({
                 {vm.hasStock && !readOnlyList ? (
                   <TableRow className="bg-muted/20" data-surplus-row={b.room.id}>
                     <TableCell className="font-medium">余り</TableCell>
-                    <TableCell colSpan={two ? 7 : 6}>
+                    <TableCell colSpan={two ? 6 : 5}>
                       <SurplusCell block={b} />
                     </TableCell>
                   </TableRow>
@@ -157,6 +166,16 @@ export function ItemTabView({
   );
 }
 
+/** 申請品目が品目と違うときの2行目（「机(木)の代わり」） */
+function RequestedLine({ name }: { name: string | null | undefined }) {
+  if (!name) return null;
+  return (
+    <span className="block text-xs text-muted-foreground" data-testid="requested-item">
+      {name}の代わり
+    </span>
+  );
+}
+
 function EditCells({ api, row, label }: { api: RowEditApi; row: StoredAllocationRow; label: string }) {
   return (
     <>
@@ -166,7 +185,7 @@ function EditCells({ api, row, label }: { api: RowEditApi; row: StoredAllocation
       <TableCell>
         {ORIGIN_LABELS[row.origin]}
         {api.pendingIds.has(row.id) ? (
-          <Badge variant="outline" className="ml-1 border-sky-400 text-sky-900">
+          <Badge variant="outline" className="mt-0.5 block w-fit border-sky-400 text-sky-900">
             未保存
           </Badge>
         ) : null}

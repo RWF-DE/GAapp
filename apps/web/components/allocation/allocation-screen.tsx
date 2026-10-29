@@ -564,7 +564,8 @@ function AllocationLoaded({
         ) : null}
       </div>
 
-      <div className={cn('grid gap-6', full && 'lg:grid-cols-[minmax(0,1fr)_380px]')}>
+      {/* 検証の一覧は xl（1280px）から右に置き、それより狭いときは表の下に回す（表の操作の列まで収めるため。B6） */}
+      <div className={cn('grid gap-6', full && 'xl:grid-cols-[minmax(0,1fr)_320px]')}>
         <div className="min-w-0 space-y-3">
           {full ? (
             <div className="flex flex-wrap gap-1" role="group" aria-label="表示の切り替え">

@@ -296,6 +296,44 @@ test('T13 了承を「拒否」にして最小変更で再実行すると、そ�
   }
 });
 
+test.describe('T13 PC の 1280px', () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  test('T13 1280px：2品目のタブでも「固定・操作」の列（運び元・削除）が部屋のまとまりに収まり、表が横にはみ出さない', async ({ page }) => {
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      for (const tab of ['机(木)', '椅子(木)', 'キャスター机']) {
+        await page.goto('/allocation/');
+        await page.getByRole('tab', { name: tab, exact: true }).click();
+        const block = page.locator('[data-room-block]').filter({ has: page.locator('[data-row-id]') }).first();
+        const row = block.locator('[data-row-id]').first();
+        await expect(row).toBeVisible();
+        const source = row.getByRole('button', { name: /の運び元を変える$/ });
+        const del = row.getByRole('button', { name: /を削除$/ });
+        await expect(source).toBeVisible();
+        await expect(del).toBeVisible();
+        const b = (await block.boundingBox())!;
+        for (const btn of [source, del]) {
+          const x = (await btn.boundingBox())!;
+          expect(x.x + x.width, `${tab}：操作のボタンが部屋のまとまりの右端を越える`).toBeLessThanOrEqual(b.x + b.width);
+        }
+        // どの部屋のまとまりの表も横にスクロールしない
+        const overflow = await page
+          .locator('[data-room-block] [data-slot="table-container"], [data-room-block] .overflow-x-auto')
+          .evaluateAll((els) => Math.max(0, ...els.map((el) => el.scrollWidth - el.clientWidth)));
+        expect(overflow, `${tab}：表が横にはみ出す`).toBeLessThanOrEqual(0);
+        // 検証の一覧は右に並ぶ（xl から）
+        const table = (await page.locator('[data-room-block]').first().boundingBox())!;
+        const issues = (await page.getByTestId('issues-panel').boundingBox())!;
+        expect(issues.x).toBeGreaterThanOrEqual(table.x + table.width);
+      }
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
 test('T13 検証の一覧：同じ項目をもう一度押してもその行へ移る。未保存の追加の行（仮の id）へも移る', async ({ page }) => {
   const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
   try {
