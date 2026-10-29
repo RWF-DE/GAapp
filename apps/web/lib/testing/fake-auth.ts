@@ -58,6 +58,8 @@ export const fakeAuth = {
 
 export const supabaseClientModule = {
   supabaseConfigError: () => null,
+  /** 偽のセッションの保存先のキー（本物は client.ts の authStorageKey） */
+  authStorageKey: () => 'sb-test-auth-token',
   getSupabase: () => ({
     auth: {
       getSession: async () => ({ data: { session: fakeAuth.session } }),

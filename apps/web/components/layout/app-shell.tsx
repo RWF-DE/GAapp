@@ -2,7 +2,7 @@
 
 import { Loader2, LogOut, Menu, X } from 'lucide-react';
 import { usePathname } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { NotLatestYearBanner } from '@/components/common/latest-year';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
@@ -170,7 +170,11 @@ function Frame({ membership, onSignOut, children }: { membership: Membership; on
         <aside className="hidden w-56 shrink-0 border-r bg-sidebar p-3 md:block print:hidden">
           <AppNav items={items} />
         </aside>
-        <main className="min-w-0 flex-1 p-4 md:p-6 print:p-0">{children}</main>
+        <main className="min-w-0 flex-1 p-4 md:p-6 print:p-0">
+          {/* 年度が変わったら画面を作り直す（前の年度の入力を持ち越さない。入力は前の年度の下書きに残る。1.3.1）。
+              同じ年度の立場の読み直しでは key が変わらないので、画面は外れない */}
+          <Fragment key={year?.id ?? 'none'}>{children}</Fragment>
+        </main>
       </div>
     </div>
   );

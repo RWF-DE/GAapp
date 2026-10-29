@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import {
   AlertDialog,
+  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogFooter,
@@ -80,9 +81,8 @@ export function ConfirmDialog({
         </AlertDialogHeader>
         {children}
         <AlertDialogFooter>
-          <Button variant="outline" disabled={busy} onClick={() => onOpenChange(false)}>
-            {cancelLabel}
-          </Button>
+          {/* AlertDialogCancel にすると、開いたときに Radix がここへフォーカスを移す（開いたボタンに残さない。Enter で開き直さない） */}
+          <AlertDialogCancel disabled={busy}>{cancelLabel}</AlertDialogCancel>
           <Button
             variant={destructive ? 'destructive' : 'default'}
             disabled={busy || confirmDisabled}

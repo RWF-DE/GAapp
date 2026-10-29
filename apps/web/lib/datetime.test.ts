@@ -9,6 +9,7 @@ import {
   toDateTimeLocal,
   tokyoStartOfDay,
   tokyoStartOfNextDay,
+  tokyoDate,
   tokyoToday,
 } from './datetime';
 
@@ -38,6 +39,14 @@ describe('表示（Asia/Tokyo）', () => {
     expect(formatDateTime('2026-10-04T14:59:59Z')).toBe('2026/10/04 23:59');
     expect(formatDateTime('2026-12-31T15:30:00Z')).toBe('2027/01/01 00:30');
     expect(tokyoToday(new Date('2026-10-04T15:00:00Z'))).toBe('2026-10-05');
+  });
+
+  it('tokyoDate：日時の Asia/Tokyo の日付（YYYY-MM-DD はそのまま。読めなければ空文字）', () => {
+    expect(tokyoDate(new Date('2026-10-04T15:00:00Z'))).toBe('2026-10-05');
+    expect(tokyoDate('2026-10-04T14:59:59Z')).toBe('2026-10-04');
+    expect(tokyoDate('2026-10-17')).toBe('2026-10-17');
+    expect(tokyoDate('oops')).toBe('');
+    expect(tokyoDate(new Date('oops'))).toBe('');
   });
 
   it('読めない値・null は空文字', () => {

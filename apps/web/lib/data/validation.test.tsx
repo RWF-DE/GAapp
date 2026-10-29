@@ -51,7 +51,7 @@ describe('useValidation', () => {
     expect(result.current).toMatchObject({ status: 'skipped', version: null });
   });
 
-  it('未保存の変更を当てた行は 150 ms まとめて検証する', () => {
+  it('未保存の変更が出た最初は今の行ですぐに検証し、その後の変更は 150 ms まとめて検証する（古い行に今の版を付けない）', () => {
     vi.useFakeTimers();
     const extra = [
       {
@@ -71,10 +71,45 @@ describe('useValidation', () => {
       initialProps: { rows: undefined as typeof extra | undefined },
     });
     expect(result.current.status).toBe('ok');
+    // 未保存の変更が出た最初：前の行（スナップショットの行）で回さず、今の行ですぐに検証する
     rerender({ rows: extra });
+    expect(result.current).toMatchObject({ status: 'unavailable', version: 12 });
+    // その後の変更は 150 ms まとめる
+    const fixed: typeof extra = [];
+    rerender({ rows: fixed });
     act(() => vi.advanceTimersByTime(149));
-    expect(result.current.status).toBe('ok');
-    act(() => vi.advanceTimersByTime(1));
     expect(result.current.status).toBe('unavailable');
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current.status).toBe('ok');
+    // 変更がなくなって、また出たときも、前の未保存の行（fixed）からではなく今の行から始める
+    rerender({ rows: undefined });
+    expect(result.current.status).toBe('ok');
+    rerender({ rows: extra });
+    expect(result.current.status).toBe('unavailable');
+  });
+
+  it('スナップショットの版が変わったら、まとめるのを待たずに今の行で検証する（結果の版と行を食い違わせない）', () => {
+    vi.useFakeTimers();
+    const bad = [
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        sourceRoomId: snapshot.rooms[0]!.id,
+        groupId: '99999999-9999-4999-8999-999999999999',
+        itemId: snapshot.items[0]!.id,
+        requestedItemId: snapshot.items[0]!.id,
+        count: 1,
+        isKeep: false,
+        origin: 'manual' as const,
+        pinned: false,
+        note: null,
+      },
+    ];
+    const good: typeof bad = [];
+    const { result, rerender } = renderHook(({ s, rows }) => useValidation(s, rows), {
+      initialProps: { s: snapshot, rows: bad as typeof bad | undefined },
+    });
+    expect(result.current).toMatchObject({ status: 'unavailable', version: 12 });
+    rerender({ s: { ...snapshot, version: 13 }, rows: good });
+    expect(result.current).toMatchObject({ status: 'ok', version: 13 });
   });
 });
