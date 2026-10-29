@@ -84,7 +84,8 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
   const allocating = status === 'allocating';
   const queryClient = useQueryClient();
   const { reloadMembership } = useAuth();
-  const notLatest = useNotLatestYearConfirm();
+  // 書く前の確かめは「最新でない年度（…）に記録します」（T13-15。操作は了承の状況の記録）
+  const notLatest = useNotLatestYearConfirm({ verb: '記録' });
   const vm = useMemo(() => buildViewModel(snapshot), [snapshot]);
   const names = useMemo(() => namesOf(vm), [vm]);
   const rows = useMemo<SwapView[]>(
@@ -218,7 +219,8 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
       },
       {
         accessorKey: 'note',
-        header: '備考',
+        // substitution_consents.note。団体代表の /my に「コメント：」として出る（総務の内部のメモではない。T13-19）
+        header: '団体へのコメント',
         enableSorting: false,
         cell: ({ row }) => <span className="line-clamp-2 block max-w-48 whitespace-pre-wrap text-sm">{row.original.note ?? ''}</span>,
       },
@@ -307,9 +309,19 @@ function SwapsLoaded({ snapshot, refetch, fetching }: { snapshot: Snapshot; refe
         onConfirm={run}
       >
         <div className="space-y-1">
-          <Label htmlFor="swap-note">備考（任意）</Label>
-          <Textarea id="swap-note" value={note} onChange={(e) => setNote(e.target.value)} rows={2} disabled={busy} />
-          {note.length > NOTE_MAX ? <p className="text-sm text-destructive">備考は {NOTE_MAX} 字までです</p> : null}
+          <Label htmlFor="swap-note">団体へのコメント（任意）</Label>
+          <p id="swap-note-help" className="text-sm text-muted-foreground" data-testid="swap-note-help">
+            団体代表の『自団体の振り分け』に「コメント：」として表示されます。団体に見えるので、総務の内部のメモには使えません。
+          </p>
+          <Textarea
+            id="swap-note"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={2}
+            disabled={busy}
+            aria-describedby="swap-note-help"
+          />
+          {note.length > NOTE_MAX ? <p className="text-sm text-destructive">コメントは {NOTE_MAX} 字までです</p> : null}
         </div>
       </ConfirmDialog>
       {notLatest.dialog}

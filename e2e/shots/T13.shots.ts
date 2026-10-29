@@ -267,10 +267,10 @@ test.describe('T13 閲覧のみ', () => {
   });
 });
 
-/** シナリオの年度は最新の年度より前なので、書く前の「最新でない年度に保存します」を確かめる */
-async function confirmNotLatest(page: Page): Promise<void> {
+/** シナリオの年度は最新の年度より前なので、書く前の「最新でない年度に記録します・回答します」を確かめる（T13-15） */
+async function confirmNotLatest(page: Page, verb: '記録' | '回答'): Promise<void> {
   const d = page.getByRole('alertdialog').filter({ hasText: '最新でない年度' });
-  await d.getByRole('button', { name: 'この年度に保存する' }).click();
+  await d.getByRole('button', { name: `この年度に${verb}する` }).click();
   await expect(d).toBeHidden();
 }
 
@@ -302,15 +302,16 @@ test.describe('T13 キャスター机交換', () => {
       await shoot(page, 'T13', 'swaps-full-pc', { fullPage: true });
 
       await row10.getByRole('button', { name: '依頼済みにする' }).click();
-      await confirmNotLatest(page);
+      await confirmNotLatest(page, '記録');
       await expect(page.getByRole('alertdialog')).toBeVisible();
+      await expect(page.getByRole('alertdialog').getByTestId('swap-note-help')).toBeVisible();
       await shoot(page, 'T13', 'swaps-op-dialog-pc');
       await page.getByRole('alertdialog').getByRole('button', { name: 'やめる' }).click();
 
       // 置き換えの行を消してから依頼する（画面は古い）→ no_rows のエラーの帯
       await sql(`delete from public.allocations where year_id = $1 and group_id = $2 and ${SUBS}`, [s.yearId, s.ids.groups['模擬店10']]);
       await row10.getByRole('button', { name: '依頼済みにする' }).click();
-      await confirmNotLatest(page);
+      await confirmNotLatest(page, '記録');
       await page.getByRole('alertdialog').getByRole('button', { name: '依頼済みにする' }).click();
       await expect(page.getByTestId('error-banner')).toBeVisible();
       await shoot(page, 'T13', 'swaps-error-banner-pc');
@@ -389,7 +390,7 @@ test.describe('T13 自団体の振り分け', () => {
       await card.getByRole('button', { name: '了承する' }).click();
       await expect(page.getByRole('alertdialog')).toBeVisible();
       await shoot(page, 'T13', 'my-not-latest-confirm-mobile');
-      await confirmNotLatest(page);
+      await confirmNotLatest(page, '回答');
       await expect(card).toHaveAttribute('data-status', 'accepted');
       await shoot(page, 'T13', 'my-answered-mobile');
       await card.getByRole('button', { name: '回答を変える' }).click();
@@ -404,7 +405,7 @@ test.describe('T13 自団体の振り分け', () => {
       );
       await page.reload();
       await card.getByRole('button', { name: '了承する' }).click();
-      await confirmNotLatest(page);
+      await confirmNotLatest(page, '回答');
       await expect(card.getByTestId('my-consent-wait')).toBeVisible();
       await shoot(page, 'T13', 'my-wait-reask-mobile');
     } finally {

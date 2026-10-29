@@ -141,6 +141,25 @@ describe('ConsentCard（交換の依頼への回答。Q4）', () => {
     await waitFor(() => expect(screen.getByTestId('my-consent-wait').textContent).toBe(WAIT_REASK));
   });
 
+  it('最新でない年度では、回答の前に「…に回答します」と確かめ（T13-15）、続けたときだけ送る', async () => {
+    const latest = { id: 'y9', label: 'R9', status: 'requesting' as const, festival_start: '2027-10-16' };
+    if (h.membership.status !== 'ready') throw new Error('ready でない');
+    h.membership = { status: 'ready', membership: { ...h.membership.membership, years: [latest, year], latestYear: latest } };
+    h.answerConsent.mockResolvedValue({});
+    renderCard(consent('asked'), data('allocating'));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '了承する' }));
+    });
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toContain('最新でない年度（R8・振り分け中）に回答します。よろしいですか');
+    expect(dialog.textContent).not.toContain('保存');
+    expect(h.answerConsent).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'この年度に回答する' }));
+    });
+    await waitFor(() => expect(h.answerConsent).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' })));
+  });
+
   it('振り分け中でなければ回答のボタンも「回答を変える」も出さない', () => {
     renderCard(consent('asked'), data('requesting'));
     expect(screen.queryByRole('button', { name: '了承する' })).toBeNull();

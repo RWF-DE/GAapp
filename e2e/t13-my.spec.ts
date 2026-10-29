@@ -31,11 +31,12 @@ async function consentStatus(groupId: string): Promise<string | undefined> {
   return r[0]?.status;
 }
 
-/** シナリオの年度は最新の年度（seed の R8）より前なので、回答の前に「最新でない年度に保存します」を確かめる（1.3.1） */
+/** シナリオの年度は最新の年度（seed の R8）より前なので、回答の前に「最新でない年度（…）に回答します」を確かめる（1.3.1・T13-15） */
 async function answer(page: Page, card: Locator, label: '了承する' | '了承しない'): Promise<void> {
   await card.getByRole('button', { name: label }).click();
   const d = page.getByRole('alertdialog').filter({ hasText: '最新でない年度' });
-  await d.getByRole('button', { name: 'この年度に保存する' }).click();
+  await expect(d).toContainText('に回答します。よろしいですか');
+  await d.getByRole('button', { name: 'この年度に回答する' }).click();
   await expect(d).toBeHidden();
 }
 
@@ -76,6 +77,15 @@ test('T13 自団体の振り分け（確定前）：申請の内容と交換の�
     await expect(page.getByRole('heading', { level: 1, name: '自団体の振り分け' })).toBeVisible();
     await expect(page.getByTestId('my-group')).toHaveText(/模擬店10/);
     await expect(page.getByTestId('my-in-progress')).toContainText('振り分け作業中');
+    // 最新でない年度を開いているので、見出しのすぐ下に「最新の年度に切り替える」（設計 1.3.1）
+    const sw = page.getByTestId('my-screen').getByTestId('latest-year-switch');
+    await expect(sw).toBeVisible();
+    await expect(sw.getByRole('button', { name: /^最新の年度（.+）に切り替える$/ })).toBeVisible();
+    const headingBox = (await page.getByRole('heading', { level: 1, name: '自団体の振り分け' }).boundingBox())!;
+    const switchBox = (await sw.boundingBox())!;
+    const progressBox = (await page.getByTestId('my-in-progress').boundingBox())!;
+    expect(switchBox.y).toBeGreaterThan(headingBox.y);
+    expect(switchBox.y + switchBox.height).toBeLessThanOrEqual(progressBox.y);
     await expect(page.getByTestId('my-requests').getByText('机(木)')).toBeVisible();
     await expect(page.getByTestId('my-requests').locator('li').filter({ hasText: '机(木)' })).toContainText(String(desk_req));
     await expect(page.getByTestId('my-submitted')).toContainText('提出日時');

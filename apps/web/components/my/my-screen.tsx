@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import { AppLink } from '@/components/common/app-link';
 import { ErrorBanner } from '@/components/common/error-banner';
-import { useNotLatestYearConfirm } from '@/components/common/latest-year';
+import { LatestYearSwitch, useNotLatestYearConfirm } from '@/components/common/latest-year';
 import { PageHeader } from '@/components/common/page-header';
 import { TokyoTime } from '@/components/common/tokyo-time';
 import { EmptyState, ErrorState, ForbiddenState, LoadingState } from '@/components/states';
@@ -80,6 +80,7 @@ function MyBody({ yearId, groupId, groupSwitch }: { yearId: string; groupId: str
     return (
       <>
         <PageHeader title="自団体の振り分け" />
+        <LatestYearSwitch />
         {groupSwitch}
         <LoadingState />
       </>
@@ -89,6 +90,7 @@ function MyBody({ yearId, groupId, groupSwitch }: { yearId: string; groupId: str
     return (
       <>
         <PageHeader title="自団体の振り分け" />
+        <LatestYearSwitch />
         {groupSwitch}
         <ErrorState message={messageFor(classifyError(q.error))} onRetry={() => void q.refetch()} />
       </>
@@ -123,6 +125,8 @@ function MyLoaded({
         onReload={() => void refetch()}
         reloading={fetching}
       />
+      {/* 最新でない年度を開いているときの「最新の年度に切り替える」（設計 1.3.1。最新の年度・最新が終了なら何も出さない） */}
+      <LatestYearSwitch />
       {groupSwitch}
       {final ? <FinalSection data={data} /> : <BeforeConfirmSection data={data} refetch={refetch} />}
     </div>
@@ -227,7 +231,8 @@ const ANSWER_LABELS = { accepted: '了承する', declined: '了承しない' } 
 export function ConsentCard({ consent: c, data, refetch }: { consent: MyConsent; data: MyData; refetch: () => Promise<unknown> }) {
   const queryClient = useQueryClient();
   const { reloadMembership } = useAuth();
-  const notLatest = useNotLatestYearConfirm();
+  // 回答の前の確かめは「最新でない年度（…）に回答します」（設計 3.11。T13-15）
+  const notLatest = useNotLatestYearConfirm({ verb: '回答' });
   const allocating = data.year.status === 'allocating';
   const [changing, setChanging] = useState(false);
   const [note, setNote] = useState('');

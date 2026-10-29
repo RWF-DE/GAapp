@@ -9,8 +9,8 @@ import { pinYear } from './support/year';
 // 団体代表が回答を変えると /swaps に出る（Q4）、確定中は読み取り、置き換えがないとき、交換依頼一覧（Excel）。
 // シナリオの年度で閉じる。
 
-// 交換依頼一覧のファイル名（日本語）を確かめるので、ブラウザは UTF-8 で起こす（t13-allocation.spec.ts と同じ）
-test.use({ launchOptions: { env: { ...process.env, LANG: 'C.UTF-8' } }, storageState: storageStateFor('admin') });
+// 交換依頼一覧のファイル名（日本語）を確かめる。Chromium を LANG=C.UTF-8 で起こすのは playwright.config.ts（T09a）が行う
+test.use({ storageState: storageStateFor('admin') });
 
 const SUBS = `requested_item_id = (select id from public.items where code = 'desk')
   and item_id = (select id from public.items where code = 'caster_desk')`;
@@ -39,10 +39,11 @@ function swapRow(page: Page, groupName: string): Locator {
   return page.locator('[data-row-id]').filter({ has: page.getByText(groupName, { exact: true }) });
 }
 
-/** シナリオの年度は最新の年度（seed の R8）より前なので、書く前に「最新でない年度に保存します」を確かめる（1.3.1） */
+/** シナリオの年度は最新の年度（seed の R8）より前なので、書く前に「最新でない年度（…）に記録します」を確かめる（1.3.1・T13-15） */
 async function confirmNotLatest(page: Page): Promise<void> {
   const d = page.getByRole('alertdialog').filter({ hasText: '最新でない年度' });
-  await d.getByRole('button', { name: 'この年度に保存する' }).click();
+  await expect(d).toContainText('に記録します。よろしいですか');
+  await d.getByRole('button', { name: 'この年度に記録する' }).click();
   await expect(d).toBeHidden();
 }
 
@@ -87,7 +88,17 @@ test('T13 キャスター机交換：依頼済みにする・拒否 → 最小�
     const g10 = s.ids.groups['模擬店10']!;
     const before10 = await substituted(s.yearId, g10);
     expect(before10.total).toBeGreaterThan(0);
-    await operate(page, '模擬店10', '依頼済みにする');
+    // 備考の欄は団体代表に見える「団体へのコメント」（T13-19）：表の見出しとダイアログの説明
+    await expect(page.getByRole('columnheader', { name: '団体へのコメント' })).toBeVisible();
+    await expect(page.getByRole('columnheader', { name: '備考' })).toHaveCount(0);
+    await swapRow(page, '模擬店10').getByTestId('swap-ops').getByRole('button', { name: '依頼済みにする', exact: true }).click();
+    await confirmNotLatest(page);
+    const opDialog = page.getByRole('alertdialog');
+    await expect(opDialog.getByLabel('団体へのコメント（任意）')).toBeVisible();
+    await expect(opDialog.getByTestId('swap-note-help')).toContainText('団体代表の『自団体の振り分け』に「コメント：」として表示されます');
+    await expect(opDialog.getByTestId('swap-note-help')).toContainText('総務の内部のメモには使えません');
+    await opDialog.getByRole('button', { name: '依頼済みにする', exact: true }).click();
+    await expect(opDialog).toBeHidden();
     await expect(page.getByText(/^依頼済みにしました（模擬店10）/)).toBeVisible();
     await expect(swapRow(page, '模擬店10').getByTestId('swap-status')).toHaveText('依頼済み');
     await expect(swapRow(page, '模擬店10').getByRole('button', { name: '未依頼に戻す' })).toBeVisible();
