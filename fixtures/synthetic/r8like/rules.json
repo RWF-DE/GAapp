@@ -1,0 +1,107 @@
+[
+  {
+    "code": "S01",
+    "kind": "substitute",
+    "enabled": true,
+    "memo": "不可机は模擬店の机(木)の代わりにだけ使う",
+    "params": {
+      "from": "desk",
+      "to": "desk_ng",
+      "categories": [
+        "stall"
+      ],
+      "cost": 0
+    }
+  },
+  {
+    "code": "S02",
+    "kind": "substitute",
+    "enabled": true,
+    "memo": "不可椅子は休憩所・模擬店の椅子(木)の代わり。同じ距離なら休憩所",
+    "params": {
+      "from": "chair",
+      "to": "chair_ng",
+      "categories": [
+        "rest_area",
+        "stall"
+      ],
+      "cost": 0,
+      "preferCategory": "rest_area"
+    }
+  },
+  {
+    "code": "S04",
+    "kind": "substitute",
+    "enabled": true,
+    "memo": "企業の長机(3人掛)が足りなければ長机(2人掛)",
+    "params": {
+      "from": "long_desk_3",
+      "to": "long_desk_2",
+      "categories": [
+        "company"
+      ],
+      "cost": 1
+    }
+  },
+  {
+    "code": "S05",
+    "kind": "source_restrict",
+    "enabled": true,
+    "memo": "設営の机(木)は 1-1〜2-3 から",
+    "params": {
+      "group": "設営",
+      "items": [
+        "desk"
+      ],
+      "rooms": [
+        "1-1",
+        "1-2",
+        "1-3",
+        "2-1",
+        "2-2",
+        "2-3"
+      ]
+    }
+  },
+  {
+    "code": "S06",
+    "kind": "fixed_request",
+    "enabled": true,
+    "memo": "設営の机(木)は241台（未提出のとき）",
+    "params": {
+      "group": "設営",
+      "item": "desk",
+      "count": 241
+    }
+  },
+  {
+    "code": "S07",
+    "kind": "substitute",
+    "enabled": true,
+    "memo": "屋内の模擬店の机(木)をキャスター机に（了承が要る）",
+    "params": {
+      "from": "desk",
+      "to": "caster_desk",
+      "categories": [
+        "stall"
+      ],
+      "indoorOnly": true,
+      "cost": 3,
+      "needsConsent": true
+    }
+  },
+  {
+    "code": "S08",
+    "kind": "keep",
+    "enabled": true,
+    "memo": "学科展示は第一多目的室の机12・椅子4を残す",
+    "params": {
+      "group": "学科展示",
+      "room": "第一多目的室",
+      "items": {
+        "desk": 12,
+        "chair": 4
+      }
+    }
+  }
+]
