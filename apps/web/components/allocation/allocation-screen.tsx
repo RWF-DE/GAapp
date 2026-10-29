@@ -273,6 +273,8 @@ function AllocationLoaded({
 
   // ---- 移動（検証の一覧・precheck の項目から） ----
   const [highlightRoom, setHighlightRoom] = useState<string | null>(null);
+  // 項目を押して移った回数（同じ項目をもう一度押したとき、URL も state も同じなので、これでもう一度スクロールする）
+  const [focusKey, setFocusKey] = useState(0);
   const setQuery = useCallback((q: Partial<AllocationQuery>) => router.forceReplace(allocationHref(q)), [router]);
   const currentTab = tabs.find((t) => t.key === query.tab) ?? tabs[0] ?? null;
   const targetOf = useCallback(
@@ -282,6 +284,7 @@ function AllocationLoaded({
   const goTo = useCallback(
     (t: IssueTarget) => {
       const d = t.destination;
+      if (d.kind !== 'none') setFocusKey((k) => k + 1);
       switch (d.kind) {
         case 'row':
           setHighlightRoom(null);
@@ -307,15 +310,15 @@ function AllocationLoaded({
   );
 
   // ?row=… で開いたら、その行のタブを開いてスクロールし、目立たせる（行のタブが違えば直す）
-  useRowFocus({ row: query.row, view: query.view, rowItem, tabByItem, currentTabKey: currentTab?.key, setQuery });
+  useRowFocus({ row: query.row, view: query.view, rowItem, tabByItem, currentTabKey: currentTab?.key, setQuery, focusKey });
   useEffect(() => {
     if (highlightRoom) document.querySelector(`[data-room-block="${CSS.escape(highlightRoom)}"]`)?.scrollIntoView({ block: 'start' });
-  }, [highlightRoom, currentTab]);
+  }, [highlightRoom, currentTab, focusKey]);
   useEffect(() => {
     if (query.view === 'group' && query.group) {
       document.querySelector(`[data-group-block="${CSS.escape(query.group)}"]`)?.scrollIntoView({ block: 'start' });
     }
-  }, [query.view, query.group]);
+  }, [query.view, query.group, focusKey]);
 
   // ---- 自動振り分け ----
   const [confirmMode, setConfirmMode] = useState<AllocateMode | null>(null);

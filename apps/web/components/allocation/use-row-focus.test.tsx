@@ -64,6 +64,22 @@ describe('useRowFocus（?row= の行へ移る）', () => {
     expect(scroll).toHaveBeenCalledTimes(1);
   });
 
+  it('同じ行をもう一度押したとき（URL は同じ。focusKey だけ進む）も、その行へスクロールする', () => {
+    const setQuery = vi.fn();
+    const props: Props = { row: ROW, view: 'item', rowItem: new Map([[ROW, 'desk']]), tabByItem, currentTabKey: 'desk', setQuery, focusKey: 1 };
+    const { rerender } = renderHook((p: Props) => useRowFocus(p), { initialProps: props });
+    expect(scroll).toHaveBeenCalledTimes(1);
+    // 編集・読み直し（focusKey は同じ）では戻さない
+    rerender({ ...props, rowItem: new Map([[ROW, 'desk']]) });
+    expect(scroll).toHaveBeenCalledTimes(1);
+    // 同じ項目をもう一度押した
+    rerender({ ...props, focusKey: 2 });
+    expect(scroll).toHaveBeenCalledTimes(2);
+    rerender({ ...props, focusKey: 2, rowItem: new Map([[ROW, 'desk']]) });
+    expect(scroll).toHaveBeenCalledTimes(2);
+    expect(setQuery).not.toHaveBeenCalled();
+  });
+
   it('未保存の追加の行（new- の仮の id）にも移る', () => {
     const temp = 'new-9d3c1a2b-7e6f-4a5b-8c9d-0e1f2a3b4c5d';
     document.body.innerHTML = `<div data-row-id="${temp}"></div>`;

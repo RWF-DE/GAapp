@@ -295,3 +295,70 @@ test('T13 了承を「拒否」にして最小変更で再実行すると、そ�
     await s.cleanup();
   }
 });
+
+test('T13 検証の一覧：同じ項目をもう一度押してもその行へ移る。未保存の追加の行（仮の id）へも移る', async ({ page }) => {
+  const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+  try {
+    await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+    await page.setViewportSize({ width: 1280, height: 600 });
+    await page.goto('/allocation/');
+    await expect(page.getByTestId('issues-panel')).toBeVisible();
+
+    // 同じ項目（了承待ちの W102。行へ移る）を2回押す（B8）
+    const item = page.locator('[data-issue-code="W102"]').first();
+    await expect(item).toBeVisible();
+    const go = item.locator('button').first();
+    await go.click();
+    await expect(page).toHaveURL(/[?&]row=[0-9a-f-]{36}/);
+    const rowId = new URL(page.url()).searchParams.get('row')!;
+    const row = page.locator(`[data-row-id="${rowId}"]`);
+    await expect(row).toHaveAttribute('data-highlighted', 'true');
+    await expect(row).toBeInViewport();
+    // 行を画面の外へ（上か下へ）スクロールしてから、同じ項目をもう一度押す
+    await page.mouse.move(400, 400);
+    await page.mouse.wheel(0, -100_000);
+    const inView = await row.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return r.bottom > 0 && r.top < (el.ownerDocument.defaultView?.innerHeight ?? 0);
+    });
+    if (inView) {
+      await page.mouse.wheel(0, 100_000);
+    }
+    await expect(row).not.toBeInViewport();
+    const urlBefore = page.url();
+    await go.click();
+    expect(page.url()).toBe(urlBefore);
+    await expect(row).toBeInViewport();
+
+    // 未保存の追加の行（ルール外の品目 → E004。rowIds は new-<uuid>）へ移る（B9）
+    await page.getByRole('button', { name: '行を追加' }).click();
+    const add = page.getByRole('dialog');
+    await expect(add.getByRole('heading', { name: '行を追加' })).toBeVisible();
+    const groupName = ((await add.getByLabel('団体').locator('option:checked').textContent()) ?? '').trim();
+    const itemSelect = add.getByLabel('品目', { exact: true });
+    const options = await itemSelect.locator('option').allTextContents();
+    let itemName: string | null = null;
+    for (const [k, text] of options.entries()) {
+      if (!text.includes('ルール外')) continue;
+      await itemSelect.selectOption({ index: k });
+      if ((await add.getByLabel('運び元').count()) > 0 && (await add.getByRole('button', { name: '追加する', exact: true }).isEnabled())) {
+        itemName = text.slice(0, text.indexOf('（'));
+        break;
+      }
+    }
+    expect(itemName, 'ルール外で在庫のある品目が要る').not.toBeNull();
+    await add.getByRole('button', { name: '追加する', exact: true }).click();
+    await expect(page.getByTestId('pending-bar')).toHaveAttribute('data-count', '1');
+    const e004 = page.locator('[data-issue-code="E004"]').filter({ hasText: `${groupName}の` }).filter({ hasText: `を${itemName}で置き換えられません` });
+    await expect(e004).toHaveCount(1);
+    await e004.locator('button').first().click();
+    await expect(page).toHaveURL(/[?&]row=new-[0-9a-f-]+/);
+    const tempId = new URL(page.url()).searchParams.get('row')!;
+    const added = page.locator(`[data-row-id="${tempId}"]`);
+    await expect(added).toHaveAttribute('data-highlighted', 'true');
+    await expect(added).toHaveAttribute('data-pending', 'true');
+    await expect(added).toBeInViewport();
+  } finally {
+    await s.cleanup();
+  }
+});
