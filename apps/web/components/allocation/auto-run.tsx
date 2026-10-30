@@ -48,6 +48,10 @@ export type AutoOutcome =
       excludedRequests: number;
       /** 保存の応答が届かず、読み直して保存されていたと分かった */
       verified?: boolean;
+      /** 保存は通ったが、その後の読み直し（⑤）が失敗した（画面はまだ前のスナップショット。「読み直す」で消える） */
+      reloadError?: unknown;
+      /** 「読み直す」を押して読み直している */
+      reloading?: boolean;
     }
   /** 保存が拒まれた（conflict・E001 など・state・input）。スナップショットは読み直した */
   | { kind: 'save-error'; mode: AllocateMode; error: unknown }
@@ -248,7 +252,8 @@ export function useAutoAllocation(deps: AutoRunDeps) {
         try {
           d.publish(await d.loadFresh());
         } catch (e) {
-          finish({ kind: 'error', mode, error: e });
+          // 保存は通っている（DB は正しい）ので、保存の結果（件数）を残し、読み直せなかったことだけを足す
+          finish({ ...saved, reloadError: e });
           return;
         }
         finish(saved);
@@ -279,7 +284,28 @@ export function useAutoAllocation(deps: AutoRunDeps) {
   }, [state.outcome, verify]);
   const dismiss = useCallback(() => setState((s) => (s.running ? s : { ...s, outcome: null })), []);
 
-  return { state, start, cancel, recheck, dismiss };
+  /** 保存の後の読み直し（⑤）が失敗したときの「読み直す」。読み直せたら reloadError を消し、だめなら残す */
+  const reloadAfterSave = useCallback(async () => {
+    const o = state.outcome;
+    if (o?.kind !== 'saved' || o.reloadError === undefined || o.reloading) return;
+    const setSaved = (f: (o: Extract<AutoOutcome, { kind: 'saved' }>) => Extract<AutoOutcome, { kind: 'saved' }>) =>
+      setState((s) => (s.outcome === null || s.outcome.kind !== 'saved' ? s : { ...s, outcome: f(s.outcome) }));
+    setSaved((x) => ({ ...x, reloading: true }));
+    try {
+      const snap = await depsRef.current.loadFresh();
+      depsRef.current.publish(snap);
+      setSaved((x) => {
+        const rest = { ...x };
+        delete rest.reloadError;
+        delete rest.reloading;
+        return rest;
+      });
+    } catch (e) {
+      setSaved((x) => ({ ...x, reloadError: e, reloading: false }));
+    }
+  }, [state.outcome]);
+
+  return { state, start, cancel, recheck, dismiss, reloadAfterSave };
 }
 
 /** 経過時間（ミリ秒）。動いている間だけ 250 ms ごとに進める */

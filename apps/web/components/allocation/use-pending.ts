@@ -3,7 +3,7 @@
 // 振り分けの行の未保存の変更を持つ（画面の設計 3.9 の「行の操作」、D-33・D-34。T13 の段 2）。
 // - スナップショットが変わったら（読み直し・ほかの人の変更・保存の後）、rebasePending で当て直す。外れた変更は一覧で知らせる。
 // - 下書き（lib/drafts.ts）：変更のたびに 500 ms まとめて写す。開いたときに下書きがあれば DraftNotice（戻すと当て直す）。
-// - 保存：lib/allocation/row-save.ts の saveRows（応答が届かなければ版で確かめる。確かめるまで送り直させない）。
+// - 保存：lib/allocation/row-save.ts の saveRows（応答が届かなければ版で確かめる。確かめるまで送り直させず、未保存の変更も変えさせない）。
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -29,6 +29,13 @@ import {
   type PendingEdit,
 } from '@/lib/allocation/pending';
 import { applySaveResult, checkAfterUnknown, saveRows, type RowSaveDeps } from '@/lib/allocation/row-save';
+
+/**
+ * 保存されたか確かめられない（unverified）間は、未保存の変更を変える操作（行の編集・追加・元に戻す・取り消す・下書きを戻す）を
+ * 受け付けない理由（設計 2.6 の (B2)・3.9）。「確かめる」は送った時点の変更で判定して未保存の変更を置き換えるので、
+ * 待っている間の編集が知らせなく消えたり、取り消した変更が戻ったりしないように
+ */
+export const EDIT_BLOCKED_UNVERIFIED = '保存されたかを確かめるまで、編集できません。「確かめる」を押してください';
 
 /** 行の保存が conflict で拒まれ、読み直して当て直したとき */
 export const CONFLICT_REAPPLIED = '他の人が変更しました。読み直して、ぶつからない変更を当て直しました';
@@ -71,9 +78,12 @@ export interface PendingApi {
   rows: ReturnType<typeof applyPending>;
   /** 今の DB の行（updated_at つき） */
   stored: StoredRows;
+  /** 未保存の変更を変える（editBlock があれば何もしない） */
   edit: (e: PendingEdit) => void;
   revert: (rowId: string) => void;
   discardAll: () => void;
+  /** 未保存の変更を変える操作（編集・追加・元に戻す・取り消す）を押せないときの理由（null なら押せる） */
+  editBlock: string | null;
   /** 保存する（理由は必須）。理由の誤りのときは例外（ReasonDialog を開いたままにする） */
   save: (reason: string) => Promise<void>;
   saving: boolean;
@@ -163,19 +173,30 @@ export function usePendingRows({
   }, [draftKey]);
 
   // ---- 編集 ----
+  const [notice, setNotice] = useState<PendingNotice | null>(null);
+  // 確かめられない間は、未保存の変更を変えない（画面のボタンも押せなくするが、ここでも止める）
+  const editBlock = notice?.kind === 'unverified' ? EDIT_BLOCKED_UNVERIFIED : null;
+  const blocked = editBlock !== null;
   const edit = useCallback(
     (e: PendingEdit) => {
+      if (blocked) return;
       setPending((p) => editPending(p, e, stored));
     },
-    [setPending, stored],
+    [blocked, setPending, stored],
   );
-  const revert = useCallback((rowId: string) => setPending((p) => revertRow(p, rowId)), [setPending]);
-  const [notice, setNotice] = useState<PendingNotice | null>(null);
+  const revert = useCallback(
+    (rowId: string) => {
+      if (blocked) return;
+      setPending((p) => revertRow(p, rowId));
+    },
+    [blocked, setPending],
+  );
   const discardAll = useCallback(() => {
+    if (blocked) return;
     setPending(() => []);
     setDropped([]);
     setNotice(null);
-  }, [setPending]);
+  }, [blocked, setPending]);
 
   // ---- 保存 ----
   const [saving, setSaving] = useState(false);
@@ -320,6 +341,7 @@ export function usePendingRows({
     edit,
     revert,
     discardAll,
+    editBlock,
     save,
     saving,
     saveBlock,
@@ -329,7 +351,8 @@ export function usePendingRows({
     dismissDropped: () => setDropped([]),
     recheck,
     resolvePartial,
-    draft: draft && !draftDecided ? { savedAt: draft.savedAt, restore: restoreDraft, discard: discardDraft } : null,
+    // 確かめられない間は下書きを戻させない（戻すと未保存の変更が置き換わる）
+    draft: draft && !draftDecided && !blocked ? { savedAt: draft.savedAt, restore: restoreDraft, discard: discardDraft } : null,
   };
 }
 

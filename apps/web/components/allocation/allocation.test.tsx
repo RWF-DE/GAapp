@@ -364,6 +364,75 @@ describe('計算中のロック（engine を偽物にして fake timers）', () 
   });
 });
 
+describe('保存の後の読み直し（⑤）だけが失敗したとき', () => {
+  function SavedHarness({ deps }: { deps: AutoRunDeps }) {
+    const a = useAutoAllocation(deps);
+    return (
+      <>
+        <button type="button" onClick={() => void a.start('full')}>
+          go
+        </button>
+        {a.state.outcome ? (
+          <AutoResult outcome={a.state.outcome} vm={vm} errorsAfter={2} onRecheck={a.recheck} onReload={vi.fn()} onReloadAfterSave={() => void a.reloadAfterSave()} />
+        ) : null}
+      </>
+    );
+  }
+  const ok: AllocateResult = { ok: true, rows: [], objective: 0, elapsedMs: 5, stats: { excludedRequests: 0 } as never };
+  const counts: SaveAutoAllocationsResult = { allocation_version: 6, inserted: 3, updated: 1, deleted: 2 };
+
+  it('保存できたことと件数を残し、「読み直せなかったので『読み直す』を押してください」。読み直せたら消える', async () => {
+    let reads = 0;
+    let failReload = true;
+    const loadFresh = vi.fn(() => {
+      reads += 1;
+      // ②の読み込みは通り、⑤の読み直しだけが失敗する。「読み直す」は通る
+      if (reads === 1 || !failReload) return Promise.resolve(snapshot);
+      return Promise.reject(new TypeError('Failed to fetch'));
+    });
+    const { deps, engine } = makeDeps({ answer: ok, save: () => Promise.resolve(counts), loadFresh });
+    await act(async () => {
+      await engine.warmup();
+    });
+    render(<SavedHarness deps={deps} />);
+    fireEvent.click(screen.getByRole('button', { name: 'go' }));
+    for (let k = 0; k < 6; k += 1) await flush();
+    const saved = screen.getByTestId('allocate-saved');
+    expect(saved.textContent).toContain('自動振り分けの結果を保存しました（追加 3・変更 1・削除 2）。');
+    expect(saved.textContent).toContain('読み直せなかったので「読み直す」を押してください');
+    // 読み直せていない（古い）スナップショットで数えた error は出さない
+    expect(screen.queryByTestId('allocate-errors-after')).toBeNull();
+    // 読み込みの失敗の帯（ErrorBanner）だけにはしない
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    failReload = false;
+    fireEvent.click(within(saved).getByRole('button', { name: '読み直す' }));
+    for (let k = 0; k < 4; k += 1) await flush();
+    expect(deps.publish).toHaveBeenLastCalledWith(snapshot);
+    expect(screen.getByTestId('allocate-saved').textContent).toContain('自動振り分けの結果を保存しました（追加 3・変更 1・削除 2）。');
+    expect(screen.getByTestId('allocate-saved').textContent).not.toContain('読み直せなかった');
+    expect(screen.getByTestId('allocate-errors-after').textContent).toContain('error が 2 件');
+  });
+
+  it('「読み直す」もまた失敗したら、保存できたことと「読み直す」を残す', async () => {
+    let reads = 0;
+    const loadFresh = vi.fn(() => (++reads === 1 ? Promise.resolve(snapshot) : Promise.reject(new TypeError('Failed to fetch'))));
+    const { deps, engine } = makeDeps({ answer: ok, save: () => Promise.resolve(counts), loadFresh });
+    await act(async () => {
+      await engine.warmup();
+    });
+    render(<SavedHarness deps={deps} />);
+    fireEvent.click(screen.getByRole('button', { name: 'go' }));
+    for (let k = 0; k < 6; k += 1) await flush();
+    fireEvent.click(within(screen.getByTestId('allocate-saved')).getByRole('button', { name: '読み直す' }));
+    for (let k = 0; k < 4; k += 1) await flush();
+    expect(loadFresh).toHaveBeenCalledTimes(3);
+    const saved = screen.getByTestId('allocate-saved');
+    expect(saved.textContent).toContain('（追加 3・変更 1・削除 2）');
+    expect(saved.textContent).toContain('読み直せなかったので「読み直す」を押してください');
+  });
+});
+
 describe('計算中のロックはキーボードで抜けられない（B5）', () => {
   const tab = (shift = false) => fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Tab', shiftKey: shift });
 

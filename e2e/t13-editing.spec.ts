@@ -5,7 +5,7 @@ import { SEED_USER_IDS } from './support/users';
 import { pinYear } from './support/year';
 
 // T13 振り分け（段 2：手での編集と使用不可の部屋。画面の設計 3.9・7.2 の T13 の行）。
-// 2つの画面の conflict、保存の応答だけを落としたとき、使用不可の部屋の固定の行（画面・API・検証の一覧の E002）、
+// 2つの画面の conflict、保存の応答だけを落としたとき、保存も版の読み直しも届かないとき（確かめるまで編集できない）、使用不可の部屋の固定の行（画面・API・検証の一覧の E002）、
 // 部屋の見出しからの使用不可と最小変更、拒否 → 最小変更で置き換えが消える。シナリオの年度で閉じる。
 
 test.use({ storageState: storageStateFor('admin') });
@@ -139,6 +139,53 @@ test('T13 行の編集：保存の応答だけを落とすと、送り直しの�
     expect(x2!.count).toBe(x.count + 1);
     // 画面も DB と同じ行数
     await expect(page.getByTestId('rows-not-saved')).toHaveCount(0);
+  } finally {
+    await s.cleanup();
+  }
+});
+
+test('T13 行の編集：保存の応答が届かず版も読めない間は、行の編集・追加・「取り消す」を押せず、「確かめる」の後に押せる', async ({ page }) => {
+  const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+  try {
+    const [x] = await rowsOf(s.yearId, "i.code = 'desk' and not a.is_keep");
+    if (!x) throw new Error('机(木)の行が要ります');
+    await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+    const row = await openRow(page, x.id);
+    const plus = row.getByRole('button', { name: /を1増やす$/ });
+    await plus.click();
+    const bar = page.getByTestId('pending-bar');
+    await expect(bar).toHaveAttribute('data-count', '1');
+
+    // 保存は届かず（サーバーにも届けない）、版の読み直しも通信できない → 確かめられない
+    const isVersionRead = (u: URL) => u.pathname.endsWith('/rest/v1/years') && u.searchParams.get('select') === 'allocation_version';
+    await page.route('**/rest/v1/rpc/save_allocation_rows', (route) => route.abort());
+    await page.route(isVersionRead, (route) => route.abort());
+    await saveWithReason(page);
+    const notice = page.getByTestId('rows-unverified');
+    await expect(notice).toBeVisible({ timeout: 15_000 });
+    const block = '保存されたかを確かめるまで、編集できません。「確かめる」を押してください';
+    await expect(notice).toContainText(block);
+    await expect(bar).toContainText(block);
+    // 行の操作は出ず、行の追加・取り消す・保存は押せない。未保存の変更は残る
+    await expect(plus).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '行を追加' })).toBeDisabled();
+    await expect(bar.getByRole('button', { name: '取り消す' })).toBeDisabled();
+    await expect(bar.getByRole('button', { name: '保存…' })).toBeDisabled();
+    await expect(bar).toHaveAttribute('data-count', '1');
+
+    // 通信が戻って「確かめる」：版が同じなので保存されていない。また編集できる
+    await page.unroute(isVersionRead);
+    await page.unroute('**/rest/v1/rpc/save_allocation_rows');
+    await notice.getByRole('button', { name: '確かめる' }).click();
+    await expect(page.getByTestId('rows-not-saved')).toBeVisible({ timeout: 15_000 });
+    await expect(bar).not.toContainText(block);
+    await expect(page.getByRole('button', { name: '行を追加' })).toBeEnabled();
+    await expect(bar.getByRole('button', { name: '取り消す' })).toBeEnabled();
+    await plus.click();
+    await expect(bar).toHaveAttribute('data-count', '1');
+    await expect(row.getByRole('group').getByRole('textbox')).toHaveValue(String(x.count + 2));
+    const [x2] = await rowsOf(s.yearId, 'a.id = $2', [x.id]);
+    expect(x2!.count).toBe(x.count); // まだ保存していない
   } finally {
     await s.cleanup();
   }
