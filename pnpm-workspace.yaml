@@ -1,0 +1,7 @@
+packages:
+  - apps/*
+  - packages/*
+# spikes/ は対象に含めない（T00 が独自の package.json で管理する）
+
+# リリースから7日（10080分）未満の版は入れない
+minimumReleaseAge: 10080

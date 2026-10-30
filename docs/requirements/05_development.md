@@ -5,7 +5,7 @@
 GitHub の組織の公開リポジトリにする。pnpm workspace のモノレポで、振り分けロジックを画面から切り離して単体テストできるようにする。コードに秘密情報は入れず、テストデータ（fixtures）にも個人情報を入れない。
 
 ```
-denpa-somu/
+GAapp/
 ├─ apps/web/                 Next.js（App Router、output: 'export'）
 │   ├─ app/(auth)/login
 │   ├─ app/(staff)/          総務向け：dashboard, allocation, swaps, requests, stocks, stock, rules, settings, history
@@ -34,7 +34,7 @@ denpa-somu/
 ## ブランチ・レビュー・CI
 
 - main が本番。main へのマージで deploy.yml が静的書き出しをビルドし、GitHub Pages に公開する。作業は `feat/<チケットID>-<内容>` ブランチで行い、PR で main に入れる
-- 公開リポジトリなので、GitHub Free の組織でも保護ブランチ（1人の承認と CI の通過を必須）を使える
+- 公開リポジトリなので、GitHub Free の組織でも保護ブランチ（1人の承認と CI の通過を必須）を使える。承認できる人がほかにいない間は、管理者が PR の中で承認だけを迂回できる（CI は迂回できない。手順は README。決定は D-41）
 - PR ごとのプレビュー URL はない。画面の変更は PR にスクリーンショットを貼るか、レビュアーがローカルで確かめる
 - migrations と RLS・RPC を変える PR は、管理者役の開発者が必ず見る。本番 DB への適用は、マージ後に手動実行のワークフロー（migrate.yml）で行う
 - CI（ci.yml）で次を実行し、すべて通らないとマージできない：
@@ -53,7 +53,7 @@ denpa-somu/
 | ID | 内容 | 前提 | 見積もり | 担当 | 状態 |
 | --- | --- | --- | --- | --- | --- |
 | T00 | スパイク：highs-js をブラウザで動かし、R8 規模の輸送問題の計算時間と、解が整数で返ることを確かめる | — | S |  | 未着手 |
-| T01 | 組織と公開リポジトリ、pnpm workspace、lint・CI の雛形、GitHub Pages への公開 | — | M |  | 未着手 |
+| T01 | 組織と公開リポジトリ、pnpm workspace、lint・CI の雛形、GitHub Pages への公開 | — | M | Claude | 完了 |
 | T02 | DDL・列挙型・ビュー・監査トリガーのマイグレーション | T01 | M |  | 未着手 |
 | T03 | RLS、権限の関数、RPC、pgTAP テスト | T02 | L |  | 未着手 |
 | T04 | Google ログイン、ドメイン制限のフック、招待と受け入れのトリガー、テスト用ログイン | T03 | M |  | 未着手 |
@@ -123,4 +123,4 @@ T06〜T08 と T09〜T11 は並行して進められる。2〜3人なら「ロジ
 - [ ] 管理者が第一セミナーを使用不可にして最小変更で再実行し、出力までを5分以内で終えられる
 - [ ] 団体代表は他の団体の申請を見られない。招待されていない人は何も見られない（Supabase の API を直接呼んでも）
 
-fixtures には企業や学生のメールアドレスなどの個人情報を入れない。R8 のフォーム回答から変換するときに importer で除く。
+fixtures には企業や学生のメールアドレスなどの個人情報を入れない。R8 のフォーム回答から変換するときに importer で除く。fixtures に置くのは UTF-8 の CSV・JSON などのテキストだけにする（xlsx・PDF・UTF-16 などは置かない。`pnpm check:emails` は fixtures/ の下に検査できないバイナリがあると失敗する）。
