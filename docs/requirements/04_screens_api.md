@@ -52,10 +52,15 @@
 - 上部：「自動振り分け」「最小変更で再実行」「確定」「Excel出力」ボタン、年度ステータス、最終実行日時
 - 左：品目タブ（R8 のシートと同じ並び）。各タブは運び元ごとにまとめた表（運び先、団体、数、備考、自動／手動、固定）＋場所ごとの余り
 - 右：検証結果（error → warning → info の順）。クリックで該当行に移動
-- 切替：「品目別」と「団体別」の表示。団体別では申請数と振り分け数（申請品目ベース）を並べて差を表示
+- 切替：「品目別」と「団体別」の表示。団体別では需要（前処理1・2を当てた後の申請。企業以外の長机(3人掛)は長机(2人掛)に、未提出の設営は固定の数に。D-05・D-07）と振り分け数（申請品目ベース）を並べて差を表示
 - 読み込み：年度の版（years.allocation_version）を、ほかのデータより先に読む。保存と確定にはこの版を渡す
 - 行の操作：追加・数の変更・運び元の変更・削除・固定。手で変えた行は origin = manual（固定だけなら origin は変えない）。保存は RPC で、他の人が先に変えていたら読み直す。保存の返り値の版は、ロックした時点の版（allocation_version_before）が自分の持つ版と同じときだけ覚え直し、違えば読み直す
-- 「自動振り分け」：実行前に「自動の行 N 件を置き換えます。固定・手動の行は残ります」と確認。計算は Web Worker で行い、その間は画面をロック。解けないときは不足と原因の一覧を出す。入力を組み立てたときの版を保存の RPC に渡し、計算中に他の人が振り分け・了承・在庫・申請・ルールなどを変えていたら「他の人が変更しました」と出して読み直す
+- 「自動振り分け」：実行前に「自動の行 N 件を置き換えます。固定・手動の行は残ります」と確認。計算は Web Worker で行い、その間は画面をロック。入力を組み立てたときの版を保存の RPC に渡し、計算中に他の人が振り分け・了承・在庫・申請・ルールなどを変えていたら「他の人が変更しました」と出して読み直す。結果が ok: false のときは振り分けを書き換えず、reason ごとに見出しを変えて出す
+  - invalid_input：「入力に誤りがあります」。inputErrors（項目とルールのコード）の一覧
+  - precheck：「振り分けの前に直すものがあります」。issues（E001・E002・E005）の一覧。クリックで該当の行・ルールへ移動
+  - infeasible：「解けません」。shortages（品目全体の不足 → 団体ごとの不足）と causes（原因のルールと、需要・在庫合計）の一覧
+  - solver_error：「計算できませんでした」。message（計算エンジンの読み込みの失敗か、計算中のエラーか）
+- 申請できない品目の申請（E006）を除いて計算したときは、結果の上に「申請できない品目の申請 N 件を除いて計算しました」と出し、検証の E006 を示す
 - 「確定」：error 0 件のときだけ押せる。理由の入力が必須。検証に使った版を一緒に送り、その後に何かが変わっていれば確定せずに読み直す（ダッシュボードの確定ボタンと同じ）。確定後は編集不可。「確定を解除」は理由入力必須
 
 ### キャスター机交換 /swaps（PC）
@@ -93,7 +98,8 @@
 - 企業フォームは団体名が入っていない（R8 ではすべて「オプション 1」）ので、取り込み時に手で団体を選ぶ
 - 同じ団体の回答が複数あるときは、タイムスタンプが一番新しいものを使い、古いものは画面に出して確認させる
 - 列がずれている行（見出しのない列に値がある行）は取り込まず、一覧で示す
-- 品目の列名はフォームでの表記（items.aliases）で品目に対応させる。企業以外の長机(3人掛)は長机(2人掛)に読み替える（S03）
+- 品目の列名はフォームでの表記（items.aliases）で品目に対応させる。企業以外の長机(3人掛)は長机(2人掛)に読み替える（S03）。読み替えた後は団体・品目ごとに合計して1行にする（長机(3人掛)と長机(2人掛)の両方を申請した回答で、同じ品目の行が2つにならないように）
+- フォームのタイムスタンプを、その団体の提出日時（request_submissions.submitted_at）として保存する（Excel の団体別集計の「申請順」に使う）。取り込みは管理者だけの RPC で行い、DB はそのときだけ渡した日時を保つ（団体代表の提出は今までどおり DB の時刻）
 - メールアドレスは、どの列にあっても（見出しのない列も含めて）パターンで見つけて捨て、保存もログ出力もしない
 
 ## DB関数とブラウザ側の処理
@@ -128,16 +134,17 @@
 
 | 名前 | 置き場所 | 動作 |
 | --- | --- | --- |
-| allocate(input) | packages/allocator | 振り分けの計算（Web Worker で実行） |
-| validate(input, rows) | packages/allocator | 検証コードの一覧を返す |
-| exportAllocationXlsx(data) | packages/exporter | R8 様式の Excel |
-| exportSwapsXlsx(data) | packages/exporter | キャスター机交換依頼一覧 |
-| exportYearJson(data) | packages/exporter | 年度データの書き出し（バックアップ） |
-| parseFormCsv(kind, csv) | packages/importer | Googleフォーム回答の取り込み（メールアドレスを捨てる） |
+| allocate(input, solver) | packages/allocator | 振り分けの計算（Web Worker で実行。solver は Worker の中で1回だけ読み込んだ highs のインスタンス） |
+| validate(data, rows) | packages/allocator | 検証コードの一覧を返す（data は年度のデータ、rows はその年度の全行） |
+| exportAllocationXlsx({ yearLabel, data, rows }) | packages/exporter | R8 様式の Excel（data は年度のデータ、rows はその年度の全行。余り・計は exporter が計算する） |
+| exportSwapsXlsx({ yearLabel, data, rows }) | packages/exporter | キャスター机交換依頼一覧（了承が要る代替の行と了承の状況） |
+| exportYearJson(yearExport) | packages/exporter | 年度データの書き出し（バックアップ。メールアドレスは含めない） |
+| parseFormCsv(kind, csv, items) | packages/importer | Googleフォーム回答の読み取り（品目の列は items の aliases で対応。メールアドレスを捨てる） |
+| resolveResponses(parsed, groups, items, manual) | packages/importer | 読み取った回答を団体に対応させ、申請（読み替えの後、団体・品目ごとに1行）と提出（フォームのタイムスタンプ）を作る。合わない行・古い回答を返す |
 
 - RPC は SECURITY DEFINER にして `search_path = ''` を設定し、関数の最初でロールを確かめる。次に年度の行をロックし（`for no key update`）、ロールをもう一度確かめてから状態を確かめ、入力を確かめてから理由を置いて書き込む。入力はブラウザで zod、DB では関数の中でもう一度確かめる
 - エラーは `raise exception`（SQLSTATE P0001）で返し、message にコード、detail に該当する行の id などを JSON で入れる（メールアドレスは入れない）。PostgREST は HTTP 400 で `{ code: 'P0001', message, details }` を返す。コードは forbidden（ロールがない。対象が見つからないときも）、not_found、invalid_state（状態が違う、確定中に変えられない）、conflict（版・updated_at が違う、重複）、invalid_input（形や参照が違う、上限を超える）、reason_required、検証コード（E001・E002・E005・E006）。RPC の中で起きた形の誤り（jsonb の中の uuid・日付など）と CHECK 違反も invalid_input にして、生の SQLSTATE は返さない。ただし、RPC のトップレベルの型つきの引数（uuid・enum・date・integer）は PostgREST が関数の前に変換するので、形が違うと 22P02・22007 などがそのまま返る（関数の中では直せない）。画面は zod で先に確かめ、22 で始まる SQLSTATE は「入力の形が違う」として扱う。画面で日本語に直して表示する
 - 楽観ロックの updated_at は、受け取った文字列をそのまま返す（Date に変換しない）
 - 振り分けの行を渡す JSON は、03 の AllocationRow と同じ camelCase（sourceRoomId、groupId、itemId、requestedItemId、count、isKeep）にする
 - 書き込みがデッドロック（SQLSTATE 40P01。PostgREST は HTTP 500 で返す）で失敗したときは、何も保存されていない（1リクエスト＝1トランザクション）ので、入力を残したまま「ほかの人の保存と重なりました。もう一度保存してください」と出す。HTTP 500 を一律に扱わず、エラーの code で分ける
-- highs-js の wasm は振り分け画面を開いたときだけ読み込む（dynamic import）。wasm ファイルは静的ファイルとして一緒に公開し、locateFile でその URL を渡す
+- highs-js の wasm は振り分け画面を開いたときだけ読み込む（その画面のコンポーネントで `new Worker(new URL('…worker.ts', import.meta.url))` を作り、Worker の中で highs を読み込む）。wasm は node_modules/highs/build/highs.wasm を `apps/web/public/highs.wasm` にコピーして静的ファイルとして公開し（git には入れず .gitignore に書く）、locateFile で basePath を付けた URL（`${origin}${basePath}/highs.wasm?v=<highs の版>`）を渡す。コピーは apps/web の predev と prebuild の両方で行う（`pnpm dev` でも 404 にならないように）。basePath を付け忘れると GitHub Pages で 404 になり、`CompileError: expected magic word` で落ちる。読み込みに失敗したら、次の実行で読み直す（失敗を覚えたままにしない）。`next build --webpack` は highs.mjs の `node:module` で失敗するので使わない

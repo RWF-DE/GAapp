@@ -8,5 +8,11 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@gaapp/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "highs": "1.15.4"
   }
 }

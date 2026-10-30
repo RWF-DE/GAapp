@@ -18,10 +18,10 @@ Claude Code 向けの仕様の入口。詳細は docs/requirements/ にあり、
 食い違ったときは 01〜05 を正とする（00 は要約）。それでも決まらないことは質問し、決まったことは notes/decisions.md に記録する。
 
 ## 関係するファイルとインターフェース
-- 構成：05_development.md の「リポジトリ構成と環境変数」（apps/web、packages/allocator・exporter・importer・shared、supabase/、fixtures/r8）。
-- 振り分け：`allocate(input: AllocateInput): AllocateResult`、`validate(input, rows): Issue[]`（型は 03_allocation.md）。
+- 構成：05_development.md の「リポジトリ構成と環境変数」（apps/web、packages/allocator・exporter・importer・shared、supabase/、fixtures/r8・fixtures/synthetic）。
+- 振り分け：`allocate(input: AllocateInput, solver): AllocateResult`、`validate(data, rows): Issue[]`（型は 03_allocation.md。solver は呼ぶ側が読み込んだ highs のインスタンス）。
 - DB：02_data.md の DDL。書き込みの RPC は 04_screens_api.md の表（set_year_status、update_year、create_year_from、invite、set_role、remove_role、revoke_invitation、remove_group_member、accept_my_invitations、save_auto_allocations、save_allocation_rows、set_consent、submit_requests、update_requests_after_deadline、check_delivery）。読み取りの RPC は previous_year_stocks、previous_year_requests。
-- 出力：exportAllocationXlsx・exportSwapsXlsx・exportYearJson。取り込み：parseFormCsv。
+- 出力：`exportAllocationXlsx({ yearLabel, data, rows })`・`exportSwapsXlsx({ yearLabel, data, rows })`・`exportYearJson(yearExport)`。取り込み：`parseFormCsv(kind, csv, items)`・`resolveResponses(parsed, groups, items, manual)`（形は 04_screens_api.md の「ブラウザ側の処理」）。
 
 ## やらないこと
 - サーバー側の処理（Route Handler・Server Action・middleware）と、Vercel などサーバー付きのホスティング。
@@ -35,9 +35,9 @@ Claude Code 向けの仕様の入口。詳細は docs/requirements/ にあり、
 05_development.md の「受け入れ基準と R8 テストデータ」をすべて満たすこと。要点：
 - R8 の正規化した申請で ok: true になり、E001〜E006 が0件。全申請を代替込みで過不足なく満たす。
 - S01〜S08 が成り立つ（設営の机241台は 1-1〜2-3 から、不可机は模擬店だけ、不可椅子は休憩所と模擬店だけ、長机(3人掛)は企業だけ、学科展示の残す）。
-- キャスター机への置き換えは 103 台以下。椅子(青)134・教卓10・長机合計106 が R8 と一致。W107 が0件。
-- 同じ入力で同じ結果。固定行・手動行が二重にならない。最小変更モードで無関係な行が変わらない。
-- ブラウザで R8 入力の計算が2秒以内。出力した xlsx を再計算してエラー0件。
+- キャスター机への置き換えは 103 台以下。椅子(青)134・教卓10・長机合計106 が R8 と一致。W107（入れ替えがルール上でき、入れ替えても距離が増えないもの）が0件。
+- 同じ入力で同じ結果。固定行・手動行が二重にならない。最小変更モードで、使用不可にした部屋から受け取っていた分を、ルール上使える場所の余りから代替を増やさずに補えるなら、無関係な行が変わらない（D-08）。
+- ブラウザで R8 入力の計算（wasm の初回の読み込みを除く）が2秒以内。出力した xlsx を再計算してエラー0件。
 - 団体代表は他の団体のデータを、招待されていない人は何も読めない（pgTAP で確認）。
 
 ## E2E の検証手順（ローカル）
@@ -47,6 +47,6 @@ Claude Code 向けの仕様の入口。詳細は docs/requirements/ にあり、
 4. 申請一覧で fixtures の申請を取り込む（またはテスト用の団体代表で1件提出する）
 5. 振り分け画面で「自動振り分け」→ 検証パネルの error が0件 → 「確定」
 6. 「Excel出力」で xlsx を保存し、LibreOffice（`soffice --headless`）で再計算して、数式エラーと「在庫超過」「要確認」が0件であることを確かめる
-7. 「確定を解除」→ 別の部屋（例：MER）を使用不可にする →「最小変更で再実行」→ 変わった行が、その部屋から運んでいた分だけであることを確かめる
+7. 「確定を解除」→ 別の部屋（例：MER）を使用不可にする →「最小変更で再実行」→ その部屋から受け取っていた分を、ルール上使える場所の余りから代替を増やさずに補える品目（合成データでは椅子(木)・椅子(青)・長机）では、変わった行がその部屋から運んでいた分と、それを補う行（その団体がすでに受け取っていた行の数が増えるものを含む）だけであることを確かめる（余りが足りず置き換えが増える机(木)などや、運び元の制限で使える場所が限られる団体は、連鎖で変わりうる。D-08）
 
 CI では同じ流れを Playwright（`pnpm e2e`）で実行する。
