@@ -102,3 +102,46 @@ test('T09 年度の作成：終了した年度からも新しい年度を作れ�
     await admin.cleanup();
   }
 });
+
+test('T09 年度の作成：作った後のルールの読み込みだけが失敗しても、作れたものとして知らせ（数は確かめられない）、新しい年度に切り替わる', async ({ page }) => {
+  // 読み込みの失敗が分かるまで（supabase-js の送り直し）時間がかかることがある
+  test.setTimeout(120_000);
+  const admin = await createUser({ purpose: 'admin' });
+  const s = await createScenario({ festivalStart: 'latest', status: 'allocating', dataset: 'small', grants: [{ userId: admin.id, role: 'admin' }] });
+  try {
+    await loginWith(page, admin);
+    await page.goto('/settings/');
+    const form = page.getByTestId('year-create-form');
+    await expect(form).toBeVisible();
+    // create_year_from はサーバーに届けて通し、その後の rules の読み込み（無効になったルールの数え直し）だけを落とす
+    let created = false;
+    await page.route('**/rest/v1/rpc/create_year_from', async (route) => {
+      const res = await route.fetch();
+      created = res.ok();
+      await route.fulfill({ response: res });
+    });
+    const isRuleCount = (u: URL) => u.pathname.endsWith('/rest/v1/rules') && (u.searchParams.get('select') ?? '').replace(/\s/g, '') === 'code,enabled';
+    await page.route(isRuleCount, (route) => (created ? route.abort() : route.continue()));
+
+    const label = `${s.label}-n3`;
+    await form.getByLabel('新しい年度名').fill(label);
+    await form.getByLabel('新しい年度の1日目').fill('2200-10-16');
+    await form.getByRole('button', { name: '新しい年度を作る' }).click();
+    const unknown = '無効になったルールの数を確かめられませんでした。ルール画面で確かめてください';
+    await expect(page.getByText(`${label} を作りました`, { exact: true })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText(unknown, { exact: true })).toBeVisible();
+    await expect(page.getByText('通信できませんでした')).toHaveCount(0);
+    // 作れたものとして新しい年度に切り替わり、タブの先頭に知らせとルール画面へのリンクが残る
+    await expect(page.getByTestId('current-year')).toHaveText(`${label}・準備中`);
+    const notice = page.getByTestId('year-created');
+    await expect(notice).toContainText(`${label} を作りました。${unknown}。`);
+    await expect(notice.getByRole('link', { name: 'ルール画面へ' })).toBeVisible();
+    if (process.env.E2E_SHOTS) await shoot(page, 'T09', 'settings-year-created-uncounted-pc');
+    await page.unroute(isRuleCount);
+    await page.unroute('**/rest/v1/rpc/create_year_from');
+    expect(await sql('select label from public.years where prev_year_id = $1', [s.yearId])).toEqual([{ label }]);
+  } finally {
+    await s.cleanup();
+    await admin.cleanup();
+  }
+});

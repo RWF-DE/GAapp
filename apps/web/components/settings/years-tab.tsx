@@ -25,7 +25,11 @@ import { FESTIVAL_START_MAX, FESTIVAL_START_MIN, REASON_MAX } from '@/lib/schema
 import { yearCreateSchema, yearEditSchema, type YearEditInput } from '@/lib/schemas/settings';
 import { Field, useSettings, useWriteErrorHandler } from './shared';
 
-type CreatedYear = { year: YearRow; disabledRuleCodes: string[] };
+/** disabledRuleCodes が null：年度は作れたが、無効になったルールを数えられなかった（作った後のルールの読み込みの失敗） */
+type CreatedYear = { year: YearRow; disabledRuleCodes: string[] | null };
+
+/** 無効になったルールを数えられなかったときの知らせ */
+const DISABLED_RULES_UNKNOWN_MESSAGE = '無効になったルールの数を確かめられませんでした。ルール画面で確かめてください';
 
 // 作った結果。作ると新しい年度に切り替わり、画面が作り直される（AppShell の key）ので、state ではなくモジュールに置いて
 // 新しい年度の年度のタブで出す（04・設計 3.2：無効になったルールの数とルール画面へのリンク）。閉じるか再読み込みで消える。
@@ -162,11 +166,14 @@ function YearEditCard({ year }: { year: YearRow }) {
 type CreateForm = z.input<ReturnType<typeof yearCreateSchema>>;
 
 function YearCreatedNotice({ created, onDismiss }: { created: CreatedYear; onDismiss: () => void }) {
-  const n = created.disabledRuleCodes.length;
+  const codes = created.disabledRuleCodes;
   return (
     <div role="status" data-testid="year-created" className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 p-3 text-sm">
       <span>
-        {created.year.label} を作りました。無効になったルール {n} 件{n > 0 ? `（${created.disabledRuleCodes.join('、')}）` : ''}。
+        {created.year.label} を作りました。
+        {codes === null
+          ? `${DISABLED_RULES_UNKNOWN_MESSAGE}。`
+          : `無効になったルール ${codes.length} 件${codes.length > 0 ? `（${codes.join('、')}）` : ''}。`}
         <AppLink href="/rules" className="ml-1 underline">
           ルール画面へ
         </AppLink>
@@ -197,12 +204,15 @@ function YearCreateCard({ year, onCreated }: { year: YearRow; onCreated: (r: Cre
       const r = await createYearFrom(year, values.label, values.festival_start);
       reset({ label: '', festival_start: '' });
       onCreated(r);
-      const n = r.disabledRuleCodes.length;
+      // 年度は作れている（数え直しが失敗しても createYearFrom は投げない）ので、ここから先は作れたものとして扱う
+      const codes = r.disabledRuleCodes;
       toast.success(`${r.year.label} を作りました`, {
         description:
-          n > 0
-            ? `対象の団体が見つからず無効になったルールが ${n} 件あります（${r.disabledRuleCodes.join('、')}）。ルール画面で確かめてください`
-            : '無効になったルールはありません',
+          codes === null
+            ? DISABLED_RULES_UNKNOWN_MESSAGE
+            : codes.length > 0
+              ? `対象の団体が見つからず無効になったルールが ${codes.length} 件あります（${codes.join('、')}）。ルール画面で確かめてください`
+              : '無効になったルールはありません',
         duration: 15000,
       });
       reloadMembership();
