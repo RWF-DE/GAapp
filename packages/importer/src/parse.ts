@@ -23,11 +23,23 @@ export type ParsedFormResponse = {
   note: string | null;
 };
 
+/**
+ * 取り込まない行。submittedAt と groupName は、同じ団体の新しい回答が読めないこと（resolveResponses の newerRejected）を
+ * 見つけるためだけに持つ（画面には出さない）。読めなければ null（日時が読めない行・空の行・企業フォームの団体名は常に null）。
+ * groupName は回答の groupName と同じく、団体名の列のうち空でない方からメールを除いたもの。
+ */
+export type RejectedRow = {
+  rowNumber: number;
+  reason: RejectReason;
+  submittedAt: string | null;
+  groupName: string | null;
+};
+
 export type ParsedForm = {
   kind: FormKind;
   responses: ParsedFormResponse[];
-  /** 取り込まない行。中身は持たない（行番号と理由だけ） */
-  rejected: { rowNumber: number; reason: RejectReason }[];
+  /** 取り込まない行。数・備考などの中身は持たない（行番号と理由、読めればタイムスタンプと団体名だけ） */
+  rejected: RejectedRow[];
   /** 対応表にない列の見出し（中身は読まない）。見出しがメールのパターンなら「(列N)」にする */
   ignoredColumns: string[];
 };
@@ -153,11 +165,24 @@ export function parseFormCsv(
   const lastReadIndex = Math.max(...cols.map((c) => c.index));
   const unnamed = new Set(header.map((h, i) => (compact(h) === '' ? i : -1)).filter((i) => i >= 0));
 
+  /** 団体名の列のうち空でない方（メールは除く）。なければ null */
+  const readGroupName = (cells: readonly string[]): string | null => {
+    for (const col of nameCols) {
+      const v = stripEmails(cells[col.index] ?? '').text.trim();
+      if (v !== '') return v;
+    }
+    return null;
+  };
+
   const responses: ParsedFormResponse[] = [];
-  const rejected: ParsedForm['rejected'] = [];
+  const rejected: RejectedRow[] = [];
   rows.slice(1).forEach((cells, k) => {
     const rowNumber = k + 2;
-    const reject = (reason: RejectReason) => rejected.push({ rowNumber, reason });
+    // 空の行・日時が読めない行以外は、読めればタイムスタンプと団体名を添える（列がずれていても、読む列の位置の値で読む）
+    const reject = (reason: RejectReason) => {
+      const submittedAt = reason === 'empty' || reason === 'invalid_timestamp' ? null : parseTimestamp(cells[ts.index] ?? '');
+      rejected.push({ rowNumber, reason, submittedAt, groupName: submittedAt === null ? null : readGroupName(cells) });
+    };
     if (cells.every((c) => c.trim() === '')) return reject('empty');
     // 列がずれている行：見出しより右、または見出しのない列に値がある
     const shifted = cells.some((c, i) => c.trim() !== '' && (i >= header.length || unnamed.has(i)));
@@ -177,14 +202,7 @@ export function parseFormCsv(
       counts[col.code!] = (counts[col.code!] ?? 0) + n;
     }
 
-    let groupName: string | null = null;
-    for (const col of nameCols) {
-      const v = stripEmails(cells[col.index] ?? '').text.trim();
-      if (v !== '') {
-        groupName = v;
-        break;
-      }
-    }
+    const groupName = readGroupName(cells);
     const noteParts = noteCols
       .map((col) => stripEmails(cells[col.index] ?? '').text.trim())
       .filter((v) => v !== '');

@@ -78,11 +78,11 @@ describe('readForm', () => {
   it('fixtures の stall.csv を読む', () => {
     const p = parsedStall();
     expect(p.responses.map((r) => r.rowNumber)).toEqual([2, 3, 4, 8, 9]);
-    expect(p.rejected).toEqual([
-      { rowNumber: 5, reason: 'misaligned' },
-      { rowNumber: 6, reason: 'invalid_number' },
-      { rowNumber: 7, reason: 'misaligned' },
-      { rowNumber: 10, reason: 'empty' },
+    expect(p.rejected.map((r) => [r.rowNumber, r.reason])).toEqual([
+      [5, 'misaligned'],
+      [6, 'invalid_number'],
+      [7, 'misaligned'],
+      [10, 'empty'],
     ]);
   });
 });
@@ -117,6 +117,39 @@ describe('buildImportPreview（stall.csv）', () => {
     expect(kou.changed).toBe(true);
     // 備考のメールは importer が除く
     expect(kou.note).not.toMatch(/@/);
+  });
+
+  it('同じ団体の新しい回答が取り込まない行なら、その団体を出し（理由つき）、既定では上書きしない', () => {
+    const csv = [
+      'タイムスタンプ,団体名,机(木),椅子(木),備考',
+      '2026/10/05 10:00:00,模擬店甲,2,3,', // 2：使う回答（読めたうちで一番新しい）
+      '2026/10/05 09:00:00,模擬店甲,1,1,', // 3：古い回答
+      '2026/10/06 10:00:00,模擬店甲,abc,3,', // 4：新しい回答（数が読めない）
+      '2026/10/05 10:00:00,模擬店乙,1,1,', // 5
+      '',
+    ].join('\n');
+    const r = readForm('department', csv, ITEMS);
+    if (!r.ok) throw new Error(r.message);
+    const kouDept = group(22, '模擬店甲', 'department');
+    const otsuDept = group(23, '模擬店乙', 'department');
+    const p = buildImportPreview(r.parsed, 'department', tables({ groups: [kouDept, otsuDept] }));
+    expect(p.newerRejected).toEqual([
+      {
+        group: kouDept,
+        kept: { rowNumber: 2, submittedAt: '2026-10-05T10:00:00+09:00' },
+        dropped: [{ rowNumber: 3, submittedAt: '2026-10-05T09:00:00+09:00' }],
+        rows: [{ rowNumber: 4, reason: 'invalid_number', submittedAt: '2026-10-06T10:00:00+09:00' }],
+      },
+    ]);
+    expect(p.superseded).toEqual([]);
+    // 団体ごとの結果には出す（管理者が選べば古い回答で上書きできる）が、既定では上書きしない
+    expect(p.plans.map((x) => [x.group.name, x.rowNumber, x.defaultOverwrite, x.newerRejected.map((y) => y.rowNumber)])).toEqual([
+      ['模擬店甲', 2, false, [4]],
+      ['模擬店乙', 5, true, []],
+    ]);
+    const kou = p.plans[0]!;
+    expect(Object.fromEntries(kou.cells.filter((c) => c.csv > 0).map((c) => [c.item.code, c.csv]))).toEqual({ desk: 2, chair: 3 });
+    expect(p.matchedCount).toBe(3);
   });
 
   it('手で選んだ行はその団体に入り、対応しない行の一覧には残る（選び直せる）', () => {

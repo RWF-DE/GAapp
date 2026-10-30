@@ -207,7 +207,7 @@ export function UsersTab() {
           open
           onOpenChange={(o) => !o && setPending(null)}
           title={`${who(pending.member)}のロール（${pending.member.role ? ROLE_LABELS[pending.member.role] : ''}）を外しますか`}
-          description="この年度の画面を開けなくなります（団体代表は残ります）。"
+          description="この年度の画面を開けなくなります（団体代表は残ります）。この人あての未使用のロールの招待も取り消します。"
           required={false}
           destructive
           confirmLabel="外す"

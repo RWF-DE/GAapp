@@ -278,14 +278,17 @@ function AllocationLoaded({
   const running = auto.state.running;
   const { stale } = useVersionWatch(yearId, snapshot.version, { paused: running });
 
-  // 保存したら知らせる（toast）
+  // 保存したら知らせる（toast）。1回の保存に1回だけ（「読み直す」で outcome が作り直されても counts は同じものなので、counts で見分ける）
   const lastToast = useRef<unknown>(null);
   useEffect(() => {
     const o = auto.state.outcome;
-    if (!o || o === lastToast.current || o.kind !== 'saved' || o.verified) return;
-    lastToast.current = o;
+    if (!o || o.kind !== 'saved' || o.verified || o.counts === lastToast.current) return;
+    lastToast.current = o.counts;
     const c = o.counts;
-    toast.success(`保存しました（追加 ${c.inserted}・変更 ${c.updated}・削除 ${c.deleted}、計算 ${seconds(o.elapsedMs)} 秒）`);
+    const text = `保存しました（追加 ${c.inserted}・変更 ${c.updated}・削除 ${c.deleted}、計算 ${seconds(o.elapsedMs)} 秒）`;
+    // 保存の後の読み直しだけが失敗した：保存できたことは伝え、読み直しを促す（読み込みの失敗の帯だけにしない）
+    if (o.reloadError !== undefined) toast.warning(`${text}。読み直せなかったので「読み直す」を押してください`);
+    else toast.success(text);
   }, [auto.state.outcome]);
 
   // ---- 移動（検証の一覧・precheck の項目から） ----
@@ -406,9 +409,11 @@ function AllocationLoaded({
     () => new Set(pend.pending.map((c) => (c.op === 'insert' ? c.tempId : c.id))),
     [pend.pending],
   );
+  // 保存されたか確かめられない間（pend.editBlock）は、行の操作を出さない（読み取りの表にする。2.6 の (B2)・3.9）
+  const rowsEditable = editable && pend.editBlock === null;
   const editApi = useMemo<RowEditApi | null>(
     () =>
-      editable
+      rowsEditable
         ? {
             vm,
             rows,
@@ -422,7 +427,7 @@ function AllocationLoaded({
             openUsable,
           }
         : null,
-    [editable, vm, rows, pendingIds, pend.edit, pend.revert, openUnusable, openUsable],
+    [rowsEditable, vm, rows, pendingIds, pend.edit, pend.revert, openUnusable, openUsable],
   );
   const checklist = useMemo(() => {
     if (!unusableRoom) return [];
@@ -656,6 +661,7 @@ function AllocationLoaded({
             onIssue={(issue) => goTo(targetOf(issue))}
             onRecheck={auto.recheck}
             onReload={() => void refetch()}
+            onReloadAfterSave={() => void auto.reloadAfterSave()}
             lineActions={lineActions}
           />
         ) : null}
@@ -680,7 +686,14 @@ function AllocationLoaded({
                 団体別
               </Button>
               {editable ? (
-                <Button size="sm" variant="outline" className="ml-auto" onClick={() => setAddOpen(true)}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto"
+                  disabled={!rowsEditable}
+                  title={pend.editBlock ?? undefined}
+                  onClick={() => setAddOpen(true)}
+                >
                   行を追加
                 </Button>
               ) : null}

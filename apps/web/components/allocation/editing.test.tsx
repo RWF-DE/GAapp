@@ -115,6 +115,7 @@ function pendingApi(p: Partial<PendingApi> = {}): PendingApi {
     edit: vi.fn(),
     revert: vi.fn(),
     discardAll: vi.fn(),
+    editBlock: null,
     save: vi.fn(async () => {}),
     saving: false,
     saveBlock: null,
@@ -153,6 +154,20 @@ describe('未保存の変更のバー', () => {
     expect((screen.getByRole('button', { name: '保存中…' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('確かめられない間（editBlock）は「取り消す」「元に戻す」も押せず、理由を出す。確かめた後（null）は押せる', () => {
+    const block = '保存されたかを確かめるまで、編集できません。「確かめる」を押してください';
+    const api = pendingApi({ editBlock: block, saveBlock: '保存できたか確かめるまで、もう一度保存できません' });
+    const { rerender } = render(<PendingBar api={api} vm={vm} />);
+    const bar = screen.getByTestId('pending-bar');
+    expect(bar.textContent).toContain(block);
+    expect((within(bar).getByRole('button', { name: '取り消す' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(bar).getByRole('button', { name: /未保存の変更 2 件/ }));
+    for (const b of within(bar).getAllByRole('button', { name: '元に戻す' })) expect((b as HTMLButtonElement).disabled).toBe(true);
+    rerender(<PendingBar api={pendingApi()} vm={vm} />);
+    expect((screen.getByRole('button', { name: '取り消す' }) as HTMLButtonElement).disabled).toBe(false);
+    for (const b of screen.getAllByRole('button', { name: '元に戻す' })) expect((b as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('変更がなければ出さない', () => {
     render(<PendingBar api={pendingApi({ pending: [] })} vm={vm} />);
     expect(screen.queryByTestId('pending-bar')).toBeNull();
@@ -161,10 +176,12 @@ describe('未保存の変更のバー', () => {
   it('確かめられないときは「確かめる」、外した変更は一覧で出す', () => {
     const api = pendingApi({
       notice: { kind: 'unverified', pending: [], heldVersion: 1, before: toStoredRows({ allocations: [] }) },
+      editBlock: '保存されたかを確かめるまで、編集できません。「確かめる」を押してください',
       dropped: [{ change: { op: 'delete', id: rows[2]!.id, updatedAt: 'x' }, reason: 'gone' }],
     });
     render(<PendingNotices api={api} vm={vm} onReload={() => {}} />);
     fireEvent.click(within(screen.getByTestId('rows-unverified')).getByRole('button', { name: '確かめる' }));
+    expect(screen.getByTestId('rows-edit-block').textContent).toBe('保存されたかを確かめるまで、編集できません。「確かめる」を押してください');
     expect(api.recheck).toHaveBeenCalled();
     const dropped = screen.getByTestId('rows-dropped');
     expect(dropped.textContent).toContain('ほかの人の変更とぶつかったので外しました');

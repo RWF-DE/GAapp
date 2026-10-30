@@ -10,6 +10,7 @@ import {
   parseNote,
   pendingListSchema,
   rebasePending,
+  removeChanges,
   reconcileAfterUnknown,
   sameUpdatedAt,
   toRpcChanges,
@@ -176,6 +177,20 @@ describe('rebasePending', () => {
   it('今の値と同じになった update は外す', () => {
     const after = stored([row(1, { count: 5 }), row(2), row(3)]);
     expect(rebasePending(p, after).pending.map((c) => c.op)).toEqual(['update', 'delete', 'insert']);
+  });
+});
+
+describe('removeChanges', () => {
+  const up = (n: number, patch: Extract<PendingChange, { op: 'update' }>['patch']): PendingChange => ({ op: 'update', id: id(n), updatedAt: T0, patch });
+  it('中身が同じ変更だけを外す（patch のキーの順によらない）。直した変更・ほかの変更は残す', () => {
+    const a = up(1, { count: 2, note: 'x' });
+    const b = up(2, { count: 3 });
+    const c: PendingChange = { op: 'delete', id: id(3), updatedAt: T0 };
+    expect(removeChanges([a, up(2, { count: 4 }), c], [up(1, { note: 'x', count: 2 }), b])).toEqual([up(2, { count: 4 }), c]);
+  });
+  it('同じ中身が2つあれば、外すのは remove の数だけ', () => {
+    const d: PendingChange = { op: 'delete', id: id(3), updatedAt: T0 };
+    expect(removeChanges([d, d], [d])).toEqual([d]);
   });
 });
 

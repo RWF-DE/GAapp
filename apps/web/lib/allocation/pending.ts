@@ -217,6 +217,32 @@ export function revertRow(pending: readonly PendingChange[], id: string): Pendin
   return pending.filter((c) => (c.op === 'insert' ? c.tempId !== id : c.id !== id));
 }
 
+/** 変更の見分け（中身が同じなら同じ。update の patch はキーの順によらない） */
+function changeKey(c: PendingChange): string {
+  if (c.op === 'insert') {
+    return JSON.stringify([c.op, c.tempId, c.groupId, c.sourceRoomId, c.itemId, c.requestedItemId, c.count, c.note ?? null, c.pinned]);
+  }
+  if (c.op === 'delete') return JSON.stringify([c.op, c.id, c.updatedAt]);
+  const patch = PATCH_KEYS.filter((k) => c.patch[k] !== undefined).map((k) => [k, c.patch[k] ?? null]);
+  return JSON.stringify([c.op, c.id, c.updatedAt, patch]);
+}
+
+/**
+ * remove と中身が同じ変更だけを外す（1つにつき1つ）。partial の「残りも取り消す」で、知らせの残りだけを外し、
+ * 知らせの後にした編集（足した変更・直した変更）は残すのに使う
+ */
+export function removeChanges(pending: readonly PendingChange[], remove: readonly PendingChange[]): PendingChange[] {
+  const left = new Map<string, number>();
+  for (const c of remove) left.set(changeKey(c), (left.get(changeKey(c)) ?? 0) + 1);
+  return pending.filter((c) => {
+    const k = changeKey(c);
+    const n = left.get(k) ?? 0;
+    if (n === 0) return true;
+    left.set(k, n - 1);
+    return false;
+  });
+}
+
 // ---- 送る ----
 
 /** save_allocation_rows の p_changes（tempId は送らない。insert の id は DB が作る） */
