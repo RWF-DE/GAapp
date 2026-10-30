@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(136);
+select plan(140);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -126,6 +126,8 @@ select throws_ok($$ insert into public.years (label, festival_start, request_ope
                     values ('T-Y9', date '2030-01-01', now(), now()) $$, '23514', null, '受付開始は締切より前');
 select throws_ok($$ insert into public.rooms (name) values ('') $$, '23514', null, 'rooms.name が空');
 select throws_ok($$ insert into public.rooms (name, extra_cost) values ('pgtap-x', -1) $$, '23514', null, 'rooms.extra_cost は 0 以上');
+select throws_ok($$ insert into public.rooms (name, extra_cost) values ('pgtap-x', 21) $$, '23514', null, 'rooms.extra_cost は 20 まで（T03）');
+select lives_ok($$ insert into public.rooms (name, extra_cost) values ('pgtap-x20', 20) $$, 'rooms.extra_cost の 20 は入る');
 select throws_ok($$ insert into public.rooms (name, aliases) values ('pgtap-x', array_fill('a'::text, array[21])) $$, '23514', null, 'aliases は 20 個まで');
 select throws_ok($$ insert into public.rooms (name, aliases) values ('pgtap-x', array[repeat('a', 1001)]) $$, '23514', null, 'aliases は合計 1000 字まで');
 select throws_ok($$ insert into public.items (code, name, sort_order) values ('Desk', 'x', 1) $$, '23514', null, 'items.code は小文字の英数字と _');
@@ -159,6 +161,8 @@ select throws_ok(format($$ insert into public.substitution_consents (group_id, f
   tests.id('G2'), tests.id('desk'), tests.id('desk')), '23514', null, '代替の元と先は別の品目');
 select throws_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟C', 'pgtap棟C', 1) $$, '23514', null, '同じ建物どうしの距離は入れられない');
 select throws_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟C', 'pgtap棟D', -1) $$, '23514', null, '距離は 0 以上');
+select throws_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟C', 'pgtap棟D', 21) $$, '23514', null, '距離は 20 まで（T03）');
+select lives_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟C', 'pgtap棟D', 20) $$, '距離の 20 は入る');
 select throws_ok(format($$ insert into public.slots (year_id, day, starts_at, ends_at, label) values (%L, 'day1', '10:00', '09:00', 'x') $$,
   tests.id('Y1')), '23514', null, '時間枠の開始は終了より前');
 select throws_ok(format($$ update public.deliveries set team = 0 where id = %L $$, tests.id('D_G1')), '23514', null, 'team は 1 以上');
@@ -188,13 +192,14 @@ select has_index('audit_logs', 'audit_logs_group_at_idx');
 select ok((select 'security_invoker=true' = any (reloptions) from pg_class where oid = 'public.v_remaining'::regclass),
   'v_remaining は security_invoker');
 
--- RLS を全表で有効にし、anon・authenticated には何の権限も与えていない（権限は T03 で表ごとに与える）
+-- RLS を全表で有効にし、anon・PUBLIC には何の権限も与えていない（authenticated の権限は T03 の 010_grants で集合として確かめる）
 select is((select count(*)::int from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind = 'r' and not c.relrowsecurity), 0,
   'public の全表で RLS が有効');
--- 権限の棚卸し：public・private スキーマの全オブジェクトを、anon・authenticated・public（PUBLIC への付与。関数の既定の execute）に当てる。
+-- 権限の棚卸し：public・private スキーマの全オブジェクトを、anon・public（PUBLIC への付与。関数の既定の execute）に当てる。
+-- authenticated は T03 で表・RPC・判定関数ごとに与えるので、010_grants.test.sql で一覧と比べる。
 -- information_schema の grantee は小文字の public と比べても PUBLIC を拾えないので、has_*_privilege で実効の権限を見る。
 -- 拡張が持つオブジェクト（pg_depend の deptype = 'e'）は対象外。失敗したときは対象の一覧が差分に出る。
-create temporary view pg_temp.priv_roles as select r from unnest(array['anon', 'authenticated', 'public']) as r;
+create temporary view pg_temp.priv_roles as select r from unnest(array['anon', 'public']) as r;
 select is((select coalesce(string_agg(format('%s %s %s', c.oid::regclass, r.r, p.p), ', ' order by c.oid::regclass::text, r.r, p.p), '')
            from pg_class c
            cross join pg_temp.priv_roles r
@@ -202,29 +207,28 @@ select is((select coalesce(string_agg(format('%s %s %s', c.oid::regclass, r.r, p
            where c.relnamespace in ('public'::regnamespace, 'private'::regnamespace) and c.relkind in ('r', 'v', 'm', 'f', 'p')
              and (has_table_privilege(r.r, c.oid, p.p)
                   or (p.p in ('select', 'insert', 'update', 'references') and has_any_column_privilege(r.r, c.oid, p.p)))), '',
-  'anon・authenticated・public に public・private の表・ビューの権限がない');
+  'anon・public に public・private の表・ビューの権限がない');
 select is((select coalesce(string_agg(format('%s %s %s', c.oid::regclass, r.r, p.p), ', ' order by c.oid::regclass::text, r.r, p.p), '')
            from pg_class c
            cross join pg_temp.priv_roles r
            cross join unnest(array['usage', 'select', 'update']) as p(p)
            where c.relnamespace in ('public'::regnamespace, 'private'::regnamespace) and c.relkind = 'S'
              and has_sequence_privilege(r.r, c.oid, p.p)), '',
-  'anon・authenticated・public に public・private のシーケンスの権限がない（audit_logs_id_seq など）');
+  'anon・public に public・private のシーケンスの権限がない（audit_logs_id_seq など）');
 select is((select coalesce(string_agg(format('%s %s', p.oid::regprocedure, r.r), ', ' order by p.oid::regprocedure::text, r.r), '')
            from pg_proc p
            cross join pg_temp.priv_roles r
            where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
              and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
              and has_function_privilege(r.r, p.oid, 'execute')), '',
-  'anon・authenticated・public に public・private の関数の execute がない（PUBLIC の既定の execute を含む）');
+  'anon・public に public・private の関数の execute がない（PUBLIC の既定の execute を含む）');
 select ok((select count(*) filter (where relkind in ('r', 'v')) >= 20 and count(*) filter (where relkind = 'S') >= 1
            from pg_class where relnamespace = 'public'::regnamespace)
           and exists (select 1 from pg_proc where pronamespace = 'private'::regnamespace),
   '棚卸しの対象が空でない（表・ビュー・シーケンス・private の関数）');
-select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schema_privilege('authenticated', 'private', 'usage')
-          and not has_schema_privilege('public', 'private', 'usage')
+select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schema_privilege('public', 'private', 'usage')
           and not has_schema_privilege('anon', 'private', 'create') and not has_schema_privilege('authenticated', 'private', 'create'),
-  'private スキーマは API のロールから使えない');
+  'private スキーマは anon・PUBLIC から使えず、だれも create できない（authenticated の usage は T03 の 010）');
 
 -- 年度・団体の付け替えを止めるトリガーが 12 表にある
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid

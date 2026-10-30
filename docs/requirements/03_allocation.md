@@ -18,7 +18,8 @@ type AllocateInput = {
   requests: { groupId: string; itemId: string; count: number }[]; // 前処理の前の申請
   rules: Rule[];                    // enabled のものだけ
   consents: { groupId: string; fromItemId: string; toItemId: string;
-              status: 'not_asked' | 'asked' | 'accepted' | 'declined' }[];
+              status: 'not_asked' | 'asked' | 'accepted' | 'declined';
+              count: number | null }[];   // 依頼したときの置き換え台数（W102 で使う）
   fixedRows: AllocationRow[];       // 残す行：pinned = true または origin = 'manual'
   mode: 'full' | 'minimal_change';
   previousRows?: AllocationRow[];   // minimal_change のとき、前回の自動行
@@ -40,7 +41,9 @@ type Cause = { ruleCode: string | null; message: string };
 ```
 
 - 入力の配列は、組み立てるときに sort_order → 名前 → id の順に並べる。並び順が変わると、同じ点数の解の中で別の解が選ばれるため
-- 保存は RPC `save_auto_allocations(year_id, rows, mode)`。1トランザクションで `origin = 'auto' AND NOT pinned` の行だけを消して rows を入れ、保存後に在庫超過がないかを DB の中でも確かめる（超過していれば全体を取り消す）。ブラウザの計算結果をそのまま信用しない
+- 画面は DB から入力を読むとき、年度の版（years.allocation_version）をほかのデータより先に読む。版は、年度が allocating の間に入力（在庫・団体・申請・提出・ルール・了承・振り分け・場所の状態など）が変わるたびに増える
+- 保存は RPC `save_auto_allocations(year_id, rows, mode, base_version)`。base_version は入力を組み立てたときに読んだ版で、違えば（計算中に入力や振り分けが変わっていれば）保存しない。1トランザクションで `origin = 'auto' AND NOT pinned` の行だけを、（運び元・団体・申請品目・品目）ごとの差分で入れ替える（同じ組み合わせの行は id を保ったまま数だけ変え、なくなった組み合わせは消し、新しい組み合わせは足す）。rows は同じ組み合わせを1行にまとめて渡す（x と x̂ は足す）。保存前に、団体がその年度のものか・使用不可の部屋からでないか（E002）・残すの運び元が使用場所か（E005）を、保存後に在庫超過（E001）を DB の中でも確かめ、だめなら全体を取り消す。is_keep は DB が「運び元＝団体の使用場所」で決め直す。ブラウザの計算結果をそのまま信用しない
+- keep ルール（S08）の行も rows に含める。保存は origin = auto・is_keep = true・pinned = false で、自動実行のたびにルールから作り直す（D-06）。ルールを無効にすれば次の自動実行で消える
 - 手で直した行（origin = manual）と固定した行（pinned）は消さず、すべて fixedRows として渡す。了承済みのキャスター机交換は、了承を記録した時点でその行を pinned にする
 
 ## 定式化
@@ -51,7 +54,7 @@ type Cause = { ruleCode: string | null; message: string };
 
 1. 長机(3人掛)を申請できない区分（企業以外）の申請は、長机(2人掛)に1対1で読み替える（S03。品目マスタの申請できる区分で判定）
 2. fixed_request（S06）の団体・品目は、申請がなければその数を需要 D にする。申請があれば申請を使い、差を W106 で知らせる
-3. keep（S08）を固定行（is_keep、pinned）にする
+3. keep（S08）の行をルールから作る（is_keep。保存は origin = auto・pinned = false。D-06）。固定行と同じように、需要と在庫から先に差し引き、結果の rows にも含める。管理者が固定した keep の行（fixedRows に入る）があれば、その団体・部屋・品目について、固定分を超える分だけを作る
 4. 固定行（fixedRows）を差し引く。需要 D'(g,i) = max(0, D(g,i) − 固定分)、在庫 S'(r,j) = S(r,j) − 固定分。固定分が申請を超えたら W101、在庫を超えたら E001 で止める
 5. 使用不可の部屋は S' = 0
 
@@ -144,7 +147,7 @@ d(r,g) は保管場所 r と団体 g の使用場所の位置関係で決める�
 
 ## 検証コード一覧
 
-検証は `packages/allocator` の `validate(input, rows): Issue[]` で行い、自動実行後と手動修正のたびに画面で呼ぶ。error が1件でもあると「確定」ボタンを押せない。warning は確認した上で確定できる。E001・E002・E005 は、確定の RPC の中で DB 側でも確かめる。
+検証は `packages/allocator` の `validate(input, rows): Issue[]` で行い、自動実行後と手動修正のたびに画面で呼ぶ。error が1件でもあると「確定」ボタンを押せない。warning は確認した上で確定できる（W102 の了承待ちも含む）。E001・E002・E005 は、確定の RPC と自動振り分けの保存の RPC の中で DB 側でも確かめる（手での保存は E002・E005 だけを止め、E001 は途中の状態を保存できるよう止めない）。確定の RPC は、検証に使った版も確かめる。確定中は、E001・E002・E005 を作る直接の書き込みを DB のトリガーで止める。E006 は、申請を書くときに DB のトリガーでも止める（企業以外の長机(3人掛)は除く。D-05）。
 
 | コード | 重さ | 条件 | 表示例 |
 | --- | --- | --- | --- |
@@ -155,7 +158,7 @@ d(r,g) は保管場所 r と団体 g の使用場所の位置関係で決める�
 | E005 | error | 残すの行で、運び元が団体の使用場所と違う | 「残す」は使用場所の部屋だけです |
 | E006 | error | 申請できない区分の申請がある | 剣道部(飲食)は長机(3人掛)を申請できません |
 | W101 | warning | 振り分け合計 > 申請 | 剣道部(飲食)の机(木) が申請より 2 台多い |
-| W102 | warning | キャスター机への置き換えがあり、了承がまだ | 2年2組：机(木)24 → キャスター机（了承待ち） |
+| W102 | warning | キャスター机への置き換えがあり、了承がまだ（了承の記録がない、または了承した台数（count）より今の置き換え台数が多い） | 2年2組：机(木)24 → キャスター机（了承待ち）、2年2組：了承は 20 台、今は 24 台（依頼し直し） |
 | W103 | warning | 1団体・1品目の運び元が4か所以上 | SE技術の机(木) が 4 か所に分かれています |
 | W104 | warning | 保管場所（is_storage）のうち、今年の在庫がひとつも数えられていない場所がある（使用不可の部屋は除く） | MER の在庫がまだ数えられていません |
 | W105 | warning | 申請が未提出の団体がある（submitted_at が null） | 3団体が未提出 |

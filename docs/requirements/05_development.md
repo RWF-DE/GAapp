@@ -40,7 +40,7 @@ GAapp/
 - CI（ci.yml）で次を実行し、すべて通らないとマージできない：
   1. `pnpm lint` と `pnpm typecheck`
   2. `pnpm test`（Vitest：allocator・exporter・importer・shared）
-  3. `supabase test db`（pgTAP：表・列・制約、トリガー（監査、確定中の守り）、ロールごとに読める・書ける範囲、RPC の権限・状態・楽観ロック・版）。テストは `supabase db reset` の後の seed が入った DB で流す。テスト用のデータは seed の品目を使い、seed とぶつからない名前とメールのドメイン（`@pgtap.test`）にする
+  3. `supabase test db`（pgTAP：表・列・制約、トリガー（監査、確定中の守り）、権限表の全セル（表 × 操作 × 年度の状態 × ロール）を期待値の表から確かめる、RPC の権限・状態・楽観ロック・版、関数の execute と表の権限の棚卸し）。テストは `supabase db reset` の後の seed が入った DB で流す。テスト用のデータは seed の品目を使い、seed とぶつからない名前とメールのドメイン（`@pgtap.test`）にする
   4. Playwright（ログイン → 申請 → 自動振り分け → 確定 → 出力の通し）。Google ログインは CI で通せないので、ローカルの Supabase にだけメールとパスワードのテストユーザーを作って使う（本番ではメールログインを無効にする）
   5. `next build`（静的書き出しが通ること）
 - コミットメッセージは Conventional Commits（feat: / fix: / docs: など）
@@ -55,7 +55,7 @@ GAapp/
 | T00 | スパイク：highs-js をブラウザで動かし、R8 規模の輸送問題の計算時間と、解が整数で返ることを確かめる | — | S |  | 未着手 |
 | T01 | 組織と公開リポジトリ、pnpm workspace、lint・CI の雛形、GitHub Pages への公開 | — | M | Claude | 完了 |
 | T02 | DDL・列挙型・ビュー・監査トリガーのマイグレーション | T01 | M | Claude | 完了 |
-| T03 | RLS、権限の関数、RPC、pgTAP テスト | T02 | L |  | 未着手 |
+| T03 | RLS、権限の関数、RPC、pgTAP テスト | T02 | L | Claude | 完了 |
 | T04 | Google ログイン、ドメイン制限のフック、招待と受け入れのトリガー、テスト用ログイン | T03 | M |  | 未着手 |
 | T05 | importer：Googleフォーム回答の取り込みと、R8 の fixtures（正規化した申請と変換表） | T02 | M |  | 未着手 |
 | T06 | allocator：前処理、LP の組み立て、highs-js の実行、ルール4種、最小変更モード | T00、T05 | L |  | 未着手 |

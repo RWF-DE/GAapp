@@ -903,7 +903,204 @@ export type Database = {
       };
     };
     Functions: {
-      [_ in never]: never;
+      accept_my_invitations: { Args: Record<PropertyKey, never>; Returns: number };
+      check_delivery: {
+        Args: {
+          p_delivery_id: string;
+          p_problem_note?: string;
+          p_returned?: boolean;
+          p_status: Database["public"]["Enums"]["delivery_status"];
+        };
+        Returns: {
+          checked_at: string | null;
+          checked_by: string | null;
+          created_at: string;
+          group_id: string;
+          id: string;
+          kind: Database["public"]["Enums"]["delivery_kind"];
+          problem_note: string | null;
+          returned: boolean;
+          slot_id: string | null;
+          status: Database["public"]["Enums"]["delivery_status"];
+          team: number | null;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "deliveries";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      create_year_from: {
+        Args: { p_festival_start: string; p_label: string; p_prev_year_id: string };
+        Returns: {
+          allocation_version: number;
+          auto_allocated_at: string | null;
+          created_at: string;
+          festival_start: string;
+          id: string;
+          label: string;
+          prev_year_id: string | null;
+          request_close_at: string | null;
+          request_open_at: string | null;
+          status: Database["public"]["Enums"]["year_status"];
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "years";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      invite: {
+        Args: {
+          p_email: string;
+          p_group_id?: string;
+          p_role?: Database["public"]["Enums"]["app_role"];
+          p_year_id: string;
+        };
+        Returns: Json;
+      };
+      previous_year_requests: {
+        Args: { p_year_id: string };
+        Returns: {
+          count: number;
+          group_name: string;
+          item_id: string;
+        }[];
+      };
+      previous_year_stocks: {
+        Args: { p_year_id: string };
+        Returns: {
+          count: number;
+          item_id: string;
+          room_id: string;
+        }[];
+      };
+      remove_group_member: {
+        Args: { p_group_id: string; p_reason?: string; p_user_id: string };
+        Returns: undefined;
+      };
+      remove_role: {
+        Args: { p_reason?: string; p_user_id: string; p_year_id: string };
+        Returns: undefined;
+      };
+      revoke_invitation: { Args: { p_invitation_id: string }; Returns: undefined };
+      save_allocation_rows: {
+        Args: { p_changes: Json; p_reason: string; p_year_id: string };
+        Returns: Json;
+      };
+      save_auto_allocations: {
+        Args: { p_base_version: number; p_mode: string; p_rows: Json; p_year_id: string };
+        Returns: Json;
+      };
+      set_consent: {
+        Args: {
+          p_from_item: string;
+          p_group_id: string;
+          p_note?: string;
+          p_status: Database["public"]["Enums"]["consent_status"];
+          p_to_item: string;
+        };
+        Returns: {
+          count: number | null;
+          created_at: string;
+          from_item_id: string;
+          group_id: string;
+          note: string | null;
+          status: Database["public"]["Enums"]["consent_status"];
+          to_item_id: string;
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "substitution_consents";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      set_role: {
+        Args: {
+          p_reason?: string;
+          p_role: Database["public"]["Enums"]["app_role"];
+          p_user_id: string;
+          p_year_id: string;
+        };
+        Returns: undefined;
+      };
+      set_year_status: {
+        Args: {
+          p_base_version?: number;
+          p_reason?: string;
+          p_to: Database["public"]["Enums"]["year_status"];
+          p_year_id: string;
+        };
+        Returns: {
+          allocation_version: number;
+          auto_allocated_at: string | null;
+          created_at: string;
+          festival_start: string;
+          id: string;
+          label: string;
+          prev_year_id: string | null;
+          request_close_at: string | null;
+          request_open_at: string | null;
+          status: Database["public"]["Enums"]["year_status"];
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "years";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      submit_requests: {
+        Args: { p_group_id: string; p_note?: string; p_rows: Json };
+        Returns: {
+          created_at: string;
+          group_id: string;
+          note: string | null;
+          submitted_at: string | null;
+          updated_at: string;
+          updated_by: string | null;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "request_submissions";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      update_requests_after_deadline: {
+        Args: { p_group_id: string; p_reason: string; p_rows: Json; p_submission?: Json };
+        Returns: undefined;
+      };
+      update_year: {
+        Args: { p_patch: Json; p_reason?: string; p_year_id: string };
+        Returns: {
+          allocation_version: number;
+          auto_allocated_at: string | null;
+          created_at: string;
+          festival_start: string;
+          id: string;
+          label: string;
+          prev_year_id: string | null;
+          request_close_at: string | null;
+          request_open_at: string | null;
+          status: Database["public"]["Enums"]["year_status"];
+          updated_at: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "years";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
     };
     Enums: {
       alloc_origin: "auto" | "manual";

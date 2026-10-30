@@ -199,19 +199,19 @@ select tests.act_clear();
 select is((select submitted_at from public.request_submissions where group_id = tests.id('G5')), null, '未提出に戻せる');
 
 -- ---------------------------------------------------------------- 距離の組の向き
-insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟Z', 'pgtap棟A2', 31);
-select is((select building_a || '|' || building_b from public.distance_overrides where cost = 31), 'pgtap棟A2|pgtap棟Z', '向きを問わず入れると小さい方が building_a になる');
-insert into public.distance_overrides (building_a, building_b, cost) values ('a', 'Z', 41);
-select is((select building_a || '|' || building_b from public.distance_overrides where cost = 41), 'Z|a',
+insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟Z', 'pgtap棟A2', 13);
+select is((select building_a || '|' || building_b from public.distance_overrides where cost = 13), 'pgtap棟A2|pgtap棟Z', '向きを問わず入れると小さい方が building_a になる');
+insert into public.distance_overrides (building_a, building_b, cost) values ('a', 'Z', 14);
+select is((select building_a || '|' || building_b from public.distance_overrides where cost = 14), 'Z|a',
   'C の照合順序（コードポイント順）で並べる。DB の照合順序（a < Z）や JavaScript の localeCompare に依存しない');
-insert into public.distance_overrides (building_a, building_b, cost) values ('Z', 'a', 51)
-  on conflict (building_a, building_b) do update set cost = 61;
-select is((select count(*)::int || '/' || max(cost) from public.distance_overrides where building_a = 'Z' and building_b = 'a'), '1/61',
+insert into public.distance_overrides (building_a, building_b, cost) values ('Z', 'a', 15)
+  on conflict (building_a, building_b) do update set cost = 16;
+select is((select count(*)::int || '/' || max(cost) from public.distance_overrides where building_a = 'Z' and building_b = 'a'), '1/16',
   '同じ組を逆順で入れても主キーが衝突する（upsert できる）');
-select throws_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('a', 'Z', 71) $$, '23505', null, '逆順の同じ組は二重に入れられない');
-update public.distance_overrides set building_a = 'zz', building_b = 'yy' where cost = 31;
-select is((select building_a || '|' || building_b from public.distance_overrides where cost = 31), 'yy|zz', '更新でも向きをそろえる');
-select throws_ok($$ update public.distance_overrides set building_b = building_a where cost = 31 $$, '23514', null, '更新で同じ建物にはできない');
+select throws_ok($$ insert into public.distance_overrides (building_a, building_b, cost) values ('a', 'Z', 17) $$, '23505', null, '逆順の同じ組は二重に入れられない');
+update public.distance_overrides set building_a = 'zz', building_b = 'yy' where cost = 13;
+select is((select building_a || '|' || building_b from public.distance_overrides where cost = 13), 'yy|zz', '更新でも向きをそろえる');
+select throws_ok($$ update public.distance_overrides set building_b = building_a where cost = 13 $$, '23514', null, '更新で同じ建物にはできない');
 
 -- ---------------------------------------------------------------- rules.year_id は変えられない
 select throws_ok(format($$ update public.rules set year_id = %L where id = %L $$, tests.id('Y2'), tests.id('RULE1')),
@@ -289,7 +289,7 @@ update public.rooms set sort_order = 9 where id = tests.id('R4');
 select is(tests.ver(), :v1 + 11, '年度をまたぐ rooms は allocating の年度の版を増やす');
 update public.items set sort_order = 99 where id = tests.id('spare');
 select is(tests.ver(), :v1 + 12, '年度をまたぐ items');
-update public.distance_overrides set cost = 9 where cost = 61;
+update public.distance_overrides set cost = 9 where cost = 16;
 select is(tests.ver(), :v1 + 13, '年度をまたぐ distance_overrides');
 select is(tests.ver_of('Y2'), 0, 'allocating でない年度（Y2）の版は増えない');
 update public.slots set label = '版' where year_id = tests.id('Y2');
