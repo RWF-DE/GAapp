@@ -44,8 +44,8 @@ export function useYearRow(yearId: string | null | undefined) {
  * 読んだ・書いたキャッシュがあれば、そちらが新しいので上書きしない。入れた行の数を返す。
  * readStartedAt はアプリが読み取りを送ろうとした時刻。応答が <head> の script の先送り（lib/boot/early-fetch.ts。D-45）
  * だったときは、実際に読んだのはページを開いたとき（JS を読み込む前。長くて EARLY_TTL_MS 前）で、キャッシュの行は
- * その分だけ新しく見える。年度の行のキャッシュは表示と読む順を決めるだけで、書き込みは DB が年度の状態で確かめる
- * （RPC・トリガー）ので、このずれは許す。
+ * その分だけ新しく見える。年度の行のキャッシュは表示（編集できるかの切り替えを含む）と読む順を決めるだけで、書き込みは
+ * DB が年度の状態と受付期間で確かめる（RPC・トリガー・RLS）ので、このずれは許す。
  */
 export function seedYearRows(queryClient: QueryClient, rows: readonly YearRow[], readStartedAt: number): number {
   let n = 0;
