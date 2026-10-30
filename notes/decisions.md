@@ -479,6 +479,18 @@
 - **チケット**：T14（人が確かめるのはユーザー・総務）。
 - **状態**：手順とデータ作りは用意した。人が確かめる4項目はまだ（2026-10-29）。テスト用ログインは Supabase の URL が 127.0.0.1・localhost のときだけ出る（T04 の守り）ので、LAN の IP で書き出すとスマホにフォームが出ない。フラグがあるときだけプライベートの IP を許すかをユーザーに確認中。
 
+## D-47 select のポリシーで判定関数を行ごとに呼ばない（2026-10-30、T14 の速さの改善。02「権限とRLS」）
+
+- **決定**：
+  - 行が多くなりうる7表（audit_logs・allocations・requests・request_submissions・substitution_consents・stocks・groups）の select のポリシーを、呼んだ人の年度・団体の集合を問い合わせごとに1回だけ作る形にする（0010_rls_select_once.sql）。関数は `private.my_role_year_ids(roles)`・`private.my_group_ids()`・`private.my_role_group_ids(roles)`（SECURITY DEFINER・`search_path = ''`・STABLE・setof uuid、呼んだ人についてだけ答える、execute は authenticated だけ）。書き方は `year_id in (select private.my_role_year_ids('{admin}'))`、引数のない判定関数は `(select private.is_admin_of_open_year())`。段 1 の案の `admin_year_ids()` はロールの配列を取る形に一般化した。
+  - 見える行（RLS の意味）は 0004 と同じにする。pgTAP の 013 が 7 表 × 7 人 × 12 の状態で 0004 の述語と行の中身ごと比べ、011 の権限表は変えずに通す。
+  - 行の少ない表と、書き込みのポリシー・トリガー・RPC は行ごとの形のままにする。allocations の `year_status(year_id)` は見える側の行でしか呼ばれないので残す。
+  - 履歴の「した人」の索引 `(year_id, user_id, at desc)` は足さない（0010 の後は年度に 10 万行で 10〜23 ms。年度の行が 10 万を大きく超えるか、遅いと言われたら足す）。
+- **理由**：行の列を判定関数に渡すと、関数が残った行の数だけ呼ばれる。audit_logs に 10 万行で、未招待・staff・viewer・団体代表の絞り込みなしの読みが約 1 秒（段 1 は負荷の高いときに 4.1 秒）かかり、8〜22 ms になった。ほかの6表も r8like の規模で 1〜13 ms → 0.1〜3 ms、5 倍の規模で 5〜76 ms → 0.2〜3.4 ms（viewer の振り分けは 25 ms）。数は notes/T14.md の「速さの改善（2026-10-30）」。
+- **反映先**：02_data.md の「権限とRLS」（select のポリシーの書き方）と、マイグレーションの一覧。
+- **チケット**：T14（速さの改善。feat/T14-speedup）。
+- **状態**：実装した（2026-10-30。未マージ）。本番へは README の 5（migrate.yml）のまま適用する。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。
