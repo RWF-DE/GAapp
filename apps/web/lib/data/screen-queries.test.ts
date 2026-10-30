@@ -4,7 +4,16 @@ import { describe, expect, it } from 'vitest';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys, STALE_TIME_MS } from '@/lib/query';
 import { parseRoomParam } from '@/lib/schemas/stock';
-import { fetchRepRequest, freshYearRow, loadMyData, planMyPrefetch, planRequestPrefetch, planStockPrefetch } from './screen-queries';
+import {
+  EARLY_FETCH_PATHS,
+  fetchRepRequest,
+  freshYearRow,
+  loadMyData,
+  planMyPrefetch,
+  planRequestPrefetch,
+  planStockPrefetch,
+  SCREEN_PREFETCH,
+} from './screen-queries';
 import { seedYearRows } from './year';
 
 const Y = '00000000-0000-4000-8000-0000000000a9';
@@ -60,6 +69,17 @@ function fakeClient(rows: Record<string, unknown>) {
   } as unknown as AppSupabaseClient;
   return { client, log };
 }
+
+describe('先送りしてよい画面（EARLY_FETCH_PATHS）', () => {
+  it('版を使わない画面（先読みの表と同じ /stock・/request・/my）だけで、振り分けに関わる画面（版を先に読む。D-33）は入らない', () => {
+    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/my', '/request', '/stock']);
+    expect(EARLY_FETCH_PATHS).toEqual(Object.keys(SCREEN_PREFETCH));
+    for (const p of ['/', '/allocation', '/swaps']) {
+      expect(EARLY_FETCH_PATHS).not.toContain(p);
+      expect(Object.keys(SCREEN_PREFETCH)).not.toContain(p);
+    }
+  });
+});
 
 describe('fetchRepRequest', () => {
   it('使用場所の名前は groups に rooms を埋め込んで同じ往復で読み、団体の行からは外す', async () => {

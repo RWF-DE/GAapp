@@ -208,8 +208,12 @@ export function startEarlyLoad(queryClient: QueryClient, opts: StartEarlyLoadOpt
     entries: [],
   };
   early = e;
-  // ページを開いたときに送るリクエストを覚え始める（次に開いたときに <head> の script が先に送る。early-fetch.ts）
-  startRecording(normalizePath(location.pathname), location);
+  // ページを開いたときに送るリクエストを覚え始める（次に開いたときに <head> の script が先に送る。early-fetch.ts）。
+  // 覚えるのは先読みの表（routes）にある、版を使わない画面だけ。振り分けに関わる画面（/・/allocation・/swaps）は覚えない
+  // （スナップショットは版を読み終えてから残りを読む。D-33。先送りすると版とデータが同時に読まれる）
+  const path = normalizePath(location.pathname);
+  if (Object.prototype.hasOwnProperty.call(e.routes, path)) startRecording(path, location);
+  else stopRecording();
   e.ready = supabase.auth.getSession().then(
     ({ data }) => {
       const userId = data.session?.user.id ?? null;
@@ -288,10 +292,14 @@ export function settleEarlyLoad(userId: string, membership: Membership): { kept:
   }
   e.entries = [];
   // 開いた画面が描いた後のリクエスト（前年の数など）も入るように、少し待ってから覚える。先読みが違っていた（年度・団体が
-  // 変わった）ときは覚えない
+  // 変わった）とき・先読みの表にない画面は覚えない。覚え終えたら、残りの先送りの応答も捨てる（後で移った画面に渡さない）
   const storage = e.storage;
   const use = removed === 0 && e.userId === userId;
-  setTimeout(() => finishRecording(requestsKey(userId, PREFETCH_HINT_PREFIX), use, storage), RECORD_SETTLE_MS);
+  const allowed = Object.keys(e.routes);
+  setTimeout(() => {
+    finishRecording(requestsKey(userId, PREFETCH_HINT_PREFIX), use, storage, allowed);
+    dropEarlyResponses();
+  }, RECORD_SETTLE_MS);
   return { kept, removed };
 }
 

@@ -313,3 +313,10 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
   '/request': planRequestPrefetch,
   '/my': planMyPrefetch,
 };
+
+/**
+ * 開いたときのリクエストを覚え、次に開いたときに <head> の script が JS より先に送ってよい画面のパス（lib/boot/early-fetch.ts。
+ * 許可リスト）。版を使わない画面（先読みの表と同じ）だけで、振り分けに関わる画面（/・/allocation・/swaps）は入れない
+ * （スナップショット〔lib/data/snapshot.ts〕は年度の行〔版〕を読み終えてから残りを読む。D-33）
+ */
+export const EARLY_FETCH_PATHS: readonly string[] = Object.freeze(Object.keys(SCREEN_PREFETCH));

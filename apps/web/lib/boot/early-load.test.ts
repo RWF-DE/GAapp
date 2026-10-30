@@ -4,7 +4,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildMembership, type MembershipSource } from '@/lib/auth/membership';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
-import { earlyAwareFetch } from './early-fetch';
+import { EARLY_GLOBAL, earlyAwareFetch } from './early-fetch';
 import {
   discardEarlyLoad,
   RECORD_SETTLE_MS,
@@ -237,8 +237,8 @@ describe('ページを開いたときの読み込み', () => {
 });
 
 describe('開いたときのリクエストの記録（early-fetch.ts）を覚える時', () => {
-  const start = () => {
-    window.history.replaceState(null, '', '/my/');
+  const start = (url = '/my/') => {
+    window.history.replaceState(null, '', url);
     startEarlyLoad(new QueryClient(), { supabase: fakeSupabase(U1), routes });
   };
   const send = () => earlyAwareFetch('https://db.example.test/rest/v1/groups?select=id', { method: 'GET' });
@@ -254,6 +254,44 @@ describe('開いたときのリクエストの記録（early-fetch.ts）を覚�
       expect(window.localStorage.getItem(`${hintKey(U1)}:requests`)).toBeNull();
       await vi.advanceTimersByTimeAsync(RECORD_SETTLE_MS);
       expect(JSON.parse(window.localStorage.getItem(`${hintKey(U1)}:requests`)!).paths['/my']).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(['/', '/allocation/', '/swaps/'])(
+    '先読みの表にない画面（%s。振り分けに関わり、版を先に読む）は記録しない（localStorage に残らない）',
+    async (url) => {
+      vi.useFakeTimers();
+      try {
+        vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')));
+        start(url);
+        await earlyAwareFetch('https://db.example.test/rest/v1/years?select=id,allocation_version', { method: 'GET' });
+        await earlyAwareFetch('https://db.example.test/rest/v1/allocations?select=*', { method: 'GET' });
+        await vi.advanceTimersByTimeAsync(0);
+        settleEarlyLoad(U1, buildMembership(sources[U1]!, null));
+        await vi.advanceTimersByTimeAsync(RECORD_SETTLE_MS);
+        expect(window.localStorage.getItem(`${hintKey(U1)}:requests`)).toBeNull();
+      } finally {
+        vi.useRealTimers();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it('覚え終えたら、残りの先送りの応答を捨てる（後で移った画面に渡さない）', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')));
+      start();
+      const w = window as unknown as Record<string, unknown>;
+      w[EARLY_GLOBAL] = { t: 't', at: Date.now(), p: window.location.pathname, r: {} };
+      await vi.advanceTimersByTimeAsync(0);
+      settleEarlyLoad(U1, buildMembership(sources[U1]!, null));
+      expect(w[EARLY_GLOBAL]).toBeDefined();
+      await vi.advanceTimersByTimeAsync(RECORD_SETTLE_MS);
+      expect(w[EARLY_GLOBAL]).toBeUndefined();
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();

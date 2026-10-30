@@ -3,14 +3,17 @@
 // スマホの 4G・遅い CPU では、ページの JS（約 330 KB）を読んで動かし始めるまでに 1 秒ほどかかり、Supabase への最初の
 // リクエストはその後になる。そこで、
 //   1. 記録：ページを開いたときにアプリが Supabase に送った読み取り（GET の /rest/v1/ と、引数のない accept_my_invitations）を、
-//      そのページのパスごとに localStorage の `gaapp:prefetch:<user_id>:requests` に覚える（URL・応答を変えるヘッダーだけ。
+//      版を使わない画面（/stock・/request・/my。lib/data/screen-queries.ts の EARLY_FETCH_PATHS。許可リスト）のパスごとに localStorage の `gaapp:prefetch:<user_id>:requests` に覚える（URL・応答を変えるヘッダーだけ。
 //      トークンは覚えない）。URL の中のページのクエリ（room・group など）の値は {{room}} のように置き換えて覚える
 //      （別の部屋の QR から開いても使えるように）。
 //   2. 先送り：次にそのパスを開いたとき、<head> の script（earlyFetchScript）が、localStorage のセッションのトークン（期限内の
 //      ときだけ）で同じリクエストを送り、応答の Promise を window.__gaappEarly に置く。
 //   3. 受け取り：supabase-js の fetch（earlyAwareFetch）が、同じリクエスト（メソッド・URL・応答を変えるヘッダー・本文、
 //      同じトークン）を送ろうとしたら、送らずに先送りの応答を返す（1つの応答は1回だけ使う）。
-// 先送りの応答は、ページを開いてから EARLY_TTL_MS の間と、書き込み（先送りできるもの以外のリクエスト）を送るまでだけ使う。
+// 先送りの応答は、ページを開いてから EARLY_TTL_MS の間と、書き込み（先送りできるもの以外のリクエスト）を送るまでと、
+// 開いた画面にいる間（SPA の画面移動でパスが変われば捨てる）だけ使う。
+// 振り分けに関わる画面（/・/allocation・/swaps）は記録も先送りもしない。スナップショット（lib/data/snapshot.ts）は年度の行（版）を
+// 読み終えてから残りを読む決まり（D-33）で、先送りすると版とデータが同時に読まれ、新しい版に古いデータを組み合わせてしまうため。
 // 読める範囲は今までどおり RLS が決める（同じトークンで同じリクエストを送るだけ）。送り先は Supabase の URL の /rest/v1/ だけ。
 // 覚えたものは先読みの id と同じ扱い（lib/boot/early-load.ts。手動のログアウトでその人の分、別の人のログインで前の人の分を消す）。
 import { SUPABASE_URL } from '@/lib/env';
@@ -144,13 +147,14 @@ export function readRecorded(key: string, storage: RequestsStorage | null): Reco
 /**
  * 記録を終えて、そのパスの分を覚える（ほかのパスの分は残す。新しいものから MAX_PATHS まで）。覚えたら true。
  * use が偽（先読みの年度・団体が違った・ログインの人が違った）なら覚えない（違う年度のリクエストを次に先送りしないため）。
+ * allowedPaths（先送りしてよい画面のパス）にないパスも覚えない（振り分けに関わる画面。上の説明）。
  */
-export function finishRecording(key: string, use: boolean, storage: RequestsStorage | null): boolean {
+export function finishRecording(key: string, use: boolean, storage: RequestsStorage | null, allowedPaths: readonly string[]): boolean {
   const r = recorder;
   if (!r) return false;
   r.done = true;
   recorder = null;
-  if (!use || r.list.length === 0 || !storage) return false;
+  if (!use || r.list.length === 0 || !storage || !allowedPaths.includes(r.path)) return false;
   try {
     const prev = readRecorded(key, storage)?.paths ?? {};
     const paths: Record<string, RecordedRequest[]> = { [r.path]: r.list };
@@ -176,6 +180,8 @@ interface EarlyState {
   t: string;
   /** 先送りした時刻（ms） */
   at: number;
+  /** 先送りしたページの location.pathname（画面を移ったら使わない） */
+  p: string;
   /** キー → 応答（失敗なら null） */
   r: Record<string, Promise<Response | null>>;
 }
@@ -183,20 +189,23 @@ interface EarlyState {
 function earlyState(): EarlyState | null {
   if (typeof window === 'undefined') return null;
   const v = (window as unknown as Record<string, unknown>)[EARLY_GLOBAL] as EarlyState | undefined;
-  return v && typeof v === 'object' && typeof v.t === 'string' && v.r && typeof v.r === 'object' ? v : null;
+  return v && typeof v === 'object' && typeof v.t === 'string' && typeof v.p === 'string' && v.r && typeof v.r === 'object' ? v : null;
 }
 
-/** 残りの先送りの応答を捨てる（書き込みを送った・ログアウトの状態になった） */
+/** 残りの先送りの応答を捨てる（書き込みを送った・ログアウトの状態になった・記録を終えた・画面を移った） */
 export function dropEarlyResponses(): void {
   if (typeof window === 'undefined') return;
   delete (window as unknown as Record<string, unknown>)[EARLY_GLOBAL];
 }
 
+const trimSlash = (p: string) => p.replace(/\/+$/, '');
+
 /** 先送りの応答のうち、このリクエストと同じものを取り出す（1回だけ）。なければ null */
 export function takeEarlyResponse(url: string, init: RequestInit | undefined, now: number = Date.now()): Promise<Response | null> | null {
   const s = earlyState();
   if (!s) return null;
-  if (now - s.at > EARLY_TTL_MS) {
+  if (now - s.at > EARLY_TTL_MS || trimSlash(window.location.pathname) !== trimSlash(s.p)) {
+    // 時間を過ぎた・SPA の画面移動で別の画面になった（別の画面〔振り分けに関わる画面など〕に、開いた画面の応答を渡さない）
     dropEarlyResponses();
     return null;
   }
@@ -248,6 +257,8 @@ export interface EarlyScriptConfig {
   b: string;
   /** 先送りしてよい POST */
   post: readonly string[];
+  /** 先送りしてよい画面のパス（basePath と末尾の / を外したもの。許可リスト。振り分けに関わる画面は入れない） */
+  paths: readonly string[];
 }
 
 /**
@@ -270,6 +281,7 @@ export const EARLY_FETCH_SOURCE = `function (c) {
     var path = location.pathname;
     if (c.b && (path === c.b || path.indexOf(c.b + '/') === 0)) path = path.slice(c.b.length);
     path = path.replace(/\\/+$/, '') || '/';
+    if (!Array.isArray(c.paths) || c.paths.indexOf(path) < 0) return;
     var list = rec && rec.paths && Object.prototype.hasOwnProperty.call(rec.paths, path) ? rec.paths[path] : null;
     if (!Array.isArray(list)) return;
     var q = new URLSearchParams(location.search);
@@ -302,7 +314,7 @@ export const EARLY_FETCH_SOURCE = `function (c) {
       if (out[key]) continue;
       out[key] = fetch(c.u + u, { method: e.m, headers: h, body: body, credentials: 'omit' }).catch(function () { return null; });
     }
-    window.__gaappEarly = { t: s.access_token, at: Date.now(), r: out };
+    window.__gaappEarly = { t: s.access_token, at: Date.now(), p: location.pathname, r: out };
   } catch (err) {}
 }`;
 

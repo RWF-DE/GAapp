@@ -29,6 +29,10 @@ const ROOM = '11111111-2222-4333-8444-555555555555';
 const USER = '00000000-0000-4000-8000-000000000002';
 const TOKEN = 'token-1';
 const PREFIX = 'gaapp:prefetch:';
+/** 先送りしてよい画面（lib/data/screen-queries.ts の EARLY_FETCH_PATHS と同じ） */
+const PATHS = ['/stock', '/request', '/my'];
+/** 振り分けに関わる画面（スナップショットで版を先に読む。D-33） */
+const SNAPSHOT_PATHS = ['/', '/allocation', '/swaps'];
 
 const win = () => window as unknown as Record<string, unknown>;
 
@@ -79,7 +83,7 @@ describe('記録', () => {
     window.history.replaceState(null, '', '/stocks/');
     await earlyAwareFetch(`${URL0}/rest/v1/items?select=id`, { method: 'GET' });
     const storage = window.localStorage;
-    expect(finishRecording(requestsKey(USER, PREFIX), true, storage)).toBe(true);
+    expect(finishRecording(requestsKey(USER, PREFIX), true, storage, PATHS)).toBe(true);
     expect(readRecorded(requestsKey(USER, PREFIX), storage)?.paths['/stock']).toEqual<RecordedRequest[]>([
       { m: 'GET', u: '/rest/v1/stocks?room_id=eq.{{room}}', h: { accept: 'application/json' } },
       { m: 'POST', u: '/rest/v1/rpc/accept_my_invitations', h: { 'content-type': 'application/json' }, b: '{}' },
@@ -95,21 +99,32 @@ describe('記録', () => {
     window.history.replaceState(null, '', '/my/');
     startRecording('/my', window.location);
     await earlyAwareFetch(`${URL0}/rest/v1/groups?select=id`, { method: 'GET' });
-    expect(finishRecording(key, false, window.localStorage)).toBe(false);
+    expect(finishRecording(key, false, window.localStorage, PATHS)).toBe(false);
     expect(Object.keys(readRecorded(key, window.localStorage)!.paths)).toEqual(Object.keys(old));
 
     startRecording('/my', window.location);
     await earlyAwareFetch(`${URL0}/rest/v1/groups?select=id`, { method: 'GET' });
-    expect(finishRecording(key, true, window.localStorage)).toBe(true);
+    expect(finishRecording(key, true, window.localStorage, PATHS)).toBe(true);
     const paths = Object.keys(readRecorded(key, window.localStorage)!.paths);
     expect(paths[0]).toBe('/my');
     expect(paths).toHaveLength(MAX_PATHS);
+  });
+
+  it.each(SNAPSHOT_PATHS)('先送りしてよい画面にないパス（%s。版を先に読む画面）は覚えない', async (path) => {
+    vi.stubGlobal('fetch', fetchOk());
+    const key = requestsKey(USER, PREFIX);
+    window.history.replaceState(null, '', path);
+    startRecording(path, window.location);
+    await earlyAwareFetch(`${URL0}/rest/v1/years?select=id,allocation_version&id=eq.${ROOM}`, { method: 'GET' });
+    await earlyAwareFetch(`${URL0}/rest/v1/allocations?select=*`, { method: 'GET' });
+    expect(finishRecording(key, true, window.localStorage, PATHS)).toBe(false);
+    expect(window.localStorage.getItem(key)).toBeNull();
   });
 });
 
 describe('先送りの応答の受け取り', () => {
   const setEarly = (r: Record<string, Promise<Response | null>>, at = Date.now()) => {
-    win()[EARLY_GLOBAL] = { t: TOKEN, at, r };
+    win()[EARLY_GLOBAL] = { t: TOKEN, at, p: window.location.pathname, r };
   };
   const auth = { Authorization: `Bearer ${TOKEN}`, Accept: 'application/json' };
   const key = requestKey('GET', '/rest/v1/items?select=id', { accept: 'application/json' });
@@ -140,6 +155,17 @@ describe('先送りの応答の受け取り', () => {
     expect(takeEarlyResponse(`${URL0}/rest/v1/items?select=id`, { headers: auth })).toBeNull();
   });
 
+  it('SPA の画面移動でパスが変わったら使わず、残りも捨てる（振り分けの画面の版の読み取りに、開いた画面の応答を渡さない）', () => {
+    window.history.replaceState(null, '', `/stock/?room=${ROOM}`);
+    const years = requestKey('GET', '/rest/v1/years?select=id,allocation_version', { accept: 'application/json' });
+    setEarly({ [key]: Promise.resolve(new Response('1')), [years]: Promise.resolve(new Response('1')) });
+    window.history.replaceState(null, '', '/stock'); // 末尾の / だけの違いは同じ画面
+    expect(takeEarlyResponse(`${URL0}/rest/v1/items?select=id`, { headers: auth })).not.toBeNull();
+    window.history.replaceState(null, '', '/');
+    expect(takeEarlyResponse(`${URL0}/rest/v1/years?select=id,allocation_version`, { headers: auth })).toBeNull();
+    expect(win()[EARLY_GLOBAL]).toBeUndefined();
+  });
+
   it('先送りが失敗していた（null）ときは、ふつうに送る', async () => {
     const real = vi.fn(async () => new Response('"real"'));
     vi.stubGlobal('fetch', real);
@@ -151,7 +177,7 @@ describe('先送りの応答の受け取り', () => {
 });
 
 describe('<head> の script（EARLY_FETCH_SOURCE）', () => {
-  const config = { u: URL0, a: 'pk', k: 'sb-db-auth-token', p: PREFIX, b: '/GAapp', post: EARLY_POSTS };
+  const config = { u: URL0, a: 'pk', k: 'sb-db-auth-token', p: PREFIX, b: '/GAapp', post: EARLY_POSTS, paths: PATHS };
   const run = () => (0, eval)(`(${EARLY_FETCH_SOURCE})`)(config);
   const session = (expiresInSec: number) =>
     window.localStorage.setItem(
@@ -186,8 +212,9 @@ describe('<head> の script（EARLY_FETCH_SOURCE）', () => {
       `POST ${URL0}/rest/v1/rpc/accept_my_invitations`,
     ]);
     expect(sent[0]!.init.headers).toMatchObject({ apikey: 'pk', authorization: `Bearer ${TOKEN}`, accept: 'application/json' });
-    const state = win()[EARLY_GLOBAL] as { t: string; r: Record<string, unknown> };
+    const state = win()[EARLY_GLOBAL] as { t: string; p: string; r: Record<string, unknown> };
     expect(state.t).toBe(TOKEN);
+    expect(state.p).toBe('/GAapp/stock/');
     expect(Object.keys(state.r).sort()).toEqual(
       [
         requestKey('GET', '/rest/v1/profiles?select=display_name', { accept: 'application/json' }),
@@ -215,6 +242,26 @@ describe('<head> の script（EARLY_FETCH_SOURCE）', () => {
     run();
     expect(f).not.toHaveBeenCalled();
     expect(win()[EARLY_GLOBAL]).toBeUndefined();
+  });
+
+  it.each(SNAPSHOT_PATHS)('覚えたものが localStorage にあっても、先送りしてよい画面にないパス（%s）では何も送らない', (path) => {
+    const f = vi.fn(async () => new Response('[]'));
+    vi.stubGlobal('fetch', f);
+    session(3600);
+    const snapshot: RecordedRequest[] = [
+      { m: 'GET', u: '/rest/v1/years?select=id,allocation_version', h: { accept: 'application/vnd.pgrst.object+json' } },
+      { m: 'GET', u: '/rest/v1/allocations?select=*', h: {} },
+    ];
+    window.localStorage.setItem(`${PREFIX}${USER}:requests`, JSON.stringify({ paths: { [path]: snapshot, '/stock': recorded } }));
+    window.history.replaceState(null, '', `/GAapp${path === '/' ? '/' : `${path}/`}`);
+    run();
+    (0, eval)(earlyFetchScript(config));
+    expect(f).not.toHaveBeenCalled();
+    expect(win()[EARLY_GLOBAL]).toBeUndefined();
+    // 設定のリストがない（古い形）ときも送らない
+    window.history.replaceState(null, '', `/GAapp/stock/?room=${ROOM}`);
+    (0, eval)(`(${EARLY_FETCH_SOURCE})`)({ ...config, paths: undefined });
+    expect(f).not.toHaveBeenCalled();
   });
 
   it('earlyFetchScript（改行を詰めた本体と設定）も同じように動く', () => {
