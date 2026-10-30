@@ -18,6 +18,7 @@
     "gen:types": "node scripts/gen-types.mjs",
     "check:types": "node scripts/gen-types.mjs --check",
     "check:no-test-login": "node scripts/check-no-test-login.mjs",
+    "build:r8-fixtures": "tsx scripts/build-r8-fixtures.ts",
     "gen:synthetic": "tsx scripts/gen-synthetic-fixtures.ts",
     "gen:synthetic-reference": "tsx scripts/gen-synthetic-reference.ts"
   },

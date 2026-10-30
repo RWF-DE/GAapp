@@ -1,0 +1,5 @@
+name,kind,building,floor,is_storage,extra_cost,sort_order,usable,aliases
+1-1,room,1,1,false,0,1,true,1-1教室
+1-2,room,1,2,false,0,2,true,
+2-1,room,2,1,false,0,3,true,
+倉庫,other,,,true,0,4,true,

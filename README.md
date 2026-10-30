@@ -184,6 +184,42 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
 
 SQL Editor は postgres で動くので RLS を通らず、監査の user_id は null になる。
 
+## R8 の fixtures を作る（R8 の元データを使うことになったら。ユーザーの PC で実行する）
+
+今は R8 の元データを使わず、合成データ fixtures/synthetic/r8like で代用している（D-40）。fixtures/r8 と seed の R8 の区間は作っていない。R8 の元データを使うことになったときのために、次の仕組みを残してある（fixtures/r8 があれば、R8 の不変条件と再計算のテストが自動でそちらにも流れる。入れたら CI に `REQUIRE_R8_FIXTURES=1` を足す）。
+
+fixtures/r8 は、元データから決まるものを `scripts/build-r8-fixtures.ts` が作り、元データにないものは手で書いてコミットする（分け方は fixtures/r8/README.md の雛形 [scripts/r8/fixtures-readme.template.md](scripts/r8/fixtures-readme.template.md) と、設計書の 3.8）。元データ（Google フォームの回答・Excel・PDF）はリポジトリに入れない。
+
+1. リポジトリの外の非公開フォルダ（例 `~/r8-source`）に、次の UTF-8 の CSV を置く（Excel は「CSV UTF-8」で書き出す）。メールアドレスなどが入っていてよい（読まずに捨てる）。
+
+   | ファイル | 中身 |
+   | --- | --- |
+   | forms/stall.csv・forms/department.csv | 模擬店・部門フォームの回答（スプレッドシートの書き出し） |
+   | forms/company.csv・forms/company_map.csv | 企業フォームの回答（あれば）。company_map.csv は列 `row,group`（company.csv の行番号と団体名） |
+   | stock.csv | 机椅子数えの最終値。1 列目が場所名、ほかは品目の列（机(木)・不可机・椅子(木)・…） |
+   | allocation.csv | 振り分け表の行。列 `品目,運び元,使用用途,数,備考` |
+   | allocation_totals.csv | 振り分け表の団体別集計。1 列目が使用用途、ほかは品目の列 |
+   | anonymize.csv | （団体名に個人名があるときだけ）列 `source_name,fixture_name` |
+
+2. 手で書くファイルを `fixtures/r8/` に置く：`meta.json`・`rooms.csv`・`rules.json`・`distance_overrides.csv`・`manual/`（`groups.csv`・`adjustments.csv`・`reference_skip.csv`・`settings.json`）。列は設計書 3.2・3.8。サンプルは [fixtures/r8-build-sample/fixture](fixtures/r8-build-sample/fixture)。
+3. 実行する：
+
+   ```bash
+   R8_SOURCE_DIR=~/r8-source pnpm build:r8-fixtures
+   ```
+
+   `R8_SOURCE_DIR` がないと、必要なファイルを示して終わる（終了コード 2）。対応しない名前や行があると、**値を出さず行番号と見出しだけ**を示して失敗する（終了コード 1）。フォームのタイムスタンプ以外の列は読まない。画面に出る「比較から除いた団体」「申請と手作業が違う組」などは、fixtures/r8/README.md に書き写す。
+4. 生成した fixtures に個人情報がないことを確かめる：
+
+   ```bash
+   pnpm check:emails      # 追跡ファイルにメールアドレスがないこと
+   pnpm test              # fixtures/ の全ファイルにメールがないこと、fixtures の読み込み（知らない列は失敗）
+   grep -rn '@' fixtures/r8 || echo '@ なし'
+   git diff --stat fixtures/r8   # 備考・氏名・学籍番号・電話の列がないこと。団体名に個人名がないか目で確かめる
+   ```
+
+   団体名に個人名（研究室名の教員名など）が残っていないかは、機械では確かめられない。groups.csv の name・aliases と reference/ を一度読んでからコミットする。
+
 ## 個人情報
 
 このリポジトリは公開する（0）。メールアドレスや個人名を、コード・fixtures・ログ・コミットに入れない（テスト用は `example.test` などの予約ドメインだけ）。CI の `pnpm check:emails` が、追跡ファイルに予約ドメイン以外のメールアドレスがあると失敗する。R8 の元データは `R8_SOURCE_DIR` の非公開フォルダから読む。
