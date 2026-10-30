@@ -42,7 +42,8 @@ function scriptUrls(html) {
   const urls = new Set();
   for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) {
     const src = attr(tag, 'src');
-    if (src && !/\snomodule(=|\s|>)/i.test(tag)) urls.add(src);
+    // data: の script（JS より先に Supabase へ送る小さな script。D-45）は HTML の中にあり、ファイルを読まないので数えない
+    if (src && !src.startsWith('data:') && !/\snomodule(=|\s|>)/i.test(tag)) urls.add(src);
   }
   for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
     if (attr(tag, 'rel') === 'preload' && attr(tag, 'as') === 'script') {

@@ -119,21 +119,31 @@ describe('自団体の振り分け（確定前）', () => {
   });
 });
 
-/** 読んだ表を記録する偽のクライアント（どの問い合わせも空の結果を返す。years と groups は1行） */
-function fakeClient(status: string) {
+/**
+ * 読んだ表を記録する偽のクライアント（years と groups は1行、allocations は allocationRows〔読むたびに次の要素〕、ほかは空）。
+ * yearGate を渡すと、years の応答はそれが解けるまで返らない（並行に読むかを確かめる）。
+ */
+function fakeClient(status: string, opts: { allocationRows?: unknown[][]; yearGate?: Promise<void> } = {}) {
   const tables: string[] = [];
+  let allocationReads = 0;
   const result = (table: string, single: boolean) => {
     if (table === 'years') {
       return { data: { id: 'y', label: 'R8', status, allocation_version: 1 }, error: null, status: 200 };
     }
     if (table === 'groups') return { data: { id: 'g', name: '模擬店01' }, error: null, status: 200 };
+    if (table === 'allocations') {
+      const rows = opts.allocationRows?.[allocationReads] ?? [];
+      allocationReads++;
+      return { data: rows, error: null, status: 200 };
+    }
     return { data: single ? null : [], error: null, status: 200 };
   };
+  const wait = (table: string) => (table === 'years' && opts.yearGate ? opts.yearGate : Promise.resolve());
   const builder = (table: string) => {
     const b: Record<string, unknown> = {};
     for (const k of ['select', 'eq', 'order', 'range']) b[k] = () => b;
-    b.maybeSingle = () => Promise.resolve(result(table, true));
-    b.then = (ok: (v: unknown) => unknown, ng?: (e: unknown) => unknown) => Promise.resolve(result(table, false)).then(ok, ng);
+    b.maybeSingle = () => wait(table).then(() => result(table, true));
+    b.then = (ok: (v: unknown) => unknown, ng?: (e: unknown) => unknown) => wait(table).then(() => result(table, false)).then(ok, ng);
     return b;
   };
   const client = {
@@ -145,19 +155,39 @@ function fakeClient(status: string) {
   return { client, tables };
 }
 
+const ALLOC_ROW = { id: 'a1', year_id: 'y', group_id: 'g', item_id: 'i', count: 3 };
+
 describe('loadMyData', () => {
+  it('年度の行を待たずに、団体・品目・場所・申請・提出・了承を並行に読む（D-45）', async () => {
+    let open!: () => void;
+    const yearGate = new Promise<void>((r) => (open = r));
+    const { client, tables } = fakeClient('allocating', { yearGate });
+    const p = loadMyData('y', 'g', client);
+    await Promise.resolve();
+    // 年度の行の応答の前に、ほかの表も送っている（振り分けの行は送らない）
+    expect(new Set(tables)).toEqual(new Set(['years', 'groups', 'items', 'rooms', 'requests', 'request_submissions', 'substitution_consents']));
+    open();
+    await p;
+  });
+
   it('確定前は振り分けの行を読みに行かない（RLS で 0 行になるのを「ない」と取り違えない）', async () => {
-    const { client, tables } = fakeClient('allocating');
+    const { client, tables } = fakeClient('allocating', { allocationRows: [[ALLOC_ROW]] });
     const d = await loadMyData('y', 'g', client);
-    expect(tables[0]).toBe('years');
     expect(tables).not.toContain('allocations');
     expect(d.allocations).toBeNull();
   });
 
-  it('確定後は振り分けの行を読む', async () => {
-    const { client, tables } = fakeClient('confirmed');
+  it('確定後は、年度の行を読んだ後に振り分けの行を読む', async () => {
+    const { client, tables } = fakeClient('confirmed', { allocationRows: [[ALLOC_ROW]] });
     const d = await loadMyData('y', 'g', client);
-    expect(tables).toContain('allocations');
+    expect(tables.filter((t) => t === 'allocations')).toHaveLength(1);
+    expect(tables.indexOf('allocations')).toBeGreaterThan(tables.indexOf('years'));
+    expect(d.allocations).toEqual([ALLOC_ROW]);
+  });
+
+  it('終了の年度で振り分けの行がなければ、空の配列（振り分けがない）', async () => {
+    const { client } = fakeClient('closed');
+    const d = await loadMyData('y', 'g', client);
     expect(d.allocations).toEqual([]);
   });
 });

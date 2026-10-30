@@ -1,92 +1,17 @@
 // 自団体の振り分け /my のデータ（画面の設計 3.11、04「自団体の振り分け」、D-39 の Q4。T13）。
 // 団体代表が自団体の分だけを読む。振り分けの行（allocations）は確定後にしか RLS で返らないので、確定前は読みに行かない。
-// 読む順：年度の行（状態）→ 団体・品目・場所・申請・提出・了承（・確定後なら振り分け）を並行に。
+// 読む順と読み方（loadMyData）は、ページを開いたときの先読みのために lib/data/screen-queries.ts に置く（D-45。同じ名前で re-export）。
 import { compareBySortOrder, type ConsentStatus } from '@gaapp/shared';
 import { useQuery } from '@tanstack/react-query';
-import {
-  COLUMNS,
-  type AllocationDbRow,
-  type ConsentDbRow,
-  type GroupRow,
-  type ItemRow,
-  type RequestDbRow,
-  type RoomRow,
-  type SubmissionRow,
-  type YearRow,
-} from '@/lib/db/types';
-import { appError, toAppError } from '@/lib/errors';
-import { queryKeys } from '@/lib/query';
+import type { ConsentDbRow } from '@/lib/db/types';
 import { callRpc } from '@/lib/rpc';
-import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
-import { fetchYear, isAllocationFinal } from './year';
+import { myDataOptions, type MyData } from './screen-queries';
 
-export interface MyData {
-  year: YearRow;
-  group: GroupRow;
-  items: ItemRow[];
-  rooms: RoomRow[];
-  requests: RequestDbRow[];
-  submission: SubmissionRow | null;
-  consents: ConsentDbRow[];
-  /** 確定・終了のときだけ読む（確定前は null。RLS で 0 行になるのを「振り分けがない」と取り違えない） */
-  allocations: AllocationDbRow[] | null;
-  loadedAt: string;
-}
-
-type Res = { data: unknown; error: unknown; status?: number };
-function rowsOf<T>(res: Res): T[] {
-  if (res.error) throw toAppError(res.error, res.status);
-  return (res.data ?? []) as T[];
-}
-
-/** 自団体のデータを読む（年度の行を先に読み、状態で振り分けの行を読むかを決める） */
-export async function loadMyData(yearId: string, groupId: string, client: AppSupabaseClient = getSupabase()): Promise<MyData> {
-  const year = await fetchYear(yearId, client);
-  const final = isAllocationFinal(year.status);
-  const [g, i, r, rq, sub, co, a] = await Promise.all([
-    client.from('groups').select(COLUMNS.groups).eq('id', groupId).eq('year_id', yearId).maybeSingle(),
-    client.from('items').select(COLUMNS.items).order('sort_order').order('id'),
-    client.from('rooms').select(COLUMNS.rooms).order('sort_order').order('id'),
-    client.from('requests').select(COLUMNS.requests).eq('group_id', groupId).order('item_id'),
-    client.from('request_submissions').select(COLUMNS.request_submissions).eq('group_id', groupId).maybeSingle(),
-    client
-      .from('substitution_consents')
-      .select(COLUMNS.substitution_consents)
-      .eq('group_id', groupId)
-      .order('from_item_id')
-      .order('to_item_id'),
-    final
-      ? client.from('allocations').select(COLUMNS.allocations).eq('year_id', yearId).eq('group_id', groupId).order('id')
-      : Promise.resolve(null),
-  ]);
-  if (g.error) throw toAppError(g.error, g.status);
-  if (!g.data) throw appError('not_found', 'group_missing', { groupId });
-  if (sub.error) throw toAppError(sub.error, sub.status);
-  return {
-    year,
-    group: g.data as unknown as GroupRow,
-    items: rowsOf<ItemRow>(i),
-    rooms: rowsOf<RoomRow>(r),
-    requests: rowsOf<RequestDbRow>(rq),
-    submission: (sub.data ?? null) as SubmissionRow | null,
-    consents: rowsOf<ConsentDbRow>(co),
-    allocations: a ? rowsOf<AllocationDbRow>(a) : null,
-    loadedAt: new Date().toISOString(),
-  };
-}
+export { loadMyData, myDataOptions, pickMyGroup, planMyPrefetch, type MyData } from './screen-queries';
 
 /** クエリ（キーは `['year', yearId, 'my', groupId]`。年度の状態の遷移で queryKeys.year を invalidate すると読み直す） */
 export function useMyData(yearId: string | null | undefined, groupId: string | null | undefined) {
-  return useQuery({
-    queryKey: queryKeys.yearPart(yearId ?? '', 'my', groupId ?? ''),
-    queryFn: () => loadMyData(yearId!, groupId!),
-    enabled: !!yearId && !!groupId,
-  });
-}
-
-/** 団体の選び方（`?group=` が自分の団体ならそれ、なければ最初の団体）。団体がなければ null */
-export function pickMyGroup<T extends { id: string }>(groups: readonly T[], param: string | null | undefined): T | null {
-  return groups.find((g) => g.id === param) ?? groups[0] ?? null;
+  return useQuery(myDataOptions(yearId, groupId));
 }
 
 const bySort = <T extends { id: string; name: string; sort_order: number }>(rows: readonly T[]) =>

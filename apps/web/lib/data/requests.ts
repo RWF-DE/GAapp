@@ -20,6 +20,7 @@ import { queryKeys } from '@/lib/query';
 import { callRpc } from '@/lib/rpc';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import type { RequestsFilter } from '@/lib/schemas/requests';
+import { repRequestOptions, SUBMISSION_STATE_COLUMNS, type SubmissionState } from './screen-queries';
 
 // ---------------------------------------------------------------- 並べ方・品目
 
@@ -585,56 +586,15 @@ export function hasNoRequests(requests: readonly Pick<RequestDbRow, 'count'>[]):
 
 // ---------------------------------------------------------------- 読む
 
-/** 団体代表の申請の画面のデータ（自団体だけ） */
-export interface RepRequestData {
-  group: GroupRow;
-  items: ItemRow[];
-  /** 使用場所の名前（なければ null＝校内に分散） */
-  locationName: string | null;
-  requests: RequestDbRow[];
-  /** 提出の記録（updated_by も読む。裏で届いた行の知らせで、自分の提出をほかの人の変更にしないため） */
-  submission: SubmissionState | null;
-  loadedAt: string;
-}
-
-/** 自団体の申請を読む（RLS で自団体だけ。団体が読めなければ not_found） */
-export async function fetchRepRequest(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<RepRequestData> {
-  const [g, i, r, s] = await Promise.all([
-    client.from('groups').select(COLUMNS.groups).eq('id', groupId).maybeSingle(),
-    client.from('items').select(COLUMNS.items).order('sort_order').order('id'),
-    client.from('requests').select(COLUMNS.requests).eq('group_id', groupId).order('item_id'),
-    client.from('request_submissions').select(SUBMISSION_STATE_COLUMNS).eq('group_id', groupId).maybeSingle(),
-  ]);
-  for (const res of [g, i, r, s]) if (res.error) throw toAppError(res.error, res.status);
-  const group = g.data as unknown as GroupRow | null;
-  if (!group) throw appError('not_found', 'group_missing', { groupId });
-  let locationName: string | null = null;
-  if (group.location_room_id) {
-    const room = await client.from('rooms').select('id, name').eq('id', group.location_room_id).maybeSingle();
-    if (room.error) throw toAppError(room.error, room.status);
-    locationName = room.data?.name ?? null;
-  }
-  return {
-    group,
-    items: (i.data ?? []) as unknown as ItemRow[],
-    locationName,
-    requests: (r.data ?? []) as unknown as RequestDbRow[],
-    submission: (s.data ?? null) as unknown as SubmissionState | null,
-    loadedAt: new Date().toISOString(),
-  };
-}
-
-/**
- * 提出の記録（updated_by で自分の書き込みかを見分ける）。画面のクエリ・申請一覧の表・送る前の読み直しはどれも updated_by を読む
- * （SUBMISSION_STATE_COLUMNS）。updated_by のない記録（キーがない）は、書いた人が分からないものとして扱う。
- */
-export type SubmissionState = SubmissionRow & { updated_by?: string | null };
-
-/**
- * 提出の記録を読む列（COLUMNS.request_submissions に updated_by を足したもの。COLUMNS は T09a のファイルなので、T11 の select で足す。
- * notes/T11.md の「T09a への申し送り」）
- */
-const SUBMISSION_STATE_COLUMNS = `${COLUMNS.request_submissions}, updated_by`;
+// 自団体の申請の画面のデータ（fetchRepRequest）と提出の記録の型・列は lib/data/screen-queries.ts に置く（先読み。D-45）
+export {
+  fetchRepRequest,
+  planRequestPrefetch,
+  repRequestOptions,
+  SUBMISSION_STATE_COLUMNS,
+  type RepRequestData,
+  type SubmissionState,
+} from './screen-queries';
 
 /** 提出の記録だけを読み直す（updated_by も読む。送る前の読み直し・「提出済みにする」・取り込み） */
 export async function fetchSubmission(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<SubmissionState | null> {
@@ -876,11 +836,7 @@ export function normalizeRequestDraft(value: unknown, groupId: string): RequestD
 }
 
 export function useRepRequest(yearId: string | null | undefined, groupId: string | null) {
-  return useQuery({
-    queryKey: queryKeys.yearPart(yearId ?? '', 'request', groupId ?? ''),
-    queryFn: () => fetchRepRequest(groupId!),
-    enabled: !!yearId && !!groupId,
-  });
+  return useQuery(repRequestOptions(yearId, groupId));
 }
 
 /** 年度で絞るために groups を inner join した行から、join の列を外す */

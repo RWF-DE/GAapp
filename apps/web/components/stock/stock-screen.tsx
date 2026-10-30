@@ -2,13 +2,17 @@
 
 // 在庫入力 /stock?room=…（画面の設計 3.3、04「在庫入力」。T10）。
 // room がなければ保管場所の一覧（RoomPicker）、あれば部屋の入力（StockInput）。room が保管場所の一覧にない・形が違うときは
-// 「この場所は見つかりません」。年度の行（状態で書けるか）と場所・品目・その年度の使用を先に読む。
+// 「この場所は見つかりません」。年度の行（状態で書けるか。立場と一緒に読んだもの）と場所・品目・その年度の使用、部屋の在庫を
+// 並行に読む（D-45。部屋の在庫は StockInput が使う。場所の一覧で部屋を確かめる前に読み始めてよい：読めるのは RLS の範囲だけで、
+// 見つからない部屋なら使わない）。前に開いた年度があれば、ページを開いたときに先読みも始まっている（lib/boot/early-load.ts）。
+import { useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
+import { useEffect } from 'react';
 import { AppLink } from '@/components/common/app-link';
 import { PageHeader } from '@/components/common/page-header';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
-import { storageRooms, useStockMaster } from '@/lib/data/stocks';
+import { roomStocksOptions, storageRooms, useStockMaster, yearStocksOptions } from '@/lib/data/stocks';
 import { useYearRow } from '@/lib/data/year';
 import { classifyError, messageFor } from '@/lib/errors';
 import { parseRoomParam } from '@/lib/schemas/stock';
@@ -24,6 +28,13 @@ export function StockScreen() {
   const yearId = open?.year.id ?? null;
   const yearQ = useYearRow(yearId);
   const masterQ = useStockMaster(yearId);
+  // 部屋の在庫（と、保存の後の「次の部屋へ」に使う年度の在庫）を、場所・品目を待たずに読み始める（StockInput が同じキーで使う）
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!yearId || !roomId) return;
+    void queryClient.prefetchQuery(roomStocksOptions(yearId, roomId));
+    void queryClient.prefetchQuery(yearStocksOptions(yearId));
+  }, [queryClient, yearId, roomId]);
 
   if (!open) return <LoadingState />;
   const failed = yearQ.isError ? yearQ : masterQ.isError ? masterQ : null;
