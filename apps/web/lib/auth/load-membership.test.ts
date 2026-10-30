@@ -12,6 +12,7 @@ function fakeClient(opts: {
 }) {
   const log: string[] = [];
   const reads: Record<string, number> = {};
+  const selects: Record<string, string> = {};
   const query = (table: string) => {
     const result = () => {
       const n = (reads[table] = (reads[table] ?? 0) + 1);
@@ -20,7 +21,11 @@ function fakeClient(opts: {
       return Promise.resolve(list[Math.min(n, list.length) - 1]!);
     };
     const chain: Record<string, unknown> = {};
-    for (const m of ['select', 'eq', 'maybeSingle']) chain[m] = () => chain;
+    for (const m of ['eq', 'maybeSingle']) chain[m] = () => chain;
+    chain.select = (cols: string) => {
+      selects[table] = cols;
+      return chain;
+    };
     chain.then = (ok: (v: Result) => unknown, ng: (e: unknown) => unknown) => result().then(ok, ng);
     return chain;
   };
@@ -31,7 +36,7 @@ function fakeClient(opts: {
       return typeof opts.accepted === 'function' ? opts.accepted() : Promise.resolve(opts.accepted);
     },
   } as unknown as AppSupabaseClient;
-  return { client, log, reads };
+  return { client, log, reads, selects };
 }
 
 const ok = (data: unknown): Result => ({ data, error: null });
@@ -58,6 +63,17 @@ describe('loadMembershipSource', () => {
     expect(src.roles).toEqual([{ year_id: 'y1', role: 'staff' }]);
     expect(src.displayName).toBe('部員');
     expect(reads).toEqual({ profiles: 1, year_roles: 1, group_members: 1, years: 1 });
+  });
+
+  it('年度は年度の行の列をすべて読み、yearRows に入れる（年度の行のキャッシュに入れる。D-45）', async () => {
+    const row = { id: 'y1', label: 'R8', status: 'requesting', festival_start: '2026-10-10', allocation_version: 3, prev_year_id: null };
+    const { client, selects } = fakeClient({ accepted: ok(0), tables: { ...tables([ok([])]), years: [ok([row])] } });
+    const before = Date.now();
+    const src = await loadMembershipSource(client, 'u1');
+    expect(selects.years).toContain('allocation_version');
+    expect(src.years).toEqual([{ id: 'y1', label: 'R8', status: 'requesting', festival_start: '2026-10-10' }]);
+    expect(src.yearRows?.rows).toEqual([row]);
+    expect(src.yearRows!.readStartedAt).toBeGreaterThanOrEqual(before);
   });
 
   it('招待を受け入れたら（返り値 > 0）、受け入れた後の立場を読み直す', async () => {

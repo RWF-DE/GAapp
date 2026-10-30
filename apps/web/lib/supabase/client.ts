@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from '@gaapp/shared';
+import { earlyAwareFetch } from '@/lib/boot/early-fetch';
 import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from '@/lib/env';
 
 export type AppSupabaseClient = SupabaseClient<Database>;
@@ -25,6 +26,7 @@ export function authStorageKey(): string {
 /**
  * ブラウザの Supabase クライアント（1つだけ作る）。publishable キーと PKCE フローを使う。
  * セッションは localStorage に保存し、トークンは自動で更新する（ログイン状態の保持）。
+ * fetch は earlyAwareFetch（ページを開いたときのリクエストを覚え、<head> の script が先に送った応答があれば使う。D-45）。
  * 静的書き出しのプリレンダーでは呼ばない（useEffect やイベントの中だけで呼ぶ）。
  */
 export function getSupabase(): AppSupabaseClient {
@@ -40,6 +42,7 @@ export function getSupabase(): AppSupabaseClient {
       // コードの交換は /auth/callback/ で明示的に行う（二重に交換しないように）
       detectSessionInUrl: false,
     },
+    global: { fetch: earlyAwareFetch },
   });
   return client;
 }

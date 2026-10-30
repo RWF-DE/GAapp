@@ -13,17 +13,24 @@ import { uuidSchema } from '@/lib/schemas/common';
 import type { StockBaseStamps, StockCounts } from '@/lib/schemas/stock';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import type { AppRole } from '@/lib/auth/membership';
+import { roomStocksOptions, sortByOrder, stockMasterOptions, yearStocksOptions } from './screen-queries';
 
 // ---- 並べ方・場所 ----
 
-/** sort_order → 名前 → id の順（CLAUDE.md の約束。場所・品目の並び） */
-export function compareByOrder(a: { sort_order: number; name: string; id: string }, b: { sort_order: number; name: string; id: string }): number {
-  return a.sort_order - b.sort_order || a.name.localeCompare(b.name, 'ja') || a.id.localeCompare(b.id);
-}
-
-export function sortByOrder<T extends { sort_order: number; name: string; id: string }>(rows: readonly T[]): T[] {
-  return [...rows].sort(compareByOrder);
-}
+// 並べ方と、画面を開くときに読むもの（場所・品目・その年度の使用、部屋・年度の在庫）は lib/data/screen-queries.ts に置く
+// （ページを開いたときの先読みで、ルートのレイアウトから読むため。D-45）。ここからも同じ名前で使える。
+export {
+  compareByOrder,
+  fetchRoomStocks,
+  fetchStockMaster,
+  fetchYearStocks,
+  planStockPrefetch,
+  roomStocksOptions,
+  sortByOrder,
+  stockMasterOptions,
+  yearStocksOptions,
+  type StockMaster,
+} from './screen-queries';
 
 /** 保管場所と、その年度の使用（room_years の行がなければ使用可） */
 export interface StorageRoom {
@@ -303,59 +310,12 @@ export async function saveRoomStocks(
 
 // ---- 読む ----
 
-export interface StockMaster {
-  rooms: RoomRow[];
-  items: ItemRow[];
-  roomYears: RoomYearRow[];
-}
-
-/** 場所・品目（年度をまたぐ表）と、その年度の使用（room_years） */
-export async function fetchStockMaster(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<StockMaster> {
-  const [rooms, items, roomYears] = await Promise.all([
-    fetchAll<RoomRow>((from, to) =>
-      client.from('rooms').select(COLUMNS.rooms).order('id').range(from, to) as unknown as PromiseLike<{ data: RoomRow[] | null; error: unknown; status?: number }>,
-    ),
-    fetchAll<ItemRow>((from, to) =>
-      client.from('items').select(COLUMNS.items).order('id').range(from, to) as unknown as PromiseLike<{ data: ItemRow[] | null; error: unknown; status?: number }>,
-    ),
-    fetchAll<RoomYearRow>((from, to) =>
-      client
-        .from('room_years')
-        .select(COLUMNS.room_years)
-        .eq('year_id', yearId)
-        .order('room_id')
-        .range(from, to) as unknown as PromiseLike<{ data: RoomYearRow[] | null; error: unknown; status?: number }>,
-    ),
-  ]);
-  return { rooms: sortByOrder(rooms), items: sortByOrder(items), roomYears };
-}
-
 /** 場所だけ（QR の印刷。年度によらない） */
 export async function fetchRooms(client: AppSupabaseClient = getSupabase()): Promise<RoomRow[]> {
   const rooms = await fetchAll<RoomRow>((from, to) =>
     client.from('rooms').select(COLUMNS.rooms).order('id').range(from, to) as unknown as PromiseLike<{ data: RoomRow[] | null; error: unknown; status?: number }>,
   );
   return sortByOrder(rooms);
-}
-
-/** その部屋の今年の在庫の行（品目の順） */
-export async function fetchRoomStocks(yearId: string, roomId: string, client: AppSupabaseClient = getSupabase()): Promise<StockDbRow[]> {
-  const res = await client.from('stocks').select(COLUMNS.stocks).eq('year_id', yearId).eq('room_id', roomId).order('item_id');
-  if (res.error) throw toAppError(res.error, res.status);
-  return (res.data ?? []) as unknown as StockDbRow[];
-}
-
-/** 今年の在庫の行すべて（在庫一覧・場所の一覧の「数えた」） */
-export async function fetchYearStocks(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<StockDbRow[]> {
-  return fetchAll<StockDbRow>((from, to) =>
-    client
-      .from('stocks')
-      .select(COLUMNS.stocks)
-      .eq('year_id', yearId)
-      .order('room_id')
-      .order('item_id')
-      .range(from, to) as unknown as PromiseLike<{ data: StockDbRow[] | null; error: unknown; status?: number }>,
-  );
 }
 
 export interface PreviousStockRow {
@@ -558,11 +518,7 @@ export function stockUrl(roomId: string, origin: string, basePath: string = BASE
 
 /** 場所・品目・その年度の使用 */
 export function useStockMaster(yearId: string | null | undefined) {
-  return useQuery({
-    queryKey: queryKeys.yearPart(yearId ?? '', 'stock-master'),
-    queryFn: () => fetchStockMaster(yearId!),
-    enabled: !!yearId,
-  });
+  return useQuery(stockMasterOptions(yearId));
 }
 
 /** 場所だけ（QR の印刷） */
@@ -572,20 +528,12 @@ export function useRooms() {
 
 /** その部屋の今年の在庫（キーは `['year', yearId, 'stocks', roomId]`。年度の stocks の invalidate で一緒に読み直す） */
 export function useRoomStocks(yearId: string | null | undefined, roomId: string | null | undefined) {
-  return useQuery({
-    queryKey: queryKeys.yearPart(yearId ?? '', 'stocks', 'room', roomId ?? ''),
-    queryFn: () => fetchRoomStocks(yearId!, roomId!),
-    enabled: !!yearId && !!roomId,
-  });
+  return useQuery(roomStocksOptions(yearId, roomId));
 }
 
 /** 今年の在庫すべて */
 export function useYearStocks(yearId: string | null | undefined) {
-  return useQuery({
-    queryKey: queryKeys.yearPart(yearId ?? '', 'stocks', 'all'),
-    queryFn: () => fetchYearStocks(yearId!),
-    enabled: !!yearId,
-  });
+  return useQuery(yearStocksOptions(yearId));
 }
 
 /** 前年の数（前年度がなければ読まない） */

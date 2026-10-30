@@ -256,13 +256,13 @@ ESLint（T09a が足す。apps/web）：
 | /settings 距離 | distance_overrides、rooms（建物の一覧） | distance_overrides を直接 |
 | /settings ユーザー | year_roles・group_members（年度の団体）・invitations（年度）・profiles | invite、set_role、remove_role、revoke_invitation、remove_group_member |
 | /settings 書き出し | 年度の行 → 年度の全データ（無効なルール・備考・別名を含む） | —（ファイルを作るだけ） |
-| /stock | 年度の行、rooms、room_years、items、stocks（年度・部屋）、profiles（数えた人）、RPC previous_year_stocks（読み取り。admin・staff）、（admin で振り分け中・確定中）v_remaining（部屋） | stocks を直接（upsert） |
+| /stock | 年度の行（立場と一緒に読んだもの）と並行に rooms、room_years、items、stocks（年度・部屋）、profiles（数えた人）、RPC previous_year_stocks（読み取り。admin・staff）、（admin で振り分け中・確定中）v_remaining（部屋） | stocks を直接（upsert） |
 | /stocks・/stocks/qr | 年度の行、rooms、room_years、items、stocks（年度）、RPC previous_year_stocks | — |
-| /request | 年度の行、groups（自団体）、items、rooms（使用場所の名前）、requests・request_submissions（自団体） | submit_requests |
+| /request | 年度の行（立場と一緒に読んだもの）と並行に groups（自団体。使用場所の名前を rooms から埋め込む）、items、requests・request_submissions（自団体） | submit_requests |
 | /requests | 年度の行、groups、items、requests（`groups!inner(year_id)` で年度に絞る）、request_submissions、（admin）previous_year_requests | 締切前：requests を直接（楽観ロック）、提出の記録は submit_requests か request_submissions を直接。締切後と取り込み：update_requests_after_deadline |
 | /rules | 年度の行、rules（年度・無効を含む）、items、rooms、groups | rules を直接 |
 | /allocation・/swaps | 年度の行（版）→ スナップショット | save_auto_allocations、save_allocation_rows、set_year_status、set_consent、room_years を直接（部屋の見出しの「使用不可にする」。3.9） |
-| /my | 年度の行、groups（自団体）、items、rooms、requests・request_submissions・substitution_consents（自団体）、allocations（自団体。確定後だけ行が返る） | set_consent（了承・拒否） |
+| /my | 年度の行（立場と一緒に読んだもの。キャッシュになければ読む）と並行に groups（自団体）、items、rooms、requests・request_submissions・substitution_consents（自団体）。allocations（自団体。確定後だけ行が返る）は年度の行が確定・終了のときだけ読む（キャッシュの年度の行で分かれば並行に、分からなければ年度の行の後に） | set_consent（了承・拒否） |
 | /history | audit_logs（年度）、groups（年度）、rooms、items、profiles | — |
 
 ### 2.2 版を先に読む（スナップショット）
@@ -275,7 +275,10 @@ ESLint（T09a が足す。apps/web）：
 
 - テスト：偽のクライアントで「years の応答の前にほかの問い合わせを出さない」ことを確かめる（lib/data/snapshot.test.ts）。
 - 版を引数に取る RPC は save_auto_allocations（p_base_version）と set_year_status の確定（p_base_version）だけ。save_allocation_rows・set_consent は版を取らないが、返り値・読み直しで版を合わせる（3.9・3.10）。
-- 振り分けに関わらない画面（在庫・申請・設定・ルール・履歴）も、最初に年度の行を読む（状態で書けるかを決めるため）。版は使わない。
+- 振り分けに関わらない画面（在庫・申請・設定・ルール・履歴・自団体の振り分け）も、年度の行の状態で書けるかを決める。版は使わないので、画面のデータは年度の行を待たずに並行に読んでよい（D-45。2026-10-30 に「最初に年度の行を読む」から改めた。画面のデータの読み方は年度の状態によらず、書けるかを決めるのは年度の行が届いてからなので、読む順を変えても書ける・書けないの判断は変わらない）。/my の allocations だけは状態で意味が変わる（確定前は RLS で 0 行）ので、確定前には読みに行かない（T13 のまま）。キャッシュの新しい年度の行で確定・終了と分かれば並行に、分からなければ年度の行を読んだ後に読む。
+- 年度の行は、立場の読み込み（loadMembershipSource の years）で COLUMNS.years を読み、AuthProvider が `['year', id, 'row']` のキャッシュに入れる（読み始めた時刻より新しいキャッシュは上書きしない）。画面の useYearRow はそれを使い、年度の行のために往復しない。
+- 先読み（D-45。lib/boot/early-load.ts）：前に開いた年度（と、その年度の団体代表の団体）の id を `localStorage` の `gaapp:prefetch:<user_id>` に覚え、ページを開いたときは Providers が立場の読み込みと同時に、その画面（/stock?room=・/request・/my。画面の部品が registerRoutePrefetch で読むものを登録する）のデータを React Query のキャッシュに読み始める。年度はそのタブで選んだ年度（sessionStorage）が覚えた年度にあればそれ、なければ覚えた最新の年度、団体は `?group=` が覚えた団体にあればそれ、なければ最初の団体。立場が届いたら、開く年度・団体が同じ先読みだけを残し、違うもの・招待されていない・ログアウトの状態・別の利用者なら消す。画面に出すのは今までどおり立場で開けると決まった後だけ（RequireAudience。データの範囲は RLS が守る）。覚えた id は下書きと同じ扱い（1.4）：手動のログアウトでその人の分、別の user_id でログインしたときに自分以外の分を消す。
+- JS より先に送る（D-45。lib/boot/early-fetch.ts）：supabase-js の fetch（earlyAwareFetch）が、ページを開いてから立場が届いて 2 秒後までに送った読み取り（Supabase の /rest/v1/ への GET と、引数のない accept_my_invitations。24 件まで）を、パスごとに `gaapp:prefetch:<user_id>:requests` に覚える（メソッド・URL・応答を変えるヘッダー〔accept・accept-profile・content-profile・content-type・prefer・range〕・本文。トークンは覚えない。URL の中のページのクエリの値〔room・group〕は {{名前}} にする。先読みの年度・団体が違ったときは覚えない）。次にそのパスを開いたとき、ルートのレイアウトの `<script async src="data:…">`（インラインの script はその前のスタイルシートを待ち、その間ページの JS のチャンクの読み込みも後回しになるので、async にする）が、localStorage のセッションのトークン（期限まで 30 秒以上あるときだけ）で同じリクエストを送り、応答の Promise を `window.__gaappEarly` に置く。earlyAwareFetch は、同じリクエスト（メソッド・URL・ヘッダー・本文、同じトークン）なら送らずにその応答を返す（1回だけ。ページを開いてから 15 秒まで。/rest/v1/ への書き込みを送ったら残りは捨てる。ログアウトの状態になったら捨てる）。送り先は、ビルドで決まった Supabase の URL の /rest/v1/ だけ。消す決まりは上の id と同じ。
 
 ### 2.3 直接の書き込み
 

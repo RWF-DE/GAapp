@@ -1669,3 +1669,37 @@ describe('StockScreen：年度の切り替え', () => {
     expect(screen.queryByTestId('stock-conflict-dialog')).toBeNull();
   });
 });
+
+describe('StockScreen：読み込みの順（D-45）', () => {
+  it('部屋の在庫と年度の在庫を、場所・品目・その年度の使用の応答を待たずに読み始める', async () => {
+    let releaseMaster!: () => void;
+    const masterGate = new Promise<void>((r) => (releaseMaster = r));
+    fake.handler = async (call) => {
+      if (call.table === 'rooms' || call.table === 'items' || call.table === 'room_years') {
+        await masterGate;
+        if (call.table === 'rooms') return { data: [ROOM, ROOM2] };
+        if (call.table === 'items') return { data: ITEMS };
+        return { data: [] };
+      }
+      if (call.table === 'stocks') return { data: [stock(DESK, 4), stock(CHAIR, 6)] };
+      return { data: [] };
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    qc.setQueryData(queryKeys.yearRow(Y), yearRow('requesting'));
+    auth.membership = membership('staff', 'requesting', true);
+    render(
+      <QueryClientProvider client={qc}>
+        <StockScreen />
+      </QueryClientProvider>,
+    );
+    // 場所・品目がまだ届いていないうちに、部屋の在庫と年度の在庫を出している
+    await waitFor(() => expect(fake.issued.filter((c) => c.table === 'stocks')).toHaveLength(2));
+    expect(screen.queryByTestId('stock-room-name')).toBeNull();
+    const roomCall = fake.issued.find((c) => c.table === 'stocks' && opArgs(c, 'eq').some(([col]) => col === 'room_id'))!;
+    expect(opArgs(roomCall, 'eq')).toContainEqual(['room_id', ROOM.id]);
+    releaseMaster();
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('4'));
+    // StockInput は先に読んだ部屋の在庫を使う（もう一度は読まない）
+    expect(fake.issued.filter((c) => c.table === 'stocks' && opArgs(c, 'eq').some(([col]) => col === 'room_id'))).toHaveLength(1);
+  });
+});
