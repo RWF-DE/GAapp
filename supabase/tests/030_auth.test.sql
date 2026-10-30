@@ -146,13 +146,14 @@ select tests.logout();
 select tests.auth_insert('deleted', 'deleted@pgtap.test', '{}', true, true);
 select is((select count(*)::int from public.year_roles where user_id = tests.id('deleted')), 0, '削除済みのアカウントには招待を付けない');
 
--- (4) すでにロールがあれば上書きしない（招待は使用済みにする）
+-- (4) すでにロールがあれば上書きしない（別のロールなら招待は使用済みにせず残す。0009、T03 のマージの後の直し）
 insert into public.year_roles (year_id, user_id, role)
   select tests.id('Y1'), tests.auth_insert('mixed', 'mixed@pgtap.test', '{}', false), 'admin';
 update auth.users set email_confirmed_at = now() where id = tests.id('mixed');
 select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('mixed')), 'admin'::public.app_role,
   'すでにあるロールは招待で上書きしない');
-select ok((select used_at is not null from public.invitations where email = 'mixed@pgtap.test'), 'その招待は使用済みになる');
+select ok((select used_at is null from public.invitations where email = 'mixed@pgtap.test'),
+  '別のロールの招待は使用済みにせず残す（管理者がロールを外すか招待を取り消して決める）');
 
 -- (5) closed の年度の招待は受け入れない
 insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'closed_y@pgtap.test', 'staff');
