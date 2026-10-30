@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(87);
+select plan(90);
 
 -- エラーの message と detail（invalid_input の field を確かめる）。成功したら 'ok'
 create function tests.error_of(p_sql text) returns text language plpgsql as $$
@@ -77,6 +77,21 @@ select tests.login_as('admin');
 select throws_ok($$ select public.set_year_status(tests.id('Y1'), 'confirmed', '確定', tests.ver()) $$, 'P0001', 'E005', '残すの不整合があれば確定できない');
 select tests.logout();
 update public.groups set location_room_id = tests.id('R1') where id = tests.id('G1');
+-- E005 の逆向き：使用場所（R1）から運ぶ行が残すでない
+update public.allocations set is_keep = false where id = tests.id('A_G1_KEEP');
+select tests.login_as('admin');
+select throws_ok($$ select public.set_year_status(tests.id('Y1'), 'confirmed', '確定', tests.ver()) $$, 'P0001', 'E005', '使用場所から運ぶ行が残すでなければ確定できない');
+select tests.logout();
+select is((select private.confirm_issues(tests.id('Y1'))),
+  jsonb_build_array(jsonb_build_object('code', 'E005', 'allocation_id', tests.id('A_G1_KEEP'), 'group_id', tests.id('G1'))),
+  '逆向きの E005 は該当の行を示す');
+update public.allocations set is_keep = true where id = tests.id('A_G1_KEEP');
+-- E005 の逆向き：G2 の使用場所を、G2 への振り分け（R2 から、残すでない）の運び元に変える
+update public.groups set location_room_id = tests.id('R2') where id = tests.id('G2');
+select tests.login_as('admin');
+select throws_ok($$ select public.set_year_status(tests.id('Y1'), 'confirmed', '確定', tests.ver()) $$, 'P0001', 'E005', '使用場所を運び元に変えて残すでない行ができれば確定できない');
+select tests.logout();
+update public.groups set location_room_id = null where id = tests.id('G2');
 
 select tests.login_as('admin');
 select tests.ver() as v1 \gset

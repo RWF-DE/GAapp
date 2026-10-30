@@ -32,7 +32,7 @@ create type delivery_status as enum ('pending','done','problem');
 
 ## テーブル定義
 
-マイグレーションは supabase/migrations に4桁の連番で置く。0001_init.sql（列挙型・表・ビュー）と 0002_triggers.sql（トリガー）は T02、0003〜0006（権限の関数・RLS・RPC）は T03、0007_auth.sql（auth.users のトリガーと Before User Created フック）は T04 で作る。本番に適用したファイルは書き換えず、次の番号のファイルを足す。created_at・updated_at は audit_logs を除く全テーブルに付け（下では省略）、トリガーで入れる（クライアントが送った値は使わない）。日時は timestamptz で保存し、画面では Asia/Tokyo で入力・表示する。
+マイグレーションは supabase/migrations に4桁の連番で置く。0001_init.sql（列挙型・表・ビュー）と 0002_triggers.sql（トリガー）は T02、0003〜0006（権限の関数・RLS・RPC）は T03、0007_auth.sql（auth.users のトリガーと Before User Created フック）は T04、0008_confirm_keep_both_ways.sql（確定の前の確認の E005 を両方向にする）は T07 で作る。本番に適用したファイルは書き換えず、次の番号のファイルを足す。created_at・updated_at は audit_logs を除く全テーブルに付け（下では省略）、トリガーで入れる（クライアントが送った値は使わない）。日時は timestamptz で保存し、画面では Asia/Tokyo で入力・表示する。
 
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
 
@@ -280,7 +280,7 @@ create view v_remaining with (security_invoker = true) as
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
-- 残すは allocations の is_keep = true の行。is_keep は、保存する RPC が「運び元＝団体の使用場所」かどうかで決める（クライアントの値は使わない）。「is_keep の行の運び元＝団体の使用場所」は CHECK ではなくトリガーで確かめる（他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。検証 E005 でも確かめる。年度の一致（行の year_id と団体の year_id）は複合外部キーで保証する
+- 残すは allocations の is_keep = true の行。is_keep は「運び元＝団体の使用場所」と一致させる（残す ⇔ 運び元が使用場所）。is_keep は、保存する RPC が「運び元＝団体の使用場所」かどうかで決める（クライアントの値は使わない）。「is_keep の行の運び元＝団体の使用場所」は CHECK ではなくトリガーで確かめる（他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。逆向き（使用場所からの行が残すでない）はトリガーでは止めず、保存の RPC が決め直して直す（RPC で書いた行はいつもそろう）。振り分けの後に団体の使用場所を変えると、どちらの向きにもずれ得るので、確定では両方向の不一致（残すなのに運び元が使用場所でない／使用場所からの行が残すでない）を検証 E005 として確かめる（`private.confirm_issues`）。年度の一致（行の year_id と団体の year_id）は複合外部キーで保証する
 - 使用不可の部屋は allocations を作らず、Excel 出力で「残す／使用不可」の行として出す
 - 理由が要る書き込み（締切後の申請修正、手での振り分け変更、確定と確定解除）と、複数の表をまとめて変える書き込み（自動振り分けの保存、年度の複製、了承の記録、申請の提出）は、すべて DB 関数（RPC）で行う。関数の中で権限を確かめ、`set_config('app.reason', reason, true)` で理由を置いてから同じトランザクションで書き込む。PostgREST は1リクエストを1トランザクションで処理するので、別の呼び出しで置いた理由は届かない
 - audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles と、room_years・groups・group_members・rooms・items・distance_overrides のトリガーで書く。invitations（メール）と profiles（氏名）は個人情報を写さないため記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''` にする（audit_logs には誰にも書き込みの権限を与えないので、部員の在庫入力などで失敗しないように）。トリガーは `current_setting('app.reason', true)` で理由を、`auth.uid()` で書いた人を読む。row_pk は主キーの列を JSON にしたもの、before・after は行全体。updated_at と版の列しか変わらない更新は記録しない。year_id・group_id は行から入れ（year_id を持たない表は団体から引く）、団体の連鎖削除で消えた行にも、消える前の団体の年度を入れる
@@ -356,4 +356,4 @@ stateDiagram-v2
   confirmed --> closed: 祭の後
 ```
 
-図にない遷移はエラーにする。requesting へは、request_close_at が未来の日時で入っているときだけ進める。confirmed へは、理由と base_version（確定ボタンを押した画面が検証に使った版）が要る。版が今の版と違えば（検証の後に振り分けや入力が変わっていれば）エラーにする。そのうえで、DB の中で在庫超過（E001。固定・手動・残すの行を含む）・使用不可からの振り分け（E002）・残すの不整合（E005）がないことを確かめてから進める。warning（W102 の了承待ちを含む）では止めない。確定中は、確定済みのデータに error を作る書き込みをトリガーで止める（「設計上の決めごと」）。確定を解除すると理由が必須で、団体への公開も止まる。closed は終点で、closed の年度は読み取り専用になる（ルールの memo と、運搬・返却のチェック（`check_delivery`）と、ロール・団体代表を外すこと（`remove_role`・`remove_group_member`）と未使用の招待の取り消し（`revoke_invitation`）を除く。「設計上の決めごと」）。
+図にない遷移はエラーにする。requesting へは、request_close_at が未来の日時で入っているときだけ進める。confirmed へは、理由と base_version（確定ボタンを押した画面が検証に使った版）が要る。版が今の版と違えば（検証の後に振り分けや入力が変わっていれば）エラーにする。そのうえで、DB の中で在庫超過（E001。固定・手動・残すの行を含む）・使用不可からの振り分け（E002）・is_keep と「運び元＝使用場所」の不一致（E005。両方向）がないことを確かめてから進める。warning（W102 の了承待ちを含む）では止めない。確定中は、確定済みのデータに error を作る書き込みをトリガーで止める（「設計上の決めごと」）。確定を解除すると理由が必須で、団体への公開も止まる。closed は終点で、closed の年度は読み取り専用になる（ルールの memo と、運搬・返却のチェック（`check_delivery`）と、ロール・団体代表を外すこと（`remove_role`・`remove_group_member`）と未使用の招待の取り消し（`revoke_invitation`）を除く。「設計上の決めごと」）。

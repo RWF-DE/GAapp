@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(61);
+select plan(63);
 
 -- 行を JSON にする補助（camelCase。03 の AllocationRow）
 create function tests.arow(p_room text, p_group text, p_item text, p_req text, p_count numeric, p_keep boolean default null)
@@ -89,6 +89,15 @@ select is((select count(*)::int from public.audit_logs where table_name = 'alloc
   '変わった行だけ監査に残る（理由つき）');
 select is((select count(*)::int from public.audit_logs where table_name = 'years' and reason = '自動振り分け（全体）'), 0, '版と実行日時の更新は監査に残さない');
 select ok((select auto_allocated_at = now() from public.years where id = tests.id('Y1')), '最終実行日時を入れる');
+-- is_keep は DB が決め直す：使用場所からの行が残すでなくなっていても（逆向きの E005）、isKeep: false を送っても、保存で残すに直る
+update public.allocations set is_keep = false where id = tests.id('A_G1_KEEP');
+select tests.login_as('admin');
+select is(public.save_auto_allocations(tests.id('Y1'), jsonb_build_array(
+            tests.arow('R1', 'G1', 'desk', 'desk', 4, false), tests.arow('R2', 'G2', 'desk', 'desk', 4), tests.arow('R2', 'G1', 'desk', 'desk', 1)),
+          'full', tests.ver()) - 'allocation_version',
+  '{"deleted":0,"updated":1,"inserted":0}'::jsonb, '使用場所からの行は isKeep: false を送っても残すとして保存する');
+select tests.logout();
+select ok((select is_keep from public.allocations where id = tests.id('A_G1_KEEP')), '逆向きの不整合は保存で直る（DB が is_keep を決め直す）');
 select tests.login_as('admin');
 select is(public.save_auto_allocations(tests.id('Y1'), jsonb_build_array(
             tests.arow('R2', 'G2', 'desk', 'desk', 4), tests.arow('R2', 'G1', 'desk', 'desk', 1)), 'minimal_change', tests.ver())

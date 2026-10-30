@@ -65,7 +65,7 @@ seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DA
 | T04 | Google ログイン、ドメイン制限のフック（学校の Google ドメインだけを許す）、招待と受け入れのトリガー、テスト用ログイン（テストユーザーは seed で作り、フックを通らない。D-02）、共通レイアウト（ナビゲーション、ロールによる表示の切り替え、読み込み中・空・権限なしの3状態。P-03） | T03 | M | Claude | 完了 |
 | T05 | importer：Googleフォーム回答の取り込みと、R8 の fixtures（正規化した申請と変換表） | T02 | M |  | 未着手 |
 | T06 | allocator：前処理、LP の組み立て、highs-js の実行、ルール4種、最小変更モード | T00、T05 の importer と共通基盤（fixtures/r8 は不要。共通基盤〔packages/shared の型・スキーマ・需要の組み立て、shared/testing、合成データ〕は T05 と T06 のうち先に着手した方が入れる） | L | Claude | 完了 |
-| T07 | allocator：validate()、解けないときの診断 | T06 | M |  | 未着手 |
+| T07 | allocator：validate()、解けないときの診断 | T06 | M | Claude | 完了 |
 | T08 | exporter：R8 様式の xlsx、交換依頼一覧、年度データの JSON、再計算テスト | T05 | M |  | 未着手 |
 | T09 | 画面：マスタ設定（年度の作成と複製・場所・品目・団体・距離・ユーザー）とダッシュボード（共通レイアウトは T04 で作ったものを使う） | T04 | L |  | 未着手 |
 | T10 | 画面：在庫入力（スマホ・QR）と在庫一覧 | T04 | M |  | 未着手 |
