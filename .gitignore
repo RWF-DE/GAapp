@@ -16,6 +16,12 @@ playwright-report/
 supabase/.temp/
 supabase/.branches/
 
+# 画面（T09a）：predev・prebuild でコピーする highs の wasm、E2E のログインの保存と setup の書き出し、basePath つきの書き出し
+apps/web/public/highs.wasm
+e2e/.auth/
+e2e/.cache/
+apps/web/out-basepath/
+
 # 元データの誤コミット防止（表計算・PDF は追跡しない。fixtures/ に置けるのは UTF-8 の CSV・JSON などのテキストだけ）
 # 大文字の拡張子も除くため、文字クラスで書く。
 *.[xX][lL][sS][xX]

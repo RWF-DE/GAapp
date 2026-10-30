@@ -127,7 +127,7 @@ Supabase（PostgreSQL）に、年度・場所・品目・在庫・団体・申�
 | 申請 | /request | 団体 | 1 | 品目ごとの数と備考を提出・修正 |
 | 申請一覧 | /requests | 総務 | 1 | 団体×品目の表、未提出、フォーム回答の取り込み |
 | ルール | /rules | 管理者 | 1 | ルールの追加・有効化・メモ |
-| 振り分け | /allocation | 管理者 | 1 | 自動実行、表の編集・固定、検証、確定、出力 |
+| 振り分け | /allocation | 管理者（部員は閲覧、閲覧のみは確定後の閲覧。Q1） | 1 | 自動実行、表の編集・固定、検証、確定、出力 |
 | キャスター机交換 | /swaps | 管理者 | 1 | 置き換えた団体の了承状況、依頼一覧の出力 |
 | 自団体の振り分け | /my | 団体 | 1 | 運び元・数、交換への回答、（フェーズ2）受け取り時刻 |
 | 履歴 | /history | 管理者 | 1 | 変更履歴の検索 |
@@ -141,7 +141,7 @@ Supabase（PostgreSQL）に、年度・場所・品目・在庫・団体・申�
 
 | 層 | 採用 | 理由 |
 | --- | --- | --- |
-| フロント | Next.js（App Router、output: 'export'）＋TypeScript、Tailwind CSS、shadcn/ui、PWA | スマホでインストール不要。静的なファイルだけで動く |
+| フロント | Next.js（App Router、output: 'export'）＋TypeScript、Tailwind CSS、shadcn/ui、TanStack Table・TanStack Query、PWA（フェーズ1はホーム画面に追加できるマニフェストとアイコンだけで、ホーム画面からはブラウザで開く。standalone は実機で Google のログインを確かめてから。Service Worker はオフラインの運搬リストが要るフェーズ2で検討。D-38） | スマホでインストール不要。静的なファイルだけで動く |
 | 配信 | GitHub Pages（組織の公開リポジトリ） | 無料。GitHub の組織だけで完結し、引き継ぐアカウントが増えない |
 | DB・認証 | Supabase 無料プラン（Postgres、Auth、Realtime）、組織で所有、東京リージョン | 権限を RLS と DB 関数に集められる |
 | 振り分け | highs-js（WebAssembly）を Web Worker で実行 | 輸送問題を管理者のブラウザで解く |

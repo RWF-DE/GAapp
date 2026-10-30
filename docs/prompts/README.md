@@ -26,17 +26,18 @@
 | 4 | T03 RLS・RPC | opus / high | 開始時から | T05 |
 | 5 | T04 ログイン・招待 | opus / high | 開始時から | T05 |
 | 6 | T05 importer・R8 の fixtures | sonnet / medium | — | T03・T04 |
-| 7 | T06 allocator | opus / high | 開始時から | T09〜T11 |
-| 8 | T07 validate・診断 | sonnet / medium | — | T08、T09〜T11 |
-| 9 | T08 exporter | sonnet / medium | — | T07、T09〜T11 |
-| 10 | T09 マスタ設定・ダッシュボード | sonnet / medium | 開始時から | T06〜T08 |
-| 11 | T10 在庫入力・在庫一覧 | sonnet / medium | — | T06〜T08 |
-| 12 | T11 申請・申請一覧 | sonnet / medium | — | T06〜T08 |
-| 13 | T12 ルール設定 | sonnet / medium | — | — |
-| 14 | T13 振り分け・交換・自団体 | sonnet / medium | 開始時から | — |
-| 15 | T14 履歴・通しの E2E・README | sonnet / medium | — | — |
+| 7 | T06 allocator | opus / high | 開始時から | — |
+| 8 | T07 validate・診断 | sonnet / medium | — | T08 |
+| 9 | T08 exporter | sonnet / medium | — | T07 |
+| 10 | T09a 画面の共通基盤 | opus / high | 開始時から | —（T04・T05・T07・T08 のマージの後に始める） |
+| 11 | T09 マスタ設定・ダッシュボード | sonnet / medium | 開始時から | T10〜T13 |
+| 12 | T10 在庫入力・在庫一覧 | sonnet / medium | — | T09、T11〜T13 |
+| 13 | T11 申請・申請一覧・CSV 取り込み | sonnet / medium | — | T09、T10、T12、T13 |
+| 14 | T12 ルール設定 | sonnet / medium | — | T09〜T11、T13 |
+| 15 | T13 振り分け・交換・自団体 | opus / high | 開始時から | T09〜T12（最初に始める） |
+| 16 | T14 履歴・通しの E2E・README | sonnet / medium | — | —（T09〜T13 の後） |
 
-並行して進めるときは worktree を使う（例：`claude -w t06`）。同じファイルを2つのセッションで同時に編集しない。
+並行して進めるときは worktree を使う（例：`claude -w t06`）。同じファイルを2つのセッションで同時に編集しない。T09a は T04・T05・T07・T08 がマージされてから始める（exporter・importer・validate の関数と型を使うため）。画面のチケット（T09〜T13）は、T09a がマージされてから始め、自分の画面のディレクトリと 04 の自分の画面の節だけを直す。05 のチケット表の「状態」と notes/decisions.md は、画面のチケットの PR では直さない（T14 の後にまとめて直す）。
 
 ## よく使うコマンド
 - `/goal <条件>`：条件を満たすまで作業を続けさせる（例：`/goal packages/allocator のテストがすべて通り、lint と型チェックがクリーン`）。

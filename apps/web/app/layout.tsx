@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { AuthProvider } from '@/lib/auth/auth-provider';
+import { Providers } from '@/components/layout/providers';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -11,11 +11,12 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+// QueryClientProvider・AuthProvider・未保存の入力の守り・Toaster は Providers（クライアントの部品）に置く（T09a）
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ja">
       <body>
-        <AuthProvider>{children}</AuthProvider>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

@@ -1,5 +1,8 @@
-import { AlertTriangle, Inbox, Loader2, ShieldX } from 'lucide-react';
+import { AlertTriangle, Inbox, Loader2, Lock, ShieldX } from 'lucide-react';
+import { ErrorBanner } from '@/components/common/error-banner';
 import { Button } from '@/components/ui/button';
+import type { YearStatus } from '@/lib/auth/membership';
+import { classifyError, messageFor, type MessageContext } from '@/lib/errors';
 import { cn } from '@/lib/utils';
 
 // すべての画面で使う3状態（読み込み中・データが空・権限なし）と、読み込みの失敗の表示（04「画面仕様」の前書き）。
@@ -85,5 +88,92 @@ export function ErrorState({
         </Button>
       ) : null}
     </StateFrame>
+  );
+}
+
+/** クエリの状態（TanStack Query の useQuery の結果のうち、使うものだけ） */
+export interface QueryLike<T> {
+  data: T | undefined;
+  isPending: boolean;
+  isError: boolean;
+  error: unknown;
+  refetch: () => unknown;
+}
+
+/**
+ * クエリの状態から、読み込み中・失敗・空・中身のどれを出すかを決める（画面の設計 1.3・3 章の前書き。T09a）。
+ * data がまだないときの失敗は、2.5 の文言（messageFor）と「もう一度読み込む」の ErrorState。空は isEmpty が真のとき empty（既定は EmptyState）。
+ * data があるときに読み直しが失敗したら（isError かつ data あり）、中身（入力のあるフォームを含む）は外さずに出し続け、
+ * 失敗はその上の帯（ErrorBanner。2.5 の文言と「もう一度」）で知らせる。読み直しが通れば帯は消える。
+ *
+ * @example
+ * <QueryState query={q} isEmpty={(rows) => rows.length === 0} empty={<EmptyState title="場所がありません" … />}>
+ *   {(rows) => <DataTable … data={rows} />}
+ * </QueryState>
+ */
+export function QueryState<T>({
+  query,
+  isEmpty,
+  empty,
+  loading,
+  errorContext,
+  children,
+}: {
+  query: QueryLike<T>;
+  isEmpty?: (data: T) => boolean;
+  empty?: React.ReactNode;
+  loading?: React.ReactNode;
+  errorContext?: MessageContext;
+  children: (data: T) => React.ReactNode;
+}) {
+  if (query.data === undefined) {
+    if (query.isError) {
+      return <ErrorState message={messageFor(classifyError(query.error), errorContext)} onRetry={() => void query.refetch()} />;
+    }
+    return <>{loading ?? <LoadingState />}</>;
+  }
+  // 帯の有無で中身の位置（React の木の上の場所）が変わらないように、帯は null でも同じ位置に置く
+  return (
+    <>
+      {query.isError ? (
+        <ErrorBanner error={query.error} context={errorContext} onRetry={() => void query.refetch()} className="mb-4" />
+      ) : null}
+      {isEmpty?.(query.data) ? (empty ?? <EmptyState />) : children(query.data)}
+    </>
+  );
+}
+
+const READ_ONLY_MESSAGES: Partial<Record<YearStatus, string>> = {
+  allocating: '年度が振り分け中のため編集できません',
+  confirmed: '年度が確定中のため編集できません',
+  closed: '終了した年度のため編集できません（読み取り専用）',
+};
+
+/**
+ * 年度の状態や立場で書けないときの帯（「年度が確定中のため編集できません」など。3 章の前書き。T09a）。入力欄は呼ぶ側が無効にする。
+ *
+ * @example
+ * {!writable ? <ReadOnlyNotice status={year.status} /> : null}
+ * <ReadOnlyNotice>部員は振り分けを見るだけです</ReadOnlyNotice>
+ */
+export function ReadOnlyNotice({
+  status,
+  children,
+  className,
+}: {
+  status?: YearStatus;
+  children?: React.ReactNode;
+  className?: string;
+}) {
+  const text = children ?? (status ? READ_ONLY_MESSAGES[status] : undefined) ?? '編集できません';
+  return (
+    <div
+      role="status"
+      data-testid="read-only-notice"
+      className={cn('flex items-center gap-2 rounded-md border bg-muted/50 px-4 py-2 text-sm text-muted-foreground', className)}
+    >
+      <Lock aria-hidden className="size-4 shrink-0" />
+      <span>{text}</span>
+    </div>
   );
 }

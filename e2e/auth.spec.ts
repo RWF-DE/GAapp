@@ -13,9 +13,10 @@ test.describe('ロールごとの表示', () => {
     await expect(page.getByTestId('home-roles')).toHaveText('総務管理者');
   });
 
-  test('部員：在庫と申請一覧だけ（マスタ設定・団体の画面は出ない）', async ({ page }) => {
+  // Q1（D-39。T09a）：部員は振り分けをいつでも読み取り専用で開ける
+  test('部員：在庫・申請一覧と振り分け（閲覧）だけ（マスタ設定・団体の画面は出ない）', async ({ page }) => {
     await loginAs(page, 'staff');
-    expect(await navLabels(page)).toEqual(['ホーム', '在庫入力', '在庫一覧', '申請一覧']);
+    expect(await navLabels(page)).toEqual(['ホーム', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
     await expect(page.getByTestId('home-roles')).toHaveText('総務部員');
   });
 

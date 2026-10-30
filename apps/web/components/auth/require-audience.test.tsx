@@ -14,7 +14,7 @@ vi.mock('@/lib/auth/auth-provider', () => ({
 const year = { id: 'y1', label: 'R8', status: 'requesting', festival_start: '2026-10-17' } as const;
 const member = (m: Partial<Membership>): MembershipState => ({
   status: 'ready',
-  membership: { displayName: 'テスト', year, role: null, groups: [], ...m },
+  membership: { displayName: 'テスト', year, role: null, groups: [], years: [year], latestYear: year, adminOfOpenYear: false, ...m },
 });
 const render = (allow: Parameters<typeof RequireAudience>[0]['allow']) =>
   renderToStaticMarkup(
@@ -55,6 +55,22 @@ describe('RequireAudience', () => {
     expect(html).toContain('role="status"');
     expect(html).not.toContain('権限がありません');
     expect(html).not.toContain('中身');
+  });
+  it('href で渡すと、ナビの表の立場と年度の状態で決める（viewer の振り分けは確定後だけ。Q1）', () => {
+    const byHref = (href: string) =>
+      renderToStaticMarkup(
+        <RequireAudience href={href}>
+          <p>中身</p>
+        </RequireAudience>,
+      );
+    auth.membership = member({ role: 'viewer' });
+    expect(byHref('/allocation')).toContain('権限がありません');
+    auth.membership = member({ role: 'viewer', year: { ...year, status: 'confirmed' } });
+    expect(byHref('/allocation/?view=group')).toBe('<p>中身</p>');
+    auth.membership = member({ role: 'staff' });
+    expect(byHref('/allocation')).toBe('<p>中身</p>');
+    expect(byHref('/swaps')).toContain('権限がありません');
+    expect(byHref('/no-such-page')).toContain('権限がありません');
   });
   it('立場を読めなかったら中身を出さない', () => {
     auth.membership = { status: 'error', message: '利用者の情報を読み込めませんでした。' };

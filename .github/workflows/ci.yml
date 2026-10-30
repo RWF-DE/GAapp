@@ -103,7 +103,8 @@ jobs:
   e2e:
     name: e2e (Playwright)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 起動 1〜2 分＋build 1 分＋Playwright の取得 1 分＋テスト（chromium と serial の2回）。画面のテストが増える分を見込む（画面の設計 7.5）
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,14 +124,26 @@ jobs:
       # ローカルの Supabase に向け、テスト用ログインを有効にした静的書き出し（basePath なし）。公開はしない
       - run: pnpm build:e2e
       - run: pnpm exec playwright install --with-deps chromium
+      # scripts/e2e.mjs が Playwright を2回呼ぶ（chromium の後に、結果によらず serial）。どちらかが落ちればこのステップが落ちる。
+      # setup（db-setup・auth-setup）はそれぞれの回で依存として走る（シナリオの年度は DB_URL のローカルの DB に pg で作る）
       - run: pnpm e2e
+      # レポートと結果は回ごとのフォルダ（playwright-report/<回>・test-results/<回>）。両方を成果物に残す
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: playwright-report
+          name: playwright-report-chromium
           path: |
-            playwright-report/
-            test-results/
+            playwright-report/chromium/
+            test-results/chromium/
+          if-no-files-found: ignore
+          retention-days: 7
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-serial
+          path: |
+            playwright-report/serial/
+            test-results/serial/
           if-no-files-found: ignore
           retention-days: 7
       - if: ${{ always() }}
