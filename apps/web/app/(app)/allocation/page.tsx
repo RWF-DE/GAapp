@@ -1,14 +1,17 @@
 import { Suspense } from 'react';
-import { PlaceholderPage } from '@/components/layout/placeholder-page';
+import { AllocationScreen } from '@/components/allocation/allocation-screen';
+import { RequireAudience } from '@/components/auth/require-audience';
 import { LoadingState } from '@/components/states';
 
-// 振り分け（/allocation）の雛形（T09a）。T13 がこのファイルを中身に置き換える。
-// ページは <Suspense> と <RequireAudience href="/allocation"> で包んで画面の部品を置くだけにする（画面の設計 1.2・1.9）。
-// クエリ（view・tab・row・group）は画面の部品で useSearchParams から読み、zod で確かめる（合わない値は無視して既定にする）。
+// 振り分け（/allocation。画面の設計 3.9。T13）。クエリ（view・tab・row・group）は画面の部品で useSearchParams から読み、zod で確かめる。
+// 立場：admin・staff はいつでも、viewer は確定後だけ（Q1）。確定前の viewer には「確定後に表示されます」を出すため、
+// href ではなく allow で通し、画面の部品が年度の状態で分ける。
 export default function Page() {
   return (
     <Suspense fallback={<LoadingState />}>
-      <PlaceholderPage href="/allocation" />
+      <RequireAudience allow={['admin', 'staff', 'viewer']}>
+        <AllocationScreen />
+      </RequireAudience>
     </Suspense>
   );
 }
