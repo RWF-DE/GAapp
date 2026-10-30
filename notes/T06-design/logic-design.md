@@ -347,7 +347,8 @@ export type ParsedFormResponse = {
 export type ParsedForm = {
   kind: FormKind;
   responses: ParsedFormResponse[];
-  rejected: { rowNumber: number; reason: 'misaligned' | 'invalid_number' | 'empty' }[];   // 中身は持たない
+  rejected: { rowNumber: number; reason: 'misaligned' | 'invalid_number' | 'invalid_timestamp' | 'empty';
+    submittedAt: string | null; groupName: string | null }[];   // 中身（数・備考）は持たない。日時と団体名は読めれば（マージの後の直し 2026-10-30。notes/T05.md）
   ignoredColumns: string[];            // 対応表にない列の見出し（中身は読まない。D-03）
 };
 export function parseFormCsv(kind: FormKind, csv: string,
@@ -359,11 +360,15 @@ export function resolveResponses(parsed: ParsedForm,
   requests: RequestRow[];              // rewriteRequestedItem（S03）を当て、(groupId, itemId) ごとに合計した後。同じキーは1行
   submissions: { groupId: string; submittedAt: string; note: string | null }[];   // submittedAt はフォームのタイムスタンプ
   unmatched: { rowNumber: number; groupName: string | null }[];
-  superseded: { groupId: string; keptRow: number; droppedRows: number[] }[];   // 同じ団体の古い回答
+  superseded: { groupId: string; keptRow: number; droppedRows: number[] }[];   // 同じ団体の古い回答（newerRejected の団体は含めない）
+  // 使う回答より新しい取り込まない行がある団体。requests・submissions に入れない（自動では取り込まない）。submission・requests は keptRow で取り込むときの値
+  newerRejected: { groupId: string; keptRow: number; droppedRows: number[];
+    rejectedRows: { rowNumber: number; reason: RejectReason; submittedAt: string }[];
+    submission: { groupId: string; submittedAt: string; note: string | null }; requests: RequestRow[] }[];
 };
 ```
 
-- メールアドレスは parseFormCsv の中で、どの列にあっても読まずに捨てる。戻り値・例外・ログのどこにも出さない（rejected も行番号と理由だけ）。
+- メールアドレスは parseFormCsv の中で、どの列にあっても読まずに捨てる。戻り値・例外・ログのどこにも出さない（rejected は行番号と理由、読めればタイムスタンプと団体名〔メールを除いたもの〕だけ）。
 - 品目の読み替え（企業以外の長机(3人掛) → 長机(2人掛)）は shared の `rewriteRequestedItem(itemCode, category, items)` を使う。allocate の前処理1と同じ関数である。
 - requests は、読み替えの後に (groupId, itemId) ごとに合計して1行にする。同じ団体が長机(3人掛)と長机(2人掛)の両方を申請していると、読み替えの後に (団体, 長机(2人掛)) が2つになり、requests の主キー (group_id, item_id) に insert できない（upsert でも「ON CONFLICT DO UPDATE command cannot affect row a second time」になる）ため。T05 のテストに、両方を申請した回答を足す。
 - submittedAt の保存（K-27 の申請順のため）：DB 設計では、ログイン中の書き込みのとき tg_submissions_set_actor が submitted_at を now() に置き換え、submit_requests・update_requests_after_deadline も now() を入れる。このままでは T11 で取り込んだ団体はすべて取り込んだ時刻になり、Excel の団体別集計の「区分の中は申請順」がフォームの提出順にならない（seed は postgres で流れるので値が残り、Vitest・seed と本番とで並びが変わる）。そこで、取り込みではフォームのタイムスタンプを submitted_at として保存できるようにする：update_requests_after_deadline（admin だけが呼べる）の p_submission に `submittedAt`（ISO）を足し、RPC がそのときだけ transaction-local の設定（`set_config('app.keep_submitted_at', 'on', true)`）を立て、トリガーはそれが立っているときは値を置き換えない。団体代表の submit_requests と直接の書き込みは今までどおり now()。DB 設計への申し送り（16 章）。DB に入るまでは、取り込んだ団体の並びは「取り込んだ時刻 → sort_order → 名前 → id」になる（K-27 の申請順は満たさない）ことを T11 の notes に書く。
