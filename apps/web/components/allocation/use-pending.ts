@@ -23,6 +23,7 @@ import {
   pendingListSchema,
   pendingSummary,
   rebasePending,
+  removeChanges,
   revertRow,
   type DroppedChange,
   type PendingChange,
@@ -95,7 +96,7 @@ export interface PendingApi {
   dropped: DroppedChange[];
   dismissDropped: () => void;
   recheck: () => Promise<void>;
-  /** 部分的に反映済みのときの選択：残りを残す・すべて取り消す */
+  /** 部分的に反映済みのときの選択：残りを残す・残りも取り消す（知らせの残りだけを外し、知らせの後の編集は残す） */
   resolvePartial: (keepRemaining: boolean) => void;
   draft: { savedAt: number; restore: () => void; discard: () => void } | null;
 }
@@ -317,12 +318,17 @@ export function usePendingRows({
     }
   }, [notice, deps, applyCheck]);
 
+  // 「残りも取り消す」は、知らせの残り（notice.remaining）だけを外す。知らせの後にした編集（足した・直した変更）は残す
   const resolvePartial = useCallback(
     (keepRemaining: boolean) => {
-      if (!keepRemaining) setPending(() => []);
+      if (notice?.kind !== 'partial') return;
+      if (!keepRemaining) {
+        const remaining = notice.remaining;
+        setPending((p) => removeChanges(p, remaining));
+      }
       setNotice(null);
     },
-    [setPending],
+    [notice, setPending],
   );
 
   const saveBlock =

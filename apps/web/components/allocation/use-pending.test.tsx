@@ -125,3 +125,65 @@ describe('usePendingRows：保存されたか確かめられない（unverified�
 function changeIdOf(c: { op: string; tempId?: string; id?: string }): string {
   return (c.op === 'insert' ? c.tempId : c.id)!;
 }
+
+describe('usePendingRows：一部だけが反映済みに見えたとき（partial）の「残りも取り消す」', () => {
+  /** A（数 1）と B（数 2）を足して保存 → 応答が届かず、版が進んでいて、A だけが DB にある → partial（残りは B） */
+  async function partial() {
+    mocks.save.mockRejectedValue(new TypeError('Failed to fetch'));
+    mocks.readVersion.mockResolvedValue(snapshot.version + 1);
+    const savedA = {
+      id: '00000000-0000-4000-8000-00000000a001',
+      year_id: snapshot.year.id,
+      source_room_id: room.id,
+      group_id: group.id,
+      item_id: desk.id,
+      requested_item_id: desk.id,
+      count: 1,
+      is_keep: false,
+      origin: 'manual' as const,
+      pinned: false,
+      note: null,
+      updated_at: '2026-10-30T00:00:00.000000+00:00',
+    };
+    mocks.loadSnapshot.mockResolvedValue({ ...snapshot, version: snapshot.version + 1, loadedAt: 'later', allocations: [...snapshot.allocations, savedA] });
+    const r = setup(vi.fn(async () => ({ isError: false })));
+    act(() => r.result.current.edit(addRow));
+    act(() => r.result.current.edit({ ...addRow, count: 2 }));
+    await act(() => r.result.current.save('E2E：理由'));
+    const notice = r.result.current.notice;
+    expect(notice?.kind).toBe('partial');
+    expect(notice?.kind === 'partial' ? notice.remaining.map((c) => (c.op === 'insert' ? c.count : null)) : null).toEqual([2]);
+    return r;
+  }
+
+  it('知らせの残りだけを外し、知らせの後に足した変更は残す', async () => {
+    const { result } = await partial();
+    act(() => result.current.edit({ ...addRow, count: 3 }));
+    expect(result.current.pending).toHaveLength(2);
+    act(() => result.current.resolvePartial(false));
+    expect(result.current.notice).toBeNull();
+    expect(result.current.pending.map((c) => (c.op === 'insert' ? c.count : null))).toEqual([3]);
+  });
+
+  it('知らせの後に残りの行を直していれば、直した変更は残す（知らせの後の編集）', async () => {
+    const { result } = await partial();
+    const b = result.current.pending[0]!;
+    act(() => result.current.edit({ op: 'update', id: changeIdOf(b), patch: { count: 4 } }));
+    act(() => result.current.resolvePartial(false));
+    expect(result.current.pending.map((c) => (c.op === 'insert' ? c.count : null))).toEqual([4]);
+  });
+
+  it('知らせの後に何もしていなければ、未保存の変更はなくなる', async () => {
+    const { result } = await partial();
+    act(() => result.current.resolvePartial(false));
+    expect(result.current.pending).toEqual([]);
+  });
+
+  it('「残りを残す」なら、残りも知らせの後の変更も残す', async () => {
+    const { result } = await partial();
+    act(() => result.current.edit({ ...addRow, count: 3 }));
+    act(() => result.current.resolvePartial(true));
+    expect(result.current.notice).toBeNull();
+    expect(result.current.pending.map((c) => (c.op === 'insert' ? c.count : null))).toEqual([2, 3]);
+  });
+});
