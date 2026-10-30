@@ -23,7 +23,7 @@ import {
 import { appError, toAppError } from '@/lib/errors';
 import { queryKeys, STALE_TIME_MS } from '@/lib/query';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
-import { fetchYear, isAllocationFinal } from './year';
+import { fetchYear, isAllocationFinal, seedYearRows } from './year';
 
 // ---------------------------------------------------------------- 在庫入力 /stock（T10）
 
@@ -206,10 +206,13 @@ export function planRequestPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] 
 
 // ---------------------------------------------------------------- 自団体の振り分け /my（T13）
 // 読む順（D-45。前は年度の行を読み終えてから残りを読んでいた）：
-// - 年度の行がキャッシュに新しくあれば（立場と一緒に読んだもの。無効にされていない・30 秒以内）、それを使って年度の行を読まず、
-//   団体・品目・場所・申請・提出・了承（確定・終了なら振り分けも）を並行に読む。
-// - なければ、年度の行と団体・品目・場所・申請・提出・了承を並行に読み、年度の行が確定・終了なら振り分けの行をその後に読む。
-// 振り分けの行は、確定前には読みに行かない（T13。確定前は RLS で 0 行になるのを「振り分けがない」と取り違えない）。
+// - 年度の行は毎回読み直し、団体・品目・場所・申請・提出・了承と並行に読む。画面に出す year と、振り分けの行を使うかは、
+//   この読み直した年度の行の状態で決める（キャッシュの行は最大 30 秒前で、その間に確定 ⇄ 確定前と変わりうる）。
+// - キャッシュに新しい年度の行があり（立場と一緒に読んだもの。無効にされていない・30 秒以内）確定・終了なら、振り分けの行も
+//   並行に読み始める（往復を増やさないため）。読み直した年度の行が確定前なら、その振り分けの行は捨てて null にする。
+// - キャッシュの行がない・確定前で、読み直した年度の行が確定・終了なら、振り分けの行をその後に読む。
+// 確定前は振り分けの行を使わない（T13。確定前は RLS で 0 行になるのを「振り分けがない」と取り違えない）。確定前と分かっていれば
+// 読みに行かない。
 
 export interface MyData {
   year: YearRow;
@@ -238,8 +241,8 @@ export function freshYearRow(queryClient: QueryClient, yearId: string, now: numb
 }
 
 /**
- * 自団体のデータを読む（年度の行と並行に読み、振り分けの行は年度の状態で使うかを決める。上の決まり）。
- * queryClient を渡すと、キャッシュの新しい年度の行を使う。
+ * 自団体のデータを読む（年度の行を読み直してほかの表と並行に読み、振り分けの行は読み直した年度の状態で使うかを決める。上の決まり）。
+ * queryClient を渡すと、キャッシュの新しい年度の行で振り分けの行を先に読み始めるかを決め、読み直した年度の行をキャッシュに入れる。
  */
 export async function loadMyData(
   yearId: string,
@@ -250,8 +253,9 @@ export async function loadMyData(
   const readAllocations = () =>
     client.from('allocations').select(COLUMNS.allocations).eq('year_id', yearId).eq('group_id', groupId).order('id');
   const known = queryClient ? freshYearRow(queryClient, yearId) : null;
+  const startedAt = Date.now();
   const [year, g, i, r, rq, sub, co, early] = await Promise.all([
-    known ?? fetchYear(yearId, client),
+    fetchYear(yearId, client),
     client.from('groups').select(COLUMNS.groups).eq('id', groupId).eq('year_id', yearId).maybeSingle(),
     client.from('items').select(COLUMNS.items).order('sort_order').order('id'),
     client.from('rooms').select(COLUMNS.rooms).order('sort_order').order('id'),
@@ -265,6 +269,8 @@ export async function loadMyData(
       .order('to_item_id'),
     known && isAllocationFinal(known.status) ? readAllocations() : null,
   ]);
+  if (queryClient) seedYearRows(queryClient, [year], startedAt);
+  // 使うかは読み直した年度の行で決める（キャッシュの行が確定で読み直した行が確定前なら、先に読んだ振り分けの行は捨てる）
   const a: Res | null = isAllocationFinal(year.status) ? (early ?? (await readAllocations())) : null;
   if (g.error) throw toAppError(g.error, g.status);
   if (!g.data) throw appError('not_found', 'group_missing', { groupId });

@@ -49,13 +49,14 @@ describe('先読みの決め方（URL と覚えた id から）', () => {
 });
 
 /** 表ごとの応答を返し、読んだ表と select を記録する偽のクライアント */
-function fakeClient(rows: Record<string, unknown>) {
+function fakeClient(rows: Record<string, unknown>, gates: Record<string, Promise<void>> = {}) {
   const log: { table: string; select: string }[] = [];
   const client = {
     from: (table: string) => {
       const entry = { table, select: '' };
       log.push(entry);
-      const res = () => Promise.resolve({ data: rows[table] ?? (table === 'request_submissions' ? null : []), error: null, status: 200 });
+      const res = () =>
+        (gates[table] ?? Promise.resolve()).then(() => ({ data: rows[table] ?? (table === 'request_submissions' ? null : []), error: null, status: 200 }));
       const b: Record<string, unknown> = {};
       b.select = (s: string) => {
         entry.select = s;
@@ -101,37 +102,79 @@ describe('fetchRepRequest', () => {
 
 describe('loadMyData と年度の行のキャッシュ', () => {
   const yearRow = (status: string) => ({ id: Y, label: 'R9', status, allocation_version: 1 }) as never;
+  const tables = (log: { table: string }[]) => log.map((l) => l.table);
 
-  it('立場と一緒に読んだ新しい年度の行があれば、年度の行を読まず、確定前なら振り分けの行も読まない', async () => {
+  it('キャッシュに新しい年度の行があっても、年度の行はほかの表と並行に読み直す。確定前なら振り分けの行は読まない', async () => {
     const qc = new QueryClient();
     seedYearRows(qc, [yearRow('requesting')], Date.now());
-    const { client, log } = fakeClient({ groups: { id: G1 } });
+    const { client, log } = fakeClient({ years: yearRow('requesting'), groups: { id: G1 } });
     const d = await loadMyData(Y, G1, client, qc);
-    expect(log.map((l) => l.table)).not.toContain('years');
-    expect(log.map((l) => l.table)).not.toContain('allocations');
+    expect(tables(log)).toContain('years');
+    expect(tables(log)).not.toContain('allocations');
     expect(d.year.status).toBe('requesting');
     expect(d.allocations).toBeNull();
   });
 
-  it('キャッシュの年度が確定なら、振り分けの行を並行に読む', async () => {
+  it('キャッシュの年度が確定なら、振り分けの行を年度の行の応答を待たずに読み始め、読み直した年度も確定なら使う（往復は増えない）', async () => {
     const qc = new QueryClient();
     seedYearRows(qc, [yearRow('confirmed')], Date.now());
-    const { client, log } = fakeClient({ groups: { id: G1 }, allocations: [{ id: 'a1' }] });
-    const d = await loadMyData(Y, G1, client, qc);
-    expect(log.map((l) => l.table).filter((t) => t === 'allocations')).toHaveLength(1);
+    let open!: () => void;
+    const yearGate = new Promise<void>((r) => (open = r));
+    const { client, log } = fakeClient({ years: yearRow('confirmed'), groups: { id: G1 }, allocations: [{ id: 'a1' }] }, { years: yearGate });
+    const p = loadMyData(Y, G1, client, qc);
+    await Promise.resolve();
+    expect(tables(log)).toContain('years');
+    expect(tables(log)).toContain('allocations');
+    open();
+    const d = await p;
+    expect(tables(log).filter((t) => t === 'allocations')).toHaveLength(1);
     expect(d.allocations).toEqual([{ id: 'a1' }]);
   });
 
-  it('キャッシュの年度が確定前なら、振り分けの行は読まない（後で年度の行も読まない）', async () => {
+  it('キャッシュの年度が確定でも、読み直した年度の行が確定前なら、先に読んだ振り分けの行は捨てて null（year も読み直した行）', async () => {
+    // 確定・終了の後、キャッシュの 30 秒以内に確定前へ戻されたとき。振り分けの行は RLS で 0 行になるので「振り分けがない」と取り違えない
+    for (const now of ['allocating', 'requesting', 'preparing']) {
+      const qc = new QueryClient();
+      seedYearRows(qc, [yearRow('confirmed')], Date.now());
+      const { client } = fakeClient({ years: yearRow(now), groups: { id: G1 }, allocations: [] });
+      const d = await loadMyData(Y, G1, client, qc);
+      expect(d.year.status, now).toBe(now);
+      expect(d.allocations, now).toBeNull();
+    }
+  });
+
+  it('キャッシュの年度が確定前でも、読み直した年度の行が確定・終了なら、その後で振り分けの行を読む', async () => {
+    for (const now of ['confirmed', 'closed']) {
+      const qc = new QueryClient();
+      seedYearRows(qc, [yearRow('allocating')], Date.now());
+      const { client, log } = fakeClient({ years: yearRow(now), groups: { id: G1 }, allocations: [{ id: 'a1' }] });
+      const d = await loadMyData(Y, G1, client, qc);
+      expect(d.year.status, now).toBe(now);
+      expect(tables(log).filter((t) => t === 'allocations'), now).toHaveLength(1);
+      expect(tables(log).indexOf('allocations'), now).toBeGreaterThan(tables(log).indexOf('years'));
+      expect(d.allocations, now).toEqual([{ id: 'a1' }]);
+    }
+  });
+
+  it('キャッシュの年度が確定前で、読み直した年度の行も確定前なら、振り分けの行は読まない', async () => {
     const qc = new QueryClient();
     seedYearRows(qc, [yearRow('allocating')], Date.now());
-    const { client, log } = fakeClient({ groups: { id: G1 }, allocations: [{ id: 'a1' }] });
+    const { client, log } = fakeClient({ years: yearRow('allocating'), groups: { id: G1 }, allocations: [{ id: 'a1' }] });
     const d = await loadMyData(Y, G1, client, qc);
-    expect(log.map((l) => l.table)).not.toContain('allocations');
+    expect(tables(log)).not.toContain('allocations');
     expect(d.allocations).toBeNull();
   });
 
-  it('無効にされた・古い年度の行は使わずに読む（状態の遷移の後の読み直しで、古い状態を使わない）', async () => {
+  it('読み直した年度の行をキャッシュに入れる（読み始めた時刻より新しいキャッシュは上書きしない）', async () => {
+    const qc = new QueryClient();
+    seedYearRows(qc, [yearRow('confirmed')], Date.now());
+    const { client } = fakeClient({ years: yearRow('allocating'), groups: { id: G1 } });
+    await loadMyData(Y, G1, client, qc);
+    expect(qc.getQueryData<{ status: string }>(queryKeys.yearRow(Y))?.status).toBe('allocating');
+    expect(freshYearRow(qc, Y)?.status).toBe('allocating');
+  });
+
+  it('無効にされた・古い年度の行は使わない（振り分けの行は年度の行の後に読む）', async () => {
     const qc = new QueryClient();
     seedYearRows(qc, [yearRow('requesting')], Date.now());
     await qc.invalidateQueries({ queryKey: queryKeys.year(Y), refetchType: 'none' });
@@ -141,7 +184,7 @@ describe('loadMyData と年度の行のキャッシュ', () => {
     expect(freshYearRow(old, Y)).toBeNull();
     const { client, log } = fakeClient({ years: yearRow('confirmed'), groups: { id: G1 }, allocations: [{ id: 'a1' }] });
     const d = await loadMyData(Y, G1, client, qc);
-    expect(log.map((l) => l.table)).toContain('years');
+    expect(tables(log)).toContain('years');
     expect(d.year.status).toBe('confirmed');
     expect(d.allocations).toEqual([{ id: 'a1' }]);
   });
