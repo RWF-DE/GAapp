@@ -293,10 +293,16 @@ test.describe('T09 ユーザー（使い捨てのユーザー）', () => {
       await page.getByLabel('新しいロール').selectOption('viewer');
       await page.getByRole('dialog').getByRole('button', { name: '変える' }).click();
       await expect(page.getByText('E2E 確認済みのロールを「閲覧のみ」にしました')).toBeVisible();
+      // 別のロールの招待が残っていても、外すとその招待も取り消す（次のログインでロールが戻らない。ロールを変えるのは set_role）
+      await sql(`insert into public.invitations (year_id, email, role) values ($1, $2, 'admin')`, [s.yearId, verified.email]);
       await rowOf(page, 'E2E 確認済み').getByRole('button', { name: 'ロールを外す' }).click();
+      await expect(page.getByRole('dialog')).toContainText('この人あての未使用のロールの招待も取り消します');
       await page.getByRole('dialog').getByRole('button', { name: '外す' }).click();
       await expect(page.getByText('E2E 確認済みのロールを外しました')).toBeVisible();
       expect(await sql('select 1 from public.year_roles where year_id = $1 and user_id = $2', [s.yearId, verified.id])).toEqual([]);
+      expect(
+        await sql('select 1 from public.invitations where year_id = $1 and email = $2 and role is not null and used_at is null', [s.yearId, verified.email]),
+      ).toEqual([]);
 
       // 最後の管理者（自分）は外せない
       await page.getByRole('row').filter({ hasText: '総務管理者' }).getByRole('button', { name: 'ロールを外す' }).click();

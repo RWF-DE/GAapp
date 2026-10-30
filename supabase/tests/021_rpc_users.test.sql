@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(111);
+select plan(121);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
 -- provider が google なら Google の identity、email なら email_verified: true の email の identity
@@ -343,13 +343,50 @@ select ok(exists (select 1 from public.group_members where group_id = tests.id('
   '団体代表の招待は付く');
 select ok((select used_at is not null from public.invitations where email = 'fu_conflict@pgtap.test' and group_id is not null),
   '団体代表の招待は使用済みになる');
--- 管理者がロールを外せば、次のログインで残した招待を受け入れる
-delete from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_conflict');
-select tests.login_as('fu_conflict');
-select is(public.accept_my_invitations(), 1, 'ロールを外した後は、残した招待を受け入れる');
+-- 管理者がロールを外す（remove_role）と、その年度の本人あての未使用のロールの招待も取り消す（外した人に、次のログインで
+-- 残っていた招待のロールが付かないように。ロールを変えるのは set_role）。ほかの年度・ほかの人・団体代表の招待は消さない
+insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'fu_conflict@pgtap.test', 'staff');
+insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'fu_conflict@pgtap.test', tests.id('G2'));
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_other@pgtap.test', 'staff');
+select tests.login_as('admin');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('fu_conflict'), '交代') $$, '別のロールを持つ人へのロールの招待が残っていても外せる');
 select tests.logout();
-select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_conflict')), 'viewer'::public.app_role,
-  'ロールを外した後は、招待のロールが付く');
+select is((select count(*)::int from public.invitations
+           where year_id = tests.id('Y1') and email = 'fu_conflict@pgtap.test' and role is not null),
+  0, 'ロールを外すと、その年度の本人あての未使用のロールの招待も消える');
+select is((select count(*)::int from public.invitations
+           where year_id = tests.id('Y2') and email = 'fu_conflict@pgtap.test' and role is not null and used_at is null),
+  1, 'ほかの年度のロールの招待は消えない');
+select is((select count(*)::int from public.invitations
+           where year_id = tests.id('Y1') and email = 'fu_conflict@pgtap.test' and group_id is not null),
+  2, '団体代表の招待（使用済み・未使用）は消えない');
+select is((select count(*)::int from public.invitations where email = 'fu_other@pgtap.test' and used_at is null),
+  1, 'ほかの人の招待は消えない');
+select tests.login_as('fu_conflict');
+select is(public.accept_my_invitations(), 2, '外した後のログインでは、ほかの年度のロールの招待と団体代表の招待だけを受け入れる');
+select tests.logout();
+select is((select count(*)::int from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_conflict')),
+  0, '外した人に、外した年度のロールは付かない');
+-- 本人のメールを確かめられない人（メールの変更の途中）は、ロールだけを外し、招待には触れない
+select tests.create_user('fu_unverified');
+insert into public.year_roles (year_id, user_id, role) values (tests.id('Y1'), tests.id('fu_unverified'), 'viewer');
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_unverified@pgtap.test', 'staff');
+update auth.users set email_change = 'other2@pgtap.test' where id = tests.id('fu_unverified');
+select tests.login_as('admin');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('fu_unverified')) $$, 'メールを確かめられない人のロールも外せる');
+select tests.logout();
+select is((select count(*)::int from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_unverified')),
+  0, 'メールを確かめられない人のロールが外れる');
+select is((select count(*)::int from public.invitations where email = 'fu_unverified@pgtap.test' and used_at is null),
+  1, 'メールを確かめられない人あての招待には触れない');
+-- 最後の管理者は今までどおり外せず、その人あての招待も消えない（Y1 は sw_email も admin なので、admin が1人の Y2 で確かめる）
+insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'admin2@pgtap.test', 'viewer');
+select tests.login_as('admin2');
+select throws_ok($$ select public.remove_role(tests.id('Y2'), tests.id('admin2')) $$, 'P0001', 'invalid_state',
+  '招待が残っていても、最後の admin は外せない');
+select tests.logout();
+select is((select count(*)::int from public.invitations where email = 'admin2@pgtap.test' and used_at is null),
+  1, '最後の admin を外せなかったときは、招待も消えない');
 -- 同じロールを持つ人：今までどおり招待を使用済みにする（ロールはそのまま）
 select tests.create_user('fu_same');
 insert into public.year_roles (year_id, user_id, role) values (tests.id('Y1'), tests.id('fu_same'), 'staff');

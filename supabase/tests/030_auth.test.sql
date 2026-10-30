@@ -153,7 +153,7 @@ update auth.users set email_confirmed_at = now() where id = tests.id('mixed');
 select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('mixed')), 'admin'::public.app_role,
   'すでにあるロールは招待で上書きしない');
 select ok((select used_at is null from public.invitations where email = 'mixed@pgtap.test'),
-  '別のロールの招待は使用済みにせず残す（管理者がロールを外すか招待を取り消して決める）');
+  '別のロールの招待は使用済みにせず残す（ロールを変えるなら管理者が set_role で変えるか、招待を取り消す）');
 
 -- (5) closed の年度の招待は受け入れない
 insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'closed_y@pgtap.test', 'staff');
