@@ -209,6 +209,34 @@ describe('createYearFrom', () => {
     const rpcArgs = opArgs(issued[0]!, 'rpc')[0]![0];
     expect(rpcArgs).toEqual({ p_prev_year_id: PREV, p_label: 'R10', p_festival_start: '2027-10-16' });
   });
+
+  it('年度を作れた後のルールの読み込みが失敗しても（返る error・通信の失敗）、年度を返し、無効になったルールは null（数えられなかった）', async () => {
+    const PREV = '00000000-0000-4000-8000-00000000f001';
+    const NEW = '00000000-0000-4000-8000-00000000f002';
+    for (const fail of ['error', 'throw'] as const) {
+      const { client } = createFakeSupabase((call) => {
+        if (call.table === 'rpc:create_year_from') return { data: { id: NEW, label: 'R10' }, error: null };
+        const yearId = opArgs(call, 'eq')[0]![1];
+        if (yearId === NEW) {
+          if (fail === 'throw') return Promise.reject(new TypeError('Failed to fetch'));
+          return { data: null, error: { message: 'timeout', code: '57014' }, status: 500 };
+        }
+        return { data: [{ code: 'S05', enabled: true }], error: null };
+      });
+      const r = await createYearFrom({ id: PREV }, 'R10', '2027-10-16', client);
+      expect(r.year.id).toBe(NEW);
+      expect(r.disabledRuleCodes).toBeNull();
+    }
+  });
+
+  it('create_year_from そのものが失敗したら投げる（ルールは読まない）', async () => {
+    const { client, issued } = createFakeSupabase((call) => {
+      if (call.table === 'rpc:create_year_from') return { data: null, error: { message: 'dup', code: '23505' }, status: 409 };
+      return { data: [], error: null };
+    });
+    await expect(createYearFrom({ id: '00000000-0000-4000-8000-00000000f001' }, 'R10', '2027-10-16', client)).rejects.toMatchObject({ info: { kind: 'conflict' } });
+    expect(issued).toHaveLength(1);
+  });
 });
 
 describe('場所の削除の前：終了していない年度のルール（場所は全年度で共有）', () => {

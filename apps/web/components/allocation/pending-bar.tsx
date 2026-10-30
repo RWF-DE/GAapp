@@ -2,7 +2,7 @@
 
 // 未保存の変更のバーと知らせ（画面の設計 3.9。T13 の段 2）。
 // 画面の下に「未保存の変更 N 件［取り消す］［保存…］」。保存は ReasonDialog（理由が必須。よく使う理由のボタンつき）。
-// 知らせ：保存されていない（もう一度保存）・確かめられない（「確かめる」まで保存を押せない）・一部だけ反映済みに見える（選ぶ）・
+// 知らせ：保存されていない（もう一度保存）・確かめられない（「確かめる」まで保存も、未保存の変更を変える操作も押せない）・一部だけ反映済みに見える（選ぶ）・
 // ほかの人の変更とぶつかったので外した変更の一覧・拒まれた（ErrorBanner）。
 import type { StoredAllocationRow } from '@gaapp/shared';
 import { AlertTriangle, ChevronDown, ChevronUp, Info } from 'lucide-react';
@@ -68,6 +68,7 @@ export function PendingNotices({ api, vm, onReload }: { api: PendingApi; vm: Vie
       {n?.kind === 'unverified' ? (
         <Notice tone="warn" testId="rows-unverified">
           <p>保存できたか確かめられません。通信が戻ったら「確かめる」を押してください（確かめるまで、もう一度保存できません）。</p>
+          {api.editBlock ? <p data-testid="rows-edit-block">{api.editBlock}</p> : null}
           <Button size="sm" variant="outline" disabled={api.saving} onClick={() => void api.recheck()}>
             {api.saving ? '確かめています…' : '確かめる'}
           </Button>
@@ -149,9 +150,13 @@ export function PendingBar({ api, vm }: { api: PendingApi; vm: ViewModel }) {
         <span className="text-muted-foreground">
           （追加 {s.inserts}・変更 {s.updates}・削除 {s.deletes}）
         </span>
-        {api.saveBlock ? <span className="text-amber-800">{api.saveBlock}</span> : null}
+        {api.editBlock ? (
+          <span className="text-amber-800">{api.editBlock}</span>
+        ) : api.saveBlock ? (
+          <span className="text-amber-800">{api.saveBlock}</span>
+        ) : null}
         <div className="ml-auto flex gap-2">
-          <Button size="sm" variant="outline" disabled={api.saving} onClick={() => setDiscardOpen(true)}>
+          <Button size="sm" variant="outline" disabled={api.saving || api.editBlock !== null} onClick={() => setDiscardOpen(true)}>
             取り消す
           </Button>
           <Button
@@ -171,7 +176,7 @@ export function PendingBar({ api, vm }: { api: PendingApi; vm: ViewModel }) {
           {api.pending.map((c) => (
             <li key={changeRowId(c)} className="flex items-center gap-2">
               <span className="min-w-0 flex-1">{describeChange(vm, c, rowsById)}</span>
-              <Button size="xs" variant="ghost" onClick={() => api.revert(changeRowId(c))}>
+              <Button size="xs" variant="ghost" disabled={api.editBlock !== null} onClick={() => api.revert(changeRowId(c))}>
                 元に戻す
               </Button>
             </li>

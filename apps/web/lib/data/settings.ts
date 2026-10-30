@@ -252,27 +252,33 @@ export function yearPatch(
 /**
  * 新しい年度を作る（create_year_from。複製元は開いている年度）。作った後に、複製元で有効だったのに新しい年度で無効になったルール
  * （付け替えられなかったもの。memo に理由が入る）を数える。
+ * 投げるのは create_year_from そのものが失敗したときだけ。年度を作れた後のルールの読み込みが失敗したら（通信の失敗など）、
+ * 年度はもう DB にあるので投げずに disabledRuleCodes を null（数えられなかった）で返す（押し直すと同じ年度名の conflict になるため）。
  */
 export async function createYearFrom(
   prev: Pick<YearRow, 'id'>,
   label: string,
   festivalStart: string,
   client: AppSupabaseClient = getSupabase(),
-): Promise<{ year: YearRow; disabledRuleCodes: string[] }> {
+): Promise<{ year: YearRow; disabledRuleCodes: string[] | null }> {
   const created = await callRpc('create_year_from', { p_prev_year_id: prev.id, p_label: label, p_festival_start: festivalStart }, client);
   const year = created as unknown as YearRow;
+  return { year, disabledRuleCodes: await countDisabledRules(prev.id, year.id, client).catch(() => null) };
+}
+
+/** 複製元（prevId）で有効だったのに新しい年度（nextId）で無効になったルールのコード（コードの順）。読めなければ投げる */
+async function countDisabledRules(prevId: string, nextId: string, client: AppSupabaseClient): Promise<string[]> {
   const [before, after] = await Promise.all([
-    client.from('rules').select('code, enabled').eq('year_id', prev.id),
-    client.from('rules').select('code, enabled').eq('year_id', year.id),
+    client.from('rules').select('code, enabled').eq('year_id', prevId),
+    client.from('rules').select('code, enabled').eq('year_id', nextId),
   ]);
   if (before.error) throw toAppError(before.error, before.status);
   if (after.error) throw toAppError(after.error, after.status);
   const wasEnabled = new Set((before.data ?? []).filter((r) => r.enabled).map((r) => r.code));
-  const disabledRuleCodes = (after.data ?? [])
+  return (after.data ?? [])
     .filter((r) => !r.enabled && wasEnabled.has(r.code))
     .map((r) => r.code)
     .sort(cmp);
-  return { year, disabledRuleCodes };
 }
 
 // ---- 読む ----

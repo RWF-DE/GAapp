@@ -115,6 +115,7 @@ export function AutoResult({
   onIssue,
   onRecheck,
   onReload,
+  onReloadAfterSave,
   lineActions,
 }: {
   outcome: AutoOutcome;
@@ -124,6 +125,8 @@ export function AutoResult({
   lineActions?: (line: FailureLine) => React.ReactNode;
   onRecheck: () => void;
   onReload: () => void;
+  /** 保存の後の読み直しが失敗したとき（saved の reloadError）の「読み直す」 */
+  onReloadAfterSave?: () => void;
 }) {
   const label = MODE_LABELS[outcome.mode];
   switch (outcome.kind) {
@@ -148,6 +151,8 @@ export function AutoResult({
       );
     case 'saved': {
       const c = outcome.counts;
+      // 保存は通ったが読み直せていない：画面は前のスナップショットなので、それで数えた error は出さない
+      const unread = outcome.reloadError !== undefined;
       return (
         <div className="space-y-2">
           {outcome.excludedRequests > 0 ? (
@@ -155,18 +160,28 @@ export function AutoResult({
               申請できない品目の申請 {outcome.excludedRequests} 件を除いて計算しました（検証の E006 を見てください）。
             </Notice>
           ) : null}
-          <Notice tone="ok" testId="allocate-saved">
+          <Notice tone={unread ? 'warn' : 'ok'} testId="allocate-saved">
             <p>
               {outcome.verified
                 ? `${label}の結果は保存されていました（応答が届かなかったので、読み直して確かめました）。`
                 : `${label}の結果を保存しました（追加 ${c.inserted}・変更 ${c.updated}・削除 ${c.deleted}）。`}
             </p>
+            {unread ? (
+              <div className="flex flex-wrap items-center gap-2" data-testid="allocate-saved-unread">
+                <p>読み直せなかったので「読み直す」を押してください（表と検証の一覧は保存の前のままです）。</p>
+                {onReloadAfterSave ? (
+                  <Button size="sm" variant="outline" disabled={outcome.reloading === true} onClick={onReloadAfterSave}>
+                    {outcome.reloading ? '読み直しています…' : '読み直す'}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
             <p data-testid="allocate-elapsed" data-elapsed-ms={Math.round(outcome.elapsedMs)} data-load-ms={Math.round(outcome.loadMs)}>
               計算 {seconds(outcome.elapsedMs)} 秒
               {outcome.loadMs >= 1 ? `（計算エンジンの読み込み ${seconds(outcome.loadMs)} 秒は含まない）` : ''}
             </p>
           </Notice>
-          {errorsAfter > 0 ? (
+          {errorsAfter > 0 && !unread ? (
             <Notice tone="warn" testId="allocate-errors-after">
               自動振り分けの後に error が {errorsAfter} 件あります（固定・手動の行が原因）。検証の一覧を見てください。
             </Notice>

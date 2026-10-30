@@ -3,7 +3,8 @@
 // 計算中のロック、自動振り分けの後、確定前の Excel の確認、解けない入力のパネル、部員の読み取り・団体別、閲覧のみの確定後、スマホ幅。
 // 読み込み中とロックは page.route で応答を止めてから撮る。
 // 段 2：行の編集（未保存の変更のバー・備考・運び元・理由のダイアログ）、使用不可にする前の一覧、使用不可にした後、
-// 下書きを戻す表示、ほかの人の変更とぶつかって外した変更、検証の一覧の E002 の操作。
+// 下書きを戻す表示、ほかの人の変更とぶつかって外した変更、検証の一覧の E002 の操作、
+// 行の保存が確かめられない間（編集できない）、自動振り分けの保存の後に読み直せなかったとき。
 // 段 3：キャスター机交換（読み込み中・一覧・操作のダイアログ・エラーの帯・確定中の読み取り・置き換えなし・部員の権限なし）、
 // 自団体の振り分け（スマホ。読み込み中・確定前の依頼・回答の後・待ってください・確定後・団体の切り替え・申請なし・管理者の権限なし）。
 import { expect, test, type Page, type Route } from '@playwright/test';
@@ -228,6 +229,72 @@ test.describe('T13 管理者（段 2：手での編集と使用不可の部屋�
       await dialog.getByRole('button', { name: '使用不可にする' }).click();
       await expect(page.getByTestId('suggest-minimal')).toBeVisible();
       await shoot(page, 'T13', 'allocation-unusable-done-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+});
+
+test.describe('T13 管理者（保存の後に確かめられない・読み直せないとき）', () => {
+  test.use({ storageState: storageStateFor('admin'), viewport: PC });
+
+  test('T13 振り分けの編集：行の保存が確かめられない間（編集できない）と、自動振り分けの保存の後に読み直せなかったとき', async ({ page }) => {
+    // 読み直しの失敗が分かるまで（supabase-js と react-query の送り直し）十数秒かかる
+    test.setTimeout(180_000);
+    const s = await createScenario({ dataset: 'synthetic', status: 'allocating', allocations: 'reference', roles: { admin: true } });
+    try {
+      const [x] = await sql<{ id: string }>(
+        `select a.id from public.allocations a join public.items i on i.id = a.item_id
+         where a.year_id = $1 and i.code = 'desk' and not a.is_keep order by a.id limit 1`,
+        [s.yearId],
+      );
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto(`/allocation/?row=${x!.id}`);
+      const row = page.locator(`[data-row-id="${x!.id}"]`);
+      await expect(row).toBeVisible();
+      await expect(page.getByTestId('engine-state')).toHaveAttribute('data-state', 'ready', { timeout: 30_000 });
+
+      // 行の保存：保存も版の読み直しも届かない → 「確かめる」まで保存も編集もできない
+      await row.getByRole('button', { name: /を1増やす$/ }).click();
+      const isVersionRead = (u: URL) => u.pathname.endsWith('/rest/v1/years') && u.searchParams.get('select') === 'allocation_version';
+      await page.route('**/rest/v1/rpc/save_allocation_rows', (route) => route.abort());
+      await page.route(isVersionRead, (route) => route.abort());
+      await page.getByTestId('pending-bar').getByRole('button', { name: '保存…' }).click();
+      await page.getByRole('dialog').getByLabel('理由（必須）').fill('E2E');
+      await page.getByRole('dialog').getByRole('button', { name: '保存する' }).click();
+      await expect(page.getByTestId('rows-edit-block')).toBeVisible({ timeout: 60_000 });
+      await expect(page.getByRole('button', { name: '行を追加' })).toBeDisabled();
+      // 知らせ（「確かめる」）と下のバー（理由）の両方が入るよう、先頭に戻して撮る
+      await page.getByRole('heading', { level: 1 }).scrollIntoViewIfNeeded();
+      await shoot(page, 'T13', 'allocation-rows-unverified-pc');
+      await page.unroute(isVersionRead);
+      await page.unroute('**/rest/v1/rpc/save_allocation_rows');
+      await page.getByTestId('rows-unverified').getByRole('button', { name: '確かめる' }).click();
+      await expect(page.getByTestId('rows-not-saved')).toBeVisible({ timeout: 30_000 });
+      await page.getByTestId('pending-bar').getByRole('button', { name: '取り消す' }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '取り消す' }).click();
+      await expect(page.getByTestId('pending-bar')).toHaveCount(0);
+
+      // 自動振り分け：保存は通り、その後の読み直し（allocations の読み込み）だけが失敗する
+      let saved = false;
+      await page.route('**/rest/v1/rpc/save_auto_allocations', async (route) => {
+        const res = await route.fetch();
+        saved = res.ok();
+        await route.fulfill({ response: res });
+      });
+      const failAfterSave = (route: Route) => (saved && route.request().method() === 'GET' ? route.abort() : route.continue());
+      await page.route('**/rest/v1/allocations*', failAfterSave);
+      await page.getByRole('button', { name: '自動振り分け', exact: true }).click();
+      await page.getByRole('alertdialog').getByRole('button', { name: '実行する' }).click();
+      const unread = page.getByTestId('allocate-saved-unread');
+      await expect(unread).toBeVisible({ timeout: 90_000 });
+      await expect(page.getByTestId('allocate-saved')).toContainText('自動振り分けの結果を保存しました（追加');
+      await shoot(page, 'T13', 'allocation-after-auto-unread-pc');
+      await page.unroute('**/rest/v1/allocations*', failAfterSave);
+      await page.unroute('**/rest/v1/rpc/save_auto_allocations');
+      await unread.getByRole('button', { name: '読み直す' }).click();
+      await expect(unread).toHaveCount(0, { timeout: 30_000 });
+      await expect(page.getByTestId('allocate-saved')).toBeVisible();
     } finally {
       await s.cleanup();
     }
