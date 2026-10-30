@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql } from '../support/db';
+import { stallCsvWithUnreadableNewer } from '../support/import-csv';
 import { SMALL } from '../support/datasets';
 import { MOBILE, PC, shoot } from '../support/shots';
 import { SEED_USER_IDS } from '../support/users';
@@ -363,6 +364,27 @@ test.describe('T11 管理者', () => {
       await expect(page.getByRole('dialog').getByTestId('plan-模擬店乙')).toContainText('同じ時刻（取り込み済み）');
       await page.getByRole('dialog').getByTestId('import-plans').scrollIntoViewIfNeeded();
       await shoot(page, 'T11', 'import-reimport-pc');
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 取り込み（PC）：同じ団体の新しい回答が読めない団体', async ({ page }) => {
+    const s = await createScenario({
+      roles: { admin: true },
+      extraGroups: [
+        { name: '模擬店甲', category: 'stall' },
+        { name: '模擬店乙', category: 'stall' },
+      ],
+    });
+    try {
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/');
+      await page.getByRole('button', { name: 'Googleフォームの回答を取り込む' }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('CSV ファイル').setInputFiles(stallCsvWithUnreadableNewer());
+      await expect(dialog.getByTestId('import-newer-rejected')).toBeVisible();
+      await shoot(page, 'T11', 'import-newer-rejected-pc', { fullPage: true });
     } finally {
       await s.cleanup();
     }
