@@ -7,11 +7,11 @@ GitHub の組織の公開リポジトリにする。pnpm workspace のモノレ�
 ```
 GAapp/
 ├─ apps/web/                 Next.js（App Router、output: 'export'）
-│   ├─ app/(auth)/login
-│   ├─ app/(staff)/          総務向け：dashboard, allocation, swaps, requests, stocks, stock, rules, settings, history
-│   ├─ app/(group)/          団体向け：request, my
+│   ├─ app/(auth)/           login、auth/callback（Google から戻る先）
+│   ├─ app/(app)/            ログインが要る画面（共通レイアウトの中）。総務向け：/（dashboard）, allocation, swaps, requests, stocks, stock, rules, settings, history。団体向け：request, my
+│   ├─ components/           共通レイアウト（ナビゲーション・未招待の画面）、3状態（読み込み中・空・権限なし）、UI 部品
 │   ├─ workers/              振り分けの Web Worker
-│   └─ lib/supabase/         ブラウザ用クライアント
+│   └─ lib/                  supabase/（ブラウザ用クライアント）、auth/（ログイン状態・今の年度の立場）、navigation（ロールごとのメニュー）
 ├─ packages/allocator/       allocate()、validate()、LP の組み立て（DB に依存しない）
 ├─ packages/exporter/        ExcelJS による xlsx、年度データの JSON
 ├─ packages/importer/        Googleフォーム回答の CSV 取り込み
@@ -27,6 +27,9 @@ GAapp/
 | --- | --- | --- |
 | NEXT_PUBLIC_SUPABASE_URL | GitHub Actions の変数、.env.local | クライアント接続 |
 | NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY | GitHub Actions の変数、.env.local | クライアント接続（公開してよい鍵） |
+| NEXT_PUBLIC_BASE_PATH | deploy.yml（リポジトリ名から作る） | GitHub Pages の basePath。ローカルと E2E は空 |
+| NEXT_PUBLIC_GOOGLE_HD_HINT | GitHub Actions の変数（任意） | Google のアカウント選択を学校のドメインに絞るヒント。値は `g.kumamoto-nct.ac.jp`（D-04）。拒否は DB のフック |
+| NEXT_PUBLIC_ENABLE_TEST_LOGIN | .env.local、E2E のビルド（pnpm build:e2e） | ローカル専用のメール＋パスワードのテスト用ログイン。本番のビルドには設定しない（設定しても Supabase がローカルでなければ出ない） |
 | SUPABASE_ACCESS_TOKEN、SUPABASE_DB_PASSWORD | GitHub Actions の secrets | migrate.yml で本番 DB にマイグレーションを適用するときだけ |
 
 アプリは secret（旧 service_role）キーを使わない。GitHub Pages は組織名.github.io/リポジトリ名/ で公開されるので、Next.js の basePath をリポジトリ名に合わせ、Supabase Auth のリダイレクト URL にも登録する。ローカルは `supabase start`（Docker）で DB を立ち上げ、`supabase db reset` でマイグレーションと seed を流す。.env ファイルはコミットしない。
@@ -41,7 +44,7 @@ GAapp/
   1. `pnpm lint` と `pnpm typecheck`
   2. `pnpm test`（Vitest：allocator・exporter・importer・shared）
   3. `supabase test db`（pgTAP：表・列・制約、トリガー（監査、確定中の守り）、権限表の全セル（表 × 操作 × 年度の状態 × ロール）を期待値の表から確かめる、RPC の権限・状態・楽観ロック・版、関数の execute と表の権限の棚卸し）。テストは `supabase db reset` の後の seed が入った DB で流す。テスト用のデータは seed の品目を使い、seed とぶつからない名前とメールのドメイン（`@pgtap.test`）にする
-  4. Playwright（ログイン → 申請 → 自動振り分け → 確定 → 出力の通し）。Google ログインは CI で通せないので、ローカルの Supabase にだけメールとパスワードのテストユーザーを作って使う（本番ではメールログインを無効にする）
+  4. Playwright（ログイン → 申請 → 自動振り分け → 確定 → 出力の通し）。Google ログインは CI で通せないので、ローカルの Supabase（CI ではログインに要るコンテナだけを起動する）にだけメールとパスワードのテストユーザー（管理者・部員・団体代表・閲覧のみ・未招待）を使う。テストユーザーは supabase/seed.sql で auth.users に直接入れて作り（Before User Created フックは通らない）、メールは予約済みのドメイン（`@example.test`）にする。seed は本番に流さず、本番ではメールログインを無効にする（D-02）。画面のテスト用ログインは E2E 用のビルド（`pnpm build:e2e`）にだけ入れ、本番と同じビルドに入っていないことを `pnpm check:no-test-login` で確かめる
   5. `next build`（静的書き出しが通ること）
 - コミットメッセージは Conventional Commits（feat: / fix: / docs: など）
 - 仕様を変えるときは、先にこの要件定義書を直してから実装する
@@ -56,12 +59,12 @@ GAapp/
 | T01 | 組織と公開リポジトリ、pnpm workspace、lint・CI の雛形、GitHub Pages への公開 | — | M | Claude | 完了 |
 | T02 | DDL・列挙型・ビュー・監査トリガーのマイグレーション | T01 | M | Claude | 完了 |
 | T03 | RLS、権限の関数、RPC、pgTAP テスト | T02 | L | Claude | 完了 |
-| T04 | Google ログイン、ドメイン制限のフック、招待と受け入れのトリガー、テスト用ログイン | T03 | M |  | 未着手 |
+| T04 | Google ログイン、ドメイン制限のフック（学校の Google ドメインだけを許す）、招待と受け入れのトリガー、テスト用ログイン（テストユーザーは seed で作り、フックを通らない。D-02）、共通レイアウト（ナビゲーション、ロールによる表示の切り替え、読み込み中・空・権限なしの3状態。P-03） | T03 | M | Claude | 完了 |
 | T05 | importer：Googleフォーム回答の取り込みと、R8 の fixtures（正規化した申請と変換表） | T02 | M |  | 未着手 |
 | T06 | allocator：前処理、LP の組み立て、highs-js の実行、ルール4種、最小変更モード | T00、T05 | L |  | 未着手 |
 | T07 | allocator：validate()、解けないときの診断 | T06 | M |  | 未着手 |
 | T08 | exporter：R8 様式の xlsx、交換依頼一覧、年度データの JSON、再計算テスト | T05 | M |  | 未着手 |
-| T09 | 画面：マスタ設定（年度の作成と複製・場所・品目・団体・距離・ユーザー）とダッシュボード | T04 | L |  | 未着手 |
+| T09 | 画面：マスタ設定（年度の作成と複製・場所・品目・団体・距離・ユーザー）とダッシュボード（共通レイアウトは T04 で作ったものを使う） | T04 | L |  | 未着手 |
 | T10 | 画面：在庫入力（スマホ・QR）と在庫一覧 | T04 | M |  | 未着手 |
 | T11 | 画面：申請と申請一覧、CSV 取り込み | T04、T05 | M |  | 未着手 |
 | T12 | 画面：ルール設定 | T06 | S |  | 未着手 |

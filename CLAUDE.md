@@ -28,7 +28,7 @@
 - 依存関係：`pnpm install`
 - 開発サーバー：`pnpm dev`（http://localhost:3100）
 - ローカル DB：`supabase start` → `supabase db reset`（マイグレーションと seed）。終わったら `supabase stop --no-backup`。Docker のデーモンが止まっていれば先に `dockerd` を起動する
-- チェック：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`supabase test db`（DB だけなら `supabase db start`）、`pnpm e2e`（先に `pnpm build`）、`pnpm check:emails`
+- チェック：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`supabase test db`（DB だけなら `supabase db start`）、`pnpm e2e`（先にローカルの Supabase を起動（`supabase start`。seed のテストユーザーを使う）して `pnpm build:e2e`。3100 番が使われていれば `E2E_PORT=3101 pnpm e2e`）、`pnpm check:emails`
 - 型の生成：`pnpm gen:types`（`supabase gen types` の出力を packages/shared/src/database.types.ts に書く。DB の変更後に実行）、一致の確認は `pnpm check:types`
 - ビルド：`pnpm build`（apps/web/out に静的書き出し。GitHub Pages 用は `NEXT_PUBLIC_BASE_PATH=/GAapp pnpm build`）
 - spikes/ は workspace・lint・typecheck・test の対象外

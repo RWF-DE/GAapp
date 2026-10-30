@@ -205,7 +205,8 @@ anonymous_users = 30
 # Number of sessions that can be refreshed in a 5 minute interval per IP address.
 token_refresh = 150
 # Number of sign up and sign-in requests that can be made in a 5 minute interval per IP address (excludes anonymous users).
-sign_in_sign_ups = 30
+# T04：E2E はテストユーザーで何度もログインするので、ローカルでは上げておく（本番の設定は管理画面で行い、この値は使わない）
+sign_in_sign_ups = 1000
 # Number of OTP / Magic link verifications that can be made in a 5 minute interval per IP address.
 token_verifications = 30
 # Number of Web3 logins that can be made in a 5 minute interval per IP address.
@@ -218,9 +219,11 @@ web3 = 30
 # secret = ""
 
 [auth.email]
-# 本番と同じ考え方（D-17a）：メールの確認と、メールの変更の確認（新旧の両方）を有効にする。
+# 本番と同じ考え方（README の「4. ログイン」の 7、D-17a）：メールの確認と、メールの変更の確認（新旧の両方）を有効にする。
 # 無効だと、GoTrue は古いアドレスに届いたリンクだけでメールの変更を終え、email の identity を email_verified: true にするので、
 # 招待された人のアドレスを名乗れる（DB の private.verified_email は、Google の identity のないアカウントではこの設定に頼る）。
+# ローカルで Email プロバイダーを有効にしているのは、seed のテストユーザーのパスワードログイン（E2E）のため。
+# サインアップはフックが拒否する（e2e/auth-hook.spec.ts）。本番では Email プロバイダーを無効にする。
 # Allow/disallow new user signups via email to your project.
 enable_signup = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
@@ -281,9 +284,11 @@ max_frequency = "5s"
 # inactivity_timeout = "8h"
 
 # This hook runs before a new user is created and allows developers to reject the request based on the incoming user object.
-# [auth.hook.before_user_created]
-# enabled = true
-# uri = "pg-functions://postgres/auth/before-user-created-hook"
+# T04：Google 以外のプロバイダーと学校のドメイン以外を拒否する（supabase/migrations/0007_auth.sql）。
+# 本番は管理画面の Authentication → Auth Hooks で同じ関数を選ぶ（README）。
+[auth.hook.before_user_created]
+enabled = true
+uri = "pg-functions://postgres/private/hook_before_user_created"
 
 # This hook runs before a token is issued and allows you to add additional claims based on the authentication method used.
 # [auth.hook.custom_access_token]

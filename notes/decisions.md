@@ -12,9 +12,13 @@
 ## D-02 テストユーザーとドメイン制限フック（2026-10-28、K-10）
 
 - **決定**：E2E・CI のメール＋パスワードのテストユーザー（管理者・部員・団体代表・未招待）は、supabase/seed.sql で auth.users に直接入れて作る（フックを通らない）。フックが許可するのは学校のドメインだけ。seed は本番に流さず（migrate.yml は `supabase db push` だけ）、本番ではメールログインを無効にする。テストユーザーのメールは予約済みのドメイン（例：`admin@example.test`）にし、実在の人のメールは使わない。
-- **反映先**：02_data.md「権限とRLS」（ログインの箇条書き）、05_development.md「ブランチ・レビュー・CI」4。
+- **T04 での追記（2026-10-29）**：
+  - テストユーザーは閲覧のみ（viewer）を足して5人（R8 の年度に招待を入れてから auth.users に入れ、トリガーでロールを付ける。id は固定）。パスワードはローカル専用の固定値（秘密ではない）。
+  - フックは Google 以外のプロバイダーも拒否する（本番でメールログインを無効にし忘れたときの守り）。フックは GoTrue の API での作成だけで呼ばれ、seed・SQL Editor・管理 API では呼ばれない（ローカルの GoTrue で確かめた）。
+  - 画面のテスト用ログインは、ビルド時のフラグ（`NEXT_PUBLIC_ENABLE_TEST_LOGIN=true`）があり、かつ Supabase の URL がローカル（127.0.0.1・localhost）のときだけ出す。フラグなしのビルドではフォームのコードごと消え、CI の `pnpm check:no-test-login` で確かめる。E2E は専用のビルド（`pnpm build:e2e`）で行う。
+- **反映先**：02_data.md「権限とRLS」（ログインの箇条書き）、05_development.md「ブランチ・レビュー・CI」4・「リポジトリ構成と環境変数」、04_screens_api.md「ログイン」。
 - **チケット**：T04。
-- **状態**：要件定義に未反映。
+- **状態**：要件定義に反映済み（T04 の PR）。
 
 ## D-03 個人情報の範囲と、importer で残す列（2026-10-28、K-05）
 
@@ -24,15 +28,18 @@
   - fixtures/r8 には備考を入れない。団体名に個人名（研究室名の教員名など）が入っていないかを T05 で確かめる。
 - **反映先**：SPEC.md「やらないこと」、04_screens_api.md「CSV取り込み」、05_development.md「fixtures/r8 の作り方」。
 - **チケット**：T04（profiles の表示名）、T05（importer・fixtures）。
-- **状態**：要件定義に未反映。
+- **状態**：T04 の分（profiles の表示名は Google の氏名だけで作り、メールからは作らない。100 字まで）は 02_data.md「権限とRLS」に反映済み（T04 の PR）。importer・fixtures の分は T05。
 
 ## D-04 学校の Google ドメイン（2026-10-28、00 の未決事項）
 
 - **決定**：学生と教員は同じドメイン。フックの許可ドメインは1つの定数にする。
-- **未決のまま**：ドメインの値はまだ受け取っていない。T04 の開始時に確認する（決まっていなければ仮の定数で進め、あとで1行直す）。1〜3年生が外部アプリにログインできるかは、引き続き情報担当への確認待ち。
-- **反映先**：00_overview.md「未決事項」の1つ目（「教員と学生でドメインが違うか」を解決済みにする）、02_data.md「権限とRLS」。
+- **決定（2026-10-29、ユーザーの回答）**：学校の Google ドメインは `g.kumamoto-nct.ac.jp`（教員と学生で同じ）。
+- **未決のまま**：1〜3年生が外部アプリにログインできるかは、引き続き情報担当への確認待ち。
+- **T04 での扱い（2026-10-29、値を受け取る前。次の項目で置き換えた）**：値は届いていないので、フック（0007_auth.sql の `c_domain`）に予約済みのドメイン `school.example` を仮に入れた（実在しないドメインなので、決まるまで本番で誰も通らない）。値が決まったら、本番に 0007 を適用する前ならその1行を、適用した後なら同じ関数を作り直すマイグレーションを足す（README「4. ログイン」）。画面の Google のアカウント選択のヒント（hd）は任意の環境変数 `NEXT_PUBLIC_GOOGLE_HD_HINT` にし、ドメインの正は DB の定数1か所にした。invite はドメインを確かめない（ローカル・pgTAP は予約ドメインで招待するため。学校以外のメールに招待しても、フックがログインを止めるので使えない）。
+- **値を受け取った後の扱い（2026-10-29）**：本番には 0007 をまだ適用していないので、0007 を直接直した。ドメインはフックから関数 `private.school_domain()`（search_path = ''、execute は supabase_auth_admin だけ）に切り出し、値 `g.kumamoto-nct.ac.jp` はそこ1か所に書く。実在のドメインのメールアドレスはテスト・文書に書かない（公開リポジトリ。実在の人のアドレスと重なるおそれ）。pgTAP（030_auth）は本番の値を確かめたうえで、トランザクションの中で school_domain を予約済みのドメイン（`school.example`）を返すものに置き換えて判定を確かめる。GitHub の変数 `NEXT_PUBLIC_GOOGLE_HD_HINT` にも同じ値を入れる。
+- **反映先**：00_overview.md「未決事項」の1つ目（「教員と学生でドメインが違うか」とドメインの値を解決済みにする）、02_data.md「権限とRLS」、README「4. ログイン」、05_development.md の環境変数の表。
 - **チケット**：T04。
-- **状態**：要件定義に未反映。
+- **状態**：要件定義に反映済み（T04 の PR。値は 2026-10-29 に反映）。1〜3年生のログインの件は未決のまま。
 
 ## D-05 長机(3人掛)の読み替えと E006（2026-10-28、K-08）
 
@@ -156,15 +163,16 @@
   - 招待を付ける（invite のその場の受け入れ・accept_my_invitations。T04 の auth のトリガーも同じ）のは、`private.verified_email(user_id)` が値を返すときだけ。条件は、削除されていない・email がある・email_confirmed_at がある・メールの変更の途中でない（email_change が空）、かつ auth.identities に auth.users.email と同じメール（小文字で比べる）の identity があり、それが identity_data の email_verified が真（真偽値の true か文字列の "true"。GoTrue の版で形が違う）の Google の identity か、email_verified が true（真偽値）の email の identity であること。招待のメールはこの値と比べる。
   - 自分あての招待の読み取り（ポリシー invitations_select）も同じ判定にする。JWT の email（auth.jwt() ->> 'email'）とは比べない。ポリシーは、自分の分だけを返す判定関数 `private.my_verified_email()` を呼ぶ（authenticated に execute を与える判定関数は 13 個になる）。`private.verified_email` は任意の user_id のメールを返すので、authenticated には execute を与えない。
   - Google の identity があるアカウントは、Google の identity のメールだけを信じる（email の identity は email_verified が true でも見ない）。
-  - verified_email は二重目の守りで、本番の Auth で必ず次の設定を守る（README の「必ず守る設定」は T04）。
+  - トリガーは、auth.identities への insert（seed のように確認済みのユーザーに identity を足したとき）と、email_confirmed_at が null から値に変わったとき（Google の初回ログイン。identity は確認の前に入る）。auth.users への insert では profiles だけを作る（identity がまだないため）。
+  - verified_email は二重目の守りで、本番の Auth で必ず次の設定を守る（README「4. ログイン」の 7「必ず守る Auth の設定」。T04）。
     - ログインは Google だけ（Email・Phone・匿名のサインインは無効）。Google の identity のないアカウントを作らせない。
     - Confirm email と Secure email change は有効。
     - Allow manual linking は無効。ローカルの supabase/config.toml も T03 で `enable_confirmations = true`（`double_confirm_changes = true` は前から）にする（auth のトリガーには触れない）。
 - **理由**：auth.users.email_confirmed_at は最初の確認の時刻で、あとでメールアドレスを変えても null に戻らない。メールの変更に確認が要らない設定（や GoTrue の版の違い、SQL・管理 API での変更）だと、ログイン済みの人が自分の email を招待された人のアドレスに変えて、その人あての招待（admin を含む）を受け取れ、JWT の email もそのアドレスになるので、その人あての未使用の招待（年度・ロール）を読めた。identity_data は利用者が書き換えられない（user_metadata と違う）。Google の identity のメールは Google が持ち主を確かめたアドレスで、ログインのたびに Google の値で上書きされる。ただし email の identity の email_verified が信じられるのは、Confirm email と Secure email change が有効なときだけ。有効なら GoTrue は、新しいアドレスを受信箱で確かめた変更のときだけ email の identity を新しいアドレスと email_verified: true に書き換える。無効（GOTRUE_MAILER_AUTOCONFIRM=true。T03 の前のローカルの enable_confirmations = false）だと、double_confirm_changes が有効でも、GoTrue（v2.197）は古いアドレスに届いたリンクだけで変更を終え、email の identity を新しいアドレスと email_verified: true に書き換える（email・パスワードのユーザーが自分のリンクだけで、他人あての admin の招待を受け取れた）。Google だけのユーザーでも、Email プロバイダーを無効にしていても、同じリンクで email_verified: true の email の identity が新しくでき、verified_email がそのアドレスを返した（T03 のレビューで確かめた）。設定が有効なら、古いアドレスのリンクだけでは変更が終わらず、identity も変わらない。Secure email change が無効だと、変更は新しいアドレスの確認だけで終わり、古いアドレスの持ち主に確かめない（盗まれたセッションからメールを付け替えられる）。Allow manual linking が有効だと、利用者が identity を外せる。Confirm email も無効なら、Google のユーザーがメールを変えて email の identity を作り、Google の identity を外して email だけのアカウントになれば、「Google の identity のメールだけを見る」守りを抜けて他人の招待を取れた（T03 の攻撃での確認）。無効なら Google の identity を外せないので、Confirm email が崩れても止まる。Email・Phone・匿名のサインインが有効だと、Google の identity のないアカウントができ、email だけのアカウントは Confirm email と Secure email change だけに頼る。Google の identity の email_verified も見るのは、Google が持ち主を確かめていないアドレスをメールが一致するだけで信じないため（T03 の攻撃での確認で、false でも信じていた）。本番は全員が Google の identity を持つので、Google の identity があるときに email の identity を見なければ、設定が崩れても止まる。メールの変更の途中を除くのは、確かめ終わる前の状態で判断しないため。T03 だけをマージしたときにも穴が残らないよう、T04 から T03 に移した（ローカルの config.toml の enable_confirmations も。auth のトリガーと、本番の Auth の設定を README に書くのは T04）。
-- **反映先**：02_data.md「権限とRLS」（権限表の下の説明、招待の受け入れと本番の Auth で必ず守る設定の箇条書き）、04_screens_api.md「DB関数（RPC）」の invite・accept_my_invitations、supabase/config.toml。
-- **残るもの**：Google の identity のない email だけのアカウント（ローカルのテストユーザー。T04 の seed）は、Confirm email と Secure email change の設定に頼る（設計どおりの既知の依存。本番では Email・Phone・匿名のサインインを無効にし、email だけのアカウントを作らない）。
+- **反映先**：02_data.md「権限とRLS」（権限表の下の説明、招待の受け入れ・本番の Auth で必ず守る設定・テストユーザーの箇条書き）、04_screens_api.md「DB関数（RPC）」の invite・accept_my_invitations、supabase/config.toml、README「4. ログイン」の 7。
+- **残るもの**：Google の identity のない email だけのアカウント（ローカルのテストユーザー。T04 の seed）は、Confirm email と Secure email change の設定に頼る（設計どおりの既知の依存。本番では Email・Phone・匿名のサインインを無効にし、email だけのアカウントを作らない）。匿名ユーザーとメールの自動確認を両方有効にすると、GoTrue は匿名ユーザーが足したメールの identity を email_verified: true で作る（確かめていない）。匿名ログインは無効（設定とフックの両方で止まる）にする。email のサインアップの確認（受信箱のリンク）では、GoTrue は email_confirmed_at を入れた後で identity の email_verified を true にするので、確認のトリガーでは付かず、次のログインの accept_my_invitations で付く（本番ではメールのサインアップを使わない）。
 - **チケット**：T03（verified_email・invite・accept_my_invitations・invitations_select、ローカルの config.toml の enable_confirmations）、T04（auth のトリガー、本番の Auth の設定を README に書く、テストユーザーの identity）。
-- **状態**：要件定義に反映済み（T03 の PR）。
+- **状態**：要件定義に反映済み（T03・T04 の PR）。
 
 ## D-18 年度の複製と確定（2026-10-29、DB 設計・T03）
 
@@ -207,12 +215,11 @@
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。
 - **P-02**（K-12、T06）：コストを整数にそろえ、使用場所以外からの移動に1を足して、同点なら「残す」が選ばれるようにする（例：d′ = 100·d ＋ 1、休憩所への不可椅子は −10、W と μ もこの単位で計算し直す）。
-- **P-03**（K-17、T04・T09）：共通レイアウト（ナビゲーション、ロールによる表示の切り替え、読み込み中・空・権限なしの3状態）を T09 から T04 に移す。
+- **P-03**（K-17、T04・T09）：**採用**（T04 で実装。04「共通レイアウト」、05 のチケット表、docs/prompts の T04・T09 に反映済み）。共通レイアウト（ナビゲーション、ロールによる表示の切り替え、読み込み中・空・権限なしの3状態）を T09 から T04 に移す。今の年度は暫定で「ロールか団体代表のある年度のうち1日目が最も遅いもの」（K-19 は T09 で決める）。
 
 ## 引き続き未決（00_overview.md「未決事項」と、キックオフで見つけたもの）
 
 - 1〜3年生（18歳未満の指定がある人）が外部アプリにログインできるか（情報担当に確認）。
-- 学校のドメインの値（D-04）。
 - Google Cloud の OAuth クライアントを、学校の Workspace の中に作れるか、誰の持ち物にするか（K-11。00 の未決事項に足す）。
 - Supabase 無料プランの一時停止からの再開期限（90日か1年か）を管理画面で確かめる（K-09）。
 - 学生会・教員の承認、GitHub と Supabase のオーナー、引き継ぐ後輩、申請の一本化、建物・階と距離の値、校内分散の団体の運び先（00 のとおり）。

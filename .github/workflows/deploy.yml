@@ -35,6 +35,9 @@ jobs:
           NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
           NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          # 任意：Google のアカウント選択を学校のドメインに絞るヒント（リポジトリの変数に g.kumamoto-nct.ac.jp を入れる。D-04。拒否は DB のフックが行う）
+          NEXT_PUBLIC_GOOGLE_HD_HINT: ${{ vars.NEXT_PUBLIC_GOOGLE_HD_HINT }}
+          # NEXT_PUBLIC_ENABLE_TEST_LOGIN は設定しない（テスト用ログインはローカル専用）
         run: pnpm build
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
