@@ -23,14 +23,18 @@
 - UI を変えたら実際に起動して確認し、スクリーンショットを notes/<チケットID>/ に残す。
 - 実装が終わったら reviewer サブエージェントでレビューする。認証・RLS・RPC・入力処理に触れたら security-reviewer にも回す。
 - 同じ指摘を2回受けたら手を止めて、やり方を見直す。
+- 画面のチケット（T09〜T14）は、自分の画面のディレクトリと 04 の自分の画面の節だけを直す。共通の部品・依存（package.json）・ナビゲーション・テストの土台は T09a が持つ。05 のチケット表の「状態」と notes/decisions.md は画面のチケットの PR では直さない（D-32）。
 
 ## コマンド
-T01 で整備したら、ここを実際のコマンドに書き換える。
 - 依存関係：`pnpm install`
-- 開発サーバー：`pnpm dev`
-- ローカル DB：`supabase start` → `supabase db reset`（マイグレーションと seed）
-- チェック：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`supabase test db`、`pnpm e2e`
-- ビルド：`pnpm build`（静的書き出し）
+- 開発サーバー：`pnpm dev`（http://localhost:3100）
+- ローカル DB：`supabase start` → `supabase db reset`（マイグレーションと seed）。終わったら `supabase stop --no-backup`。Docker のデーモンが止まっていれば先に `dockerd` を起動する
+- チェック：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`supabase test db`（DB だけなら `supabase db start`）、`pnpm e2e`（先にローカルの Supabase を起動（`supabase start`。seed のテストユーザーを使う）して `pnpm build:e2e`。3100 番が使われていれば `E2E_PORT=3101 pnpm e2e`）、`pnpm check:emails`
+- E2E：`pnpm e2e` は scripts/e2e.mjs が Playwright を2回呼ぶ（並行の chromium〔setup の db-setup・auth-setup は依存で走る〕の後に、結果によらず serial〔年度の作成・年度をまたぐ表の変更・通しの流れ〕を流し、どちらかが落ちれば失敗。レポートは回ごとに別のフォルダ）。1つだけ流すときは `pnpm exec playwright test --project=chromium e2e/<ファイル>`。スクリーンショットは `pnpm e2e:shots --grep <チケットID>`（`E2E_SHOTS=1` で shots のプロジェクトだけを流し、notes/<チケットID>/ に保存する。CI では流さない。テストの名前はチケット ID で始める）
+- 最初に読む JS の量：`pnpm build` の後に `node scripts/first-load-js.mjs`（apps/web/out の各ページが読む script の gzip の合計）
+- 型の生成：`pnpm gen:types`（`supabase gen types` の出力を packages/shared/src/database.types.ts に書く。DB の変更後に実行）、一致の確認は `pnpm check:types`
+- ビルド：`pnpm build`（apps/web/out に静的書き出し。GitHub Pages 用は `NEXT_PUBLIC_BASE_PATH=/GAapp pnpm build`）。`pnpm dev`・`pnpm build` の前に apps/web の predev・prebuild が highs の wasm を apps/web/public/highs.wasm にコピーする（git に入れない）
+- spikes/ は workspace・lint・typecheck・test の対象外
 
 ## 設計上の約束（破らない）
 - サーバーを持たない。Next.js は `output: 'export'`。Route Handler・Server Action・middleware・動的セグメント（`[id]`）は使わず、id はクエリ文字列で渡す。
@@ -56,3 +60,9 @@ T01 で整備したら、ここを実際のコマンドに書き換える。
 - ExcelJS は数式を計算しない。数式と一緒に計算済みの値も書き、fullCalcOnLoad を設定する。
 - GitHub Pages は `組織名.github.io/リポジトリ名/` で公開されるので、Next.js の basePath と Supabase Auth のリダイレクト URL を合わせる。
 - Google ログインは CI で通せない。E2E はローカル Supabase のメール＋パスワードのテストユーザーで行い、本番ではメールログインを無効にする。
+- 静的書き出しでは、`useSearchParams` を使う部品をページで `<Suspense>` に包む（包まないと `next build` が失敗する）。`window`・`location`・`localStorage`・`Worker` はプリレンダーの間はないので、useEffect かイベントの中だけで使う。
+- highs の wasm は `require.resolve('highs/runtime')` で引いてコピーする（`highs/package.json` は exports にないので引けない）。public のファイルと QR の絶対 URL には basePath を自分で付ける。
+- E2E は画面からサインアップやメールの変更をしない（ローカルも Confirm email が有効）。ユーザーは seed か e2e/support の createUser で作る。
+- RLS で拒否された update・delete はエラーにならず 0 行で成功する。直接の更新と削除は `.select()` で変わった行を受け取り、0 行を成功として扱わない。
+- 年度をまたぐ表（rooms・items・distance_overrides）に行を足すと、振り分け中のすべての年度の allocation_version が上がる。E2E では並行のテストの前に1回だけ入れ、テストの途中で変えない。
+- アイコンは Next のファイルの規約（app/icon.png など）で置く（metadata に文字列で書くと basePath が付かない）。マニフェストの JSON の中の URL には basePath を自分で付ける。

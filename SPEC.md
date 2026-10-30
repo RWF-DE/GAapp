@@ -18,10 +18,10 @@ Claude Code 向けの仕様の入口。詳細は docs/requirements/ にあり、
 食い違ったときは 01〜05 を正とする（00 は要約）。それでも決まらないことは質問し、決まったことは notes/decisions.md に記録する。
 
 ## 関係するファイルとインターフェース
-- 構成：05_development.md の「リポジトリ構成と環境変数」（apps/web、packages/allocator・exporter・importer・shared、supabase/、fixtures/r8）。
-- 振り分け：`allocate(input: AllocateInput): AllocateResult`、`validate(input, rows): Issue[]`（型は 03_allocation.md）。
-- DB：02_data.md の DDL。書き込みの RPC は 04_screens_api.md の表（set_year_status、create_year_from、save_auto_allocations、save_allocation_rows、update_requests_after_deadline、set_consent、invite、check_delivery）。
-- 出力：exportAllocationXlsx・exportSwapsXlsx・exportYearJson。取り込み：parseFormCsv。
+- 構成：05_development.md の「リポジトリ構成と環境変数」（apps/web、packages/allocator・exporter・importer・shared、supabase/、fixtures/r8・fixtures/synthetic）。
+- 振り分け：`allocate(input: AllocateInput, solver): AllocateResult`、`validate(data, rows): Issue[]`（型は 03_allocation.md。solver は呼ぶ側が読み込んだ highs のインスタンス）。
+- DB：02_data.md の DDL。書き込みの RPC は 04_screens_api.md の表（set_year_status、update_year、create_year_from、invite、set_role、remove_role、revoke_invitation、remove_group_member、accept_my_invitations、save_auto_allocations、save_allocation_rows、set_consent、submit_requests、update_requests_after_deadline、check_delivery）。読み取りの RPC は previous_year_stocks、previous_year_requests。
+- 出力：`exportAllocationXlsx({ yearLabel, data, rows })`・`exportSwapsXlsx({ yearLabel, data, rows })`・`exportYearJson(yearExport)`。取り込み：`parseFormCsv(kind, csv, items)`・`resolveResponses(parsed, groups, items, manual)`（形は 04_screens_api.md の「ブラウザ側の処理」）。
 
 ## やらないこと
 - サーバー側の処理（Route Handler・Server Action・middleware）と、Vercel などサーバー付きのホスティング。
@@ -33,20 +33,27 @@ Claude Code 向けの仕様の入口。詳細は docs/requirements/ にあり、
 
 ## 受け入れ基準
 05_development.md の「受け入れ基準と R8 テストデータ」をすべて満たすこと。要点：
+
+（注：D-40〔2026-10-29〕により R8 の元データは使わない。下の「R8 の正規化した申請」「R8 入力」は合成データ fixtures/synthetic/r8like で確かめ、R8 の実績との一致〔103 台以下、椅子(青)134・教卓10・長机合計106 が R8 と一致など、R8 の元データでしか確かめられないもの〕は確かめない。2027年5〜6月の R8 のデータでの検証をどうするかは、そのときにユーザーが決める。）
+
 - R8 の正規化した申請で ok: true になり、E001〜E006 が0件。全申請を代替込みで過不足なく満たす。
 - S01〜S08 が成り立つ（設営の机241台は 1-1〜2-3 から、不可机は模擬店だけ、不可椅子は休憩所と模擬店だけ、長机(3人掛)は企業だけ、学科展示の残す）。
-- キャスター机への置き換えは 103 台以下。椅子(青)134・教卓10・長机合計106 が R8 と一致。W107 が0件。
-- 同じ入力で同じ結果。固定行・手動行が二重にならない。最小変更モードで無関係な行が変わらない。
-- ブラウザで R8 入力の計算が2秒以内。出力した xlsx を再計算してエラー0件。
+- キャスター机への置き換えは 103 台以下。椅子(青)134・教卓10・長机合計106 が R8 と一致。W107（入れ替えがルール上でき、入れ替えても距離が増えないもの）が0件。
+- 同じ入力で同じ結果。固定行・手動行が二重にならない。最小変更モードで、使用不可にした部屋から受け取っていた分を、ルール上使える場所の余りから代替を増やさずに補えるなら、無関係な行が変わらない（D-08）。
+- ブラウザで R8 入力の計算（wasm の初回の読み込みを除く）が2秒以内。出力した xlsx を再計算してエラー0件。
 - 団体代表は他の団体のデータを、招待されていない人は何も読めない（pgTAP で確認）。
 
 ## E2E の検証手順（ローカル）
-1. `supabase start` → `supabase db reset`（seed に品目・場所・R8 の団体と在庫が入る）
-2. `pnpm dev` で起動し、テスト用の管理者でログインする
-3. 年度を作り、在庫一覧で在庫が入っていることを確かめる（第一セミナーは使用不可）
-4. 申請一覧で fixtures の申請を取り込む（またはテスト用の団体代表で1件提出する）
-5. 振り分け画面で「自動振り分け」→ 検証パネルの error が0件 → 「確定」
-6. 「Excel出力」で xlsx を保存し、LibreOffice（`soffice --headless`）で再計算して、数式エラーと「在庫超過」「要確認」が0件であることを確かめる
-7. 「確定を解除」→ 別の部屋（例：MER）を使用不可にする →「最小変更で再実行」→ 変わった行が、その部屋から運んでいた分だけであることを確かめる
+
+（注：D-40 により R8 の本データ〔fixtures/r8 と seed の R8 の団体・在庫〕は入らない。手順 3〜7 は合成データ fixtures/synthetic/r8like〔第一セミナーは使用不可、MER もある〕で流す。R8 の本データを使うことになったら、fixtures/r8 をそちらに読み替える。）
+
+1. `supabase start` → `supabase db reset`（seed に品目・テスト用の場所・R8 の年度・テストユーザーが入る。R8 の本データは入らない。D-40）
+2. `pnpm build:e2e` → `pnpm e2e`（CI と同じ。通しの流れは e2e/serial/full-flow.spec.ts）。手で確かめるときは `pnpm dev` で起動し、テスト用のユーザーで同じ順に操作する
+3. 合成データ（fixtures/synthetic/r8like）で受付中の年度を作る（e2e/support のシナリオの年度）。管理者で在庫一覧を開き、在庫が入っていること（第一セミナーは使用不可）を確かめ、部員（スマホの幅）で1部屋を同じ数のまま数え直す（数えた人と日時が変わる。在庫は変えない）
+4. 団体代表で、代表する団体の申請を今の数のまま再提出する（提出日時が変わる）。管理者が申請一覧で通しの流れ専用の模擬店の CSV（e2e/fixtures/full-flow-stall.csv）を取り込み、対応しない行（マスタにない名前）を手で団体に対応させる。CSV の数はどの品目も、その団体の今の申請以下にしてある（需要を増やさない）。この入力で 5 と 7 が解けることは、E2E の前に Vitest（e2e/full-flow/data.test.ts）で確かめてある
+5. ダッシュボードで「締切」→ 振り分け画面で「自動振り分け」（計算 2 秒以内。wasm の初回の読み込みを除く）→ 検証パネルの error が0件 → 「確定」（理由を入れる）
+6. 「Excel出力」で xlsx を保存し、LibreOffice（`soffice --headless`。packages/exporter/tools/recalc.py）で再計算して、数式エラーと「在庫超過」「要確認」が0件であることを確かめる
+7. 「確定を解除」→ 別の部屋（例：MER）を振り分け画面の部屋の見出しで使用不可にする（その部屋からの固定・手動の行があれば、先に一覧で直して保存してから。この流れでは自動の行だけなので一覧は空）→「最小変更で再実行」→ D-08 の判定で確かめる：その部屋から受け取っていた分を、ルール上使える場所の余りから代替を増やさずに補えるつながりでは、変わった行がその部屋から運んでいた分と、それを補う行（その団体がすでに受け取っていた行の数が増えるものを含む）だけで、その部屋と関係のないつながりの行は変わらない（余りが足りず置き換えが増える机(木)などのつながりや、運び元の制限で使える場所が限られる団体は、連鎖で変わりうる）。どのつながりが「補える」かはデータで決まるので、品目で決め打ちせず、allocator の確かめ方（`@gaapp/allocator/testing` の checkMinimalChange）を使う。画面の結果が同じ入力の allocate の結果と一致することも確かめる。補えないつながりで変わった行の数はテストの出力に記録する
+8. 年度の作成と前年度からの複製は、別のテスト（e2e/serial の年度の作成）で確かめる（通しの流れの中で年度を作ると在庫が複製されず、3 が成り立たないため）
 
 CI では同じ流れを Playwright（`pnpm e2e`）で実行する。
