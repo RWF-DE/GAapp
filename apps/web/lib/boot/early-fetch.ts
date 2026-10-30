@@ -147,7 +147,8 @@ export function readRecorded(key: string, storage: RequestsStorage | null): Reco
 /**
  * 記録を終えて、そのパスの分を覚える（ほかのパスの分は残す。新しいものから MAX_PATHS まで）。覚えたら true。
  * use が偽（先読みの年度・団体が違った・ログインの人が違った）なら覚えない（違う年度のリクエストを次に先送りしないため）。
- * allowedPaths（先送りしてよい画面のパス）にないパスも覚えない（振り分けに関わる画面。上の説明）。
+ * allowedPaths（先送りしてよい画面のパス）にないパスも覚えない（振り分けに関わる画面。上の説明）。前に覚えた分のうち
+ * allowedPaths にないもの（許可リストを入れる前に覚えた /allocation など）は、ここで消す（使わないものを残さない）。
  */
 export function finishRecording(key: string, use: boolean, storage: RequestsStorage | null, allowedPaths: readonly string[]): boolean {
   const r = recorder;
@@ -159,7 +160,7 @@ export function finishRecording(key: string, use: boolean, storage: RequestsStor
     const prev = readRecorded(key, storage)?.paths ?? {};
     const paths: Record<string, RecordedRequest[]> = { [r.path]: r.list };
     for (const [p, list] of Object.entries(prev)) {
-      if (p !== r.path && Object.keys(paths).length < MAX_PATHS) paths[p] = list;
+      if (p !== r.path && allowedPaths.includes(p) && Object.keys(paths).length < MAX_PATHS) paths[p] = list;
     }
     storage.setItem(key, JSON.stringify({ paths }));
     return true;

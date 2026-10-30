@@ -269,6 +269,7 @@ export async function loadMyData(
       .order('to_item_id'),
     known && isAllocationFinal(known.status) ? readAllocations() : null,
   ]);
+  // 年度の行の応答が先送り（ページを開いたときに送ったもの）なら、実際に読んだのは startedAt より前（seedYearRows の説明）
   if (queryClient) seedYearRows(queryClient, [year], startedAt);
   // 使うかは読み直した年度の行で決める（キャッシュの行が確定で読み直した行が確定前なら、先に読んだ振り分けの行は捨てる）
   const a: Res | null = isAllocationFinal(year.status) ? (early ?? (await readAllocations())) : null;

@@ -95,19 +95,45 @@ describe('記録', () => {
     const key = requestsKey(USER, PREFIX);
     const old: Record<string, RecordedRequest[]> = {};
     for (let i = 0; i < MAX_PATHS; i++) old[`/p${i}`] = [{ m: 'GET', u: `/rest/v1/t${i}`, h: {} }];
+    // 先送りしてよい画面が MAX_PATHS より多いときの上限を確かめる（いまの許可リストは 3 つ）
+    const allowed = [...PATHS, ...Object.keys(old)];
     window.localStorage.setItem(key, JSON.stringify({ paths: old }));
     window.history.replaceState(null, '', '/my/');
     startRecording('/my', window.location);
     await earlyAwareFetch(`${URL0}/rest/v1/groups?select=id`, { method: 'GET' });
-    expect(finishRecording(key, false, window.localStorage, PATHS)).toBe(false);
+    expect(finishRecording(key, false, window.localStorage, allowed)).toBe(false);
     expect(Object.keys(readRecorded(key, window.localStorage)!.paths)).toEqual(Object.keys(old));
 
     startRecording('/my', window.location);
     await earlyAwareFetch(`${URL0}/rest/v1/groups?select=id`, { method: 'GET' });
-    expect(finishRecording(key, true, window.localStorage, PATHS)).toBe(true);
+    expect(finishRecording(key, true, window.localStorage, allowed)).toBe(true);
     const paths = Object.keys(readRecorded(key, window.localStorage)!.paths);
     expect(paths[0]).toBe('/my');
     expect(paths).toHaveLength(MAX_PATHS);
+  });
+
+  it('前に覚えた分のうち、先送りしてよい画面にないパス（許可リストの前に覚えた /allocation など）は、次に覚えるときに消す', async () => {
+    vi.stubGlobal('fetch', fetchOk());
+    const key = requestsKey(USER, PREFIX);
+    const entry = (u: string): RecordedRequest[] => [{ m: 'GET', u, h: {} }];
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({
+        paths: {
+          '/allocation': entry('/rest/v1/allocations?select=*'),
+          '/stock': entry('/rest/v1/stocks?select=*'),
+          '/': entry('/rest/v1/years?select=id,allocation_version'),
+          '/swaps': entry('/rest/v1/swaps?select=*'),
+        },
+      }),
+    );
+    window.history.replaceState(null, '', '/my/');
+    startRecording('/my', window.location);
+    await earlyAwareFetch(`${URL0}/rest/v1/groups?select=id`, { method: 'GET' });
+    expect(finishRecording(key, true, window.localStorage, PATHS)).toBe(true);
+    const paths = readRecorded(key, window.localStorage)!.paths;
+    expect(Object.keys(paths)).toEqual(['/my', '/stock']);
+    expect(paths['/stock']).toEqual(entry('/rest/v1/stocks?select=*'));
   });
 
   it.each(SNAPSHOT_PATHS)('先送りしてよい画面にないパス（%s。版を先に読む画面）は覚えない', async (path) => {

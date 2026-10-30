@@ -165,7 +165,7 @@ describe('loadMyData と年度の行のキャッシュ', () => {
     expect(d.allocations).toBeNull();
   });
 
-  it('読み直した年度の行をキャッシュに入れる（読み始めた時刻より新しいキャッシュは上書きしない）', async () => {
+  it('読み直した年度の行で、読み始める前のキャッシュの行を上書きする（確定のキャッシュの行が、読み直した確定前の行になる）', async () => {
     const qc = new QueryClient();
     seedYearRows(qc, [yearRow('confirmed')], Date.now());
     const { client } = fakeClient({ years: yearRow('allocating'), groups: { id: G1 } });
