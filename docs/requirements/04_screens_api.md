@@ -164,7 +164,7 @@
 | remove_role(year_id, user_id, reason) | admin | ロールを外す（終了した年度でも。卒業した admin を外すため）。最後の admin は外せない。ロールがなければ not_found |
 | revoke_invitation(invitation_id) | admin | 未使用の招待を取り消す（終了した年度でも）。招待が見つからなければ forbidden（有無を漏らさない） |
 | remove_group_member(group_id, user_id, reason) | admin | 団体代表を外す（終了した年度でも） |
-| accept_my_invitations() | ログインしている人 | 自分のメール（本人のものと確かめられるときだけ。`private.verified_email`）あての未使用の招待（終了していない年度）を受け入れ、件数を返す。画面がログインのたびに呼ぶ |
+| accept_my_invitations() | ログインしている人 | 自分のメール（本人のものと確かめられるときだけ。`private.verified_email`）あての未使用の招待（終了していない年度）を受け入れ、件数を返す。その年度で別のロールを持っていれば、そのロールの招待は受け入れず（件数に数えず、ロールも変えない）未使用のまま残す（管理者がロールを外すか招待を取り消して決める）。画面がログインのたびに呼ぶ |
 | save_auto_allocations(year_id, rows, mode, base_version) | admin | 版が base_version と同じときだけ、auto かつ未固定の行を差分で入れ替える。年度の一致・E002・E005 を保存前に、在庫超過を保存後に確かめ、だめなら全体を取り消す。振り分け中のみ（確定中はエラー） |
 | save_allocation_rows(year_id, changes, reason) | admin | 行の追加・変更・削除・固定。データを変えた行は origin = manual。各行の updated_at で楽観ロック。理由必須。ロックした時点の版と保存後の版を返す。振り分け中のみ（確定中はエラー） |
 | set_consent(group_id, from_item, to_item, status, note) | admin、その団体の代表 | 依頼済みにすると、その時点の置き換え台数を count に入れる。了承なら該当の置き換え行を pinned にし、拒否なら pinned を外す。団体代表は依頼済み以降に了承・拒否だけを記録できる。依頼した台数より置き換えが増えていれば了承は conflict。振り分け中のみ |
