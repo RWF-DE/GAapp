@@ -1,0 +1,603 @@
+import type { Json } from '@gaapp/shared';
+import { describe, expect, it, vi } from 'vitest';
+import type { GroupRow, RuleDbRow } from '@/lib/db/types';
+import type { GroupCsvRow } from '@/lib/schemas/settings';
+import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
+import { appError, unknownOutcomeMessage } from '@/lib/errors';
+import { settleLockedWrite } from '@/lib/data/locked-save';
+import {
+  createYearFrom,
+  distancePair,
+  matchesWritten,
+  readDistance,
+  readGroup,
+  readGroupByName,
+  readItemByCode,
+  readRoom,
+  readRoomByName,
+  lockedRowOutcome,
+  runLockedWrite,
+  settleLockedCall,
+  fetchMyYearRoles,
+  fetchOpenYearRules,
+  freshDataOf,
+  latestAdminOpenYear,
+  openYearsForRoomRefs,
+  parseSettingsTab,
+  planGroupImport,
+  roomRefsAcrossYears,
+  rulesReferencing,
+  saveGroupImport,
+  yearPatch,
+} from './settings';
+
+const G1 = '00000000-0000-4000-8000-000000000001';
+const G2 = '00000000-0000-4000-8000-000000000002';
+const R1 = '00000000-0000-4000-8000-0000000000a1';
+const R2 = '00000000-0000-4000-8000-0000000000a2';
+const T = '2026-10-29T00:00:00.123456+00:00';
+
+let n = 0;
+const rule = (code: string, kind: RuleDbRow['kind'], params: unknown, enabled = true): RuleDbRow => ({
+  id: `00000000-0000-4000-8000-0000000001${String(++n).padStart(2, '0')}`,
+  year_id: 'y',
+  code,
+  kind,
+  params: params as NonNullable<Json>,
+  enabled,
+  memo: null,
+  updated_at: T,
+});
+
+describe('rulesReferencing', () => {
+  const rules = [
+    rule('S05', 'source_restrict', { group: G1, items: ['desk'], rooms: [R1, R2] }),
+    rule('S06', 'fixed_request', { group: G1, item: 'desk', count: 3 }),
+    rule('S08', 'keep', { group: G2, room: R1, items: { desk: 2 } }),
+    rule('S01', 'substitute', { from: 'desk', to: 'caster_desk', categories: ['stall'], cost: 1 }),
+    rule('X01', 'keep', { group: G1, room: R2, items: { chair: 1 } }, false),
+    // 壊れた params（配列・文字列・null）は読める所だけで判定し、落ちない
+    rule('B01', 'keep', 'broken'),
+    rule('B02', 'source_restrict', null),
+    rule('B03', 'source_restrict', { rooms: 'not-array', group: 5 }),
+    // DB の付け替えが見る groups の配列
+    rule('G01', 'substitute', { groups: [G2] }),
+  ];
+
+  it('団体を参照する有効なルールと無効なルールをコードの順に分ける', () => {
+    const r = rulesReferencing(rules, { groupId: G1 });
+    expect(r.enabled.map((x) => x.code)).toEqual(['S05', 'S06']);
+    expect(r.disabled.map((x) => x.code)).toEqual(['X01']);
+    expect(r.enabled[0]).toMatchObject({ kind: 'source_restrict', enabled: true, summary: '運び元の制限：この団体の運び元を制限' });
+    expect(r.enabled[1]!.summary).toBe('固定の申請：この団体の desk を固定');
+  });
+
+  it('団体の参照には params.groups の配列も入る', () => {
+    expect(rulesReferencing(rules, { groupId: G2 }).enabled.map((x) => x.code)).toEqual(['G01', 'S08']);
+  });
+
+  it('場所を参照するのは source_restrict の rooms と keep の room', () => {
+    const r1 = rulesReferencing(rules, { roomId: R1 });
+    expect(r1.enabled.map((x) => x.code)).toEqual(['S05', 'S08']);
+    expect(r1.enabled.map((x) => x.summary)).toEqual(['運び元の制限：この場所を運び元に含む', '残す：この場所の備品を残す']);
+    const r2 = rulesReferencing(rules, { roomId: R2 });
+    expect(r2.enabled.map((x) => x.code)).toEqual(['S05']);
+    expect(r2.disabled.map((x) => x.code)).toEqual(['X01']);
+  });
+
+  it('参照がなければ空', () => {
+    expect(rulesReferencing(rules, { groupId: '00000000-0000-4000-8000-000000000009' })).toEqual({ enabled: [], disabled: [] });
+    expect(rulesReferencing([], { roomId: R1 })).toEqual({ enabled: [], disabled: [] });
+  });
+});
+
+describe('parseSettingsTab', () => {
+  it('知らない値は years', () => {
+    expect(parseSettingsTab('groups')).toBe('groups');
+    expect(parseSettingsTab('export')).toBe('export');
+    expect(parseSettingsTab('foo')).toBe('years');
+    expect(parseSettingsTab(null)).toBe('years');
+  });
+});
+
+describe('yearPatch', () => {
+  const year = {
+    label: 'R9',
+    festival_start: '2027-10-16',
+    request_open_at: '2027-07-01T00:00:00+00:00',
+    request_close_at: null,
+  };
+  it('変えたキーだけを入れる（同じ時刻は別の書き方でも変えていない）', () => {
+    expect(yearPatch(year, { label: 'R9', festival_start: '2027-10-16', request_open_at: '2027-07-01T09:00:00+09:00', request_close_at: null })).toEqual({});
+    expect(
+      yearPatch(year, { label: 'R9b', festival_start: '2027-10-17', request_open_at: null, request_close_at: '2027-07-10T18:00:00+09:00' }),
+    ).toEqual({ label: 'R9b', festival_start: '2027-10-17', request_open_at: null, request_close_at: '2027-07-10T18:00:00+09:00' });
+  });
+});
+
+const group = (over: Partial<GroupRow>): GroupRow => ({
+  id: G1,
+  year_id: 'y',
+  name: '模擬店A',
+  display_name: null,
+  aliases: [],
+  category: 'stall',
+  is_food: false,
+  location_room_id: null,
+  sort_order: 10,
+  updated_at: T,
+  ...over,
+});
+const csvRow = (over: Partial<GroupCsvRow>): GroupCsvRow => ({
+  line: 2,
+  name: '模擬店A',
+  display_name: null,
+  category: 'stall',
+  is_food: false,
+  location_room_id: null,
+  aliases: [],
+  sort_order: 10,
+  ...over,
+});
+
+describe('planGroupImport', () => {
+  it('同じ名前の団体は変える・変わらない、なければ足す（削除はしない）', () => {
+    const groups = [group({}), group({ id: G2, name: '部門B', category: 'department', aliases: ['B'] })];
+    const plan = planGroupImport(
+      [
+        csvRow({}),
+        csvRow({ line: 3, name: '部門B', category: 'department', aliases: ['B', 'びー'], is_food: true, location_room_id: R1 }),
+        csvRow({ line: 4, name: '企業C', category: 'company' }),
+      ],
+      groups,
+    );
+    expect(plan.counts).toEqual({ add: 1, change: 1, same: 1 });
+    expect(plan.lines.map((l) => l.action)).toEqual(['same', 'change', 'add']);
+    expect(plan.lines[1]!.changes).toEqual(['飲食', '使用場所', '別名']);
+    expect(plan.lines[1]!.existing?.id).toBe(G2);
+    expect(plan.nameErrors).toEqual([]);
+  });
+
+  it('取り込んだ後の団体に checkGroupNames を当てる（大文字・小文字・全角半角だけが違う名前）', () => {
+    const plan = planGroupImport([csvRow({ name: 'ｍｏｇｉ' })], [group({ name: 'MOGI' })]);
+    expect(plan.counts.add).toBe(1);
+    expect(plan.nameErrors).toHaveLength(1);
+    expect(plan.nameErrors[0]).toContain('MOGI');
+  });
+});
+
+describe('saveGroupImport', () => {
+  it('足す・変える行だけを (year_id, name) の upsert 1回で送る', async () => {
+    const plan = planGroupImport([csvRow({}), csvRow({ line: 3, name: '企業C', category: 'company' })], [group({})]);
+    const { client, issued } = createFakeSupabase(() => ({ data: [{ id: G2 }], error: null }));
+    await expect(saveGroupImport('y', plan, client)).resolves.toBe(1);
+    expect(issued).toHaveLength(1);
+    const [values, opts] = opArgs(issued[0]!, 'upsert')[0]! as [{ name: string; year_id: string }[], { onConflict: string }];
+    expect(values.map((v) => [v.year_id, v.name])).toEqual([['y', '企業C']]);
+    expect(opts).toEqual({ onConflict: 'year_id,name' });
+  });
+
+  it('返った行が足りなければ（RLS で拒否）forbidden', async () => {
+    const plan = planGroupImport([csvRow({ name: '企業C' })], []);
+    const { client } = createFakeSupabase(() => ({ data: [], error: null }));
+    await expect(saveGroupImport('y', plan, client)).rejects.toMatchObject({ info: { kind: 'forbidden' } });
+  });
+
+  it('変えるものがなければ送らない', async () => {
+    const plan = planGroupImport([csvRow({})], [group({})]);
+    const { client, issued } = createFakeSupabase(() => ({ data: [], error: null }));
+    await expect(saveGroupImport('y', plan, client)).resolves.toBe(0);
+    expect(issued).toHaveLength(0);
+  });
+});
+
+describe('createYearFrom', () => {
+  it('作った年度と、付け替えられずに無効になったルールのコードを返す', async () => {
+    const PREV = '00000000-0000-4000-8000-00000000f001';
+    const NEW = '00000000-0000-4000-8000-00000000f002';
+    const { client, issued } = createFakeSupabase((call) => {
+      if (call.table === 'rpc:create_year_from') return { data: { id: NEW, label: 'R10' }, error: null };
+      const yearId = opArgs(call, 'eq')[0]![1];
+      if (yearId === PREV) {
+        return { data: [{ code: 'S05', enabled: true }, { code: 'S06', enabled: true }, { code: 'X01', enabled: false }], error: null };
+      }
+      return { data: [{ code: 'S05', enabled: false }, { code: 'S06', enabled: true }, { code: 'X01', enabled: false }], error: null };
+    });
+    const r = await createYearFrom({ id: PREV }, ' R10 ', '2027-10-16', client);
+    expect(r.year.id).toBe(NEW);
+    expect(r.disabledRuleCodes).toEqual(['S05']);
+    const rpcArgs = opArgs(issued[0]!, 'rpc')[0]![0];
+    expect(rpcArgs).toEqual({ p_prev_year_id: PREV, p_label: 'R10', p_festival_start: '2027-10-16' });
+  });
+});
+
+describe('場所の削除の前：終了していない年度のルール（場所は全年度で共有）', () => {
+  const y = (id: string, label: string, status: 'preparing' | 'requesting' | 'allocating' | 'confirmed' | 'closed', festival_start: string) => ({
+    id,
+    label,
+    status,
+    festival_start,
+  });
+  const R8 = y('y8', 'R8', 'confirmed', '2026-10-17');
+  const R9 = y('y9', 'R9', 'preparing', '2027-10-16');
+  const R7 = y('y7', 'R7', 'closed', '2025-10-18');
+  const R10 = y('y10', 'R10', 'requesting', '2028-10-14');
+
+  it('openYearsForRoomRefs：終了した年度は見ない。admin・staff の年度は読め、団体代表・閲覧のみ・ロールのない年度は読めない', () => {
+    const scope = openYearsForRoomRefs(
+      [R7, R8, R9, R10],
+      [
+        { year_id: 'y7', role: 'admin' },
+        { year_id: 'y8', role: 'staff' },
+        { year_id: 'y9', role: 'admin' },
+        { year_id: 'y10', role: 'viewer' },
+      ],
+    );
+    expect(scope.readable.map((x) => x.label)).toEqual(['R9', 'R8']);
+    expect(scope.unreadable.map((x) => x.label)).toEqual(['R10']);
+    // 団体代表だけの年度（ロールの行がない）も読めない
+    expect(openYearsForRoomRefs([R8, R9], [{ year_id: 'y9', role: 'admin' }]).unreadable.map((x) => x.label)).toEqual(['R8']);
+  });
+
+  it('roomRefsAcrossYears：表示中でない年度の有効なルールも見つけ、年度ごとに分ける', () => {
+    const rules = [
+      { ...rule('S05', 'source_restrict', { group: G1, items: ['desk'], rooms: [R1] }), year_id: 'y8' },
+      { ...rule('S08', 'keep', { group: G2, room: R1, items: { desk: 2 } }, false), year_id: 'y9' },
+      { ...rule('S09', 'keep', { group: G2, room: R2, items: { desk: 2 } }), year_id: 'y9' },
+    ];
+    const r = roomRefsAcrossYears(rules, { readable: [R9, R8], unreadable: [R10] }, R1);
+    expect(r.byYear.map((x) => [x.year.label, x.refs.enabled.map((e) => e.code), x.refs.disabled.map((e) => e.code)])).toEqual([
+      ['R9', [], ['S08']],
+      ['R8', ['S05'], []],
+    ]);
+    expect(r.enabledCount).toBe(1);
+    expect(r.unreadable.map((x) => x.label)).toEqual(['R10']);
+    // 参照がなければ年度の行を出さない
+    expect(roomRefsAcrossYears(rules, { readable: [R9, R8], unreadable: [] }, 'other').byYear).toEqual([]);
+  });
+
+  it('fetchOpenYearRules：年度と自分のロールを読み、読める終了していない年度のルールだけを1回で読む', async () => {
+    const { client, issued } = createFakeSupabase((call) => {
+      if (call.table === 'years') return { data: [R7, R8, R9, R10], error: null };
+      if (call.table === 'year_roles') {
+        return {
+          data: [
+            { year_id: 'y7', role: 'admin' },
+            { year_id: 'y8', role: 'admin' },
+            { year_id: 'y9', role: 'staff' },
+          ],
+          error: null,
+        };
+      }
+      if (call.table === 'rules') return { data: [{ ...rule('S05', 'keep', { room: R1 }), year_id: 'y8' }], error: null };
+      throw new Error(call.table);
+    });
+    const r = await fetchOpenYearRules('u1', client);
+    expect(r.scope.readable.map((x) => x.label)).toEqual(['R9', 'R8']);
+    expect(r.scope.unreadable.map((x) => x.label)).toEqual(['R10']);
+    expect(r.rules.map((x) => x.code)).toEqual(['S05']);
+    const roles = issued.find((c) => c.table === 'year_roles')!;
+    expect(opArgs(roles, 'eq')).toEqual([['user_id', 'u1']]);
+    const rulesCall = issued.find((c) => c.table === 'rules')!;
+    expect(opArgs(rulesCall, 'in')).toEqual([['year_id', ['y9', 'y8']]]);
+  });
+
+  it('fetchOpenYearRules：読める年度がなければルールを読まない', async () => {
+    const { client, issued } = createFakeSupabase((call) => {
+      if (call.table === 'years') return { data: [R8], error: null };
+      if (call.table === 'year_roles') return { data: [], error: null };
+      throw new Error(call.table);
+    });
+    const r = await fetchOpenYearRules('u1', client);
+    expect(r.rules).toEqual([]);
+    expect(r.scope.unreadable.map((x) => x.label)).toEqual(['R8']);
+    expect(issued.some((c) => c.table === 'rules')).toBe(false);
+  });
+});
+
+describe('終了した年度の「年度を開く」の行き先（GlobalReadOnlyNote）', () => {
+  const y = (id: string, label: string, status: 'preparing' | 'requesting' | 'allocating' | 'confirmed' | 'closed', festival_start: string) => ({
+    id,
+    label,
+    status,
+    festival_start,
+  });
+  const R7 = y('y7', 'R7', 'closed', '2025-10-18');
+  const R8 = y('y8', 'R8', 'confirmed', '2026-10-17');
+  const R9 = y('y9', 'R9', 'preparing', '2027-10-16');
+  const R10 = y('y10', 'R10', 'requesting', '2028-10-14');
+
+  it('自分が admin の、終了していない最新の年度だけ。部員・閲覧のみ・団体代表だけの年度や終了した年度は行き先にしない', () => {
+    const roles = [
+      { year_id: 'y7', role: 'admin' as const },
+      { year_id: 'y8', role: 'admin' as const },
+      { year_id: 'y9', role: 'staff' as const },
+      { year_id: 'y10', role: 'viewer' as const },
+    ];
+    // 最新の年度（R10）は閲覧のみ、R9 は部員なので、admin の R8 を行き先にする（渡す順によらない）
+    expect(latestAdminOpenYear([R7, R10, R8, R9], roles)?.label).toBe('R8');
+    expect(latestAdminOpenYear([R8, R9, R10], [{ year_id: 'y9', role: 'admin' }, { year_id: 'y10', role: 'admin' }])?.label).toBe('R10');
+  });
+
+  it('admin の終了していない年度がなければ null（ボタンを出さない）', () => {
+    expect(latestAdminOpenYear([R7, R9, R10], [{ year_id: 'y7', role: 'admin' }, { year_id: 'y9', role: 'staff' }])).toBeNull();
+    // 団体代表だけの年度（ロールの行がない）
+    expect(latestAdminOpenYear([R9], [])).toBeNull();
+    // ロールの行があっても、自分の年度（years）にない年度は開けないので行き先にしない
+    expect(latestAdminOpenYear([R7], [{ year_id: 'y9', role: 'admin' }])).toBeNull();
+  });
+
+  it('fetchMyYearRoles：自分の year_roles だけを読む', async () => {
+    const { client, issued } = createFakeSupabase(() => ({ data: [{ year_id: 'y8', role: 'admin' }] }));
+    expect(await fetchMyYearRoles('u1', client)).toEqual([{ year_id: 'y8', role: 'admin' }]);
+    expect(issued[0]!.table).toBe('year_roles');
+    expect(opArgs(issued[0]!, 'eq')).toEqual([['user_id', 'u1']]);
+    const denied = createFakeSupabase(() => ({ error: { code: '42501', message: 'permission denied' }, status: 403 }));
+    await expect(fetchMyYearRoles('u1', denied.client)).rejects.toMatchObject({ info: { kind: 'forbidden' } });
+  });
+});
+
+describe('freshDataOf（削除の確かめに使う読み込みの結果）', () => {
+  it('読めていて、読み直し中でも読み直しの失敗でもないときだけ data を返す', () => {
+    expect(freshDataOf({ data: [1], isFetching: false, isError: false })).toEqual([1]);
+    expect(freshDataOf({ data: undefined, isFetching: false, isError: false })).toBeNull();
+    expect(freshDataOf({ data: [1], isFetching: true, isError: false })).toBeNull();
+    // 一度読めてキャッシュがあり、開き直したときの読み直しが失敗した（isError で古い data が残る）ときは使わない
+    expect(freshDataOf({ data: [1], isFetching: false, isError: true })).toBeNull();
+  });
+});
+
+// ---- 2.6 の (B1)：楽観ロックの更新・一意のキーの insert ----
+
+describe('matchesWritten（読み直した行の書いた列が、送った値と同じか）', () => {
+  const row = { id: G1, name: '企業A', display_name: null, aliases: ['A', 'えー'], sort_order: 3, updated_at: T };
+
+  it('書いた列だけを比べる（書いていない列・updated_at は見ない）', () => {
+    expect(matchesWritten(row, { name: '企業A', sort_order: 3 })).toBe(true);
+    expect(matchesWritten(row, { name: '企業B' })).toBe(false);
+  });
+
+  it('送った値（zod で空白を除き、空なら null にした後）と同じ正規化で比べる：空の任意の文字列は null で、空白つきは別の値', () => {
+    expect(matchesWritten(row, { display_name: null })).toBe(true);
+    expect(matchesWritten(row, { display_name: '' })).toBe(false);
+    expect(matchesWritten(row, { name: ' 企業A' })).toBe(false);
+    // 書かなかった（undefined）列は比べない
+    expect(matchesWritten(row, { display_name: undefined, name: '企業A' })).toBe(true);
+  });
+
+  it('配列（別名・申請できる区分）は順も含めて比べる', () => {
+    expect(matchesWritten(row, { aliases: ['A', 'えー'] })).toBe(true);
+    expect(matchesWritten(row, { aliases: ['えー', 'A'] })).toBe(false);
+    expect(matchesWritten(row, { aliases: ['A'] })).toBe(false);
+    expect(matchesWritten({ aliases: null }, { aliases: [] })).toBe(false);
+  });
+});
+
+describe('distancePair（建物の組を DB のトリガーと同じ向きに）', () => {
+  it('C の照合順序（コードポイントの順）で小さい方を building_a に', () => {
+    expect(distancePair('B棟', 'A棟')).toEqual({ building_a: 'A棟', building_b: 'B棟' });
+    expect(distancePair('A棟', 'B棟')).toEqual({ building_a: 'A棟', building_b: 'B棟' });
+    // 大文字は小文字より前（C の照合順序。localeCompare とは違う）
+    expect(distancePair('a', 'B')).toEqual({ building_a: 'B', building_b: 'a' });
+    // サロゲートペア（U+1F3EB）は UTF-16 の単位ではなくコードポイントで比べる（U+FF21 より後）
+    expect(distancePair('\u{1F3EB}', '\uFF21')).toEqual({ building_a: '\uFF21', building_b: '\u{1F3EB}' });
+  });
+});
+
+describe('読み直しの関数（更新は主キー、insert は一意のキー）', () => {
+  it('readRoom・readRoomByName・readItemByCode・readGroup・readGroupByName は1行を読み、なければ null', async () => {
+    const { client, issued } = createFakeSupabase((call) => ({ data: call.table === 'items' ? null : { id: 'x' } }));
+    expect(await readRoom(R1, client)).toEqual({ id: 'x' });
+    expect(await readRoomByName('1-1', client)).toEqual({ id: 'x' });
+    expect(await readItemByCode('desk', client)).toBeNull();
+    expect(await readGroup(G1, client)).toEqual({ id: 'x' });
+    expect(await readGroupByName('y', '企業A', client)).toEqual({ id: 'x' });
+    expect(issued.map((c) => [c.table, opArgs(c, 'match')[0]])).toEqual([
+      ['rooms', [{ id: R1 }]],
+      ['rooms', [{ name: '1-1' }]],
+      ['items', [{ code: 'desk' }]],
+      ['groups', [{ id: G1 }]],
+      ['groups', [{ year_id: 'y', name: '企業A' }]],
+    ]);
+    expect(issued.every((c) => opArgs(c, 'maybeSingle').length === 1)).toBe(true);
+  });
+
+  it('readDistance は DB の向きの組で読む', async () => {
+    const { client, issued } = createFakeSupabase(() => ({ data: null }));
+    await readDistance('B棟', 'A棟', client);
+    expect(opArgs(issued[0]!, 'match')).toEqual([[{ building_a: 'A棟', building_b: 'B棟' }]]);
+  });
+
+  it('読めなければ AppError を投げる（通信の失敗は network）', async () => {
+    const { client } = createFakeSupabase(() => ({ error: { code: '', message: 'TypeError: fetch failed' }, status: 0 }));
+    await expect(readRoom(R1, client)).rejects.toMatchObject({ info: { kind: 'network' } });
+  });
+});
+
+describe('runLockedWrite（2.6 の (B1) の分かれ道）', () => {
+  interface Row {
+    name: string;
+    updated_at: string;
+  }
+  const T0 = '2026-10-29T01:00:00.000001+00:00';
+  const T1 = '2026-10-29T01:00:01.000002+00:00';
+  const network = () => new TypeError('Failed to fetch');
+  const run = (
+    write: () => Promise<unknown>,
+    reread: Row | null | Error,
+    opts: { input?: string; base?: string | null; insert?: boolean } = {},
+  ) => {
+    const rereadFn = vi.fn(() => (reread instanceof Error ? Promise.reject(reread) : Promise.resolve(reread)));
+    const result = runLockedWrite<Row>({
+      write,
+      reread: rereadFn,
+      matches: (r) => r.name === (opts.input ?? '新'),
+      baseVersion: opts.base === undefined ? T0 : opts.base,
+      ...(opts.insert ? { insert: true } : {}),
+    });
+    return { result, rereadFn };
+  };
+
+  it('成功したら done（読み直さない）', async () => {
+    const { result, rereadFn } = run(() => Promise.resolve({}), null);
+    expect(await result).toEqual({ kind: 'done', earlier: false });
+    expect(rereadFn).not.toHaveBeenCalled();
+  });
+
+  it('forbidden・input などは failed（読み直さない。2.5 の表のとおり）', async () => {
+    for (const e of [appError('forbidden', 'lock_unchanged'), { code: '23514', message: 'check' }, { code: '42501', message: 'rls' }]) {
+      const { result, rereadFn } = run(() => Promise.reject(e), null);
+      expect((await result).kind).toBe('failed');
+      expect(rereadFn).not.toHaveBeenCalled();
+    }
+  });
+
+  describe('応答が届かなかった（isUnknownOutcome）', () => {
+    it('saved：読み直した行が入力と同じ → done（earlier。「保存されていました」）', async () => {
+      const { result } = run(() => Promise.reject(network()), { name: '新', updated_at: T1 });
+      expect(await result).toEqual({ kind: 'done', earlier: true });
+    });
+
+    it('not-saved：版が入力の元のまま → unknown（入力を残して unknownOutcomeMessage()）', async () => {
+      const { result } = run(() => Promise.reject(network()), { name: '元', updated_at: T0 });
+      expect((await result).kind).toBe('unknown');
+    });
+
+    it('unread：読み直しも届かない → unknown', async () => {
+      const { result } = run(() => Promise.reject(network()), network());
+      expect((await result).kind).toBe('unknown');
+    });
+
+    it('ゲートウェイのタイムアウト（コードのない 504）も同じ', async () => {
+      const { result } = run(() => Promise.reject({ message: 'Gateway Timeout', status: 504 }), { name: '新', updated_at: T1 });
+      expect((await result).kind).toBe('done');
+    });
+
+    it('changed：版が進み入力と違う → changed。文言は更新なら lock_conflict、行がなくなっていれば lock_missing', async () => {
+      const a = await run(() => Promise.reject(network()), { name: '他', updated_at: T1 }).result;
+      expect(a).toMatchObject({ kind: 'changed', row: { name: '他', updated_at: T1 }, conflict: { info: { kind: 'conflict', reason: 'lock_conflict' } } });
+      const b = await run(() => Promise.reject(network()), null).result;
+      expect(b).toMatchObject({ kind: 'changed', row: null, conflict: { info: { kind: 'not_found', reason: 'lock_missing' } } });
+    });
+
+    it('insert：行がなければ not-saved（unknown）、別の値の行ができていれば changed（23505 の文言）、入力と同じ行なら done', async () => {
+      expect((await run(() => Promise.reject(network()), null, { base: null, insert: true }).result).kind).toBe('unknown');
+      expect(await run(() => Promise.reject(network()), { name: '他', updated_at: T1 }, { base: null, insert: true }).result).toMatchObject({
+        kind: 'changed',
+        conflict: { info: { kind: 'conflict', code: '23505' } },
+      });
+      expect(await run(() => Promise.reject(network()), { name: '新', updated_at: T1 }, { base: null, insert: true }).result).toEqual({
+        kind: 'done',
+        earlier: true,
+      });
+    });
+
+    it('自分の前の送信（値が今の入力と違う）が後から通っていた → changed（ほかの人の変更に見える。受け入れる）', async () => {
+      const { result } = run(() => Promise.reject(network()), { name: '前に送った値', updated_at: T1 });
+      expect((await result).kind).toBe('changed');
+    });
+  });
+
+  describe('止められた（conflict・not_found・23505）', () => {
+    const conflict = appError('conflict', 'lock_conflict');
+
+    it('saved：前の送信が後から通っていて入力と同じ → done（earlier）', async () => {
+      const { result, rereadFn } = run(() => Promise.reject(conflict), { name: '新', updated_at: T1 });
+      expect(await result).toEqual({ kind: 'done', earlier: true });
+      expect(rereadFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('changed：ほかの人の値 → changed（止めたエラーの文言。読み直した行を入力の元にする）', async () => {
+      const { result } = run(() => Promise.reject(conflict), { name: '他', updated_at: T1 });
+      expect(await result).toMatchObject({ kind: 'changed', row: { name: '他', updated_at: T1 }, conflict: { info: { reason: 'lock_conflict' } } });
+    });
+
+    it('not-saved（版が入力の元のまま。更新の 23505 など）→ changed（今までの conflict の扱い）', async () => {
+      const dup = { code: '23505', message: 'duplicate key' };
+      const { result } = run(() => Promise.reject(dup), { name: '元', updated_at: T0 });
+      expect(await result).toMatchObject({ kind: 'changed', conflict: { info: { kind: 'conflict', code: '23505' } } });
+    });
+
+    it('not_found（lock_missing）で行がない → changed（row は null）', async () => {
+      const { result } = run(() => Promise.reject(appError('not_found', 'lock_missing')), null);
+      expect(await result).toMatchObject({ kind: 'changed', row: null, conflict: { info: { kind: 'not_found' } } });
+    });
+
+    it('insert の 23505：入力と同じ行なら done、違えば changed（23505）', async () => {
+      const dup = { code: '23505', message: 'duplicate key' };
+      expect(await run(() => Promise.reject(dup), { name: '新', updated_at: T1 }, { base: null, insert: true }).result).toEqual({
+        kind: 'done',
+        earlier: true,
+      });
+      expect(await run(() => Promise.reject(dup), { name: '他', updated_at: T1 }, { base: null, insert: true }).result).toMatchObject({
+        kind: 'changed',
+        conflict: { info: { code: '23505' } },
+      });
+    });
+
+    it('unread：読み直せない → unread（「読み直しました」と言わず、読み直すボタン）', async () => {
+      const { result } = run(() => Promise.reject(conflict), network());
+      expect(await result).toMatchObject({ kind: 'unread' });
+    });
+
+    it('changed の outcome：版が進んだときだけ changed（入力の元を付け替える）。版が入力の元のままなら not-saved（付け替えない）', async () => {
+      expect(await run(() => Promise.reject(conflict), { name: '他', updated_at: T1 }).result).toMatchObject({ kind: 'changed', outcome: 'changed' });
+      expect(await run(() => Promise.reject(conflict), { name: '元', updated_at: T0 }).result).toMatchObject({ kind: 'changed', outcome: 'not-saved' });
+      expect(await run(() => Promise.reject(network()), { name: '他', updated_at: T1 }).result).toMatchObject({ kind: 'changed', outcome: 'changed' });
+    });
+  });
+
+  describe('settleLockedCall（止められて読み直せなかった後の「読み直す」も同じ判定）', () => {
+    const conflict = appError('conflict', 'lock_conflict');
+    const call = (reread: Row | null | Error, input = '新') => ({
+      reread: () => (reread instanceof Error ? Promise.reject(reread) : Promise.resolve(reread)),
+      matches: (r: Row) => r.name === input,
+      baseVersion: T0,
+    });
+
+    it('読んだ行がいまの入力と同じ → done（earlier）、ほかの人の値 → changed、版が元のまま → changed（not-saved）、また読めない → unread', async () => {
+      expect(await settleLockedCall<Row>(call({ name: '新', updated_at: T1 }), conflict)).toEqual({ kind: 'done', earlier: true });
+      expect(await settleLockedCall<Row>(call({ name: '他', updated_at: T1 }), conflict)).toMatchObject({
+        kind: 'changed',
+        outcome: 'changed',
+        row: { name: '他' },
+        conflict: { info: { reason: 'lock_conflict' } },
+      });
+      expect(await settleLockedCall<Row>(call({ name: '元', updated_at: T0 }), conflict)).toMatchObject({ kind: 'changed', outcome: 'not-saved' });
+      expect(await settleLockedCall<Row>(call(network()), conflict)).toMatchObject({ kind: 'unread', error: conflict });
+    });
+
+    it('前に送った値の行でも、いまの入力と違えば changed（ほかの人の変更に見える）', async () => {
+      expect(await settleLockedCall<Row>(call({ name: '前', updated_at: T1 }, '今'), conflict)).toMatchObject({ kind: 'changed', outcome: 'changed' });
+    });
+
+    it('書き込みの後でない読み直し（e が null。insert のキーを変えてから「読み直す」）：行がない → not-saved（conflict にしない）、別の値の行 → 23505、同じ → done、読めない → unread', async () => {
+      const insert = (reread: Row | null | Error) => ({ ...call(reread), baseVersion: null, insert: true });
+      expect(await settleLockedCall<Row>(insert(null), null)).toEqual({ kind: 'not-saved' });
+      expect(await settleLockedCall<Row>(insert({ name: '他', updated_at: T1 }), null)).toMatchObject({
+        kind: 'changed',
+        outcome: 'changed',
+        conflict: { info: { kind: 'conflict', code: '23505' } },
+      });
+      expect(await settleLockedCall<Row>(insert({ name: '新', updated_at: T1 }), null)).toEqual({ kind: 'done', earlier: true });
+      expect(await settleLockedCall<Row>(insert(network()), null)).toEqual({ kind: 'unread', error: null });
+    });
+  });
+
+  describe('lockedRowOutcome（裏の読み直しで受け取った行の判定）', () => {
+    it('settleLockedWrite と同じ判定になる（行のあり・なし × 入力と同じ・違う × 版が元のまま・進んだ）', async () => {
+      const rows: (Row | null)[] = [null, { name: '新', updated_at: T0 }, { name: '新', updated_at: T1 }, { name: '他', updated_at: T0 }, { name: '他', updated_at: T1 }];
+      for (const base of [T0, null]) {
+        for (const row of rows) {
+          const matches = (r: Row) => r.name === '新';
+          const want = await settleLockedWrite<Row>({ reread: async () => row, matches, baseVersion: base, versionOf: (r) => r.updated_at });
+          expect(lockedRowOutcome<Row>(row, { matches, baseVersion: base }), JSON.stringify({ base, row })).toBe(want);
+        }
+      }
+    });
+  });
+
+  it('unknownOutcomeMessage の文言（画面が出すもの）', () => {
+    expect(unknownOutcomeMessage()).toBe('保存できたか分かりません。もう一度「保存」を押すと、確かめてから送ります');
+  });
+});
