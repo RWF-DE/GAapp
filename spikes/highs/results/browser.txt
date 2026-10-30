@@ -1,0 +1,32 @@
+chromium 153.0.8010.12
+
+## wasm の読み込み方
+locate=base: 成功 loadCold=157.7ms wasm=/GAapp/highs.wasm
+   wasm へのリクエスト: [{"url":"/GAapp/highs.wasm","status":200,"type":"application/wasm"}]
+locate=none: 成功 loadCold=183.0ms wasm=(locateFile なし：既定)
+   wasm へのリクエスト: [{"url":"/GAapp/assets/highs-CTQpMom3.wasm","status":200,"type":"application/wasm"}]
+locate=root: 失敗 [cold load] RuntimeError: Aborted(CompileError: WebAssembly.instantiate(): expected magic word 00 61 73 6d, found 6e 6f 74 20 @+0). Build with -sASSERTIONS for more info.
+   wasm へのリクエスト: [{"url":"/highs.wasm","status":404,"type":""},{"url":"/highs.wasm","status":404,"type":""},{"url":"/highs.wasm","status":404,"type":""}]
+
+## 本測定（5回開く。毎回キャッシュなし。localhost、gzip 配信）
+UA Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36
+highs 1.15.1
+変数 5630、制約 344、LP 151523 文字、LP 作成(buildModel) 17.3ms
+wasm 読み込み(初回 = fetch+compile+instantiate、5ページ): 148.5, 146.5, 153.3, 162.7, 152.4  中央値 152.4ms
+  内訳(ページ1): fetch 21.3ms（2回目の取得なのでキャッシュ込み）, compile 10.2ms, instantiate 2.2ms  (3531401 B)
+  転送量(ページ1): [{"transferSize":1221001,"encoded":1220701,"decoded":3531401}]
+  読み込み直し(キャッシュ後、ページ1の5回): 26.0, 27.8, 25.1, 22.7, 23.0 中央値 25.1ms
+[original] 解く: ページ1の5回 166.3, 55.8, 44.4, 36.3, 41.0 → 中央値 44.4ms。5ページの5回中央値の中央値 49.5ms、全25回の中央値 50.7ms、1回目だけ(5ページ)の中央値 168.4ms
+   status=Optimal 整数のずれ max=0 5回とも同じ解=true 独立検証の問題=0件 W107=0
+[integer] 解く: ページ1の5回 37.1, 46.9, 43.4, 48.6, 38.2 → 中央値 43.4ms。5ページの5回中央値の中央値 42.0ms、全25回の中央値 41.5ms、1回目だけ(5ページ)の中央値 37.9ms
+   status=Optimal 整数のずれ max=0 5回とも同じ解=true 独立検証の問題=0件 W107=0
+並べ替えても同じ解: true  解けない入力の Status: Infeasible
+20回: 使い回し 1回目 36.6ms 2〜20回の中央値 34.0ms 同じ解=true wasmメモリ 21233664→21233664
+20回: 毎回作り直し(instantiateWasm で Module 共有) load 中央値 1.6ms(最大 2.8) solve 中央値 33.2ms 同じ解=true
+Node の解のハッシュと同じ: original=true、integer=true
+
+## 回線を絞った場合の wasm 読み込み（CDP の Network.emulateNetworkConditions。キャッシュなし）
+Fast 4G 相当 9Mbps/170ms: wasm 読み込み(初回) 1258.6ms、ページを開いてから結果が出るまで 2759ms
+Slow 4G 相当 1.6Mbps/150ms: wasm 読み込み(初回) 6000.8ms、ページを開いてから結果が出るまで 7676ms
+
+結果を results/browser.json に書いた

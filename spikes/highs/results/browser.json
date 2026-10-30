@@ -1,0 +1,454 @@
+{
+ "chromium": "153.0.8010.12",
+ "locate": {
+  "base": {
+   "ok": true,
+   "wasmReqs": [
+    {
+     "url": "/GAapp/highs.wasm",
+     "status": 200,
+     "type": "application/wasm"
+    }
+   ],
+   "wasmUrl": "/GAapp/highs.wasm",
+   "errs": []
+  },
+  "none": {
+   "ok": true,
+   "wasmReqs": [
+    {
+     "url": "/GAapp/assets/highs-CTQpMom3.wasm",
+     "status": 200,
+     "type": "application/wasm"
+    }
+   ],
+   "wasmUrl": "(locateFile なし：既定)",
+   "errs": []
+  },
+  "root": {
+   "ok": false,
+   "error": "[cold load] RuntimeError: Aborted(CompileError: WebAssembly.instantiate(): expected magic word 00 61 73 6d, found 6e 6f 74 20 @+0). Build with -sASSERTIONS for more info.",
+   "wasmReqs": [
+    {
+     "url": "/highs.wasm",
+     "status": 404,
+     "type": ""
+    },
+    {
+     "url": "/highs.wasm",
+     "status": 404,
+     "type": ""
+    },
+    {
+     "url": "/highs.wasm",
+     "status": 404,
+     "type": ""
+    }
+   ],
+   "errs": []
+  }
+ },
+ "pages": [
+  {
+   "loadColdMs": 148.5,
+   "wall": 2551,
+   "original": {
+    "status": "Optimal",
+    "times": [
+     166.3000000002794,
+     55.799999999813735,
+     44.39999999990687,
+     36.3000000002794,
+     41
+    ],
+    "median": 44.39999999990687,
+    "hashes": [
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 26562515.5,
+    "issues": 0,
+    "w107": 0
+   },
+   "integer": {
+    "status": "Optimal",
+    "times": [
+     37.10000000009313,
+     46.90000000037253,
+     43.39999999990687,
+     48.60000000009313,
+     38.1999999997206
+    ],
+    "median": 43.39999999990687,
+    "hashes": [
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 2660046647,
+    "issues": 0,
+    "w107": 0
+   },
+   "shuffledSame": true
+  },
+  {
+   "loadColdMs": 146.5,
+   "wall": 1022,
+   "original": {
+    "status": "Optimal",
+    "times": [
+     154.6999999997206,
+     53.89999999990687,
+     44.89999999990687,
+     36.89999999990687,
+     39.200000000186265
+    ],
+    "median": 44.89999999990687,
+    "hashes": [
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 26562515.5,
+    "issues": 0,
+    "w107": 0
+   },
+   "integer": {
+    "status": "Optimal",
+    "times": [
+     35,
+     46.5,
+     36.5,
+     31.700000000186265,
+     37.59999999962747
+    ],
+    "median": 36.5,
+    "hashes": [
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 2660046647,
+    "issues": 0,
+    "w107": 0
+   },
+   "shuffledSame": true
+  },
+  {
+   "loadColdMs": 153.29999999981374,
+   "wall": 1030,
+   "original": {
+    "status": "Optimal",
+    "times": [
+     175.10000000009313,
+     50.700000000186265,
+     49.5,
+     36.5,
+     39.89999999990687
+    ],
+    "median": 49.5,
+    "hashes": [
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 26562515.5,
+    "issues": 0,
+    "w107": 0
+   },
+   "integer": {
+    "status": "Optimal",
+    "times": [
+     37.89999999990687,
+     45,
+     41.10000000009313,
+     33.200000000186265,
+     32.89999999990687
+    ],
+    "median": 37.89999999990687,
+    "hashes": [
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 2660046647,
+    "issues": 0,
+    "w107": 0
+   },
+   "shuffledSame": true
+  },
+  {
+   "loadColdMs": 162.70000000018626,
+   "wall": 1149,
+   "original": {
+    "status": "Optimal",
+    "times": [
+     168.39999999990687,
+     63.8000000002794,
+     49.700000000186265,
+     46.60000000009313,
+     44.799999999813735
+    ],
+    "median": 49.700000000186265,
+    "hashes": [
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 26562515.5,
+    "issues": 0,
+    "w107": 0
+   },
+   "integer": {
+    "status": "Optimal",
+    "times": [
+     44.40000000037253,
+     46.200000000186265,
+     61,
+     43.89999999990687,
+     37.3000000002794
+    ],
+    "median": 44.40000000037253,
+    "hashes": [
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 2660046647,
+    "issues": 0,
+    "w107": 0
+   },
+   "shuffledSame": true
+  },
+  {
+   "loadColdMs": 152.39999999990687,
+   "wall": 1194,
+   "original": {
+    "status": "Optimal",
+    "times": [
+     193.5,
+     62.39999999990687,
+     51.5,
+     51.700000000186265,
+     58.89999999990687
+    ],
+    "median": 58.89999999990687,
+    "hashes": [
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb",
+     "15c0c62abdabeb"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 26562515.5,
+    "issues": 0,
+    "w107": 0
+   },
+   "integer": {
+    "status": "Optimal",
+    "times": [
+     42,
+     58.60000000009313,
+     41.5,
+     43.799999999813735,
+     39
+    ],
+    "median": 42,
+    "hashes": [
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d",
+     "152fe14cd0d46d"
+    ],
+    "sameAll": true,
+    "maxFrac": 0,
+    "objective": 2660046647,
+    "issues": 0,
+    "w107": 0
+   },
+   "shuffledSame": true
+  }
+ ],
+ "page0": {
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+  "base": "/GAapp/",
+  "locate": "base",
+  "wasmUrl": "/GAapp/highs.wasm",
+  "loadColdMs": 148.5,
+  "wasmResource": [
+   {
+    "name": "http://localhost:5199/GAapp/highs.wasm",
+    "transferSize": 1221001,
+    "encodedBodySize": 1220701,
+    "decodedBodySize": 3531401,
+    "durationMs": 117.5
+   }
+  ],
+  "highsVersion": "1.15.1",
+  "split": {
+   "fetchMs": 21.300000000279397,
+   "compileMs": 10.199999999720603,
+   "instantiateMs": 2.2000000001862645,
+   "bytes": 3531401
+  },
+  "loadWarmMs": [
+   26,
+   27.799999999813735,
+   25.100000000093132,
+   22.700000000186265,
+   23
+  ],
+  "loadWarmMedian": 25.100000000093132,
+  "buildMs": 17.3499999998603,
+  "stats": {
+   "original": {
+    "chars": 151523,
+    "maxLine": 300,
+    "lines": 641,
+    "vars": 5630,
+    "hatVars": 0,
+    "rows": 344,
+    "nonzeros": 11260
+   },
+   "integer": {
+    "chars": 162683,
+    "maxLine": 300,
+    "lines": 678,
+    "vars": 5630,
+    "hatVars": 0,
+    "rows": 344,
+    "nonzeros": 11260
+   }
+  },
+  "original": {
+   "status": "Optimal",
+   "times": [
+    166.3000000002794,
+    55.799999999813735,
+    44.39999999990687,
+    36.3000000002794,
+    41
+   ],
+   "median": 44.39999999990687,
+   "hashes": [
+    "15c0c62abdabeb",
+    "15c0c62abdabeb",
+    "15c0c62abdabeb",
+    "15c0c62abdabeb",
+    "15c0c62abdabeb"
+   ],
+   "sameAll": true,
+   "maxFrac": 0,
+   "objective": 26562515.5,
+   "issues": 0,
+   "w107": 0
+  },
+  "integer": {
+   "status": "Optimal",
+   "times": [
+    37.10000000009313,
+    46.90000000037253,
+    43.39999999990687,
+    48.60000000009313,
+    38.1999999997206
+   ],
+   "median": 43.39999999990687,
+   "hashes": [
+    "152fe14cd0d46d",
+    "152fe14cd0d46d",
+    "152fe14cd0d46d",
+    "152fe14cd0d46d",
+    "152fe14cd0d46d"
+   ],
+   "sameAll": true,
+   "maxFrac": 0,
+   "objective": 2660046647,
+   "issues": 0,
+   "w107": 0
+  },
+  "shuffledSame": true,
+  "infeasibleStatus": "Infeasible",
+  "reuse": {
+   "times": [
+    36.60000000009313,
+    31.5,
+    32.3000000002794,
+    33.10000000009313,
+    34.10000000009313,
+    32.60000000009313,
+    38.89999999990687,
+    31.899999999906868,
+    33.700000000186265,
+    30.700000000186265,
+    31.899999999906868,
+    31.800000000279397,
+    40.60000000009313,
+    34.89999999990687,
+    37.10000000009313,
+    36.1999999997206,
+    50.299999999813735,
+    36.90000000037253,
+    34.60000000009313,
+    34
+   ],
+   "first": 36.60000000009313,
+   "medianRest": 34,
+   "sameAll": true,
+   "mem0": 21233664,
+   "mem1": 21233664
+  },
+  "recreate": {
+   "loadMedian": 1.5500000000465661,
+   "solveMedian": 33.199999999953434,
+   "sameAll": true,
+   "loadMax": 2.7999999998137355
+  },
+  "wall": 2551
+ },
+ "throttle": {
+  "Fast 4G 相当 9Mbps/170ms": {
+   "loadColdMs": 1258.6000000000931,
+   "wall": 2759
+  },
+  "Slow 4G 相当 1.6Mbps/150ms": {
+   "loadColdMs": 6000.799999999814,
+   "wall": 7676
+  }
+ }
+}

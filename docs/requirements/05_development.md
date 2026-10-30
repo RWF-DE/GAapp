@@ -61,7 +61,7 @@ seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DA
 
 | ID | 内容 | 前提 | 見積もり | 担当 | 状態 |
 | --- | --- | --- | --- | --- | --- |
-| T00 | スパイク：highs-js をブラウザで動かし、R8 規模の輸送問題の計算時間と、解が整数で返ることを確かめる | — | S |  | 未着手 |
+| T00 | スパイク：highs-js をブラウザで動かし、R8 規模の輸送問題の計算時間と、解が整数で返ることを確かめる | — | S | Claude | 完了 |
 | T01 | 組織と公開リポジトリ、pnpm workspace、lint・CI の雛形、GitHub Pages への公開 | — | M | Claude | 完了 |
 | T02 | DDL・列挙型・ビュー・監査トリガーのマイグレーション | T01 | M | Claude | 完了 |
 | T03 | RLS、権限の関数、RPC、pgTAP テスト | T02 | L | Claude | 完了 |

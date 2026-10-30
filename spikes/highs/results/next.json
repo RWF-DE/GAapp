@@ -1,0 +1,69 @@
+{
+ "base": {
+  "result": {
+   "ok": true,
+   "locate": "base",
+   "loadMs": 155.79999999981374,
+   "status": "Optimal",
+   "objective": 16,
+   "x": {
+    "x1": 4,
+    "x2": 1,
+    "x3": 0,
+    "x4": 5
+   }
+  },
+  "wasm": [
+   {
+    "url": "/GAapp/highs.wasm",
+    "status": 200,
+    "type": "application/wasm"
+   }
+  ]
+ },
+ "none": {
+  "result": {
+   "ok": true,
+   "locate": "none",
+   "loadMs": 165.5,
+   "status": "Optimal",
+   "objective": 16,
+   "x": {
+    "x1": 4,
+    "x2": 1,
+    "x3": 0,
+    "x4": 5
+   }
+  },
+  "wasm": [
+   {
+    "url": "/GAapp/_next/static/media/highs.2otm_s2y11n62.wasm",
+    "status": 200,
+    "type": "application/wasm"
+   }
+  ]
+ },
+ "root": {
+  "result": {
+   "error": "Aborted(CompileError: WebAssembly.instantiate(): expected magic word 00 61 73 6d, found 6e 6f 74 20 @+0). Build with -sASSERTIONS for more info.",
+   "locate": "root"
+  },
+  "wasm": [
+   {
+    "url": "/highs.wasm",
+    "status": 404,
+    "type": ""
+   },
+   {
+    "url": "/highs.wasm",
+    "status": 404,
+    "type": ""
+   },
+   {
+    "url": "/highs.wasm",
+    "status": 404,
+    "type": ""
+   }
+  ]
+ }
+}

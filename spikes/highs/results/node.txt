@@ -1,0 +1,81 @@
+## 環境
+node v22.22.0, highs(npm) 1.15.4, options {"solver":"simplex","random_seed":0,"time_limit":30,"output_flag":false}
+
+## 入力
+保管場所 40（在庫あり。使用不可 1 を含む）、部屋合計 56、団体 55、品目 9、申請行 170
+在庫合計 {
+  desk: 506,
+  desk_ng: 41,
+  chair: 493,
+  chair_ng: 40,
+  caster_desk: 180,
+  chair_blue: 432,
+  long_desk_3: 8,
+  long_desk_2: 127,
+  lectern: 27
+}
+申請合計(前処理前) {
+  desk: 644,
+  desk_ng: 0,
+  chair: 372,
+  chair_ng: 0,
+  caster_desk: 29,
+  chair_blue: 134,
+  long_desk_3: 12,
+  long_desk_2: 94,
+  lectern: 10
+} 合計 1295
+highs.version {"major":1,"minor":15,"patch":1,"string":"1.15.1","gitHash":"04024d7"} memoryBytes 21233664
+
+## 5回ずつ解く（同じ Highs インスタンス、折り返しあり 300 字）
+[original] status=Optimal vars=5630 rows=344(供給174+需要170) nnz=11260 N=1295 W=90650 dmax=7 mu=8
+   solve ms: 112.5, 62.0, 44.3, 38.7, 36.1  中央値 44.3  最小 36.1  最大 112.5
+   最大の整数からのずれ max|x-round(x)| = 0（≤1e-6: true）  目的関数 26562515.5
+   5回の解のハッシュ 15c0c62abdabeb 15c0c62abdabeb 15c0c62abdabeb 15c0c62abdabeb 15c0c62abdabeb  → 全部同じ: true
+   独立した検証（E001〜E005 相当）: 問題なし
+   品目別の使用数 {"caster_desk":126,"chair":335,"chair_ng":37,"chair_blue":134,"desk":506,"long_desk_2":98,"desk_ng":41,"lectern":10,"long_desk_3":8} 代替 {"desk->caster_desk":97,"chair->chair_ng":37,"desk->desk_ng":41,"long_desk_3->long_desk_2":2}
+   W107 パターン 0 件（うち受け取る側が S05 の運び元の制限を受けている団体 0） []
+[integer] status=Optimal vars=5630 rows=344(供給174+需要170) nnz=11260 N=1295 W=9077950 dmax=701 mu=702
+   solve ms: 41.8, 38.5, 36.7, 40.0, 36.2  中央値 38.5  最小 36.2  最大 41.8
+   最大の整数からのずれ max|x-round(x)| = 0（≤1e-6: true）  目的関数 2660046647
+   5回の解のハッシュ 152fe14cd0d46d 152fe14cd0d46d 152fe14cd0d46d 152fe14cd0d46d 152fe14cd0d46d  → 全部同じ: true
+   独立した検証（E001〜E005 相当）: 問題なし
+   品目別の使用数 {"caster_desk":126,"chair":335,"chair_ng":37,"chair_blue":134,"desk":506,"long_desk_2":98,"desk_ng":41,"lectern":10,"long_desk_3":8} 代替 {"desk->caster_desk":97,"chair->chair_ng":37,"desk->desk_ng":41,"long_desk_3->long_desk_2":2}
+   W107 パターン 0 件（うち受け取る側が S05 の運び元の制限を受けている団体 0） []
+
+## 入力の配列を並べ替えてから、sort_order → 名前 → id で並べ直す
+seed1: LP同一=true 解のハッシュ=15c0c62abdabeb 同一=true
+seed2: LP同一=true 解のハッシュ=15c0c62abdabeb 同一=true
+seed3: LP同一=true 解のハッシュ=15c0c62abdabeb 同一=true
+
+## LP 文字列の大きさ（K-23）
+wrap=なし: 文字数 150299 行数 348 最長行 58917  → status=Optimal 34.6ms 折り返し300と同じ解=true
+wrap=1000: 文字数 150821 行数 407 最長行 1000  → status=Optimal 35.3ms 折り返し300と同じ解=true
+wrap=300: 文字数 151523 行数 641 最長行 300  → status=Optimal 39.0ms 折り返し300と同じ解=true
+wrap=100: 文字数 154859 行数 1753 最長行 104  → status=Optimal 37.1ms 折り返し300と同じ解=true
+整数化・折り返しなし: 文字数 161348 最長行 69966
+折り返しなしの長い行  obj:+ 0…=58917字,  d33:+ x…=489字,  d38:+ x…=489字
+
+## 20回続けて解く（K-23）
+使い回し(同じインスタンス): 1回目 46.1ms 2〜20回の中央値 38.4ms 最大 47.1ms  全部同じ解=true  wasm メモリ 21233664→21233664 B  rss増 21.0MB
+wasmModule の確認: wasmModule を渡しても locateFile が呼ばれて失敗した → 1.15.4 では wasmModule は無視される (RuntimeError: Aborted(Error: ENOENT: no such file or directory, open '/nonexiste)
+作り直し loadHighs() 毎回（毎回 wasm を読んで compile）: 20回完走  load中央値 13.8ms solve中央値 40.3ms  全部同じ解=true  rss増 30.1MB
+作り直し instantiateWasm で共有（compile は1回）: 20回完走  load中央値 3.7ms solve中央値 39.6ms  全部同じ解=true  rss増 36.3MB
+loadHighs() の時間(Node, 5回): 13.2, 17.3, 10.9, 16.0, 13.4 中央値 13.4ms
+
+## 解けない入力の status
+S05（6部屋の机 235 < 241）: Status="Infeasible" 26.9ms
+教卓の在庫 5 < 需要 10: Status="Infeasible" 37.7ms
+教卓の在庫が全くない（需要の行に変数が1つもない）: 需要行 165（正常時は 169）→ Status="Optimal"、独立した検証 5 件（E003 95427942-b0af-4782-ad3b-4b00c3a17886|7c7dce96-a96c-4f22-a836-d47de59c12d3 need 1 got 0）。変数がない需要の行は作れず、LP は Optimal を返してしまう。LP を作る前に shortages で返すこと
+time_limit=0.0001: Status="Time limit reached" （Optimal 以外は解として使わない）
+参考：矛盾する小さな LP: Status="Infeasible"
+
+## 最小変更モード（x̂・μ）：MER を使用不可にして解き直す
+[original] 前回 MER から運んでいた 13 行 73 台。変数 5679（うち x̂ 237）  解く 42.2ms（x̂ なし 35.9ms）  Status=Optimal
+   変わった行（運び元・団体・申請品目・品目）: 最小変更 50 件 / 186 台（全 278 キー中）。x̂ なしで解き直した場合 246 件 / 828 台
+   MER 以外が原因の変更（運び元が MER でなく、前回 MER を使っていた団体・品目でもない行） 14 件  独立した検証 問題なし  整数からのずれ 0
+[integer] 前回 MER から運んでいた 13 行 71 台。変数 5680（うち x̂ 238）  解く 51.6ms（x̂ なし 37.5ms）  Status=Optimal
+   変わった行（運び元・団体・申請品目・品目）: 最小変更 48 件 / 178 台（全 280 キー中）。x̂ なしで解き直した場合 242 件 / 818 台
+   MER 以外が原因の変更（運び元が MER でなく、前回 MER を使っていた団体・品目でもない行） 11 件  独立した検証 問題なし  整数からのずれ 0
+
+結果を results/node.json に書いた
