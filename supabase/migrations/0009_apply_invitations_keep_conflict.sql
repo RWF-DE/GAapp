@@ -46,13 +46,17 @@ begin
 end $$;
 
 -- ロールを外す。closed の年度でもできる（卒業した admin を外して、権限を残さないため）。最後の admin は外せない。
--- 外した人の、本人のものと確かめられるメール（private.verified_email）あての、その年度の未使用のロールの招待も消す
--- （残すと次のログインでそのロールが付く）。メールを確かめられなければ招待には触れない（だれあての招待かを決められないため）。
+-- 外した人の、本人のものと確定しているメールあての、その年度の未使用のロールの招待も消す（残すと次のログインでそのロールが付く）。
+-- 招待を消すのは権限を減らす向きなので、private.verified_email が null（メールの変更の途中など）でも消す。消す相手のメールは
+--   ・private.verified_email(p_user_id)（取れれば）
+--   ・lower(auth.users.email)（今の確定したメール。Secure email change では、変更が確定するまで変わらない）
+--   ・provider = 'google' で identity_data の email_verified が真の identity の lower(identity_data ->> 'email')
+-- のどれか。メールの変更の途中の人が変更を元に戻すと verified_email がまた取れ、残っていた招待のロールが付くため。
+-- email_change（確定していない変更先）は使わない（他人のアドレスを入れて、他人の招待を消せてしまうため）。
 -- 団体代表の招待（role が null）は消さない（団体代表を外すのは remove_group_member）。
 -- 引数・返り値・SECURITY DEFINER・search_path・最初のロールの確認・権限（create or replace は権限を保つ）は 0005 と同じ
 create or replace function public.remove_role(p_year_id uuid, p_user_id uuid, p_reason text default null)
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_email text;
 begin
   perform private.lock_year(p_year_id, '{preparing,requesting,allocating,confirmed,closed}', '{admin}');
   if exists (select 1 from public.year_roles where year_id = p_year_id and user_id = p_user_id and role = 'admin')
@@ -62,9 +66,13 @@ begin
   perform private.set_reason(p_reason);
   delete from public.year_roles where year_id = p_year_id and user_id = p_user_id;
   if not found then perform private.fail('not_found'); end if;
-  v_email := private.verified_email(p_user_id);
-  if v_email is not null then
-    delete from public.invitations
-    where year_id = p_year_id and email = v_email and role is not null and used_at is null;
-  end if;
+  delete from public.invitations
+  where year_id = p_year_id and role is not null and used_at is null
+    and email in (
+      select private.verified_email(p_user_id)
+      union
+      select lower(u.email) from auth.users u where u.id = p_user_id
+      union
+      select lower(i.identity_data ->> 'email') from auth.identities i
+      where i.user_id = p_user_id and i.provider = 'google' and i.identity_data ->> 'email_verified' = 'true');
 end $$;

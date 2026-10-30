@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(121);
+select plan(131);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
 -- provider が google なら Google の identity、email なら email_verified: true の email の identity
@@ -367,18 +367,62 @@ select is(public.accept_my_invitations(), 2, '外した後のログインでは�
 select tests.logout();
 select is((select count(*)::int from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_conflict')),
   0, '外した人に、外した年度のロールは付かない');
--- 本人のメールを確かめられない人（メールの変更の途中）は、ロールだけを外し、招待には触れない
+-- 本人のメールを確かめられない人（メールの変更の途中。verified_email が null）も、ロールを外すと、本人のものと確定している
+-- メール（auth.users.email。Secure email change では確定するまで変わらない）あての、その年度の未使用のロールの招待を消す
+-- （残すと、変更を元に戻した後のログインでそのロールが付き、外した人に権限が戻る）。
+-- 確定していない変更先（email_change）あての招待は消さない（他人のアドレスを入れて他人の招待を消せないように）
 select tests.create_user('fu_unverified');
-insert into public.year_roles (year_id, user_id, role) values (tests.id('Y1'), tests.id('fu_unverified'), 'viewer');
-insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_unverified@pgtap.test', 'staff');
-update auth.users set email_change = 'other2@pgtap.test' where id = tests.id('fu_unverified');
+insert into public.year_roles (year_id, user_id, role) values (tests.id('Y1'), tests.id('fu_unverified'), 'staff');
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_unverified@pgtap.test', 'admin');
+insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'fu_unverified@pgtap.test', 'viewer');
+insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'fu_unverified@pgtap.test', tests.id('G1'));
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_pending_to@pgtap.test', 'staff');
+update auth.users set email_change = 'fu_pending_to@pgtap.test' where id = tests.id('fu_unverified');
+select is(private.verified_email(tests.id('fu_unverified')), null, '前提：メールの変更の途中の人は、本人のメールを確かめられない');
 select tests.login_as('admin');
-select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('fu_unverified')) $$, 'メールを確かめられない人のロールも外せる');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('fu_unverified')) $$, 'メールの変更の途中の人のロールも外せる');
 select tests.logout();
 select is((select count(*)::int from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_unverified')),
-  0, 'メールを確かめられない人のロールが外れる');
-select is((select count(*)::int from public.invitations where email = 'fu_unverified@pgtap.test' and used_at is null),
-  1, 'メールを確かめられない人あての招待には触れない');
+  0, 'メールの変更の途中の人のロールが外れる');
+select is((select count(*)::int from public.invitations
+           where year_id = tests.id('Y1') and email = 'fu_unverified@pgtap.test' and role is not null),
+  0, 'メールの変更の途中でも、本人の確定したメールあての、その年度の未使用のロールの招待を消す');
+select is((select count(*)::int from public.invitations
+           where year_id = tests.id('Y2') and email = 'fu_unverified@pgtap.test' and role is not null and used_at is null),
+  1, 'メールの変更の途中の人でも、ほかの年度のロールの招待は消えない');
+select is((select count(*)::int from public.invitations
+           where year_id = tests.id('Y1') and email = 'fu_unverified@pgtap.test' and group_id is not null and used_at is null),
+  1, 'メールの変更の途中の人でも、団体代表の招待は消えない');
+select is((select count(*)::int from public.invitations where email = 'fu_pending_to@pgtap.test' and used_at is null),
+  1, 'email_change に他人のアドレスを入れていても、その他人あての招待は消えない');
+-- 変更を元に戻して（確定したメールに戻る）ログインしても、外した年度のロールは付かない
+update auth.users set email_change = '' where id = tests.id('fu_unverified');
+select tests.login_as('fu_unverified');
+select is(public.accept_my_invitations(), 2,
+  '元のアドレスに戻した後のログインでは、ほかの年度のロールの招待と団体代表の招待だけを受け入れる');
+select tests.logout();
+select is((select count(*)::int from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_unverified')),
+  0, 'メールの変更の途中で外し、元のアドレスに戻してから accept_my_invitations を呼んでも、外した年度のロールが付かない');
+-- Google の identity（email_verified が真）のメールも本人のもの（auth.users.email と違い、verified_email が null でも）。
+-- email_verified が真でない Google の identity のメールあての招待は消さない
+select tests.user_with_identity('fu_google', 'google');
+update auth.identities set identity_data = identity_data || '{"email": "Fu_Google_Acct@pgtap.test"}'
+where user_id = tests.id('fu_google');
+select tests.user_with_identity('fu_gunv', 'google');
+update auth.identities set identity_data = identity_data || '{"email": "fu_gunv_acct@pgtap.test", "email_verified": false}'
+where user_id = tests.id('fu_gunv');
+insert into public.year_roles (year_id, user_id, role) values
+  (tests.id('Y1'), tests.id('fu_google'), 'viewer'), (tests.id('Y1'), tests.id('fu_gunv'), 'viewer');
+insert into public.invitations (year_id, email, role) values
+  (tests.id('Y1'), 'fu_google_acct@pgtap.test', 'staff'), (tests.id('Y1'), 'fu_gunv_acct@pgtap.test', 'staff');
+select tests.login_as('admin');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('fu_google')) $$, 'Google の identity のメールが違う人のロールを外す');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('fu_gunv')) $$, 'Google の identity のメールが確認されていない人のロールを外す');
+select tests.logout();
+select is((select count(*)::int from public.invitations where email = 'fu_google_acct@pgtap.test'),
+  0, '確認済みの Google の identity のメールあての、その年度の未使用のロールの招待も消す');
+select is((select count(*)::int from public.invitations where email = 'fu_gunv_acct@pgtap.test' and used_at is null),
+  1, 'email_verified が真でない Google の identity のメールあての招待は消さない');
 -- 最後の管理者は今までどおり外せず、その人あての招待も消えない（Y1 は sw_email も admin なので、admin が1人の Y2 で確かめる）
 insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'admin2@pgtap.test', 'viewer');
 select tests.login_as('admin2');

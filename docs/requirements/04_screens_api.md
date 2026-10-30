@@ -161,7 +161,7 @@
 | create_year_from(prev_year_id, label, festival_start) | 複製元の年度の admin（複製元が終了していてもよい） | 複製元が最新の年度のときだけ（それを複製元にした年度も、1日目が同じか後の年度もない）。1日目は複製元より後で、2000-01-01〜2200-12-31（範囲外は invalid_input（field: festival_start））。年度を作り、団体・ルール・場所の状態を複製してルールの団体 id を付け替える。呼んだ人を新しい年度の admin にする |
 | invite(year_id, email, role, group_id) | admin | 招待を作る。今のメールが本人のものと確かめられるアカウント（02「権限とRLS」の `private.verified_email`）があればその場でロールを付ける（別のロールを持っていればエラー）。終了した年度には招待できない。返り値は招待の id と、その場で付けたか（applied） |
 | set_role(year_id, user_id, role, reason) | admin | ロールを付ける・変える（role は必須。null は invalid_input。ロールを変えるときはこれを使い、remove_role で外してから招待し直さない）。終了した年度ではできない。最後の admin は降格できない |
-| remove_role(year_id, user_id, reason) | admin | ロールを外す（終了した年度でも。卒業した admin を外すため）。外すと、その年度の、本人のものと確かめられるメール（`private.verified_email`。確かめられなければ招待には触れない）あての未使用のロールの招待も取り消す（残すと次のログインでそのロールが付き、外した人に権限が戻るため。団体代表の招待は消さない）。最後の admin は外せない。ロールがなければ not_found |
+| remove_role(year_id, user_id, reason) | admin | ロールを外す（終了した年度でも。卒業した admin を外すため）。外すと、その年度の、本人のものと確定しているメール（`private.verified_email`〔取れれば〕、auth.users.email〔確定するまで変わらない〕、email_verified が真の Google の identity のメール。メールの変更の途中で verified_email が取れないときも同じ。確定していない変更先〔email_change〕は使わない）あての未使用のロールの招待も取り消す（残すと次のログインでそのロールが付き、外した人に権限が戻るため。団体代表の招待は消さない）。最後の admin は外せない。ロールがなければ not_found |
 | revoke_invitation(invitation_id) | admin | 未使用の招待を取り消す（終了した年度でも）。招待が見つからなければ forbidden（有無を漏らさない） |
 | remove_group_member(group_id, user_id, reason) | admin | 団体代表を外す（終了した年度でも） |
 | accept_my_invitations() | ログインしている人 | 自分のメール（本人のものと確かめられるときだけ。`private.verified_email`）あての未使用の招待（終了していない年度）を受け入れ、件数を返す。その年度で別のロールを持っていれば、そのロールの招待は受け入れず（件数に数えず、ロールも変えない）未使用のまま残す（ロールを変えるなら管理者が `set_role` で変えるか、招待を取り消す）。画面がログインのたびに呼ぶ |
