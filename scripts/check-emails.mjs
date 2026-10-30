@@ -66,6 +66,8 @@ function main() {
       text = buf.toString('utf8');
     }
     text.split('\n').forEach((line, i) => {
+      // pnpm-lock.yaml の deprecated: は npm パッケージの公開メタデータ（作者の連絡先を含むことがある）。このリポジトリの個人情報ではない
+      if (file === 'pnpm-lock.yaml' && /^\s+deprecated:/.test(line)) return;
       for (const email of findEmails(line)) {
         if (file === SELF_TEST_FILE && SELF_TEST_DOMAINS.has(email.split('@')[1].toLowerCase())) continue;
         bad++;
