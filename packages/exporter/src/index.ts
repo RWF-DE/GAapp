@@ -32,10 +32,11 @@ export {
   NEEDS_CHECK,
   SUMMARY_SHEET_NAME,
   SWAPS_SHEET_NAME,
+  ExportInputError,
 } from './report';
 export { exportYearJson } from './json';
 
-/** R8 様式の振り分け表（ファイル名は allocationXlsxFileName）。団体名が SUMIF に使えないときは例外 */
+/** R8 様式の振り分け表（ファイル名は allocationXlsxFileName）。団体名が SUMIF に、品目名がシート名に使えないときは ExportInputError */
 export async function exportAllocationXlsx(input: ReportInput): Promise<Uint8Array> {
   return writeWorkbook(buildAllocationSheets(input), input.generatedAt);
 }

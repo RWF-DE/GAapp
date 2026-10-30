@@ -65,6 +65,17 @@ describe('downloadAllocationXlsx', () => {
     expect(saved.files).toHaveLength(0);
   });
 
+  it('シート名に使えない品目名があれば、exporter の日本語の文をそのまま画面に出せる形（ExportBlockedError）で止める', async () => {
+    const s = fixtureSnapshot(fx);
+    s.items = s.items.map((i) => (i.code === 'caster_desk' ? { ...i, name: 'キャスター/机' } : i));
+    const err = await downloadAllocationXlsx(s).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ExportBlockedError);
+    expect((err as Error).message).toMatch(/^品目名を変えてから出力してください：/);
+    expect((err as Error).message).toContain('「キャスター/机」');
+    expect((err as Error).message).toContain('マスタ設定');
+    expect(saved.files).toHaveLength(0);
+  });
+
   it('viewer のスナップショット（在庫なし）では出さない', async () => {
     const s = { ...fixtureSnapshot(fx), part: 'public' as const };
     await expect(downloadAllocationXlsx(s)).rejects.toThrow(ExportBlockedError);

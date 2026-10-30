@@ -76,14 +76,54 @@ export function yearJsonFileName(yearLabel: string): string {
 const colLetter = (i: number) => String.fromCharCode(65 + i);
 const quoteSheet = (name: string) => `'${name.replaceAll("'", "''")}'`;
 
+/** 入力（団体名・品目名）のせいで出力を止めるときの例外。message は利用者にそのまま見せられる日本語 */
+export class ExportInputError extends Error {
+  override name = 'ExportInputError';
+}
+
 /** 出力の前の確認：SUMIF のキーにできない団体名があればファイルを作らない（K-21） */
 export function assertGroupNames(groups: readonly { name: string }[]): void {
   const errors = checkGroupNames(groups);
   if (errors.length > 0) {
-    throw new Error(
+    throw new ExportInputError(
       `団体名を変えてから出力してください：${errors
         .map((e) => `「${groups[Number(/^groups\.(\d+)\./.exec(e.path)?.[1])]?.name ?? '?'}」${e.message}`)
         .join(' / ')}`,
+    );
+  }
+}
+
+/** Excel のシート名の上限（ExcelJS はこれを超えると黙って切り詰める） */
+const SHEET_NAME_MAX = 31;
+/** シート名の重複の比べ方：Excel は大文字・小文字を区別しない。全角・半角も念のため同じとみなす */
+const sheetNameKey = (name: string) => name.normalize('NFKC').toLowerCase();
+
+/**
+ * 出力の前の確認：品目シートの名前にする品目名（SHEET_DEFS の各シートの最初の品目）が Excel のシート名に使えなければ、
+ * ファイルを作らない。ExcelJS は禁止文字・先頭か末尾の ' で英語の例外を投げ、31 文字を超える名前は黙って切り詰める
+ * （団体別集計の SUMIF が切り詰める前の名前を参照して #REF! になる）ので、その前に日本語で止める。
+ */
+export function assertSheetItemNames(items: readonly Pick<Item, 'code' | 'name'>[]): void {
+  const problems: string[] = [];
+  const seen = new Map<string, string>([[sheetNameKey(SUMMARY_SHEET_NAME), SUMMARY_SHEET_NAME]]);
+  for (const codes of SHEET_DEFS) {
+    const name = items.find((i) => i.code === codes[0])?.name;
+    if (name === undefined) continue; // 品目がないときは buildContext が止める
+    const reasons: string[] = [];
+    if (name.trim() === '') reasons.push('空です');
+    if (/[*?:\\/[\]]/.test(name)) reasons.push('シート名に使えない文字（* ? : \\ / [ ]）を含みます');
+    if (/^'|'$/.test(name)) reasons.push("先頭か末尾が ' です");
+    if (name.length > SHEET_NAME_MAX) reasons.push(`${SHEET_NAME_MAX} 文字を超えています（${name.length} 文字）`);
+    const key = sheetNameKey(name);
+    if (key === 'history') reasons.push('Excel が予約している名前（History）です');
+    const other = seen.get(key);
+    if (other !== undefined) reasons.push(`シート「${other}」と同じ名前です（大文字・小文字、全角・半角の違いは同じとみなします）`);
+    else seen.set(key, name);
+    if (reasons.length > 0) problems.push(`「${name}」は${reasons.join('。')}`);
+  }
+  if (problems.length > 0) {
+    throw new ExportInputError(
+      `品目名を変えてから出力してください：品目名は振り分け表のシート名になります。${problems.join(' / ')}。マスタ設定の品目で名前を直してください`,
     );
   }
 }
@@ -313,6 +353,7 @@ function buildItemSheet(
 export function buildAllocationSheets(input: Pick<ReportInput, 'yearLabel' | 'data' | 'rows'>): SheetModel[] {
   const { data, yearLabel } = input;
   assertGroupNames(data.groups);
+  assertSheetItemNames(data.items);
   const ctx = buildContext(data, input.rows);
 
   const sheets: SheetModel[] = [];
