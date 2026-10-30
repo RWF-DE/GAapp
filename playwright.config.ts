@@ -5,6 +5,9 @@ import { localDbUrl, localSupabaseEnv } from './scripts/local-supabase-env.mjs';
 // ローカルの Supabase（supabase start → supabase db reset。seed のテストユーザー）が起動している必要がある。ポートは 3100。
 // E2E_PORT はポートを使っているほかのサーバーと避けたいときだけ（既定 3100）
 const PORT = Number(process.env.E2E_PORT ?? 3100);
+// basePath のスモーク（T14。E2E_BASEPATH=1 のときだけ）：pnpm build:e2e -- --base-path /GAapp の書き出し（apps/web/out-basepath）を
+// 別のポートで配る。E2E_BASEPATH_PORT はポートを避けたいときだけ（既定 3101）
+const BASEPATH_PORT = Number(process.env.E2E_BASEPATH_PORT ?? 3101);
 
 // テスト（e2e/helpers.ts）が Supabase の API を直接呼ぶときの URL と publishable キー
 Object.assign(process.env, localSupabaseEnv());
@@ -52,6 +55,18 @@ if (process.env.E2E_SHOTS) {
 if (process.env.E2E_MANUAL) {
   projects.push({ name: 'manual', testDir: './e2e/manual', testMatch: SPEC, dependencies: ['auth-setup'], workers: 1, use: { ...desktop } });
 }
+if (process.env.E2E_BASEPATH) {
+  // ログインは basePath の下のテスト用ログインで行う（storageState は E2E_PORT の origin のものなので使えない）。
+  // シナリオの年度と年度をまたぐ表は db-setup に頼る
+  projects.push({
+    name: 'basepath',
+    testDir: './e2e/basepath',
+    testMatch: SPEC,
+    dependencies: ['db-setup'],
+    workers: 1,
+    use: { ...desktop, baseURL: `http://localhost:${BASEPATH_PORT}` },
+  });
+}
 if (process.env.E2E_PERF) {
   projects.push({ name: 'perf', testMatch: /e2e\/perf\.spec\.ts$/, dependencies: ['auth-setup'], workers: 1, use: { ...desktop } });
 }
@@ -71,10 +86,23 @@ export default defineConfig({
     launchOptions: { env: { ...process.env, LANG: 'C.UTF-8' } },
   },
   projects,
-  webServer: {
-    command: `pnpm exec serve apps/web/out --listen ${PORT} --no-clipboard`,
-    url: `http://localhost:${PORT}/`,
-    reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
-  },
+  webServer: [
+    {
+      command: `pnpm exec serve apps/web/out --listen ${PORT} --no-clipboard`,
+      url: `http://localhost:${PORT}/`,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    // apps/web/out-basepath を根に配る（/GAapp/… がそのまま当たる。GitHub Pages と同じ形）
+    ...(process.env.E2E_BASEPATH
+      ? [
+          {
+            command: `pnpm exec serve apps/web/out-basepath --listen ${BASEPATH_PORT} --no-clipboard`,
+            url: `http://localhost:${BASEPATH_PORT}/GAapp/`,
+            reuseExistingServer: !process.env.CI,
+            timeout: 30_000,
+          },
+        ]
+      : []),
+  ],
 });
