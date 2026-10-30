@@ -83,11 +83,12 @@ describe('parseFormCsv: 模擬店フォーム', () => {
     ].sort((a, b) => (a[0] as number) - (b[0] as number)));
   });
   it('列がずれている行（見出しのない列に値がある行・数の列にメール）と不正な数、空行は取り込まず、理由だけを返す', () => {
+    // タイムスタンプと団体名が読めれば添える（同じ団体の新しい回答が読めないことを resolveResponses が見つけるため）
     expect(parsed.rejected).toEqual([
-      { rowNumber: 5, reason: 'misaligned' },
-      { rowNumber: 6, reason: 'invalid_number' },
-      { rowNumber: 7, reason: 'misaligned' },
-      { rowNumber: 10, reason: 'empty' },
+      { rowNumber: 5, reason: 'misaligned', submittedAt: '2026-10-06T10:15:00+09:00', groupName: '模擬店丙' },
+      { rowNumber: 6, reason: 'invalid_number', submittedAt: '2026-10-06T10:20:00+09:00', groupName: '模擬店丁' },
+      { rowNumber: 7, reason: 'misaligned', submittedAt: '2026-10-06T10:30:00+09:00', groupName: '模擬店戊' },
+      { rowNumber: 10, reason: 'empty', submittedAt: null, groupName: null },
     ]);
   });
   it('全角の数字を読み、空の数は 0。品目は aliases で対応する', () => {
@@ -130,9 +131,9 @@ describe('parseFormCsv: 途中で切れた行', () => {
     const parsed = parseFormCsv('department', csv, itemDefs);
     expect(parsed.responses.map((r) => r.rowNumber)).toEqual([2, 6]);
     expect(parsed.rejected).toEqual([
-      { rowNumber: 3, reason: 'misaligned' },
-      { rowNumber: 4, reason: 'misaligned' },
-      { rowNumber: 5, reason: 'misaligned' },
+      { rowNumber: 3, reason: 'misaligned', submittedAt: '2026-10-01T10:01:00+09:00', groupName: '団体2' },
+      { rowNumber: 4, reason: 'misaligned', submittedAt: '2026-10-01T10:02:00+09:00', groupName: '団体3' },
+      { rowNumber: 5, reason: 'misaligned', submittedAt: '2026-10-01T10:03:00+09:00', groupName: null },
     ]);
   });
   it('対応表にない列（右端）が省かれていても、読む列に届いていれば取り込む', () => {
@@ -160,7 +161,7 @@ describe('parseFormCsv: メールの扱い', () => {
       ['団体1', '連絡先  です'],
       [null, null],
     ]);
-    expect(parsed.rejected).toEqual([{ rowNumber: 3, reason: 'misaligned' }]);
+    expect(parsed.rejected).toEqual([{ rowNumber: 3, reason: 'misaligned', submittedAt: '2026-10-01T10:01:00+09:00', groupName: '団体2' }]);
     expect(containsEmail(realMail)).toBe(true);
     expect(containsEmail('全角＠でも')).toBe(false);
     expect(containsEmail('a＠mail.example')).toBe(true);
@@ -302,6 +303,85 @@ describe('resolveResponses: 模擬店・部門', () => {
     // (団体, 品目) は一意
     const keys = r.requests.map((x) => `${x.groupId}|${x.itemId}`);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe('resolveResponses: 同じ団体の新しい回答が取り込まない行になったとき', () => {
+  const header = 'タイムスタンプ,団体名,机(木),椅子(木),備考';
+  const groups = [group('団体1', 'department'), group('団体2', 'department'), group('団体3', 'department', ['別名3']), group('重複', 'department'), group('重複 ', 'department')];
+  const csv = [
+    header,
+    '2026/10/01 10:00:00,団体1,2,3,古い', // 2：団体1 の古い回答
+    '2026/10/01 11:00:00,団体1,abc,3,', // 3：団体1 の新しい回答（数が読めない）
+    '2026/10/01 09:00:00,団体1,1,1,,ずれ', // 4：団体1 のもっと古い取り込まない行（関係ない）
+    '2026/10/01 10:00:00,団体2,5,5,', // 5：団体2
+    '2026/10/01 09:00:00,団体2,x,1,', // 6：団体2 の古い取り込まない行（関係ない）
+    'いつか,団体2,1,1,', // 7：日時が読めない（団体2 に当てない）
+    '2026/10/01 10:00:00,別名3,1,1,', // 8：団体3
+    '2026/10/01 10:00:00,別名3,1,1,,ずれ', // 9：団体3 の同じ時刻の後の行（使う回答より新しいとみなす）
+    '',
+  ].join('\n');
+  const parsed = parseFormCsv('department', csv, itemDefs);
+  const res = resolveResponses(parsed, groups, items, {});
+
+  it('使う回答より新しい取り込まない行があれば、その団体は requests・submissions に入れず newerRejected で返す', () => {
+    expect(parsed.rejected.map((r) => [r.rowNumber, r.reason])).toEqual([
+      [3, 'invalid_number'],
+      [4, 'misaligned'],
+      [6, 'invalid_number'],
+      [7, 'invalid_timestamp'],
+      [9, 'misaligned'],
+    ]);
+    expect(res.submissions.map((s) => s.groupId)).toEqual([gid('団体2')]);
+    expect(new Set(res.requests.map((r) => r.groupId))).toEqual(new Set([gid('団体2')]));
+    expect(res.newerRejected).toEqual([
+      {
+        groupId: gid('団体1'),
+        keptRow: 2,
+        droppedRows: [],
+        rejectedRows: [{ rowNumber: 3, reason: 'invalid_number', submittedAt: '2026-10-01T11:00:00+09:00' }],
+        submission: { groupId: gid('団体1'), submittedAt: '2026-10-01T10:00:00+09:00', note: '古い' },
+        requests: [
+          { groupId: gid('団体1'), itemId: itemId('desk'), count: 2 },
+          { groupId: gid('団体1'), itemId: itemId('chair'), count: 3 },
+        ],
+      },
+      {
+        groupId: gid('団体3'),
+        keptRow: 8,
+        droppedRows: [],
+        rejectedRows: [{ rowNumber: 9, reason: 'misaligned', submittedAt: '2026-10-01T10:00:00+09:00' }],
+        submission: { groupId: gid('団体3'), submittedAt: '2026-10-01T10:00:00+09:00', note: null },
+        requests: [
+          { groupId: gid('団体3'), itemId: itemId('desk'), count: 1 },
+          { groupId: gid('団体3'), itemId: itemId('chair'), count: 1 },
+        ],
+      },
+    ]);
+    expect(res.superseded).toEqual([]);
+  });
+
+  it('新しい取り込まない行のある団体の古い回答は、superseded ではなく newerRejected の droppedRows に出す', () => {
+    const csv2 = [header, '2026/10/01 09:00:00,団体1,1,1,', '2026/10/01 10:00:00,団体1,2,2,', '2026/10/01 11:00:00,団体1,2,2,,ずれ', ''].join('\n');
+    const r = resolveResponses(parseFormCsv('department', csv2, itemDefs), groups, items, {});
+    expect(r.superseded).toEqual([]);
+    expect(r.newerRejected.map((x) => [x.groupId, x.keptRow, x.droppedRows, x.rejectedRows.map((y) => y.rowNumber)])).toEqual([
+      [gid('団体1'), 3, [2], [4]],
+    ]);
+  });
+
+  it('団体名が2つの団体に当たる・どの団体にも当たらない取り込まない行は、どの団体も止めない', () => {
+    const csv3 = [header, '2026/10/01 09:00:00,重複,1,1,', '2026/10/01 10:00:00,重複,x,1,', '2026/10/01 10:00:00,未登録,x,1,', ''].join('\n');
+    const r = resolveResponses(parseFormCsv('department', csv3, itemDefs), groups, items, { 2: gid('重複') });
+    expect(r.newerRejected).toEqual([]);
+    expect(r.submissions.map((s) => s.groupId)).toEqual([gid('重複')]);
+  });
+
+  it('使う回答がない団体（回答が全部取り込まない行）は、今までどおり取り込まない行に出すだけ', () => {
+    const csv4 = [header, '2026/10/01 10:00:00,団体1,x,1,', ''].join('\n');
+    const r = resolveResponses(parseFormCsv('department', csv4, itemDefs), groups, items, {});
+    expect(r.newerRejected).toEqual([]);
+    expect(r.submissions).toEqual([]);
   });
 });
 

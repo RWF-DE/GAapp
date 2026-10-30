@@ -78,9 +78,9 @@ function renderDialog(t: Partial<RequestsTables> = {}) {
   return { onImported, onError };
 }
 
-async function upload(user: ReturnType<typeof userEvent.setup>) {
+async function upload(user: ReturnType<typeof userEvent.setup>, text = csvText) {
   const input = screen.getByLabelText('CSV ファイル');
-  await user.upload(input, new File([csvText], 'stall.csv', { type: 'text/csv' }));
+  await user.upload(input, new File([text], 'stall.csv', { type: 'text/csv' }));
   await screen.findByTestId('import-counts');
 }
 
@@ -171,6 +171,36 @@ describe('取り込みのダイアログ（stall.csv）', () => {
     await user.click(screen.getByRole('button', { name: '取り込む（2 団体）' }));
     await screen.findByTestId('import-results');
     expect(vi.mocked(callRpc).mock.calls.length).toBe(2);
+  });
+
+  it('同じ団体の新しい回答が取り込まない行なら、その団体と理由を出し、既定では上書きしない（選べば古い回答で上書きする）', async () => {
+    const user = userEvent.setup();
+    const header = csvText.split(/\r?\n/)[0]!;
+    const cols = header.split(',').length;
+    // 見出しのない列（右端）に値がある行は列のずれ。模擬店甲の 10/07 の回答が読めない
+    const line = (ts: string, name: string, desk: string, extra = '') => {
+      const cells = Array<string>(cols).fill('');
+      cells[0] = ts;
+      cells[7] = name; // 団体名（非飲食）
+      cells[8] = desk; // 机(木)
+      if (extra) cells[cols - 1] = extra;
+      return cells.join(',');
+    };
+    const text = [header, line('2026/10/06 09:00:00', '模擬店甲', '3'), line('2026/10/07 09:00:00', '模擬店甲', '4', 'ずれ'), line('2026/10/06 09:00:00', '模擬店乙', '1'), ''].join('\n');
+    renderDialog();
+    vi.mocked(callRpc).mockResolvedValue(undefined as never);
+    await upload(user, text);
+    expect(screen.getByTestId('import-counts').textContent).toContain('新しい回答が読めない団体 1');
+    expect(screen.getByTestId('import-newer-rejected').textContent).toContain(
+      '模擬店甲：行3（2026/10/07 09:00・列のずれ）の回答が読めません。読めた回答のうち一番新しい行2（2026/10/06 09:00）は、下の「上書き」を選んだときだけ取り込みます',
+    );
+    expect(screen.getByTestId('plan-模擬店甲').textContent).toContain('新しい回答が読めない');
+    expect(screen.getByTestId('newer-rejected-模擬店甲').textContent).toBe('行3の新しい回答が読めません。上書きすると行2の回答で置き換えます');
+    const box = screen.getByRole('checkbox', { name: '模擬店甲を上書きする' });
+    expect(box.getAttribute('data-state')).toBe('unchecked');
+    await user.click(screen.getByRole('button', { name: '取り込む（1 団体）' }));
+    await screen.findByTestId('import-results');
+    expect(vi.mocked(callRpc).mock.calls.map((c) => (c[1] as unknown as { p_group_id: string }).p_group_id)).toEqual([OTSU.id]);
   });
 
   it('団体ごとに成否を出す（conflict は取り込みの前に変わった旨）', async () => {

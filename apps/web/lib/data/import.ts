@@ -141,6 +141,17 @@ export interface SupersededGroup {
   dropped: { rowNumber: number; submittedAt: string }[];
 }
 
+/** 新しい回答が読めない団体（同じ団体の、使う回答より新しい行が取り込まない行になった。importer の newerRejected） */
+export interface NewerRejectedGroup {
+  group: GroupRow;
+  /** 使う候補の回答（読めた回答のうち一番新しいもの） */
+  kept: { rowNumber: number; submittedAt: string };
+  /** それより古い回答 */
+  dropped: { rowNumber: number; submittedAt: string }[];
+  /** 使う候補より新しい、取り込まない行（行番号・理由・タイムスタンプだけ。中身は出さない） */
+  rows: { rowNumber: number; reason: RejectReason; submittedAt: string }[];
+}
+
 /** プレビューの1セル（品目ごとの CSV の数と今の DB の数） */
 export interface PlanCell {
   item: ItemRow;
@@ -190,8 +201,13 @@ export interface ImportPlan {
   dbSubmission: SubmissionRow | null;
   /** 今の DB に備考があるか */
   dbHasNote: boolean;
-  /** 上書きの既定（Q2：CSV のタイムスタンプが DB の提出日時より新しい、または未提出なら上書き） */
+  /** 上書きの既定（Q2：CSV のタイムスタンプが DB の提出日時より新しい、または未提出なら上書き。newerRejected があれば上書きしない） */
   defaultOverwrite: boolean;
+  /**
+   * 同じ団体の、使う回答（rowNumber）より新しい取り込まない行。あれば一番新しい回答が読めないので、既定では上書きしない
+   * （管理者が選べば rowNumber の回答で上書きする）
+   */
+  newerRejected: NewerRejectedGroup['rows'];
   /** CSV のタイムスタンプと DB の提出日時が同じ時刻（同じ CSV を取り込み直した。既定では上書きしない） */
   sameTimestamp: boolean;
 }
@@ -208,6 +224,8 @@ export interface ImportPreview {
   superseded: SupersededGroup[];
   /** 古い回答の数（使わない行の数） */
   supersededCount: number;
+  /** 新しい回答が読めない団体（団体ごとの結果にも出し、既定では上書きしない） */
+  newerRejected: NewerRejectedGroup[];
   ignoredColumns: string[];
   plans: ImportPlan[];
 }
@@ -260,17 +278,26 @@ export function buildImportPreview(
   const groupById = new Map(t.groups.map((g) => [g.id, g]));
   const subs = new Map(t.submissions.map((s) => [s.group_id, s]));
   const dbReq = new Map(t.requests.map((r) => [`${r.group_id}:${r.item_id}`, r]));
-  const csvReq = new Map(resolved.requests.map((r) => [`${r.groupId}:${r.itemId}`, r.count]));
+  // 新しい回答が読めない団体も、団体ごとの結果には出す（使う候補の回答の数で。既定では上書きしない）
+  const csvReq = new Map(
+    [...resolved.requests, ...resolved.newerRejected.flatMap((n) => n.requests)].map((r) => [`${r.groupId}:${r.itemId}`, r.count]),
+  );
   const supersededByGroup = new Map(resolved.superseded.map((s) => [s.groupId, s]));
+  const newerByGroup = new Map(resolved.newerRejected.map((n) => [n.groupId, n]));
   const rowsOf = rowsByGroup(parsed, kind, t, manual);
+  // 団体の順（resolveResponses に渡した団体の並び＝sort_order → 名前 → id）
+  const order = new Map(groupsForKind(t.groups, kind).map((g, i) => [g.id, i]));
+  const submissions = [...resolved.submissions, ...resolved.newerRejected.map((n) => n.submission)].sort(
+    (a, b) => (order.get(a.groupId) ?? 0) - (order.get(b.groupId) ?? 0),
+  );
 
   const plans: ImportPlan[] = [];
-  // resolveResponses の submissions は団体の順（渡した団体の並び＝sort_order → 名前 → id）
-  for (const s of resolved.submissions) {
+  for (const s of submissions) {
     const group = groupById.get(s.groupId);
     if (!group) continue;
     const sup = supersededByGroup.get(s.groupId);
-    const rowNumber = sup?.keptRow ?? rowsOf.get(s.groupId)?.[0] ?? 0;
+    const newer = newerByGroup.get(s.groupId);
+    const rowNumber = newer?.keptRow ?? sup?.keptRow ?? rowsOf.get(s.groupId)?.[0] ?? 0;
     const kept = byRow.get(rowNumber);
     const cells: PlanCell[] = [];
     const blocked: ImportPlan['blocked'] = [];
@@ -310,8 +337,9 @@ export function buildImportPreview(
       dbSubmittedAt,
       dbSubmission: sub,
       dbHasNote: !!sub?.note?.trim(),
-      defaultOverwrite: defaultOverwriteOf(s.submittedAt, dbSubmittedAt),
+      defaultOverwrite: !newer && defaultOverwriteOf(s.submittedAt, dbSubmittedAt),
       sameTimestamp: sameTimestampOf(s.submittedAt, dbSubmittedAt),
+      newerRejected: newer?.rejectedRows ?? [],
     });
   }
 
@@ -320,6 +348,19 @@ export function buildImportPreview(
     if (!group) return [];
     const at = (n: number) => byRow.get(n)?.submittedAt ?? '';
     return [{ group, kept: { rowNumber: s.keptRow, submittedAt: at(s.keptRow) }, dropped: s.droppedRows.map((n) => ({ rowNumber: n, submittedAt: at(n) })) }];
+  });
+  const newerRejected: NewerRejectedGroup[] = resolved.newerRejected.flatMap((n) => {
+    const group = groupById.get(n.groupId);
+    if (!group) return [];
+    const at = (r: number) => byRow.get(r)?.submittedAt ?? '';
+    return [
+      {
+        group,
+        kept: { rowNumber: n.keptRow, submittedAt: at(n.keptRow) },
+        dropped: n.droppedRows.map((r) => ({ rowNumber: r, submittedAt: at(r) })),
+        rows: n.rejectedRows,
+      },
+    ];
   });
   const rejectedByReason: Partial<Record<RejectReason, number>> = {};
   for (const r of parsed.rejected) rejectedByReason[r.reason] = (rejectedByReason[r.reason] ?? 0) + 1;
@@ -332,6 +373,7 @@ export function buildImportPreview(
     rejectedByReason,
     superseded,
     supersededCount: superseded.reduce((n, s) => n + s.dropped.length, 0),
+    newerRejected,
     ignoredColumns: parsed.ignoredColumns,
     plans,
   };

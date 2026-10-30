@@ -331,6 +331,8 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
     if (empty > 0) report.emptyFormRows.push({ form: kind, count: empty });
     for (const r of parsed.rejected) if (r.reason !== 'empty') fail(kind, r.rowNumber, r.reason);
     for (const r of parsed.responses) if (r.groupName !== null) r.groupName = anonymize(r.groupName);
+    // 取り込まない行の団体名も同じ名前で団体に当てる（同じ団体の新しい回答が読めない団体は resolveResponses が newerRejected にし、取り込まない）
+    for (const r of parsed.rejected) if (r.groupName !== null) r.groupName = anonymize(r.groupName);
     const manualMap: Record<number, string> = {};
     if (kind === 'company') {
       const t = readTable(src('companyMap'), SOURCE_FILES.companyMap);

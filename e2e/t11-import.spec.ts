@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
 import { storageStateFor } from './support/auth';
 import { createScenario, sql } from './support/db';
+import { stallCsvWithUnreadableNewer } from './support/import-csv';
 import { SEED_USER_IDS } from './support/users';
 import { pinYear } from './support/year';
 
@@ -118,6 +119,42 @@ test.describe('T11 取り込み（管理者）', () => {
       await dialog.getByRole('button', { name: '取り込む（1 団体）' }).click();
       await expect(dialog.getByTestId('import-results')).toContainText('模擬店乙：取り込みました');
       expect(await countsOf(kou)).toEqual({ desk: 9 });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T11 取り込み：同じ団体の新しい回答が読めない団体は、理由を出して既定では上書きしない', async ({ page }) => {
+    const s = await createScenario({
+      roles: { admin: true },
+      extraGroups: [
+        { name: '模擬店甲', category: 'stall' },
+        { name: '模擬店乙', category: 'stall' },
+      ],
+    });
+    try {
+      const kou = s.ids.groups['模擬店甲']!;
+      const otsu = s.ids.groups['模擬店乙']!;
+      await pinYear(page, SEED_USER_IDS.admin, s.yearId);
+      await page.goto('/requests/');
+      await page.getByRole('button', { name: 'Googleフォームの回答を取り込む' }).click();
+      const dialog = page.getByRole('dialog');
+      await dialog.getByLabel('CSV ファイル').setInputFiles(stallCsvWithUnreadableNewer());
+      await expect(dialog.getByTestId('import-counts')).toContainText('取り込まない 1（列のずれ 1）・古い回答 0・新しい回答が読めない団体 1');
+      await expect(dialog.getByTestId('import-newer-rejected')).toContainText(
+        '模擬店甲：行3（2026/10/07 09:00・列のずれ）の回答が読めません。読めた回答のうち一番新しい行2（2026/10/06 09:00）は、下の「上書き」を選んだときだけ取り込みます',
+      );
+      await expect(dialog.getByTestId('plan-模擬店甲')).toContainText('新しい回答が読めない');
+      await expect(dialog.getByTestId('newer-rejected-模擬店甲')).toHaveText('行3の新しい回答が読めません。上書きすると行2の回答で置き換えます');
+      await expect(dialog.getByRole('checkbox', { name: '模擬店甲を上書きする' })).not.toBeChecked();
+      await expect(dialog.getByRole('checkbox', { name: '模擬店乙を上書きする' })).toBeChecked();
+
+      await dialog.getByRole('button', { name: '取り込む（1 団体）' }).click();
+      await expect(dialog.getByTestId('import-results')).toContainText('模擬店乙：取り込みました');
+      await expect(dialog.getByTestId('import-results')).not.toContainText('模擬店甲');
+      expect(await countsOf(kou)).toEqual({});
+      expect(await submittedAtOf(kou)).toBeNull();
+      expect(await countsOf(otsu)).toEqual({ desk: 1, chair: 2 });
     } finally {
       await s.cleanup();
     }

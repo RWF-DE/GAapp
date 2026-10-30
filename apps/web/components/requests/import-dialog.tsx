@@ -320,6 +320,7 @@ function PreviewBody({
       <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm" data-testid="import-counts">
         回答 {preview.responseCount}・対応した {preview.matchedCount}・対応しない {preview.responseCount - preview.matchedCount}・取り込まない {rejectedTotal}
         {rejectedTotal > 0 ? `（${rejectedText}）` : ''}・古い回答 {preview.supersededCount}
+        {preview.newerRejected.length > 0 ? `・新しい回答が読めない団体 ${preview.newerRejected.length}` : ''}
         {preview.ignoredColumns.length > 0 ? (
           <span className="block text-xs text-muted-foreground">読まなかった列：{preview.ignoredColumns.join('、')}</span>
         ) : null}
@@ -380,6 +381,21 @@ function PreviewBody({
               <li key={s.group.id}>
                 {s.group.name}：行{s.kept.rowNumber}（{formatDateTime(s.kept.submittedAt)}）を使い、
                 {s.dropped.map((d) => `行${d.rowNumber}（${formatDateTime(d.submittedAt)}）`).join('・')}は使いません
+              </li>
+            ))}
+          </ul>
+        </Section>
+      ) : null}
+
+      {preview.newerRejected.length > 0 ? (
+        <Section title="新しい回答が読めない団体（既定では上書きしません）" testId="import-newer-rejected">
+          <ul className="space-y-1 text-sm">
+            {preview.newerRejected.map((n) => (
+              <li key={n.group.id} className="text-amber-700">
+                {n.group.name}：
+                {n.rows.map((r) => `行${r.rowNumber}（${formatDateTime(r.submittedAt)}・${REJECT_LABELS[r.reason]}）`).join('・')}
+                の回答が読めません。読めた回答のうち一番新しい行{n.kept.rowNumber}（{formatDateTime(n.kept.submittedAt)}）は、下の「上書き」を選んだときだけ取り込みます。CSV
+                の行を直して取り込み直してください
               </li>
             ))}
           </ul>
@@ -462,7 +478,13 @@ function PlansTable({
                 <td className="py-1 pr-3 tabular-nums">
                   {p.dbSubmittedAt ? formatDateTime(p.dbSubmittedAt) : '未提出'}
                   {!p.defaultOverwrite ? (
-                    <span className="block text-xs text-amber-700">{p.sameTimestamp ? '同じ時刻（取り込み済み）' : 'アプリの提出の方が新しい'}</span>
+                    <span className="block text-xs text-amber-700">
+                      {p.newerRejected.length > 0
+                        ? '新しい回答が読めない'
+                        : p.sameTimestamp
+                          ? '同じ時刻（取り込み済み）'
+                          : 'アプリの提出の方が新しい'}
+                    </span>
                   ) : null}
                 </td>
                 {columns.map(({ item, index }) => {
@@ -484,6 +506,11 @@ function PlansTable({
                 })}
                 <td className="py-1 pl-3 text-xs">
                   <ul className="space-y-0.5">
+                    {p.newerRejected.length > 0 ? (
+                      <li className="text-destructive" data-testid={`newer-rejected-${p.group.name}`}>
+                        {p.newerRejected.map((r) => `行${r.rowNumber}`).join('・')}の新しい回答が読めません。上書きすると行{p.rowNumber}の回答で置き換えます
+                      </li>
+                    ) : null}
                     {p.note ? <li>備考あり{p.dbHasNote ? '（今の備考を置き換えます）' : ''}</li> : p.dbHasNote ? <li>今の備考を消します</li> : null}
                     {p.noteTruncated ? (
                       <li className="text-amber-700" data-testid={`note-too-long-${p.group.name}`}>

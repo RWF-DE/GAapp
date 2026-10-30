@@ -8,7 +8,7 @@ import type { Snapshot } from './snapshot';
 import { isAllocationFinal } from './year';
 import { toStoredRows, toYearData } from './year-data';
 
-/** 出力の前に止めるとき（団体名が Excel の集計に使えない）。message は画面にそのまま出せる日本語 */
+/** 出力の前に止めるとき（団体名が Excel の集計に、品目名がシート名に使えない）。message は画面にそのまま出せる日本語 */
 export class ExportBlockedError extends Error {
   override name = 'ExportBlockedError';
 }
@@ -74,7 +74,14 @@ export async function downloadAllocationXlsx(snapshot: Snapshot, opts: { generat
   assertExportableGroupNames(snapshot);
   const input = toReportInput(snapshot, opts.generatedAt);
   const ex = await import('@gaapp/exporter');
-  const bytes = await ex.exportAllocationXlsx(input);
+  let bytes: Uint8Array;
+  try {
+    bytes = await ex.exportAllocationXlsx(input);
+  } catch (e) {
+    // 品目名がシート名に使えないときなど、入力のせいで止めたときの日本語の文は、そのまま画面に出す（ふつうの失敗の文に置き換えない）
+    if (e instanceof ex.ExportInputError) throw new ExportBlockedError(e.message, { cause: e });
+    throw e;
+  }
   const fileName = allocationExportFileName(snapshot.year.label, snapshot.year.status);
   downloadFile(bytes, fileName, MIME.xlsx);
   return { fileName };
