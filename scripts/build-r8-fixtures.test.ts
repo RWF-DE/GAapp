@@ -239,6 +239,36 @@ describe('build-r8-fixtures: 失敗のしかた（元データの値を出さな
     expect(r.stderr).toContain('forms/stall.csv:');
     expect(r.stderr).toContain('misaligned');
   });
+  describe('同じ団体の新しい回答が取り込めない行（resolveResponses の newerRejected）', () => {
+    // 研究室ゼータ（anonymize.csv で研究室A）の、使う回答（11:00）より新しい回答の机が数でない
+    const addNewer = () =>
+      appendFileSync(path.join(source, 'forms', 'department.csv'), `2026/10/06 12:00:00,d9@example.test,研究室ゼータ,${secret},0,0\n`);
+    it('--allow-rejected でなければ、行番号とフォームの名前だけを示して失敗する（値は出さない）', () => {
+      addNewer();
+      const r = run();
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain('forms/department.csv:4');
+      expect(r.stderr).not.toContain(secret);
+      expect(r.stderr).not.toContain('研究室ゼータ');
+      expect(r.stderr).not.toContain('@');
+      expect(existsSync(path.join(out, 'groups.csv'))).toBe(false);
+    });
+    it('--allow-rejected なら、その団体を取り込まず、report に匿名化した団体名と理由を残す（回答のない団体には入れない）', () => {
+      addNewer();
+      const r = run({ R8_SOURCE_DIR: source }, ['--allow-rejected']);
+      expect(r.code, r.stderr).toBe(0);
+      const fx = readFixtureDir(out);
+      expect(fx.groups.find((g) => g.name === '研究室A')!.submittedAt).toBeNull();
+      const line = r.stdout.split('\n').find((l) => l.startsWith('新しい回答が取り込めない団体'));
+      expect(line, r.stdout).toBeDefined();
+      expect(line).toContain('研究室A(department・4行目 invalid_number');
+      const without = r.stdout.split('\n').find((l) => l.startsWith('フォームの回答がなかった団体'))!;
+      expect(without).not.toContain('研究室A');
+      expect(r.stdout + r.stderr).not.toContain('研究室ゼータ');
+      expect(r.stdout + r.stderr).not.toContain(secret);
+      expect(r.stdout + r.stderr).not.toContain('@');
+    });
+  });
   it('anonymize.csv の source_name が manual/groups.csv の name・aliases に入っていたら、値を出さず行番号だけを示して失敗する', () => {
     const g = path.join(out, 'manual', 'groups.csv');
     const original = readFileSync(g, 'utf8');

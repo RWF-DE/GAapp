@@ -217,6 +217,11 @@ export type BuildReport = {
   excludedFromTotals: string[];
   totalsCount: number;
   skippedFormRows: { form: FormKind; rowNumber: number; reason: string }[];
+  /**
+   * 同じ団体の、使う回答より新しい回答が取り込まない行になった団体（resolveResponses の newerRejected。--allow-rejected のときだけ）。
+   * 一番新しい回答が読めないので取り込まず、submitted_at は空（formWithoutResponse には入れない）。group は匿名化した名前
+   */
+  formNewerRejected: { form: FormKind; group: string; rows: { rowNumber: number; reason: string }[] }[];
   /** 完全に空の行（Excel の書き出しの「,,,,」）。失敗にせず、件数だけ残す */
   emptyFormRows: { form: FormKind; count: number }[];
 };
@@ -288,6 +293,7 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
     excludedFromTotals: [],
     totalsCount: 0,
     skippedFormRows: [],
+    formNewerRejected: [],
     emptyFormRows: [],
   };
 
@@ -331,7 +337,7 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
     if (empty > 0) report.emptyFormRows.push({ form: kind, count: empty });
     for (const r of parsed.rejected) if (r.reason !== 'empty') fail(kind, r.rowNumber, r.reason);
     for (const r of parsed.responses) if (r.groupName !== null) r.groupName = anonymize(r.groupName);
-    // 取り込まない行の団体名も同じ名前で団体に当てる（同じ団体の新しい回答が読めない団体は resolveResponses が newerRejected にし、取り込まない）
+    // 取り込まない行の団体名も同じ名前で団体に当てる（同じ団体の新しい回答が読めない団体は resolveResponses が newerRejected にし、取り込まない。下で扱う）
     for (const r of parsed.rejected) if (r.groupName !== null) r.groupName = anonymize(r.groupName);
     const manualMap: Record<number, string> = {};
     if (kind === 'company') {
@@ -348,13 +354,23 @@ export function buildR8Fixtures(opts: BuildOptions): BuildResult {
       .map((g) => ({ id: gid(g.name), name: g.name, aliases: g.aliases, category: g.category }));
     const res = resolveResponses(parsed, importGroups, items, manualMap);
     for (const u of res.unmatched) fail(kind, u.rowNumber, '団体に対応しません');
+    // 使う回答より新しい回答が取り込まない行の団体は、取り込まない行と同じ扱い（--allow-rejected でなければ止め、なら report に残す）
+    for (const n of res.newerRejected) {
+      const rows = n.rejectedRows.map((r) => ({ rowNumber: r.rowNumber, reason: r.reason }));
+      if (!opts.allowRejected) {
+        const first = rows[0]!;
+        throw new BuildError(`forms/${kind}.csv:${first.rowNumber}: 同じ団体の新しい回答が取り込めない行です（${first.reason}）。この団体の回答は取り込めません`);
+      }
+      report.formNewerRejected.push({ form: kind, group: nameOfId.get(n.groupId)!, rows });
+    }
     for (const s of res.superseded)
       report.formSuperseded.push({ form: kind, group: nameOfId.get(s.groupId)!, droppedRows: s.droppedRows.length });
     for (const s of res.submissions) submittedAt.set(nameOfId.get(s.groupId)!, s.submittedAt);
     for (const r of res.requests) countsOf(nameOfId.get(r.groupId)!)[codeOfId.get(r.itemId) as keyof ItemCounts] += r.count;
   }
+  const newerRejectedGroups = new Set(report.formNewerRejected.map((n) => n.group));
   report.formWithoutResponse = manual.groups
-    .filter((g) => g.submission === 'form' && !submittedAt.has(g.name))
+    .filter((g) => g.submission === 'form' && !submittedAt.has(g.name) && !newerRejectedGroups.has(g.name))
     .map((g) => g.name);
 
   // ---- 手で決めた読み替え・追加・代理入力 ----
@@ -609,6 +625,12 @@ export function formatReport(r: BuildReport): string {
   L.push(`申請と手作業の requested_item が違う組: ${r.requestedItemDiffs.length} 組`);
   for (const d of r.requestedItemDiffs) L.push(`  ${d.group} ${d.item} 申請 ${d.requested} / 手作業 ${d.reference}`);
   if (r.emptyFormRows.length) L.push(`空の行（取り込まない）: ${r.emptyFormRows.map((e) => `${e.form}:${e.count}件`).join('、')}`);
+  if (r.formNewerRejected.length)
+    L.push(
+      `新しい回答が取り込めない団体（取り込まず、submitted_at は空）: ${r.formNewerRejected
+        .map((n) => `${n.group}(${n.form}・${n.rows.map((x) => `${x.rowNumber}行目 ${x.reason}`).join('・')})`)
+        .join('、')}`,
+    );
   if (r.skippedFormRows.length) L.push(`飛ばしたフォームの行: ${r.skippedFormRows.map((s) => `${s.form}:${s.rowNumber}(${s.reason})`).join('、')}`);
   return L.join('\n');
 }
