@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 // 年度のタブ（T09）：新しい年度を作った後の知らせ。create_year_from が通った後のルールの読み込みが失敗しても
 // （disabledRuleCodes が null）、年度を作れたものとして扱う（フォームを閉じる・新しい年度に切り替える）。
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+// T15b：総務部門長・総務副部門長は受付期間だけ（年度名・1日目は読み取り、送る patch も受付期間だけ、作成の欄はない。D-50）。
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Membership } from '@/lib/auth/membership';
+import type { AppRole } from '@/lib/auth/roles';
 import type { YearRow } from '@/lib/db/types';
 import { fakeAuth, sourceOf } from '@/lib/testing/fake-auth';
 import { TestProviders } from '@/lib/testing/providers';
@@ -28,6 +30,9 @@ vi.mock('@/lib/data/settings', async (orig) => ({ ...(await orig<typeof import('
 const setYear = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/auth/guarded', async (orig) => ({ ...(await orig<typeof import('@/lib/auth/guarded')>()), useGuardedSetYear: () => setYear }));
 
+const rpc = vi.hoisted(() => ({ callRpc: vi.fn() }));
+vi.mock('@/lib/rpc', () => rpc);
+
 const T0 = '2026-10-29T01:00:00.000001+00:00';
 const year = {
   id: 'y9',
@@ -40,12 +45,12 @@ const year = {
 } as unknown as YearRow;
 const NEW = { ...year, id: 'y10', label: 'R10', festival_start: '2028-10-14' } as unknown as YearRow;
 
-function renderTab() {
+function renderTab(role: AppRole = 'admin') {
   const value: SettingsContextValue = {
     year,
-    membership: { years: [], adminOfOpenYear: true, role: 'admin', latestYear: { id: 'y9', label: 'R9' } } as unknown as Membership,
+    membership: { years: [], adminOfOpenYear: role === 'admin', role, latestYear: { id: 'y9', label: 'R9' } } as unknown as Membership,
     yearWritable: true,
-    globalWritable: true,
+    globalWritable: role === 'admin',
   };
   return render(
     <TestProviders>
@@ -75,7 +80,7 @@ beforeEach(() => {
     years: [{ id: 'y9', label: 'R9', status: 'preparing', festival_start: '2027-10-16' }],
     roles: [{ year_id: 'y9', role: 'admin' }],
   });
-  for (const f of [data.createYearFrom, setYear, toasts.success, toasts.error, toasts.info]) f.mockReset();
+  for (const f of [data.createYearFrom, setYear, rpc.callRpc, toasts.success, toasts.error, toasts.info]) f.mockReset();
   setYear.mockResolvedValue(true);
 });
 afterEach(() => cleanup());
@@ -110,4 +115,47 @@ describe('新しい年度を作った後の知らせ', () => {
     expect(notice.textContent).toContain('R10 を作りました。無効になったルールの数を確かめられませんでした。ルール画面で確かめてください。');
     expect(notice.textContent).not.toContain('無効になったルール 0 件');
   });
+});
+
+describe('年度の変更の段（D-50）', () => {
+  const field = (form: HTMLElement, name: string) => form.querySelector(`input[name="${name}"]`) as HTMLInputElement;
+
+  it('管理者：年度名・1日目も書け、説明は年度名・1日目・受付期間。作成の欄がある（最新の年度）', async () => {
+    renderTab('admin');
+    const form = await screen.findByTestId('year-edit-form');
+    for (const name of ['label', 'festival_start', 'request_open_at', 'request_close_at']) expect(field(form, name).readOnly).toBe(false);
+    expect(screen.getByTestId('year-edit-description').textContent).toBe(
+      '年度名・1日目・申請の受付期間を変えます。受付開始の前に締切を入れてください（受付中は締切を空にできません）。',
+    );
+    expect(screen.getByTestId('year-create-form')).toBeTruthy();
+  });
+
+  for (const role of ['head', 'deputy_head'] as const) {
+    it(`${role}：年度名・1日目は読み取り、作成の欄はなく、送る patch は受付期間だけ`, async () => {
+      rpc.callRpc.mockResolvedValue({});
+      const user = userEvent.setup();
+      renderTab(role);
+      const form = await screen.findByTestId('year-edit-form');
+      expect(field(form, 'label').readOnly).toBe(true);
+      expect(field(form, 'festival_start').readOnly).toBe(true);
+      expect(field(form, 'request_open_at').readOnly).toBe(false);
+      expect(field(form, 'request_close_at').readOnly).toBe(false);
+      expect(screen.getByTestId('year-edit-description').textContent).toBe(
+        '申請の受付期間を変えます（年度名と1日目は管理者が変えます）。受付開始の前に締切を入れてください（受付中は締切を空にできません）。',
+      );
+      // 最新の年度でも、作成の欄は出さずに管理者が作ると知らせる
+      expect(screen.queryByTestId('year-create-form')).toBeNull();
+      expect(screen.getByTestId('year-create-unavailable').textContent).toBe(
+        '新しい年度は、最新の年度（R9）を開いて、その年度の管理者が作れます。',
+      );
+      // 読み取りの欄は打っても変わらない
+      await user.type(field(form, 'label'), 'X');
+      expect(field(form, 'label').value).toBe('R9');
+      fireEvent.change(field(form, 'request_close_at'), { target: { value: '2027-07-10T18:00' } });
+      await user.click(screen.getByRole('button', { name: '年度を保存' }));
+      await waitFor(() => expect(rpc.callRpc).toHaveBeenCalledTimes(1));
+      expect(rpc.callRpc).toHaveBeenCalledWith('update_year', { p_year_id: 'y9', p_patch: { request_close_at: '2027-07-10T18:00:00+09:00' } });
+      await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('年度を保存しました'));
+    });
+  }
 });

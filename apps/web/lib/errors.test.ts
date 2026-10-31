@@ -81,6 +81,33 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     );
   });
 
+  it('招待の conflict（field: role）の後ろの文は、ロールを変えられる人かで変わる（管理者はメンバーの一覧、部門長・副部門長は管理者に頼む。D-50）', () => {
+    const e = p0001('conflict', { field: 'role', current: 'viewer' });
+    expect(msg(e, { rpc: 'invite', canChangeRoles: true })).toBe('この人はすでに「閲覧のみ」です。ロールの変更はメンバーの一覧から');
+    expect(msg(e, { rpc: 'invite', canChangeRoles: false })).toBe('この人はすでに「閲覧のみ」です。ロールの変更は管理者に頼んでください');
+    expect(msg(p0001('conflict', { field: 'role', current: 'head' }), { canChangeRoles: false })).toBe(
+      'この人はすでに「総務部門長」です。ロールの変更は管理者に頼んでください',
+    );
+    // 今のロールが分からない（表にない値・ない）ときは名前を出さない
+    expect(msg(p0001('conflict', { field: 'role', current: 'other' }), { canChangeRoles: false })).toBe(
+      'この人にはすでに別のロールがあります。ロールの変更は管理者に頼んでください',
+    );
+    expect(msg(p0001('conflict', { field: 'role' }))).toBe('この人にはすでに別のロールがあります。ロールの変更はメンバーの一覧から');
+  });
+
+  it('招待の conflict（field: group_role。同じ団体に別の立場でいる。T15）→ 今の立場と、切り替えはメンバーの一覧から', () => {
+    const e = p0001('conflict', { field: 'group_role', current: 'deputy_manager' });
+    expect(classifyError(e)).toMatchObject({ kind: 'conflict', reason: 'conflict' });
+    expect(effectOf(classifyError(e))).toMatchObject({ reload: 'data', keepInput: true });
+    expect(msg(e, { rpc: 'invite' })).toBe('この人はすでにこの団体の副店長です。店長・副店長の切り替えはメンバーの一覧から');
+    expect(msg(p0001('conflict', { field: 'group_role', current: 'manager' }), { canChangeRoles: false })).toBe(
+      'この人はすでにこの団体の店長です。店長・副店長の切り替えはメンバーの一覧から',
+    );
+    expect(msg(p0001('conflict', { field: 'group_role' }))).toBe(
+      'この人はすでにこの団体の店長・副店長です。店長・副店長の切り替えはメンバーの一覧から',
+    );
+  });
+
   it('P0001 role_overlap（兼任の禁止。T15）→ conflict。details によらず同じ文言で、読み直して入力を残す', () => {
     const overlap = '総務の部門員・部門長・副部門長は、同じ年度の団体の店長・副店長を兼ねられません（管理者と閲覧のみは兼ねられます）';
     const Y = '55555555-5555-4555-8555-555555555555';
@@ -93,6 +120,8 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     // invite の早めのエラー（reason つき）と details のないものも同じ
     expect(msg(p0001('role_overlap', { year_id: Y, reason: 'pending_invitation' }), { rpc: 'invite' })).toBe(overlap);
     expect(msg(p0001('role_overlap'))).toBe(overlap);
+    // 部門長・副部門長の招待（canChangeRoles: false）でも同じ
+    expect(msg(p0001('role_overlap', { year_id: Y, user_id: U, reason: 'current_membership' }), { rpc: 'invite', canChangeRoles: false })).toBe(overlap);
   });
 
   it('P0001 invalid_input → input（欄の日本語名を添える）。入力を残す', () => {

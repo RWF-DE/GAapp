@@ -20,7 +20,7 @@ import { AppError, appError, isUnknownOutcome, toAppError } from '@/lib/errors';
 import { isLockRejection, settleLockedWrite, type LockedWriteOutcome } from '@/lib/data/locked-save';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { callRpc } from '@/lib/rpc';
-import type { AppRole, YearSummary } from '@/lib/auth/membership';
+import type { AppRole, GroupRole, YearSummary } from '@/lib/auth/membership';
 import { APP_ROLES, isAdmin, isSoumu } from '@/lib/auth/roles';
 import { SETTINGS_TABS, type SettingsTab } from '@/lib/navigation';
 import type { GroupCsvRow } from '@/lib/schemas/settings';
@@ -42,9 +42,15 @@ export const SETTINGS_TAB_LABELS: Record<SettingsTab, string> = {
   export: '書き出し',
 };
 
-/** クエリの tab（合わない値は既定の years。1.1） */
-export function parseSettingsTab(v: string | null | undefined): SettingsTab {
-  return (SETTINGS_TABS as readonly string[]).includes(v ?? '') ? (v as SettingsTab) : 'years';
+/**
+ * クエリの tab（1.1）。tabs（その人が開けるタブ。settingsTabsFor）にない値・知らない値は、開けるタブの最初（既定の years）。
+ * 部門長・副部門長の `?tab=groups` なども年度のタブになる（URL は書き換えない。04「マスタ設定」・D-50）。
+ *
+ * @example
+ * parseSettingsTab('groups', settingsTabsFor('head')) // 'years'
+ */
+export function parseSettingsTab(v: string | null | undefined, tabs: readonly SettingsTab[] = SETTINGS_TABS): SettingsTab {
+  return (tabs as readonly string[]).includes(v ?? '') ? (v as SettingsTab) : (tabs[0] ?? 'years');
 }
 
 // ---- 並び（sort_order → 名前 → id。CLAUDE.md の約束） ----
@@ -237,16 +243,21 @@ export function latestAdminOpenYear(
 
 // ---- 年度 ----
 
-/** 年度の変更の patch（変えたキーだけ。日時は同じ時刻なら変えていない扱い） */
+/**
+ * 年度の変更の patch（変えたキーだけ。日時は同じ時刻なら変えていない扱い）。windowOnly（総務部門長・総務副部門長）なら受付期間
+ * （request_open_at・request_close_at）だけを入れる（update_year は、管理者でない人のほかのキーを forbidden にする。D-48。
+ * 画面では年度名・1日目の欄を読み取りにしているので、変わったキーが入ることはない）。
+ */
 export function yearPatch(
   year: Pick<YearRow, 'label' | 'festival_start' | 'request_open_at' | 'request_close_at'>,
   next: { label: string; festival_start: string; request_open_at: string | null; request_close_at: string | null },
+  opts: { windowOnly?: boolean } = {},
 ): Partial<typeof next> {
   const sameTime = (a: string | null, b: string | null) =>
     a === null || b === null ? a === b : Date.parse(a) === Date.parse(b);
   const patch: Partial<typeof next> = {};
-  if (next.label !== year.label) patch.label = next.label;
-  if (next.festival_start !== year.festival_start) patch.festival_start = next.festival_start;
+  if (!opts.windowOnly && next.label !== year.label) patch.label = next.label;
+  if (!opts.windowOnly && next.festival_start !== year.festival_start) patch.festival_start = next.festival_start;
   if (!sameTime(next.request_open_at, year.request_open_at)) patch.request_open_at = next.request_open_at;
   if (!sameTime(next.request_close_at, year.request_close_at)) patch.request_close_at = next.request_close_at;
   return patch;
@@ -346,21 +357,32 @@ export async function fetchAllocationSources(yearId: string, client: AppSupabase
 
 // ---- メンバー（ユーザーのタブ） ----
 
+/** メンバーが代表する団体と、その団体での立場 */
+export interface MemberGroup {
+  id: string;
+  name: string;
+  /** 店長・副店長（group_members.role） */
+  role: GroupRole;
+}
+
 export interface MemberRow {
   userId: string;
   /** profiles の表示名。読めなければ null（「名前を表示できません」） */
   displayName: string | null;
   role: AppRole | null;
   roleUpdatedAt: string | null;
-  /** 代表する団体（この年度） */
-  groups: { id: string; name: string }[];
+  /** 代表する団体と立場（この年度。団体名の順） */
+  groups: MemberGroup[];
 }
 
 export interface InvitationRow {
   id: string;
   email: string;
+  /** ロールの招待のロール（団体の招待は null） */
   role: AppRole | null;
   groupId: string | null;
+  /** 団体の招待の立場（店長・副店長。invitations.group_role。ロールの招待は null） */
+  groupRole: GroupRole | null;
   usedAt: string | null;
   createdAt: string;
 }
@@ -376,25 +398,28 @@ export interface Members {
 const ROLE_ORDER = new Map<AppRole, number>(APP_ROLES.map((r, i) => [r, i]));
 const roleOrder = (role: AppRole | null) => (role ? (ROLE_ORDER.get(role) ?? 9) : 9);
 
-/** 年度のメンバー（ロールと団体代表）と招待を読む（admin だけが全部を読める） */
+/**
+ * 年度のメンバー（ロールと店長・副店長）と招待を読む。ロールと団体代表は部門長以上が全部を読める。招待は、管理者は全部、
+ * 総務部門長・総務副部門長は総務部門員の招待と団体の招待だけ（RLS。D-48）
+ */
 export async function fetchMembers(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<Members> {
   const [roles, reps, invs] = await Promise.all([
     client.from('year_roles').select('user_id, role, updated_at').eq('year_id', yearId).order('user_id'),
     client
       .from('group_members')
-      .select('group_id, user_id, groups!inner(year_id, name)')
+      .select('group_id, user_id, role, groups!inner(year_id, name)')
       .eq('groups.year_id', yearId)
       .order('group_id')
       .order('user_id'),
     client
       .from('invitations')
-      .select('id, email, role, group_id, used_at, created_at')
+      .select('id, email, role, group_id, group_role, used_at, created_at')
       .eq('year_id', yearId)
       .order('created_at')
       .order('id'),
   ]);
   for (const r of [roles, reps, invs]) if (r.error) throw toAppError(r.error, r.status);
-  const repRows = (reps.data ?? []) as unknown as { group_id: string; user_id: string; groups: { name: string } }[];
+  const repRows = (reps.data ?? []) as unknown as { group_id: string; user_id: string; role: GroupRole; groups: { name: string } }[];
   const userIds = [...new Set([...(roles.data ?? []).map((r) => r.user_id), ...repRows.map((r) => r.user_id)])];
   const names = new Map<string, string>();
   if (userIds.length > 0) {
@@ -418,7 +443,7 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
   }
   const repCount = new Map<string, number>();
   for (const r of repRows) {
-    memberOf(r.user_id).groups.push({ id: r.group_id, name: r.groups.name });
+    memberOf(r.user_id).groups.push({ id: r.group_id, name: r.groups.name, role: r.role });
     repCount.set(r.group_id, (repCount.get(r.group_id) ?? 0) + 1);
   }
   const members = [...byUser.values()].sort(
@@ -428,14 +453,17 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
       cmp(a.userId, b.userId),
   );
   for (const m of members) m.groups.sort((a, b) => a.name.localeCompare(b.name, 'ja') || cmp(a.id, b.id));
-  const invitations = (invs.data ?? []).map((i) => ({
-    id: i.id,
-    email: i.email,
-    role: i.role,
-    groupId: i.group_id,
-    usedAt: i.used_at,
-    createdAt: i.created_at,
-  }));
+  const invitations = (invs.data ?? []).map(
+    (i): InvitationRow => ({
+      id: i.id,
+      email: i.email,
+      role: i.role,
+      groupId: i.group_id,
+      groupRole: i.group_role,
+      usedAt: i.used_at,
+      createdAt: i.created_at,
+    }),
+  );
   return { members, invitations, repCount };
 }
 

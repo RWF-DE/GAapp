@@ -3,6 +3,7 @@ import { Constants } from '@gaapp/shared';
 import { describe, expect, it } from 'vitest';
 import {
   APP_ROLES,
+  canRevokeInvitation,
   GROUP_ROLES,
   inviteKindsFor,
   isAdmin,
@@ -62,5 +63,16 @@ describe('扱えるロールと招待の立場（D-50）', () => {
     expect(inviteKindsFor('head')).toEqual(['staff', 'manager', 'deputy_manager']);
     expect(inviteKindsFor('deputy_head')).toEqual(['staff', 'manager', 'deputy_manager']);
     for (const r of ['staff', 'viewer', null, undefined] as const) expect(inviteKindsFor(r)).toEqual([]);
+  });
+
+  it('canRevokeInvitation：管理者はすべて、部門長・副部門長は総務部門員の招待と団体の招待、ほかは何もない', () => {
+    const revocable = (actor: AppRole | null | undefined) => [
+      ...APP_ROLES.filter((role) => canRevokeInvitation(actor, { role })),
+      ...(canRevokeInvitation(actor, { role: null }) ? ['group'] : []),
+    ];
+    expect(revocable('admin')).toEqual(['admin', 'head', 'deputy_head', 'staff', 'viewer', 'group']);
+    expect(revocable('head')).toEqual(['staff', 'group']);
+    expect(revocable('deputy_head')).toEqual(['staff', 'group']);
+    for (const r of ['staff', 'viewer', null, undefined] as const) expect(revocable(r)).toEqual([]);
   });
 });

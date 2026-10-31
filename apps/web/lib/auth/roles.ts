@@ -71,3 +71,12 @@ export function manageableRoles(actor: MaybeRole): readonly AppRole[] {
 export function inviteKindsFor(actor: MaybeRole): readonly InviteKind[] {
   return isLead(actor) ? [...manageableRoles(actor), ...GROUP_ROLES] : [];
 }
+
+/**
+ * その招待を取り消せるか（revoke_invitation の段）：ロールの招待は manageableRoles にそのロールがあるとき（管理者はすべて、
+ * 総務部門長・総務副部門長は総務部門員の招待だけ）、団体の招待（店長・副店長。role が null）は部門長以上。
+ * 部門長・副部門長には RLS がこの範囲の招待だけを返すので、画面に出る招待とそろう（ユーザーのタブの「取り消す」）。
+ */
+export function canRevokeInvitation(actor: MaybeRole, invitation: { role: AppRole | null }): boolean {
+  return invitation.role ? manageableRoles(actor).includes(invitation.role) : isLead(actor);
+}

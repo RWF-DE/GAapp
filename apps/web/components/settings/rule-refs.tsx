@@ -91,7 +91,7 @@ export function RoomRuleRefsNotice({ refs, currentYearId }: { refs: RoomRuleRefs
       {refs.unreadable.length > 0 ? (
         <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900" data-testid="rule-refs-unreadable">
           {`ルールを読めない終了していない年度があるので、削除できません（${refs.unreadable.map((y) => y.label).join('、')}。`}
-          {'その年度の総務管理者・総務部員でないため、この場所を参照する有効なルールがないかを確かめられません）。'}
+          {'その年度の総務（管理者・総務部門長・総務副部門長・総務部門員）でないため、この場所を参照する有効なルールがないかを確かめられません）。'}
           {'削除は、終了していないすべての年度のルールを読める管理者が行ってください。'}
         </p>
       ) : null}

@@ -342,12 +342,15 @@ export function Field({
   error,
   hint,
   className,
+  errorTestId,
   children,
 }: {
   label: string;
   error?: string | undefined;
   hint?: React.ReactNode;
   className?: string;
+  /** エラーの文の data-testid（E2E が欄の下の文を名指しで見るとき。招待の立場の欄など） */
+  errorTestId?: string;
   children: (props: { id: string; 'aria-invalid'?: true; 'aria-describedby'?: string }) => React.ReactNode;
 }) {
   const id = useId();
@@ -364,7 +367,7 @@ export function Field({
         </p>
       ) : null}
       {error ? (
-        <p id={errId} role="alert" className="text-xs text-destructive">
+        <p id={errId} role="alert" className="text-xs text-destructive" data-testid={errorTestId}>
           {error}
         </p>
       ) : null}
