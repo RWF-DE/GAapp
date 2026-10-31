@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(35);
+select plan(42);
 
 -- 在庫：staff の書き込みが監査に残る（K-16）。数えた人は DB が入れる（K-25）
 select tests.login_as('staff');
@@ -75,6 +75,20 @@ from unnest(array['update public.stocks set count = 0 where year_id = :Y1',
                   'update public.groups set location_room_id = null where year_id = :Y1',
                   'update public.room_years set usable = false where year_id = :Y1']) t;
 select is(tests.guard_calls(), 0::bigint, '拒否される insert・update では、守りのトリガーが年度の行をロックしない');
+-- 部門長・副部門長（T15）：groups の書き込みは管理者だけのまま（前置きの確かめは can_admin）なので、拒否されロックもしない。
+-- room_years（今年の使用）は部門長以上が書く。前置きの確かめが can_lead になったので、守りが年度の行をロックして E002 を止める
+select is(tests.try_cell(tests.sql('update public.groups set location_room_id = null where year_id = :Y1'), p, 'update'), 'denied',
+          format('%s の groups の update は拒否（管理者だけ）', p))
+from unnest(array['head', 'deputy']) p;
+select is(tests.guard_calls(), 0::bigint, '部門長・副部門長の groups の書き込みでも、守りは年度の行をロックしない');
+select is(tests.try_cell(tests.sql('insert into public.room_years (year_id, room_id, usable) values (:Y1, :R4, true)'), p, 'insert'),
+          'allowed', format('%s は確定中も場所の状態を足せる', p))
+from unnest(array['head', 'deputy']) p;
+select is(tests.guard_calls(), 2::bigint, '部門長・副部門長の room_years の書き込みでは、守りのトリガーが年度の行をロックして状態を読む（1回ずつ）');
+select tests.login_as('head');
+select throws_ok(tests.sql('insert into public.room_years (year_id, room_id, usable) values (:Y1, :R1, false)'),
+  'P0001', 'invalid_state', '部門長も、確定中に振り分けのある部屋を使用不可にできない（守りが効く）');
+select tests.logout();
 -- admin の書き込みでは守りが効く（確定中に E001・E002・E005 を作れない）
 select tests.login_as('admin');
 select throws_ok(tests.sql('insert into public.room_years (year_id, room_id, usable) values (:Y1, :R1, false)'),

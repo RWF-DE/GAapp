@@ -1,7 +1,7 @@
 -- 013_rls_select_once：0010 の select のポリシー（判定関数を行ごとに呼ばない形。T14 の速さの改善、D-47）
--- ① 見える行が 0004 のポリシー（行ごとに判定関数を呼ぶ形）とまったく同じこと：7 表 × 7 人 × Y1 の6つの状態 × Y2 の2つの状態で、
---    今のポリシーで見える行（authenticated に切り替えて読む）と、0004 の述語で postgres が選んだ行（auth.uid() だけを変える）を、
---    行の中身ごと比べる。
+-- ① 見える行が行ごとの形のポリシー（0004 の述語のロールの配列を、T15 の段〔部門長以上・総務。0013〕に直したもの）とまったく同じこと：
+--    7 表 × 9 人 × Y1 の6つの状態 × Y2 の2つの状態で、今のポリシーで見える行（authenticated に切り替えて読む）と、行ごとの形の述語で
+--    postgres が選んだ行（auth.uid() だけを変える）を、行の中身ごと比べる。
 -- ② 新しい関数（my_role_year_ids・my_group_ids・my_role_group_ids）が呼んだ人についてだけ答えることと、実行の権限。
 -- ③ audit_logs の年度をまたぐ表の行（year_id が null）と、開いていない（closed の）年度の扱い。
 -- ④ 7 表の select のポリシーが、行の列を判定関数に渡していないこと（書き方の決まり。02 の「権限とRLS」）。
@@ -14,22 +14,23 @@ begin;
 insert into public.audit_logs (table_name, row_pk, action, year_id, before, after)
 values ('years', '{}', 'update', null, '{"a":1}', '{"a":2}'), ('profiles', '{}', 'update', null, '{"a":1}', '{"a":2}');
 
-select plan(36);
+select plan(46);
 
--- ---------------------------------------------------------------- ① 0004 の述語と同じ行が見える
+-- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
+-- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
 create table tests.old_pred (tbl text primary key, pred text not null);
 insert into tests.old_pred values
   ('audit_logs', $p$ case when year_id is null
                          then table_name in ('rooms', 'items', 'distance_overrides') and private.is_admin_of_open_year()
-                         else private.has_role(year_id, 'admin') end $p$),
-  ('allocations', $p$ private.has_any_role(year_id, '{admin,staff}')
+                         else private.has_any_role(year_id, '{admin,head,deputy_head}') end $p$),
+  ('allocations', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}')
                       or ((private.has_role(year_id, 'viewer') or private.is_group_member(group_id))
                           and private.year_status(year_id) in ('confirmed', 'closed')) $p$),
-  ('requests', $p$ private.has_any_role(private.group_year_id(group_id), '{admin,staff}') or private.is_group_member(group_id) $p$),
-  ('request_submissions', $p$ private.has_any_role(private.group_year_id(group_id), '{admin,staff}') or private.is_group_member(group_id) $p$),
-  ('substitution_consents', $p$ private.has_any_role(private.group_year_id(group_id), '{admin,staff}') or private.is_group_member(group_id) $p$),
-  ('stocks', $p$ private.has_any_role(year_id, '{admin,staff}') $p$),
-  ('groups', $p$ private.has_any_role(year_id, '{admin,staff,viewer}') or private.is_group_member(id) $p$);
+  ('requests', $p$ private.has_any_role(private.group_year_id(group_id), '{admin,head,deputy_head,staff}') or private.is_group_member(group_id) $p$),
+  ('request_submissions', $p$ private.has_any_role(private.group_year_id(group_id), '{admin,head,deputy_head,staff}') or private.is_group_member(group_id) $p$),
+  ('substitution_consents', $p$ private.has_any_role(private.group_year_id(group_id), '{admin,head,deputy_head,staff}') or private.is_group_member(group_id) $p$),
+  ('stocks', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$),
+  ('groups', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff,viewer}') or private.is_group_member(id) $p$);
 
 -- 行の中身をまとめた指紋（件数と、行の文字列を並べた md5）
 create function tests.visible_old(p_tbl text, p_persona text) returns text language plpgsql as $$
@@ -59,7 +60,7 @@ begin
       perform tests.set_scenario(s1);
       update public.years set status = s2::public.year_status where id = tests.id('Y2');
       for t in select tbl from tests.old_pred order by tbl loop
-        foreach p in array array['admin', 'staff', 'rep', 'rep2', 'viewer', 'outsider', 'admin2'] loop
+        foreach p in array array['admin', 'staff', 'rep', 'rep2', 'viewer', 'outsider', 'admin2', 'head', 'deputy'] loop
           insert into tests.compared values (t, s1 || ' / Y2 ' || s2, p, tests.visible_old(t, p), tests.visible_new(t, p));
         end loop;
       end loop;
@@ -71,7 +72,7 @@ end $$;
 select tests.compare_all();
 
 select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
-  format('%s：0010 のポリシーで見える行は、0004 の述語で選ぶ行と同じ（7 人 × Y1 の6状態 × Y2 の2状態）', t))
+  format('%s：0010 の形（0013 の段）のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態）', t))
 from unnest(array['audit_logs', 'allocations', 'requests', 'request_submissions', 'substitution_consents', 'stocks', 'groups']) t;
 -- 比べたものに中身がある（全員 0 行や全員同じでは比べたことにならない）
 select is_empty($q$ select tbl from tests.compared group by tbl
@@ -87,6 +88,20 @@ select set_eq($q$ select private.my_role_group_ids('{admin,staff}') $q$, array[t
   'admin：admin・staff の年度の団体は Y1 の3団体（Y2 の G3 は入らない）');
 select tests.logout();
 
+-- 部門長・副部門長（T15）：ロールの年度は Y1。集合は渡したロールの配列どおり（段の配列を渡すポリシーで、head・deputy_head が入る）
+select tests.login_as('head');
+select set_eq($q$ select private.my_role_year_ids('{admin,head,deputy_head}') $q$, array[tests.id('Y1')], 'head：部門長以上の年度は Y1');
+select is_empty($q$ select private.my_role_year_ids('{admin,staff,viewer}') $q$, 'head：admin・staff・viewer の年度はない');
+select set_eq($q$ select private.my_role_group_ids('{admin,head,deputy_head,staff}') $q$, array[tests.id('G1'), tests.id('G2'), tests.id('G4')],
+  'head：総務の年度の団体は Y1 の3団体');
+select is_empty($q$ select private.my_group_ids() $q$, 'head：代表の団体はない');
+select tests.logout();
+select tests.login_as('deputy');
+select set_eq($q$ select private.my_role_year_ids('{deputy_head}') $q$, array[tests.id('Y1')], 'deputy：副部門長の年度は Y1');
+select is_empty($q$ select private.my_role_year_ids('{head}') $q$, 'deputy：head（部門長）のロールの年度はない（副部門長は別のロール）');
+select set_eq($q$ select private.my_role_year_ids('{admin,head,deputy_head}') $q$, array[tests.id('Y1')], 'deputy：部門長以上の年度は Y1');
+select tests.logout();
+
 select tests.login_as('rep');
 select set_eq($q$ select private.my_role_year_ids('{admin,staff,viewer}') $q$, array[tests.id('Y2')], 'rep：ロールの年度は Y2（viewer）だけ');
 select set_eq($q$ select private.my_group_ids() $q$, array[tests.id('G1')], 'rep：代表の団体は G1 だけ');
@@ -95,7 +110,8 @@ select is_empty($q$ select private.my_role_group_ids('{admin,staff}') $q$, 'rep�
 select tests.logout();
 
 select tests.login_as('staff');
-select set_eq($q$ select private.my_group_ids() $q$, array[tests.id('G4')], 'staff：代表を兼ねる団体は G4 だけ');
+select set_eq($q$ select private.my_group_ids() $q$, array[tests.id('G3')],
+  'staff：代表の団体は Y2 の G3 だけ（兼任の禁止で、staff の年度〔Y1〕の団体代表は兼ねられない）');
 select set_eq($q$ select private.my_role_year_ids('{staff}') $q$, array[tests.id('Y1')], 'staff：staff の年度は Y1');
 select tests.logout();
 
@@ -155,11 +171,15 @@ end $$;
 select tests.set_scenario('requesting');
 select is(tests.audit_counts('admin'), 'Y1=true Y2=false null3=true null_other=false',
   'Y1（開いている）の admin：Y1 の行と、年度をまたぐ3表の行が見える。Y2 の行と、3表のほかの年度のない行は見えない');
+select is(tests.audit_counts('head'), 'Y1=true Y2=false null3=false null_other=false',
+  'Y1 の部門長：Y1 の行は読めるが、年度をまたぐ3表の行（管理者だけ）は読めない');
+select is(tests.audit_counts('deputy'), 'Y1=true Y2=false null3=false null_other=false', 'Y1 の副部門長も部門長と同じ');
 select is(tests.audit_counts('staff'), 'Y1=false Y2=false null3=false null_other=false', 'staff は履歴を読めない');
 select is(tests.audit_counts('outsider'), 'Y1=false Y2=false null3=false null_other=false', '未招待の人は履歴を読めない');
 select tests.set_scenario('closed');
 select is(tests.audit_counts('admin'), 'Y1=true Y2=false null3=false null_other=false',
   'Y1 が closed：admin は Y1 の行は読めるが、年度をまたぐ表の行は読めない（closed でない年度の admin でないため。D-01）');
+select is(tests.audit_counts('head'), 'Y1=true Y2=false null3=false null_other=false', 'Y1 が closed でも、部門長は Y1 の行を読める');
 select is(tests.audit_counts('admin2'), 'Y1=false Y2=true null3=true null_other=false',
   'Y1 が closed でも、Y2（preparing）の admin は年度をまたぐ表の行を読める');
 -- admin が Y2 の admin も兼ねる：開いている年度があれば、年度をまたぐ表の行が読める

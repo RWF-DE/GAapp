@@ -113,11 +113,20 @@ export const RPC_ARGS = {
     p_email: emailSchema,
     p_role: z.enum(E.app_role).optional(),
     p_group_id: uuid.optional(),
+    // 団体の招待の立場（T15。省くと店長。group_id なしで渡すと invalid_input）
+    p_group_role: z.enum(E.group_role).optional(),
   }),
   set_role: z.object({ p_year_id: uuid, p_user_id: uuid, p_role: z.enum(E.app_role), p_reason: optionalReasonSchema.optional() }),
   remove_role: z.object({ p_year_id: uuid, p_user_id: uuid, p_reason: optionalReasonSchema.optional() }),
   revoke_invitation: z.object({ p_invitation_id: uuid }),
   remove_group_member: z.object({ p_group_id: uuid, p_user_id: uuid, p_reason: optionalReasonSchema.optional() }),
+  // 店長⇄副店長（T15。画面から呼ぶのは T15b）
+  set_group_member_role: z.object({
+    p_group_id: uuid,
+    p_user_id: uuid,
+    p_group_role: z.enum(E.group_role),
+    p_reason: optionalReasonSchema.optional(),
+  }),
   save_auto_allocations: z.object({
     p_year_id: uuid,
     p_rows: autoRowsPayload,

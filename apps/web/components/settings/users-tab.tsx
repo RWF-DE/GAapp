@@ -28,7 +28,7 @@ import { classifyError, messageFor } from '@/lib/errors';
 import { CATEGORY_LABELS } from '@/lib/labels';
 import { callRpc } from '@/lib/rpc';
 import { EMAIL_MAX } from '@/lib/schemas/common';
-import { INVITE_KINDS, inviteFormSchema, type InviteFormInput } from '@/lib/schemas/settings';
+import { INVITE_KINDS, inviteFormSchema, type InviteFormInput, type InviteFormOutput } from '@/lib/schemas/settings';
 import { Field, selectClass, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
 
 const ROLES: readonly AppRole[] = ['admin', 'staff', 'viewer'];
@@ -324,7 +324,7 @@ function RoleDialog({
 function InviteCard({ groups, onInvited }: { groups: readonly { id: string; name: string; category: keyof typeof CATEGORY_LABELS }[]; onInvited: () => Promise<void> }) {
   const { year } = useSettings();
   const onError = useWriteErrorHandler();
-  const form = useForm<InviteFormInput, unknown, { email: string; role: AppRole | null; group_id: string | null }>({
+  const form = useForm<InviteFormInput, unknown, InviteFormOutput>({
     resolver: zodResolver(inviteFormSchema),
     defaultValues: { email: '', kind: 'staff', group_id: '' },
   });

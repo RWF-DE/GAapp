@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(148);
+select plan(152);
 
 -- ---------------------------------------------------------------- 時刻（created_at・updated_at）
 select lives_ok($$ insert into public.rooms (name, created_at, updated_at) values ('pgtap-T', '2000-01-01', '2000-01-01') $$, '時刻を指定した insert');
@@ -86,6 +86,25 @@ select is((select year_id from public.audit_logs where table_name = 'years' and 
 select is((select group_id from public.audit_logs where table_name = 'groups' and action = 'insert' and row_pk ->> 'id' = tests.id('G1')::text), tests.id('G1'), 'groups は自分の id が団体');
 select is((select year_id from public.audit_logs where table_name = 'rooms' and row_pk ->> 'id' = tests.id('R1')::text order by id desc limit 1), null, '年度をまたぐ表（rooms）の year_id は null');
 
+-- 団体代表の立場（店長⇄副店長。T15）の変更も監査に残る（理由・団体・年度つき）
+select set_config('app.reason', '副店長に交代', true);
+select tests.act_as('admin');
+update public.group_members set role = 'deputy_manager' where group_id = tests.id('G1') and user_id = tests.id('rep');
+select tests.act_clear();
+select set_config('app.reason', '', true);
+select is((select (before ->> 'role') || '>' || (after ->> 'role') || ' ' || reason from public.audit_logs
+           where table_name = 'group_members' and action = 'update' order by id desc limit 1),
+  'manager>deputy_manager 副店長に交代', '店長 → 副店長の変更が監査に残る（before・after・理由）');
+select is((select row_pk from public.audit_logs where table_name = 'group_members' and action = 'update' order by id desc limit 1),
+  jsonb_build_object('group_id', tests.id('G1'), 'user_id', tests.id('rep')), 'row_pk は団体と人');
+select ok((select year_id = tests.id('Y1') and group_id = tests.id('G1') and user_id = tests.id('admin') from public.audit_logs
+           where table_name = 'group_members' and action = 'update' order by id desc limit 1),
+  '立場の変更の監査に、年度・団体・変えた人が入る');
+update public.group_members set role = 'deputy_manager' where group_id = tests.id('G1') and user_id = tests.id('rep');
+select is((select count(*)::int from public.audit_logs where table_name = 'group_members' and action = 'update'), 1,
+  '同じ立場への更新（updated_at だけの変更）は監査に書かない');
+update public.group_members set role = 'manager' where group_id = tests.id('G1') and user_id = tests.id('rep');
+
 -- 団体の連鎖削除：消えた子の行にも消える前の団体の年度が入る
 select lives_ok($$ delete from public.groups where id = tests.id('G2') $$, '団体を消す（requesting の年度）');
 select is((select count(distinct table_name)::int from public.audit_logs where action = 'delete' and table_name in ('requests', 'request_submissions', 'allocations', 'group_members')
@@ -120,7 +139,7 @@ select throws_ok(format($$ update public.allocations set year_id = %L where id =
   'P0001', 'invalid_input', '振り分けの年度を団体と違う年度に変えられない（年度は変えられない）');
 select throws_ok(format($$ insert into public.deliveries (year_id, group_id, kind) values (%L, %L, 'tent') $$, tests.id('Y2'), tests.id('G1')),
   '23503', null, '受け渡しの year_id は団体の year_id と一致する');
-select throws_ok(format($$ insert into public.invitations (year_id, email, group_id) values (%L, 'wrong@pgtap.test', %L) $$, tests.id('Y2'), tests.id('G1')),
+select throws_ok(format($$ insert into public.invitations (year_id, email, group_id, group_role) values (%L, 'wrong@pgtap.test', %L, 'manager') $$, tests.id('Y2'), tests.id('G1')),
   '23503', null, '招待の year_id は団体の year_id と一致する');
 insert into public.slots (year_id, day, label) values (tests.id('Y2'), 'day1', 'Y2 の時間枠');
 select throws_ok(format($$ update public.deliveries set slot_id = (select id from public.slots where label = 'Y2 の時間枠') where id = %L $$, tests.id('D_G1')),

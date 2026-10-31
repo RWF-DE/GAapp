@@ -7,7 +7,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(76);
+select plan(90);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。confirmed = false なら email_confirmed_at を null にする。
 -- provider が google なら Google の identity（Google の経路）、email なら email_verified: true の email の identity（seed の経路）
@@ -102,27 +102,33 @@ select is((select length(display_name) from public.profiles where user_id = test
 select is((select display_name from public.profiles where user_id = tests.id('p_blank')), '名前未設定', '空白だけの名前は使わない。未確認でも profiles はできる');
 
 -- ================================================================ 招待の受け入れ
--- 招待を用意する（Y1 の staff、G1・G2 の代表。メールは大文字が混じっても小文字で比べる）
+-- 招待を用意する（Y1 の staff、G1・G2 の代表。メールは大文字が混じっても小文字で比べる）。
+-- g_new は同じ年度（Y1）の staff の招待と団体（G2）の招待を持つ（T15 より前の 4 引数の invite は一度に作れた）。兼任の禁止（D-49）で
+-- 片方しか付かない。同じ時刻の招待はロールの招待を先に受け入れるので、staff が付いて団体の招待は残る
 insert into public.invitations (year_id, email, role) values
   (tests.id('Y1'), 'g_new@pgtap.test', 'staff'),
   (tests.id('Y1'), 'seed_path@pgtap.test', 'viewer'),
   (tests.id('Y1'), 'unconf@pgtap.test', 'staff'),
   (tests.id('Y1'), 'deleted@pgtap.test', 'staff'),
   (tests.id('Y1'), 'mixed@pgtap.test', 'viewer');
-insert into public.invitations (year_id, email, group_id) values
-  (tests.id('Y1'), 'g_new@pgtap.test', tests.id('G2')),
-  (tests.id('Y1'), 'seed_path@pgtap.test', tests.id('G1'));
+insert into public.invitations (year_id, email, group_id, group_role) values
+  (tests.id('Y1'), 'g_new@pgtap.test', tests.id('G2'), 'manager'),
+  (tests.id('Y1'), 'seed_path@pgtap.test', tests.id('G1'), 'deputy_manager');
 
 -- (1) Google の経路：未確認で insert → 同じトランザクションで確認済みに update
 select tests.auth_insert('g_new', 'g_new@pgtap.test', '{"full_name": "グーグル 太郎"}', false);
 select is((select count(*)::int from public.year_roles where user_id = tests.id('g_new')), 0, 'insert の時点（未確認）ではロールを付けない');
 select is((select count(*)::int from public.invitations where email = 'g_new@pgtap.test' and used_at is null), 2, '招待は未使用のまま');
-update auth.users set email_confirmed_at = now() where id = tests.id('g_new');
+select lives_ok($$ update auth.users set email_confirmed_at = now() where id = tests.id('g_new') $$,
+  '兼任になる招待があっても、初回ログイン（メールの確認。GoTrue のトランザクション）は失敗しない（例外を出さない）');
 select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('g_new')), 'staff'::public.app_role,
-  '初回ログイン（メールの確認）で招待どおりの year_roles ができる');
-select ok(exists (select 1 from public.group_members where group_id = tests.id('G2') and user_id = tests.id('g_new')),
-  '団体代表の招待から group_members ができる');
-select is((select count(*)::int from public.invitations where email = 'g_new@pgtap.test' and used_at is not null), 2, '招待は使用済みになる');
+  '初回ログイン（メールの確認）で招待どおりの year_roles ができる（同じ時刻ならロールの招待が先）');
+select ok(not exists (select 1 from public.group_members where user_id = tests.id('g_new')),
+  '同じ年度の staff と兼任になる団体（G2）の招待からは group_members を作らない');
+select is((select count(*)::int from public.invitations where email = 'g_new@pgtap.test' and used_at is not null and role = 'staff'), 1,
+  'staff の招待は使用済みになる');
+select ok((select used_at is null from public.invitations where email = 'g_new@pgtap.test' and group_id is not null),
+  '兼任になる団体の招待は未使用のまま残る（管理者の画面で見える）');
 select is((select reason from public.audit_logs where table_name = 'year_roles' and row_pk ->> 'user_id' = tests.id('g_new')::text),
   '招待の受け入れ', '監査に「招待の受け入れ」と残る');
 select is(nullif(current_setting('app.reason', true), ''), null, '受け入れの後、トランザクションの理由は元に戻る（後の書き込みに残らない）');
@@ -134,7 +140,42 @@ select tests.auth_insert('seed_path', 'Seed_Path@PGTAP.test', '{}', true, false,
 select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('seed_path')), 'viewer'::public.app_role,
   '確認済みのユーザーに identity が足されたら、その場で招待を受け入れる（メールは小文字で比べる）');
 select ok(exists (select 1 from public.group_members where group_id = tests.id('G1') and user_id = tests.id('seed_path')),
-  'ロールと団体代表の両方の招待を受け入れる');
+  'ロールと団体代表の両方の招待を受け入れる（viewer は団体代表を兼ねられる）');
+select is((select role from public.group_members where group_id = tests.id('G1') and user_id = tests.id('seed_path')),
+  'deputy_manager'::public.group_role, '団体の招待の立場（副店長）で group_members ができる');
+
+-- (2b) Google の経路で、立場と年度：Y1 の G2 の副店長の招待と、Y2 の staff の招待（違う年度なので兼ねてよい）
+insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'g_dep@pgtap.test', 'staff');
+insert into public.invitations (year_id, email, group_id, group_role) values (tests.id('Y1'), 'g_dep@pgtap.test', tests.id('G2'), 'deputy_manager');
+select tests.auth_insert('g_dep', 'g_dep@pgtap.test', '{}', false);
+select lives_ok($$ update auth.users set email_confirmed_at = now() where id = tests.id('g_dep') $$, '初回ログイン（Google の経路）');
+select is((select role from public.group_members where group_id = tests.id('G2') and user_id = tests.id('g_dep')),
+  'deputy_manager'::public.group_role, 'Google の経路でも、団体の招待の立場（副店長）で group_members ができる');
+select is((select role from public.year_roles where year_id = tests.id('Y2') and user_id = tests.id('g_dep')), 'staff'::public.app_role,
+  '違う年度（Y2）の staff の招待も付く（兼任の禁止は年度ごと）');
+select is((select count(*)::int from public.invitations where email = 'g_dep@pgtap.test' and used_at is not null), 2, '2つの招待とも使用済み');
+
+-- (2c) すでに団体代表（Y1 の G1 の店長）の人の、同じ年度の staff の招待：初回ログインは失敗せず、招待は未使用のまま
+select tests.auth_insert('g_rep', 'g_rep@pgtap.test', '{}', false);
+insert into public.group_members (group_id, user_id, role) values (tests.id('G1'), tests.id('g_rep'), 'manager');
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'g_rep@pgtap.test', 'staff');
+select lives_ok($$ update auth.users set email_confirmed_at = now() where id = tests.id('g_rep') $$,
+  '団体代表の人に同じ年度の staff の招待があっても、初回ログインは失敗しない');
+select is((select count(*)::int from public.year_roles where user_id = tests.id('g_rep')), 0, '兼任になる staff は付かない');
+select ok((select used_at is null from public.invitations where email = 'g_rep@pgtap.test'), 'staff の招待は未使用のまま');
+select tests.login_as('g_rep');
+select is(public.accept_my_invitations(), 0, '次のログインの accept_my_invitations も0件（例外を出さない）');
+select tests.logout();
+
+-- (2d) 副店長の人への同じ団体の店長の招待：立場は変えず（変えるのは set_group_member_role）、招待は未使用のまま
+select tests.auth_insert('g_pos', 'g_pos@pgtap.test', '{}', false);
+insert into public.group_members (group_id, user_id, role) values (tests.id('G2'), tests.id('g_pos'), 'deputy_manager');
+insert into public.invitations (year_id, email, group_id, group_role) values (tests.id('Y1'), 'g_pos@pgtap.test', tests.id('G2'), 'manager');
+select lives_ok($$ update auth.users set email_confirmed_at = now() where id = tests.id('g_pos') $$,
+  '別の立場の招待があっても、初回ログインは失敗しない');
+select is((select role from public.group_members where group_id = tests.id('G2') and user_id = tests.id('g_pos')),
+  'deputy_manager'::public.group_role, '立場は副店長のまま');
+select ok((select used_at is null from public.invitations where email = 'g_pos@pgtap.test'), '別の立場の団体の招待は未使用のまま');
 
 -- (3) 未確認のまま（メールのサインアップで他人のメールを名乗った登録）には付けない
 select tests.auth_insert('unconf', 'unconf@pgtap.test', '{}', false);
@@ -167,7 +208,7 @@ select tests.set_scenario('requesting');
 -- email_confirmed_at は最初の確認の時刻のまま残る。メールの変更に確認が要らない設定（や SQL・管理 API での変更）で、
 -- auth.users.email だけが招待された人のアドレスに変わった状態を作る
 insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'victim@pgtap.test', 'admin');
-insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'victim@pgtap.test', tests.id('G1'));
+insert into public.invitations (year_id, email, group_id, group_role) values (tests.id('Y1'), 'victim@pgtap.test', tests.id('G1'), 'manager');
 -- Google のユーザー：Google の identity のメールは自分のまま
 select tests.auth_insert('sw_google', 'sw_google@pgtap.test', '{}', false);
 update auth.users set email_confirmed_at = now() where id = tests.id('sw_google');

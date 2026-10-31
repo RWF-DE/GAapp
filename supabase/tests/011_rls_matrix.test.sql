@@ -1,12 +1,18 @@
--- 011_rls_matrix：権限表の全セル（表 × 操作 × 年度の状態 × ペルソナ）（T03）
+-- 011_rls_matrix：権限表の全セル（表 × 操作 × 年度の状態 × ペルソナ）（T03。T15 で総務部門長・副部門長を足した）
 -- 期待値の表（tests.expect）から、試す SQL（tests.cell_sql）と、Y1 の6つの状態（preparing、requesting、requesting:after＝締切後、
--- allocating、confirmed、closed）と、6人のペルソナ（admin staff rep viewer outsider admin2）を掛け合わせてセルを作る。
--- yn はペルソナの順に Y（allowed）/N（denied）を並べた6文字。scenario が '*' の行は、その表・操作の既定（状態ごとの行がなければこれ）。
+-- allocating、confirmed、closed）と、8人のペルソナ（admin staff rep viewer outsider admin2 head deputy）を掛け合わせてセルを作る。
+-- yn は期待値の列の順（admin staff rep viewer outsider admin2 head）に Y（allowed）/N（denied）を並べた7文字。どのペルソナがどの列で
+-- 確かめるかは tests.persona_col が決める。deputy（総務副部門長）は head（総務部門長）の列で確かめる（権限は同じ。D-48。文字を写さない）。
+-- scenario が '*' の行は、その表・操作の既定（状態ごとの行がなければこれ）。
 -- 各セルは副トランザクションの中でペルソナに切り替えて実行し、取り消す（tests.try_cell）。select は件数 > 0、書き込みは影響した
 -- 行数 > 0 を allowed、42501（権限なし・with check 違反）・0 行（using で見えない）・トリガーの invalid_state（確定中の守り）を denied とする。
 -- それ以外のエラーは error:<SQLSTATE> になり、期待値と合わないので、テストデータの不備が「拒否された」に紛れない。
--- ペルソナ（fixture）：admin・staff・viewer は Y1 のロール。rep は G1（Y1）の代表で Y2 の viewer。staff と viewer は G4（Y1）の代表も兼ねる。
--- admin2 は Y2（preparing）の admin。outsider はロールも団体もない。
+-- ペルソナ（fixture）：admin・head・deputy・staff・viewer は Y1 のロール（head は総務部門長、deputy は総務副部門長）。
+-- rep は G1（Y1）の代表で Y2 の viewer。viewer は G4（Y1）の副店長も兼ねる。staff は G3（Y2）の店長（兼任の禁止で、同じ年度の
+-- 団体代表は兼ねられない。D-49）。admin2 は Y2（preparing）の admin。outsider はロールも団体もない。
+-- head の列は、notes/T15.md の「権限の段」（02「権限とRLS」）から書いた：部門長以上（LEAD）の表（room_years・slots・deliveries・rules の
+-- 書き込み、在庫の allocating・confirmed の書き込み、申請の直接の書き込み、year_roles・group_members の全行、staff と団体の招待、
+-- 年度の履歴）は Y、管理者だけの表（rooms・items・distance_overrides・groups の書き込み、年度のない履歴、admin・viewer の招待）は N
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
@@ -65,11 +71,16 @@ insert into tests.cell_sql values
  ('year_roles','delete','delete from public.year_roles where year_id = :Y1'),
  ('group_members','select','select count(*) from public.group_members where group_id = :G1'),
  ('group_members(own)','select','select count(*) from public.group_members where user_id = auth.uid()'),
+ ('group_members(G4)','select','select count(*) from public.group_members where group_id = :G4'),
  ('group_members','insert','insert into public.group_members(group_id, user_id) values (:G1, :outsider)'),
  ('group_members','update','update public.group_members set user_id = user_id where group_id = :G1'),
  ('group_members','delete','delete from public.group_members where group_id = :G1'),
  ('invitations','select','select count(*) from public.invitations where email = ''someone@pgtap.test'''),
  ('invitations(own)','select','select count(*) from public.invitations where email = lower(auth.jwt() ->> ''email'')'),
+ -- T15：部門長・副部門長が読める招待は staff のロールの招待（上の someone）と団体の招待だけ。admin・viewer のロールの招待は読めない
+ ('invitations(admin)','select','select count(*) from public.invitations where id = :INV_ADMIN'),
+ ('invitations(viewer)','select','select count(*) from public.invitations where email = ''viewer@pgtap.test'' and role = ''viewer'''),
+ ('invitations(group)','select','select count(*) from public.invitations where email = ''rep@pgtap.test'' and group_id = :G1'),
  ('invitations','insert','insert into public.invitations(year_id, email, role) values (:Y1, ''new@pgtap.test'', ''staff'')'),
  ('invitations','update','update public.invitations set used_at = now() where year_id = :Y1'),
  ('invitations','delete','delete from public.invitations where year_id = :Y1'),
@@ -121,115 +132,125 @@ insert into tests.cell_sql values
  ('audit_logs','update','update public.audit_logs set reason = ''x'''),
  ('audit_logs','delete','delete from public.audit_logs');
 
--- 期待値（persona の順：admin staff rep viewer outsider admin2）
+-- 期待値（列の順：admin staff rep viewer outsider admin2 head。deputy は head の列）
 insert into tests.expect values
  -- years：読むのはロールか団体代表。書き込みは RPC だけ（権限がない）
- ('years','select','*','YYYYNN'),
- ('years','insert','*','NNNNNN'), ('years','update','*','NNNNNN'), ('years','delete','*','NNNNNN'),
- -- 年度をまたぐ表：読むのは招待された人、書くのは closed でない年度のどれかの admin（admin は Y1 だけなので Y1 が closed なら書けない）
- ('rooms','select','*','YYYYNY'),
- ('rooms','insert','*','YNNNNY'), ('rooms','insert','closed','NNNNNY'),
- ('rooms','update','*','YNNNNY'), ('rooms','update','closed','NNNNNY'),
- ('rooms','delete','*','YNNNNY'), ('rooms','delete','closed','NNNNNY'),
- ('items','select','*','YYYYNY'),
- ('items','insert','*','YNNNNY'), ('items','insert','closed','NNNNNY'),
- ('items','update','*','YNNNNY'), ('items','update','closed','NNNNNY'),
- ('items','delete','*','YNNNNY'), ('items','delete','closed','NNNNNY'),
- ('distance_overrides','select','*','YYYYNY'),
- ('distance_overrides','insert','*','YNNNNY'), ('distance_overrides','insert','closed','NNNNNY'),
- ('distance_overrides','update','*','YNNNNY'), ('distance_overrides','update','closed','NNNNNY'),
- ('distance_overrides','delete','*','YNNNNY'), ('distance_overrides','delete','closed','NNNNNY'),
- -- room_years・slots：年度のロールか団体代表が読み、admin が書く（closed は読み取り専用）
- ('room_years','select','*','YYYYNN'),
- ('room_years','insert','*','YNNNNN'), ('room_years','insert','closed','NNNNNN'),
- ('room_years','update','*','YNNNNN'), ('room_years','update','closed','NNNNNN'),
- ('room_years','delete','*','YNNNNN'), ('room_years','delete','closed','NNNNNN'),
- -- 振り分けのある部屋を使用不可にするのは、確定中は止める（E002）
- ('room_years(unusable)','insert','*','YNNNNN'), ('room_years(unusable)','insert','confirmed','NNNNNN'),
- ('room_years(unusable)','insert','closed','NNNNNN'),
- ('slots','select','*','YYYYNN'),
- ('slots','insert','*','YNNNNN'), ('slots','insert','closed','NNNNNN'),
- ('slots','update','*','YNNNNN'), ('slots','update','closed','NNNNNN'),
- ('slots','delete','*','YNNNNN'), ('slots','delete','closed','NNNNNN'),
- -- stocks：admin・staff が読む。admin は closed 以外、staff は preparing・requesting（締切後も requesting の間）に書ける
- ('stocks','select','*','YYNNNN'),
- ('stocks','insert','*','YYNNNN'), ('stocks','insert','allocating','YNNNNN'), ('stocks','insert','confirmed','YNNNNN'),
- ('stocks','insert','closed','NNNNNN'),
- ('stocks','update','*','YYNNNN'), ('stocks','update','allocating','YNNNNN'), ('stocks','update','confirmed','YNNNNN'),
- ('stocks','update','closed','NNNNNN'),
+ ('years','select','*','YYYYNNY'),
+ ('years','insert','*','NNNNNNN'), ('years','update','*','NNNNNNN'), ('years','delete','*','NNNNNNN'),
+ -- 年度をまたぐ表：読むのは招待された人、書くのは closed でない年度のどれかの admin（管理者だけ。admin は Y1 だけなので Y1 が closed なら書けない）
+ ('rooms','select','*','YYYYNYY'),
+ ('rooms','insert','*','YNNNNYN'), ('rooms','insert','closed','NNNNNYN'),
+ ('rooms','update','*','YNNNNYN'), ('rooms','update','closed','NNNNNYN'),
+ ('rooms','delete','*','YNNNNYN'), ('rooms','delete','closed','NNNNNYN'),
+ ('items','select','*','YYYYNYY'),
+ ('items','insert','*','YNNNNYN'), ('items','insert','closed','NNNNNYN'),
+ ('items','update','*','YNNNNYN'), ('items','update','closed','NNNNNYN'),
+ ('items','delete','*','YNNNNYN'), ('items','delete','closed','NNNNNYN'),
+ ('distance_overrides','select','*','YYYYNYY'),
+ ('distance_overrides','insert','*','YNNNNYN'), ('distance_overrides','insert','closed','NNNNNYN'),
+ ('distance_overrides','update','*','YNNNNYN'), ('distance_overrides','update','closed','NNNNNYN'),
+ ('distance_overrides','delete','*','YNNNNYN'), ('distance_overrides','delete','closed','NNNNNYN'),
+ -- room_years・slots：年度のロールか団体代表が読み、部門長以上が書く（closed は読み取り専用。今年の使用は振り分けの作業）
+ ('room_years','select','*','YYYYNNY'),
+ ('room_years','insert','*','YNNNNNY'), ('room_years','insert','closed','NNNNNNN'),
+ ('room_years','update','*','YNNNNNY'), ('room_years','update','closed','NNNNNNN'),
+ ('room_years','delete','*','YNNNNNY'), ('room_years','delete','closed','NNNNNNN'),
+ -- 振り分けのある部屋を使用不可にするのは、確定中は止める（E002。部門長以上でも）
+ ('room_years(unusable)','insert','*','YNNNNNY'), ('room_years(unusable)','insert','confirmed','NNNNNNN'),
+ ('room_years(unusable)','insert','closed','NNNNNNN'),
+ ('slots','select','*','YYYYNNY'),
+ ('slots','insert','*','YNNNNNY'), ('slots','insert','closed','NNNNNNN'),
+ ('slots','update','*','YNNNNNY'), ('slots','update','closed','NNNNNNN'),
+ ('slots','delete','*','YNNNNNY'), ('slots','delete','closed','NNNNNNN'),
+ -- stocks：総務が読む。部門長以上は closed 以外、staff は preparing・requesting（締切後も requesting の間）に書ける
+ ('stocks','select','*','YYNNNNY'),
+ ('stocks','insert','*','YYNNNNY'), ('stocks','insert','allocating','YNNNNNY'), ('stocks','insert','confirmed','YNNNNNY'),
+ ('stocks','insert','closed','NNNNNNN'),
+ ('stocks','update','*','YYNNNNY'), ('stocks','update','allocating','YNNNNNY'), ('stocks','update','confirmed','YNNNNNY'),
+ ('stocks','update','closed','NNNNNNN'),
  -- 在庫の行を消す・在庫を振り分けより少なくするのは、確定中は止める（E001）
- ('stocks','delete','*','YYNNNN'), ('stocks','delete','allocating','YNNNNN'), ('stocks','delete','confirmed','NNNNNN'),
- ('stocks','delete','closed','NNNNNN'),
- ('stocks(decrease)','update','*','YYNNNN'), ('stocks(decrease)','update','allocating','YNNNNN'),
- ('stocks(decrease)','update','confirmed','NNNNNN'), ('stocks(decrease)','update','closed','NNNNNN'),
- ('v_remaining','select','*','YYNNNN'),
- -- groups：admin・staff・viewer と自団体の代表が読む。admin が書く。確定中は削除と使用場所の変更を止める
- ('groups','select','*','YYYYNN'), ('groups(G2)','select','*','YYNYNN'),
- ('groups','insert','*','YNNNNN'), ('groups','insert','closed','NNNNNN'),
- ('groups','update','*','YNNNNN'), ('groups','update','closed','NNNNNN'),
- ('groups','delete','*','YNNNNN'), ('groups','delete','confirmed','NNNNNN'), ('groups','delete','closed','NNNNNN'),
- ('groups(location)','update','*','YNNNNN'), ('groups(location)','update','confirmed','NNNNNN'),
- ('groups(location)','update','closed','NNNNNN'),
- -- year_roles・group_members・invitations：admin と自分の行。書き込みは RPC だけ
- ('year_roles','select','*','YYNNNN'), ('year_roles(own)','select','*','YYYYNY'),
- ('year_roles','insert','*','NNNNNN'), ('year_roles','update','*','NNNNNN'), ('year_roles','delete','*','NNNNNN'),
- ('group_members','select','*','YNYNNN'), ('group_members(own)','select','*','NYYYNN'),
- ('group_members','insert','*','NNNNNN'), ('group_members','update','*','NNNNNN'), ('group_members','delete','*','NNNNNN'),
- ('invitations','select','*','YNNNNN'), ('invitations(own)','select','*','NYYYNN'),
- ('invitations','insert','*','NNNNNN'), ('invitations','update','*','NNNNNN'), ('invitations','delete','*','NNNNNN'),
- -- 申請：admin・staff と自団体の代表が読む。団体代表は受付期間内、admin は preparing と締切前の requesting に書ける
- ('request_submissions','select','*','YYYNNN'), ('request_submissions(G2)','select','*','YYNNNN'),
- ('request_submissions','insert','*','NNNNNN'), ('request_submissions','insert','preparing','YNNNNN'),
- ('request_submissions','insert','requesting','YNYNNN'),
- ('request_submissions','update','*','NNNNNN'), ('request_submissions','update','preparing','YNNNNN'),
- ('request_submissions','update','requesting','YNYNNN'),
- ('request_submissions(G2)','update','*','NNNNNN'), ('request_submissions(G2)','update','preparing','YNNNNN'),
- ('request_submissions(G2)','update','requesting','YNNNNN'),
- ('request_submissions','delete','*','NNNNNN'), ('request_submissions','delete','preparing','YNNNNN'),
- ('request_submissions','delete','requesting','YNYNNN'),
- ('requests','select','*','YYYNNN'), ('requests(G2)','select','*','YYNNNN'),
- ('requests','insert','*','NNNNNN'), ('requests','insert','preparing','YNNNNN'), ('requests','insert','requesting','YNYNNN'),
- -- staff と viewer は G4 の代表なので、受付期間内は G4 の申請を書ける
- ('requests(G4)','insert','*','NNNNNN'), ('requests(G4)','insert','preparing','YNNNNN'),
- ('requests(G4)','insert','requesting','YYNYNN'),
- ('requests','update','*','NNNNNN'), ('requests','update','preparing','YNNNNN'), ('requests','update','requesting','YNYNNN'),
- ('requests(G2)','update','*','NNNNNN'), ('requests(G2)','update','preparing','YNNNNN'), ('requests(G2)','update','requesting','YNNNNN'),
- ('requests','delete','*','NNNNNN'), ('requests','delete','preparing','YNNNNN'), ('requests','delete','requesting','YNYNNN'),
- -- rules：admin・staff が読み、admin が書く。closed は memo だけ（トリガー）
- ('rules','select','*','YYNNNN'),
- ('rules','insert','*','YNNNNN'), ('rules','insert','closed','NNNNNN'),
- ('rules','update','*','YNNNNN'),
- ('rules(enabled)','update','*','YNNNNN'), ('rules(enabled)','update','closed','NNNNNN'),
- ('rules','delete','*','YNNNNN'), ('rules','delete','closed','NNNNNN'),
- -- 了承：admin・staff と自団体の代表が読む。書き込みは set_consent だけ
- ('substitution_consents','select','*','YYYNNN'),
- ('substitution_consents','insert','*','NNNNNN'), ('substitution_consents','update','*','NNNNNN'),
- ('substitution_consents','delete','*','NNNNNN'),
- -- allocations：admin・staff は常に、viewer と自団体の代表は confirmed 以降に読む。書き込みは RPC だけ
- ('allocations','select','*','YYNNNN'), ('allocations','select','confirmed','YYYYNN'), ('allocations','select','closed','YYYYNN'),
- ('allocations(G2)','select','*','YYNNNN'), ('allocations(G2)','select','confirmed','YYNYNN'),
- ('allocations(G2)','select','closed','YYNYNN'),
- ('allocations','insert','*','NNNNNN'), ('allocations','update','*','NNNNNN'), ('allocations','delete','*','NNNNNN'),
- -- deliveries：admin・staff・viewer と自団体の代表が読み、admin が書く（staff の更新は check_delivery）
- ('deliveries','select','*','YYYYNN'), ('deliveries(G2)','select','*','YYNYNN'),
- ('deliveries','insert','*','YNNNNN'), ('deliveries','insert','closed','NNNNNN'),
- ('deliveries','update','*','YNNNNN'), ('deliveries','update','closed','NNNNNN'),
- ('deliveries','delete','*','YNNNNN'), ('deliveries','delete','closed','NNNNNN'),
- -- profiles：自分と、自分が admin・staff である年度のメンバー（admin2 は Y2 の admin で、rep は Y2 の viewer）
- ('profiles','select','*','YYNNNN'), ('profiles(own)','select','*','YYYYYY'), ('profiles(rep)','select','*','YYYNNY'),
- ('profiles','insert','*','NNNNNN'), ('profiles','update','*','NNNNNN'), ('profiles','delete','*','NNNNNN'),
- -- audit_logs：その年度の admin。年度のない行（年度をまたぐ3表）は closed でない年度の admin
- ('audit_logs','select','*','YNNNNN'),
- ('audit_logs(global)','select','*','YNNNNY'), ('audit_logs(global)','select','closed','NNNNNY'),
- ('audit_logs','insert','*','NNNNNN'), ('audit_logs','update','*','NNNNNN'), ('audit_logs','delete','*','NNNNNN');
+ ('stocks','delete','*','YYNNNNY'), ('stocks','delete','allocating','YNNNNNY'), ('stocks','delete','confirmed','NNNNNNN'),
+ ('stocks','delete','closed','NNNNNNN'),
+ ('stocks(decrease)','update','*','YYNNNNY'), ('stocks(decrease)','update','allocating','YNNNNNY'),
+ ('stocks(decrease)','update','confirmed','NNNNNNN'), ('stocks(decrease)','update','closed','NNNNNNN'),
+ ('v_remaining','select','*','YYNNNNY'),
+ -- groups：総務・viewer と自団体の代表が読む。書くのは admin だけ。確定中は削除と使用場所の変更を止める
+ ('groups','select','*','YYYYNNY'), ('groups(G2)','select','*','YYNYNNY'),
+ ('groups','insert','*','YNNNNNN'), ('groups','insert','closed','NNNNNNN'),
+ ('groups','update','*','YNNNNNN'), ('groups','update','closed','NNNNNNN'),
+ ('groups','delete','*','YNNNNNN'), ('groups','delete','confirmed','NNNNNNN'), ('groups','delete','closed','NNNNNNN'),
+ ('groups(location)','update','*','YNNNNNN'), ('groups(location)','update','confirmed','NNNNNNN'),
+ ('groups(location)','update','closed','NNNNNNN'),
+ -- year_roles・group_members：部門長以上はその年度の全行、ほかは自分の行。書き込みは RPC だけ
+ -- （staff は G3〔Y2〕の店長なので group_members(own) は Y、G4 の行は読めない。viewer は G4 の副店長なので自分の行を読む）
+ ('year_roles','select','*','YYNNNNY'), ('year_roles(own)','select','*','YYYYNYY'),
+ ('year_roles','insert','*','NNNNNNN'), ('year_roles','update','*','NNNNNNN'), ('year_roles','delete','*','NNNNNNN'),
+ ('group_members','select','*','YNYNNNY'), ('group_members(own)','select','*','NYYYNNN'), ('group_members(G4)','select','*','YNNYNNY'),
+ ('group_members','insert','*','NNNNNNN'), ('group_members','update','*','NNNNNNN'), ('group_members','delete','*','NNNNNNN'),
+ -- invitations：admin はその年度の全部、部門長以上は staff のロールの招待と団体の招待、ほかは自分のメールの行。書き込みは RPC だけ
+ ('invitations','select','*','YNNNNNY'), ('invitations(own)','select','*','NYYYNNN'),
+ ('invitations(admin)','select','*','YNNNNNN'), ('invitations(viewer)','select','*','YNNYNNN'),
+ ('invitations(group)','select','*','YNYNNNY'),
+ ('invitations','insert','*','NNNNNNN'), ('invitations','update','*','NNNNNNN'), ('invitations','delete','*','NNNNNNN'),
+ -- 申請：総務と自団体の代表が読む。団体代表は受付期間内、部門長以上は preparing と締切前の requesting に書ける
+ ('request_submissions','select','*','YYYNNNY'), ('request_submissions(G2)','select','*','YYNNNNY'),
+ ('request_submissions','insert','*','NNNNNNN'), ('request_submissions','insert','preparing','YNNNNNY'),
+ ('request_submissions','insert','requesting','YNYNNNY'),
+ ('request_submissions','update','*','NNNNNNN'), ('request_submissions','update','preparing','YNNNNNY'),
+ ('request_submissions','update','requesting','YNYNNNY'),
+ ('request_submissions(G2)','update','*','NNNNNNN'), ('request_submissions(G2)','update','preparing','YNNNNNY'),
+ ('request_submissions(G2)','update','requesting','YNNNNNY'),
+ ('request_submissions','delete','*','NNNNNNN'), ('request_submissions','delete','preparing','YNNNNNY'),
+ ('request_submissions','delete','requesting','YNYNNNY'),
+ ('requests','select','*','YYYNNNY'), ('requests(G2)','select','*','YYNNNNY'),
+ ('requests','insert','*','NNNNNNN'), ('requests','insert','preparing','YNNNNNY'), ('requests','insert','requesting','YNYNNNY'),
+ -- viewer は G4 の副店長なので、受付期間内は G4 の申請を書ける（staff はもう G4 の代表でない）
+ ('requests(G4)','insert','*','NNNNNNN'), ('requests(G4)','insert','preparing','YNNNNNY'),
+ ('requests(G4)','insert','requesting','YNNYNNY'),
+ ('requests','update','*','NNNNNNN'), ('requests','update','preparing','YNNNNNY'), ('requests','update','requesting','YNYNNNY'),
+ ('requests(G2)','update','*','NNNNNNN'), ('requests(G2)','update','preparing','YNNNNNY'), ('requests(G2)','update','requesting','YNNNNNY'),
+ ('requests','delete','*','NNNNNNN'), ('requests','delete','preparing','YNNNNNY'), ('requests','delete','requesting','YNYNNNY'),
+ -- rules：総務が読み、部門長以上が書く。closed は memo だけ（トリガー）
+ ('rules','select','*','YYNNNNY'),
+ ('rules','insert','*','YNNNNNY'), ('rules','insert','closed','NNNNNNN'),
+ ('rules','update','*','YNNNNNY'),
+ ('rules(enabled)','update','*','YNNNNNY'), ('rules(enabled)','update','closed','NNNNNNN'),
+ ('rules','delete','*','YNNNNNY'), ('rules','delete','closed','NNNNNNN'),
+ -- 了承：総務と自団体の代表が読む。書き込みは set_consent だけ
+ ('substitution_consents','select','*','YYYNNNY'),
+ ('substitution_consents','insert','*','NNNNNNN'), ('substitution_consents','update','*','NNNNNNN'),
+ ('substitution_consents','delete','*','NNNNNNN'),
+ -- allocations：総務は常に、viewer と自団体の代表は confirmed 以降に読む。書き込みは RPC だけ
+ ('allocations','select','*','YYNNNNY'), ('allocations','select','confirmed','YYYYNNY'), ('allocations','select','closed','YYYYNNY'),
+ ('allocations(G2)','select','*','YYNNNNY'), ('allocations(G2)','select','confirmed','YYNYNNY'),
+ ('allocations(G2)','select','closed','YYNYNNY'),
+ ('allocations','insert','*','NNNNNNN'), ('allocations','update','*','NNNNNNN'), ('allocations','delete','*','NNNNNNN'),
+ -- deliveries：総務・viewer と自団体の代表が読み、部門長以上が書く（staff の更新は check_delivery）
+ ('deliveries','select','*','YYYYNNY'), ('deliveries(G2)','select','*','YYNYNNY'),
+ ('deliveries','insert','*','YNNNNNY'), ('deliveries','insert','closed','NNNNNNN'),
+ ('deliveries','update','*','YNNNNNY'), ('deliveries','update','closed','NNNNNNN'),
+ ('deliveries','delete','*','YNNNNNY'), ('deliveries','delete','closed','NNNNNNN'),
+ -- profiles：自分と、自分が総務（部門長以上・staff）である年度のメンバー（admin2 は Y2 の admin で、rep は Y2 の viewer）
+ ('profiles','select','*','YYNNNNY'), ('profiles(own)','select','*','YYYYYYY'), ('profiles(rep)','select','*','YYYNNYY'),
+ ('profiles','insert','*','NNNNNNN'), ('profiles','update','*','NNNNNNN'), ('profiles','delete','*','NNNNNNN'),
+ -- audit_logs：その年度の部門長以上。年度のない行（年度をまたぐ3表）は closed でない年度の admin だけ
+ ('audit_logs','select','*','YNNNNNY'),
+ ('audit_logs(global)','select','*','YNNNNYN'), ('audit_logs(global)','select','closed','NNNNNYN'),
+ ('audit_logs','insert','*','NNNNNNN'), ('audit_logs','update','*','NNNNNNN'), ('audit_logs','delete','*','NNNNNNN');
+
+-- ペルソナと期待値の列。deputy は head の列で確かめる（総務副部門長の権限は総務部門長と同じ。D-48）
+create table tests.persona_col (persona text primary key, col int not null, ord int not null unique);
+insert into tests.persona_col values
+  ('admin', 1, 1), ('staff', 2, 2), ('rep', 3, 3), ('viewer', 4, 4), ('outsider', 5, 5), ('admin2', 6, 6),
+  ('head', 7, 7), ('deputy', 7, 8);
 
 create view tests.cells as
 select c.tbl, c.op, s.scenario, p.persona,
-       case substr(coalesce(e.yn, d.yn), p.ord::int, 1) when 'Y' then 'allowed' when 'N' then 'denied' end as expected,
+       case substr(coalesce(e.yn, d.yn), p.col, 1) when 'Y' then 'allowed' when 'N' then 'denied' end as expected,
        tests.sql(c.template) as sql
 from tests.cell_sql c
 cross join unnest(array['preparing','requesting','requesting:after','allocating','confirmed','closed']) as s(scenario)
-cross join unnest(array['admin','staff','rep','viewer','outsider','admin2']) with ordinality as p(persona, ord)
+cross join tests.persona_col p
 left join tests.expect e on e.tbl = c.tbl and e.op = c.op and e.scenario = s.scenario
 left join tests.expect d on d.tbl = c.tbl and d.op = c.op and d.scenario = '*';
 
@@ -240,18 +261,31 @@ begin
   return tests.try_cell(p_sql, p_persona, p_op);
 end $$;
 
-select plan((select count(*)::int from tests.cells) + 3 + 20);
+select plan((select count(*)::int from tests.cells) + 6 + 24);
 
 -- 期待値の表の形
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
 select is_empty($$ select e.tbl, e.op from tests.expect e left join tests.cell_sql c using (tbl, op) where c.tbl is null $$,
   '期待値の表に、試す SQL のない行がない');
 select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 20, '19 表と v_remaining をすべて試す');
+select is_empty($$ select tbl, op, scenario, yn from tests.expect where yn !~ '^[YN]{7}$' $$,
+  '期待値はどの行も7列（admin staff rep viewer outsider admin2 head）');
+select is((select string_agg(persona || '=' || col, ' ' order by ord) from tests.persona_col),
+  'admin=1 staff=2 rep=3 viewer=4 outsider=5 admin2=6 head=7 deputy=7', 'deputy は head の列で確かめる（8人 × 7列）');
 
-select is(tests.run_cell(scenario, persona, op, sql), expected,
-          format('%s %s [%s] %s', tbl, op, scenario, persona))
-from tests.cells
+-- 全セルを試して結果を残す（ペルソナ・状態ごとに副トランザクションで試して取り消す）
+create table tests.results as
+select tbl, op, scenario, persona, expected, tests.run_cell(scenario, persona, op, sql) as got from tests.cells;
+
+select is(got, expected, format('%s %s [%s] %s', tbl, op, scenario, persona))
+from tests.results
 order by tbl, op, scenario, persona;
+
+-- 総務副部門長は総務部門長と同じ（期待値とは別に、実際の結果どうしを比べる）
+select is_empty($$ select h.tbl, h.op, h.scenario, h.got as head, d.got as deputy
+                   from tests.results h join tests.results d using (tbl, op, scenario)
+                   where h.persona = 'head' and d.persona = 'deputy' and h.got is distinct from d.got $$,
+  'deputy（総務副部門長）は全セルで head（総務部門長）と同じ結果');
 
 -- ---------------------------------------------------------------- 完了基準の2点と、権限表の外の確認
 -- いま見えている public の表・ビューの行数（0 でないものだけ）を、呼んだ人の権限で数える
@@ -306,12 +340,29 @@ select is(tests.try_cell(tests.sql('update public.requests set count = 7 where g
   '受付開始前は団体代表は申請を書けない');
 select is(tests.try_cell(tests.sql('update public.requests set count = 7 where group_id = :G1'), 'admin', 'update'), 'allowed',
   '受付開始前でも admin は締切前なら書ける');
+select is(tests.try_cell(tests.sql('update public.requests set count = 7 where group_id = :G1'), 'head', 'update'), 'allowed',
+  '受付開始前でも部門長は締切前なら書ける（申請の代理入力は部門長以上）');
 -- 締切が null の requesting（RPC では作れないが、念のため）は、団体代表も admin も書けない
 update public.years set request_open_at = null, request_close_at = null where id = tests.id('Y1');
 select is(tests.try_cell(tests.sql('update public.requests set count = 7 where group_id = :G1'), 'rep', 'update'), 'denied',
   '締切が null なら団体代表は書けない（K-24）');
 select is(tests.try_cell(tests.sql('update public.requests set count = 7 where group_id = :G1'), 'admin', 'update'), 'denied',
   '締切が null の requesting は admin も RPC なしでは書けない');
+select is(tests.try_cell(tests.sql('update public.requests set count = 7 where group_id = :G1'), 'deputy', 'update'), 'denied',
+  '締切が null の requesting は副部門長も RPC なしでは書けない');
+
+-- 部門長以上は、その年度の year_roles・group_members を全部読める（ほかの年度の行は読めない。T15）
+select tests.set_scenario('requesting');
+select tests.login_as('head');
+select is((select string_agg(p.display_name || ':' || yr.role, ' ' order by yr.role, p.display_name)
+           from public.year_roles yr join public.profiles p on p.user_id = yr.user_id),
+  'admin:admin head:head deputy:deputy_head staff:staff viewer:viewer',
+  '部門長は Y1 の year_roles を全部読め（表示名も読める）、Y2 の行は読めない');
+select is((select string_agg(g.name || ':' || p.display_name || ':' || gm.role, ' ' order by g.name)
+           from public.group_members gm join public.groups g on g.id = gm.group_id join public.profiles p on p.user_id = gm.user_id),
+  'T-G1:rep:manager T-G2:rep2:manager T-G4:viewer:deputy_manager',
+  '部門長は Y1 の団体代表を全部読め（店長・副店長も）、Y2 の G3 の行は読めない');
+select tests.logout();
 
 -- 自分あての招待は、JWT の email ではなく、本人のものと確かめられる今のメール（private.verified_email、D-17a）で決める。
 -- viewer（Y1 の viewer。自分あての使用済みの招待がある）の JWT の email だけを、未使用の招待がある someone に変える

@@ -397,13 +397,15 @@ test.describe('T09 ホーム（閲覧のみ）', () => {
   });
 });
 
-test('T09 部員で団体代表も兼ねる人：団体代表のカードがダッシュボードの上に出る', async ({ page }) => {
-  const u = await createUser({ purpose: 'staffrep' });
-  const s = await createScenario({ status: 'requesting', dataset: 'small', grants: [{ userId: u.id, role: 'staff' }] });
+// 部員（staff）は同じ年度の団体代表を兼ねられない（兼任の禁止。T15・D-49。group_members の insert が role_overlap になる）ので、
+// 兼ねられる管理者で確かめる
+test('T09 管理者で団体代表も兼ねる人：団体代表のカードがダッシュボードの上に出る', async ({ page }) => {
+  const u = await createUser({ purpose: 'adminrep' });
+  const s = await createScenario({ status: 'requesting', dataset: 'small', grants: [{ userId: u.id, role: 'admin' }] });
   try {
     await sql('insert into public.group_members (group_id, user_id) values ($1, $2)', [s.ids.groups[SMALL.groups.department], u.id]);
     await loginWith(page, u);
-    await expect(page.getByTestId('home-roles')).toHaveText(`総務部員${SMALL.groups.department} の団体代表`);
+    await expect(page.getByTestId('home-roles')).toHaveText(`総務管理者${SMALL.groups.department} の団体代表`);
     await expect(page.getByTestId('rep-card')).toHaveAttribute('data-group', SMALL.groups.department);
     await expect(page.getByTestId('dashboard-year')).toBeVisible();
     const repTop = (await page.getByTestId('rep-card').boundingBox())!.y;
