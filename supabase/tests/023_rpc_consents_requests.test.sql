@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(93);
+select plan(109);
 
 -- ================================================================ submit_requests（受付中）
 select tests.login_anon();
@@ -70,10 +70,15 @@ select throws_ok(format($$ select public.submit_requests(%L, %L) $$, tests.id('G
 select throws_ok(format($$ select public.submit_requests(%L, '{}') $$, tests.id('G1')), 'P0001', 'invalid_input', 'rows は配列');
 select throws_ok(format($$ select public.submit_requests(%L, '[]', %L) $$, tests.id('G1'), repeat('あ', 2001)), 'P0001', 'invalid_input', '備考の上限（2000 字）');
 select tests.logout();
--- staff は G4 の代表なので、G4 の申請は出せる
-select tests.login_as('staff');
+-- viewer は G4 の副店長なので、G4 の申請は出せる（閲覧のみは団体代表を兼ねられる。副店長も店長と同じ権限。T15）
+select tests.login_as('viewer');
 select lives_ok(format($$ select public.submit_requests(%L, %L) $$, tests.id('G4'),
-  jsonb_build_array(jsonb_build_object('itemId', tests.id('desk'), 'count', 1))), '団体代表を兼ねる staff は自団体（G4）の申請を出せる');
+  jsonb_build_array(jsonb_build_object('itemId', tests.id('desk'), 'count', 1))), '副店長を兼ねる viewer は自団体（G4）の申請を出せる');
+select tests.logout();
+-- staff は同じ年度の団体代表を兼ねられない（兼任の禁止。D-49）ので、G4 の申請も出せない
+select tests.login_as('staff');
+select throws_ok(format($$ select public.submit_requests(%L, '[]') $$, tests.id('G4')), 'P0001', 'forbidden',
+  'staff は団体代表でないので、G4 の申請も出せない');
 select tests.logout();
 -- 締切後・受付前・preparing
 select tests.set_scenario('requesting:after');
@@ -91,6 +96,13 @@ select tests.login_as('admin');
 select lives_ok(format($$ select public.submit_requests(%L, %L) $$, tests.id('G2'),
   jsonb_build_array(jsonb_build_object('itemId', tests.id('desk'), 'count', 4))), 'preparing では admin が代理で出せる');
 select tests.logout();
+-- 部門長・副部門長（T15）：代理入力は部門長以上（preparing と締切前の requesting）。試して取り消す
+select is(tests.try_rpc(p, format($$ select public.submit_requests(%L, %L) $$, tests.id('G2'),
+            jsonb_build_array(jsonb_build_object('itemId', tests.id('desk'), 'count', 4))), st), 'ok',
+          format('%s は %s に代理で提出できる', p, st))
+from unnest(array['head', 'deputy']) p cross join unnest(array['preparing', 'requesting']) st;
+select is(tests.try_rpc('head', format($$ select public.submit_requests(%L, '[]') $$, tests.id('G2')), 'requesting:after'), 'invalid_state',
+  '締切後は部門長も submit_requests では出せない（締切後の RPC を使う）');
 
 -- ================================================================ update_requests_after_deadline（振り分け中）
 select tests.set_scenario('allocating');
@@ -103,6 +115,10 @@ select tests.logout();
 select tests.login_as('admin2');
 select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '理由') $$, tests.id('G1')), 'P0001', 'forbidden', '別の年度の admin は直せない');
 select tests.logout();
+select is(tests.try_rpc(p, format($$ select public.update_requests_after_deadline(%L, %L, '部門長の修正') $$, tests.id('G1'),
+            jsonb_build_array(jsonb_build_object('itemId', tests.id('chair'), 'count', 2)))), 'ok',
+          format('%s は締切後に申請を直せる（部門長以上）', p))
+from unnest(array['head', 'deputy']) p;
 select tests.login_as('admin');
 select throws_ok(format($$ select public.update_requests_after_deadline(%L, '[]', '') $$, tests.id('G1')), 'P0001', 'reason_required', '理由は必須');
 select tests.ver() as v0 \gset
@@ -178,6 +194,9 @@ select tests.login_as('admin2');
 select throws_ok(format($$ select public.set_consent(%L, %L, %L, 'asked') $$, tests.id('G1'), tests.id('desk'), tests.id('caster_desk')),
   'P0001', 'forbidden', '別の年度の admin は記録できない');
 select tests.logout();
+select is(tests.try_rpc(p, format($$ select public.set_consent(%L, %L, %L, 'asked') $$, tests.id('G1'), tests.id('desk'), tests.id('caster_desk'))),
+          'ok', format('%s は交換を依頼済みにできる（了承の記録は部門長以上）', p))
+from unnest(array['head', 'deputy']) p;
 select tests.login_as('rep');
 select throws_ok(format($$ select public.set_consent(%L, %L, %L, 'accepted') $$, tests.id('G1'), tests.id('desk'), tests.id('caster_desk')),
   'P0001', 'invalid_state', '未依頼には回答できない');
@@ -248,6 +267,9 @@ select tests.logout();
 select tests.login_as('admin2');
 select throws_ok(format($$ select public.check_delivery(%L, 'done') $$, tests.id('D_G1')), 'P0001', 'forbidden', '別の年度の admin はチェックできない');
 select tests.logout();
+select is(tests.try_rpc(p, format($$ select public.check_delivery(%L, 'done') $$, tests.id('D_G1'))), 'ok',
+          format('%s は運搬チェックができる（総務）', p))
+from unnest(array['head', 'deputy']) p;
 select tests.login_as('staff');
 select throws_ok($$ select public.check_delivery(gen_random_uuid(), 'done') $$, 'P0001', 'forbidden', '存在しない受け渡しは forbidden');
 select throws_ok(format($$ select public.check_delivery(%L, null) $$, tests.id('D_G1')), 'P0001', 'invalid_input', '状態がなければ invalid_input');
@@ -263,14 +285,25 @@ select tests.logout();
 with y as (insert into public.years (label, festival_start, prev_year_id) values ('T-Y3', date '2028-10-14', tests.id('Y1')) returning id)
 insert into tests.ids select 'Y3', id from y;
 insert into public.year_roles (year_id, user_id, role) values
-  (tests.id('Y3'), tests.id('staff'), 'staff'), (tests.id('Y3'), tests.id('admin2'), 'admin');
+  (tests.id('Y3'), tests.id('staff'), 'staff'), (tests.id('Y3'), tests.id('admin2'), 'admin'),
+  (tests.id('Y3'), tests.id('head'), 'head'), (tests.id('Y3'), tests.id('deputy'), 'deputy_head');
 select tests.login_as('staff');
 select is((select count(*)::int from public.previous_year_stocks(tests.id('Y3'))), 4, 'Y3 の staff は前年度（Y1）の在庫を読める');
-select throws_ok($$ select * from public.previous_year_requests(tests.id('Y3')) $$, 'P0001', 'forbidden', '前年度の申請は admin だけ');
+select throws_ok($$ select * from public.previous_year_requests(tests.id('Y3')) $$, 'P0001', 'forbidden', '前年度の申請は部門長以上（staff は読めない）');
 select tests.logout();
 select tests.login_as('admin2');
 select ok((select bool_and(group_name like 'T-G%') and count(*) > 0 from public.previous_year_requests(tests.id('Y3'))),
   'Y3 の admin は前年度の申請を団体名つきで読める');
+select tests.logout();
+-- 部門長・副部門長（T15）：前年度の申請は部門長以上、前年度の在庫は総務
+select tests.login_as('head');
+select ok((select bool_and(group_name like 'T-G%') and count(*) > 0 from public.previous_year_requests(tests.id('Y3'))),
+  'Y3 の部門長は前年度の申請を読める');
+select is((select count(*)::int from public.previous_year_stocks(tests.id('Y3'))), 4, 'Y3 の部門長は前年度の在庫を読める');
+select tests.logout();
+select tests.login_as('deputy');
+select ok((select count(*) > 0 from public.previous_year_requests(tests.id('Y3'))), 'Y3 の副部門長も前年度の申請を読める');
+select is((select count(*)::int from public.previous_year_stocks(tests.id('Y3'))), 4, 'Y3 の副部門長も前年度の在庫を読める');
 select tests.logout();
 select tests.login_as('admin');
 select throws_ok($$ select * from public.previous_year_stocks(tests.id('Y3')) $$, 'P0001', 'forbidden', '前年度の admin でも、その年度のロールがなければ読めない');

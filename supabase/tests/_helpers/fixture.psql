@@ -13,7 +13,8 @@ end $$;
 with i as (insert into public.items (code, name, sort_order) values ('pgtap_spare', 'pgTAP 削除用', 99) returning id)
 insert into tests.ids select 'spare', id from i;
 
-select tests.create_user(n) from unnest(array['admin','staff','rep','rep2','viewer','outsider','admin2']) n;
+-- head（Y1 の総務部門長）と deputy（Y1 の総務副部門長）は T15 で足した（今までのペルソナの後ろに作る）
+select tests.create_user(n) from unnest(array['admin','staff','rep','rep2','viewer','outsider','admin2','head','deputy']) n;
 
 with y as (
   insert into public.years (label, festival_start, request_close_at, status)
@@ -45,26 +46,33 @@ with g as (
     (tests.id('Y1'), 'T-G1', 'stall', tests.id('R1'), 1),
     (tests.id('Y1'), 'T-G2', 'department', null, 2),
     (tests.id('Y2'), 'T-G3', 'stall', tests.id('R1'), 1),
-    (tests.id('Y1'), 'T-G4', 'department', null, 4)       -- staff・viewer が団体代表を兼ねる（group_members(own) の中身のある検査用）
+    (tests.id('Y1'), 'T-G4', 'department', null, 4)       -- viewer が副店長を兼ねる（閲覧のみは同じ年度の団体代表を兼ねられる。D-49）
   returning id, name)
 insert into tests.ids select substr(name, 3), id from g;
 
 insert into public.year_roles (year_id, user_id, role) values
   (tests.id('Y1'), tests.id('admin'), 'admin'),
+  (tests.id('Y1'), tests.id('head'), 'head'),
+  (tests.id('Y1'), tests.id('deputy'), 'deputy_head'),
   (tests.id('Y1'), tests.id('staff'), 'staff'),
   (tests.id('Y1'), tests.id('viewer'), 'viewer'),
   (tests.id('Y2'), tests.id('admin2'), 'admin'),
   (tests.id('Y2'), tests.id('rep'), 'viewer');            -- rep が Y2 では viewer（year_roles(own) の rep の中身のある検査用）
-insert into public.group_members (group_id, user_id) values
-  (tests.id('G1'), tests.id('rep')), (tests.id('G2'), tests.id('rep2')),
-  (tests.id('G4'), tests.id('staff')), (tests.id('G4'), tests.id('viewer'));
+-- 兼任の禁止（D-49）：staff は Y1 の団体代表になれないので、Y2 の G3 の店長にする（違う年度ならよい。group_members(own) の
+-- staff の中身のある検査用）。viewer は Y1 の G4 の副店長（閲覧のみは兼ねられる。副店長も店長と同じ権限）
+insert into public.group_members (group_id, user_id, role) values
+  (tests.id('G1'), tests.id('rep'), 'manager'), (tests.id('G2'), tests.id('rep2'), 'manager'),
+  (tests.id('G3'), tests.id('staff'), 'manager'), (tests.id('G4'), tests.id('viewer'), 'deputy_manager');
 
 insert into public.invitations (year_id, email, role, used_at) values
   (tests.id('Y1'), 'viewer@pgtap.test', 'viewer', now()),
   (tests.id('Y1'), 'staff@pgtap.test', 'staff', now()),            -- invitations(own) の staff の中身のある検査用
   (tests.id('Y1'), 'someone@pgtap.test', 'staff', null);
-insert into public.invitations (year_id, email, group_id, used_at) values
-  (tests.id('Y1'), 'rep@pgtap.test', tests.id('G1'), now());
+-- 未使用の admin の招待（T15）。部門長・副部門長には読めず、上書きも取り消しもできない（011・024）
+with i as (insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'invited_admin@pgtap.test', 'admin') returning id)
+insert into tests.ids select 'INV_ADMIN', id from i;
+insert into public.invitations (year_id, email, group_id, group_role, used_at) values
+  (tests.id('Y1'), 'rep@pgtap.test', tests.id('G1'), 'manager', now());
 
 insert into public.stocks (year_id, room_id, item_id, count) values
   (tests.id('Y1'), tests.id('R1'), tests.id('desk'), 10),

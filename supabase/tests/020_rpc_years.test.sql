@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(90);
+select plan(109);
 
 -- エラーの message と detail（invalid_input の field を確かめる）。成功したら 'ok'
 create function tests.error_of(p_sql text) returns text language plpgsql as $$
@@ -16,6 +16,56 @@ exception when others then
   return v_msg || ' ' || v_detail;
 end $$;
 grant execute on function tests.error_of(text) to authenticated;
+
+-- エラーのコードだけ（成功なら 'ok'）。成功した書き込みは残る
+create function tests.code_of(p_sql text) returns text language plpgsql as $$
+begin
+  execute p_sql;
+  return 'ok';
+exception when others then
+  return case when sqlstate = 'P0001' then sqlerrm else 'error:' || sqlstate end;
+end $$;
+grant execute on function tests.code_of(text) to authenticated;
+
+-- 年度の状態を順にたどる（T15）：Y1 を preparing にしてから、そのペルソナで遷移を頼み、結果を並べる。
+-- 各段で closed も頼む（部門長以上は、終了〔closed〕だけは admin に限られる。遷移の確かめより先に forbidden）
+create function tests.status_walk(p_persona text) returns text language plpgsql as $$
+declare
+  v text := '';
+  st record;
+begin
+  perform tests.set_scenario('preparing');
+  perform tests.login_as(p_persona);
+  for st in select * from (values
+      (1, 'closed', null), (2, 'requesting', null), (3, 'closed', null), (4, 'allocating', null), (5, 'closed', null),
+      (6, 'confirmed', '確定'), (7, 'allocating', '確定の解除'), (8, 'confirmed', '確定し直し'), (9, 'closed', null)) as t(n, to_status, reason)
+      order by n loop
+    v := v || format('%s>%s:%s ', private.year_status(tests.id('Y1')), st.to_status,
+                     tests.code_of(format('select public.set_year_status(%L, %L, %L, %s)', tests.id('Y1'), st.to_status, st.reason,
+                                          case when st.to_status = 'confirmed' then 'tests.ver()' else 'null' end)));
+  end loop;
+  perform tests.logout();
+  return btrim(v);
+end $$;
+
+-- ================================================================ set_year_status：段（T15。D-48）
+-- 部門長・副部門長は、終了（closed）のほかの遷移（受付開始・締切・確定・確定の解除）ができる。closed はどの状態からでも forbidden。
+-- admin は今までどおり（図にない遷移は invalid_state、confirmed → closed ができる）。deputy の期待値は head と同じ文字列
+select is(tests.status_walk('head'),
+  'preparing>closed:forbidden preparing>requesting:ok requesting>closed:forbidden requesting>allocating:ok allocating>closed:forbidden allocating>confirmed:ok confirmed>allocating:ok allocating>confirmed:ok confirmed>closed:forbidden',
+  '部門長は closed 以外の遷移ができ、closed はどの状態からでも forbidden（遷移の確かめより先）');
+select is(tests.status_walk('deputy'), tests.status_walk('head'), '副部門長の遷移の結果は部門長と同じ');
+select is(tests.status_walk('admin'),
+  'preparing>closed:invalid_state preparing>requesting:ok requesting>closed:invalid_state requesting>allocating:ok allocating>closed:invalid_state allocating>confirmed:ok confirmed>allocating:ok allocating>confirmed:ok confirmed>closed:ok',
+  'admin は今までどおり（図にない遷移は invalid_state、confirmed → closed ができる）');
+select is(tests.status_walk('staff'),
+  'preparing>closed:forbidden preparing>requesting:forbidden preparing>closed:forbidden preparing>allocating:forbidden preparing>closed:forbidden preparing>confirmed:forbidden preparing>allocating:forbidden preparing>confirmed:forbidden preparing>closed:forbidden',
+  'staff はどの遷移もできない（preparing のまま）');
+select tests.set_scenario('requesting');
+select tests.login_as('head');
+select is((select reason from public.audit_logs where table_name = 'years' and action = 'update' and user_id = tests.id('head')
+           order by id desc limit 1), '確定し直し', '部門長の遷移も理由つきで監査に残る（部門長は年度の履歴を読める）');
+select tests.logout();
 
 -- ================================================================ set_year_status
 select tests.login_anon();
@@ -142,6 +192,45 @@ select is((select reason from public.audit_logs where table_name = 'years' and r
   '延長', 'update_year の理由が監査に残る');
 select ok((select festival_start = date '2027-10-16' from public.years where id = tests.id('Y1')), 'patch にないキー（1日目）は変わらない');
 
+-- ================================================================ update_year：段（T15。D-48）
+-- 部門長・副部門長が変えられるのは受付期間（request_open_at・request_close_at）だけ。年度名・1日目は forbidden。
+-- 知らないキー・オブジェクトでない patch は forbidden より先に invalid_input。キーのない {} は通る
+select tests.set_scenario('requesting');
+select tests.login_as('head');
+select is(tests.error_of(format($$ select public.update_year(%L, %L, '延長') $$, tests.id('Y1'),
+            jsonb_build_object('request_close_at', now() + interval '3 day'))), 'ok', '部門長は締切を変えられる');
+select is(tests.error_of(format($$ select public.update_year(%L, %L, null) $$, tests.id('Y1'),
+            jsonb_build_object('request_open_at', now() - interval '1 hour', 'request_close_at', now() + interval '4 day'))), 'ok',
+  '部門長は受付開始と締切を一度に変えられる');
+select is(tests.code_of($$ select public.update_year(tests.id('Y1'), '{"label": "部門長の年度名"}', null) $$), 'forbidden',
+  '部門長は年度名を変えられない');
+select is(tests.code_of($$ select public.update_year(tests.id('Y1'), '{"festival_start": "2027-10-17"}', null) $$), 'forbidden',
+  '部門長は1日目を変えられない');
+select is(tests.code_of(format($$ select public.update_year(%L, %L, null) $$, tests.id('Y1'),
+            jsonb_build_object('request_close_at', now() + interval '5 day', 'label', 'x'))), 'forbidden',
+  '受付期間と年度名を一緒に送っても forbidden（何も変えない）');
+select is(tests.error_of($$ select public.update_year(tests.id('Y1'), '{"status": "closed"}', null) $$), 'invalid_input {"field": "status"}',
+  '部門長でも、知らないキーは forbidden より先に invalid_input');
+select is(tests.error_of($$ select public.update_year(tests.id('Y1'), '["label"]', null) $$), 'invalid_input {"field": "patch"}',
+  '部門長でも、オブジェクトでない patch は invalid_input');
+select is(tests.code_of($$ select public.update_year(tests.id('Y1'), '{}', null) $$), 'ok', '部門長の {} は通る（何も変わらない）');
+select tests.logout();
+select ok((select request_open_at is not null and request_close_at > now() + interval '3 day' and label = 'T-Y1改'
+                  and festival_start = date '2027-10-16' from public.years where id = tests.id('Y1')),
+  '部門長の変更で受付期間だけが変わり、年度名・1日目は変わらない');
+select tests.login_as('deputy');
+select is(tests.code_of($$ select public.update_year(tests.id('Y1'), '{"label": "副部門長の年度名"}', null) $$), 'forbidden',
+  '副部門長も年度名を変えられない');
+select is(tests.code_of(format($$ select public.update_year(%L, %L, null) $$, tests.id('Y1'),
+            jsonb_build_object('request_close_at', now() + interval '2 day'))), 'ok', '副部門長も締切を変えられる');
+select tests.logout();
+select tests.set_scenario('closed');
+select tests.login_as('head');
+select is(tests.code_of(format($$ select public.update_year(%L, %L, null) $$, tests.id('Y1'),
+            jsonb_build_object('request_close_at', now() + interval '2 day'))), 'invalid_state', '終了した年度は部門長も変えられない');
+select tests.logout();
+select tests.set_scenario('requesting');
+
 -- ================================================================ create_year_from（D-01）
 -- ルール：団体が見つからないもの（S99）と、団体の配列（S98）
 insert into public.rules (year_id, code, kind, params) values
@@ -155,6 +244,12 @@ select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', date 
 select tests.logout();
 select tests.login_as('outsider');
 select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', date '2028-10-01') $$, 'P0001', 'forbidden', '未招待は年度を作れない');
+select tests.logout();
+select tests.login_as('head');
+select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', date '2028-10-01') $$, 'P0001', 'forbidden', '部門長は年度を作れない（管理者だけ）');
+select tests.logout();
+select tests.login_as('deputy');
+select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', date '2028-10-01') $$, 'P0001', 'forbidden', '副部門長も年度を作れない');
 select tests.logout();
 select tests.login_as('admin2');
 select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', date '2028-10-01') $$, 'P0001', 'forbidden', '複製元にロールのない admin は複製できない');

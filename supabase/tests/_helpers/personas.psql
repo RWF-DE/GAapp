@@ -3,6 +3,7 @@
 -- T02 のテスト（001・002）は、ロールを切り替えず、tests.act_as() で auth.uid() だけを変える（postgres のまま。RLS を通らない）。
 -- T03 のテスト（010〜023）は、tests.login_as() で authenticated に切り替え、ポリシーと grant を通して確かめる。
 -- tests.try_cell() は権限表のセルを副トランザクションの中で試し、結果を返して取り消す（011）。
+-- tests.try_rpc() は RPC を1回試して取り消し、tests.error_json() はエラーのコードと detail を返す（T15）。
 create schema tests;
 grant usage on schema tests to authenticated, anon;
 
@@ -83,6 +84,43 @@ begin
     when others then v_result := 'error:' || sqlstate || ' ' || sqlerrm;
   end;
   return v_result;
+end $$;
+
+-- RPC などを1回だけ試す（T15。024 の段の表と、022・023 の部門長・副部門長の確かめ）。p_scenario を渡せば先に Y1 をその状態にする。
+-- 結果を返して、副トランザクションごと取り消す（書いたもの・年度の状態・ロールの切り替えも戻る）。
+-- 戻り値：ok / P0001 のコード（forbidden・invalid_state・role_overlap など）/ error:<SQLSTATE> <メッセージ>（42501 もこれ）
+create function tests.try_rpc(p_persona text, p_sql text, p_scenario text default null) returns text language plpgsql as $$
+declare v_result text;
+begin
+  begin
+    if p_scenario is not null then
+      perform tests.set_scenario(p_scenario);
+    end if;
+    perform tests.login_as(p_persona);
+    execute p_sql;
+    v_result := 'ok';
+    raise exception using errcode = 'TT001';          -- 取り消し用
+  exception
+    when sqlstate 'TT001' then null;
+    when sqlstate 'P0001' then v_result := sqlerrm;
+    when others then v_result := 'error:' || sqlstate || ' ' || sqlerrm;
+  end;
+  return v_result;
+end $$;
+
+-- エラーのコードと detail（JSON）を返す（T15。role_overlap・conflict の detail をキーの順によらず比べる）。成功なら {"code": "ok"}。
+-- 成功した書き込みは残る（lives_ok と同じ）。失敗した文だけが副トランザクションごと取り消される
+create function tests.error_json(p_sql text) returns jsonb language plpgsql as $$
+declare v_msg text; v_detail text; v_state text;
+begin
+  execute p_sql;
+  return jsonb_build_object('code', 'ok');
+exception when others then
+  get stacked diagnostics v_msg = message_text, v_detail = pg_exception_detail, v_state = returned_sqlstate;
+  if v_state <> 'P0001' then
+    return jsonb_build_object('code', 'error:' || v_state, 'message', v_msg);
+  end if;
+  return jsonb_build_object('code', v_msg, 'detail', nullif(v_detail, '')::jsonb);
 end $$;
 
 -- :Y1 などの名前を id に置き換える

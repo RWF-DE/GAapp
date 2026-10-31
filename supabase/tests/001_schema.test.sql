@@ -2,13 +2,16 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(140);
+select plan(156);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
 select enum_has_labels('public', 'group_category', array['stall','department','company','rest_area']);
 select enum_has_labels('public', 'room_kind', array['room','gym','outdoor','other']);
-select enum_has_labels('public', 'app_role', array['admin','staff','viewer']);
+-- app_role：T15 で総務部門長（head）・総務副部門長（deputy_head）を admin の後に足した（0011）
+select enum_has_labels('public', 'app_role', array['admin','head','deputy_head','staff','viewer']);
+-- group_role：団体代表の立場（店長・副店長。T15）
+select enum_has_labels('public', 'group_role', array['manager','deputy_manager']);
 select enum_has_labels('public', 'rule_kind', array['substitute','source_restrict','fixed_request','keep']);
 select enum_has_labels('public', 'alloc_origin', array['auto','manual']);
 select enum_has_labels('public', 'consent_status', array['not_asked','asked','accepted','declined']);
@@ -30,8 +33,8 @@ select columns_are('public', 'items', array['id','code','name','aliases','reques
 select columns_are('public', 'stocks', array['year_id','room_id','item_id','count','counted_by','counted_at','created_at','updated_at']);
 select columns_are('public', 'groups', array['id','year_id','name','display_name','aliases','category','is_food','location_room_id','sort_order','created_at','updated_at']);
 select columns_are('public', 'year_roles', array['year_id','user_id','role','created_at','updated_at']);
-select columns_are('public', 'group_members', array['group_id','user_id','created_at','updated_at']);
-select columns_are('public', 'invitations', array['id','year_id','email','role','group_id','used_at','created_at','updated_at']);
+select columns_are('public', 'group_members', array['group_id','user_id','role','created_at','updated_at']);
+select columns_are('public', 'invitations', array['id','year_id','email','role','group_id','group_role','used_at','created_at','updated_at']);
 select columns_are('public', 'request_submissions', array['group_id','submitted_at','note','updated_by','created_at','updated_at']);
 select columns_are('public', 'requests', array['group_id','item_id','count','created_at','updated_at']);
 select columns_are('public', 'rules', array['id','year_id','code','kind','params','enabled','memo','created_at','updated_at']);
@@ -58,6 +61,13 @@ select col_type_is('v_remaining', 'remaining', 'integer');
 select col_not_null('allocations', 'requested_item_id');
 select col_not_null('allocations', 'origin');
 select col_is_null('deliveries', 'slot_id');
+-- 団体代表の立場（T15）：group_members.role は not null・既定は店長（今の団体代表は店長になった）。invitations.group_role は団体の招待だけ
+select col_type_is('group_members', 'role', 'group_role');
+select col_not_null('group_members', 'role');
+select col_default_is('group_members', 'role', 'manager');
+select col_type_is('invitations', 'group_role', 'group_role');
+select col_is_null('invitations', 'group_role');
+select col_hasnt_default('invitations', 'group_role');
 select ok((select bool_and(is_nullable = 'NO' and column_default is not null)
            from information_schema.columns
            where table_schema = 'public' and column_name in ('created_at', 'updated_at')
@@ -149,6 +159,15 @@ select throws_ok(format($$ insert into public.invitations (year_id, email, role,
   tests.id('Y1'), tests.id('G1')), '23514', null, '招待は role と group_id の両方を持てない');
 select throws_ok(format($$ insert into public.invitations (year_id, email) values (%L, 'none@pgtap.test') $$,
   tests.id('Y1')), '23514', null, '招待は role か group_id のどちらかが要る');
+-- 招待の立場（T15。invitations_group_role_check）：団体の招待だけが group_role を持つ
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'invitations_group_role_check'),
+  'CHECK (((group_id IS NULL) = (group_role IS NULL)))', 'invitations_group_role_check は「団体の招待のときだけ立場がある」');
+select throws_ok(format($$ insert into public.invitations (year_id, email, group_id) values (%L, 'nogr@pgtap.test', %L) $$,
+  tests.id('Y1'), tests.id('G1')), '23514', null, '団体の招待には立場（group_role）が要る');
+select throws_ok(format($$ insert into public.invitations (year_id, email, role, group_role) values (%L, 'grrole@pgtap.test', 'viewer', 'manager') $$,
+  tests.id('Y1')), '23514', null, 'ロールの招待は立場を持てない');
+select lives_ok(format($$ insert into public.invitations (year_id, email, group_id, group_role) values (%L, 'grdep@pgtap.test', %L, 'deputy_manager') $$,
+  tests.id('Y1'), tests.id('G1')), '団体の招待は副店長でも作れる');
 select throws_ok(format($$ insert into public.invitations (year_id, email, role) values (%L, 'Upper@pgtap.test', 'viewer') $$,
   tests.id('Y1')), '23514', null, '招待のメールは小文字');
 select throws_ok(format($$ insert into public.invitations (year_id, email, role) values (%L, 'no-at-sign', 'viewer') $$,
@@ -174,8 +193,8 @@ select throws_ok(format($$ insert into public.invitations (year_id, email, role)
   tests.id('Y1')), '23505', null, '未使用のロール招待は（年度・メール）に1つ');
 select lives_ok(format($$ insert into public.invitations (year_id, email, role) values (%L, 'viewer@pgtap.test', 'staff') $$,
   tests.id('Y1')), '使用済みのロール招待があっても新しい招待は作れる');
-select throws_ok(format($$ insert into public.invitations (year_id, email, group_id) values (%L, 'dup@pgtap.test', %L), (%L, 'dup@pgtap.test', %L) $$,
-  tests.id('Y1'), tests.id('G2'), tests.id('Y1'), tests.id('G2')), '23505', null, '未使用の団体招待は（年度・メール・団体）に1つ');
+select throws_ok(format($$ insert into public.invitations (year_id, email, group_id, group_role) values (%L, 'dup@pgtap.test', %L, 'manager'), (%L, 'dup@pgtap.test', %L, 'deputy_manager') $$,
+  tests.id('Y1'), tests.id('G2'), tests.id('Y1'), tests.id('G2')), '23505', null, '未使用の団体招待は（年度・メール・団体）に1つ（立場が違っても。招待し直すと立場が変わる）');
 
 -- index
 select has_index('invitations', 'invitations_email_idx');
@@ -235,6 +254,25 @@ select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger 
            where t.tgname = 'check_immutable' and c.relnamespace = 'public'::regnamespace),
   'allocations deliveries group_members groups invitations request_submissions requests room_years slots stocks substitution_consents year_roles',
   'check_immutable が 12 表にある');
+
+-- 兼任の禁止（T15。0012）：check_role_overlap が year_roles・group_members にだけあり、BEFORE・ROW・列が約束どおり。
+-- 店長⇄副店長（group_members の role だけの更新）では動かない（列に role がない）
+select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where t.tgname = 'check_role_overlap' and not t.tgisinternal),
+  'group_members year_roles', 'check_role_overlap は year_roles と group_members にある');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'check_role_overlap' and t.tgrelid = 'public.year_roles'::regclass),
+  'CREATE TRIGGER check_role_overlap BEFORE INSERT OR UPDATE OF role, user_id ON public.year_roles FOR EACH ROW EXECUTE FUNCTION private.tg_year_roles_check_overlap()',
+  'year_roles の check_role_overlap：BEFORE INSERT OR UPDATE OF role, user_id・行ごと');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'check_role_overlap' and t.tgrelid = 'public.group_members'::regclass),
+  'CREATE TRIGGER check_role_overlap BEFORE INSERT OR UPDATE OF user_id, group_id ON public.group_members FOR EACH ROW EXECUTE FUNCTION private.tg_group_members_check_overlap()',
+  'group_members の check_role_overlap：BEFORE INSERT OR UPDATE OF user_id, group_id・行ごと（role の更新では動かない）');
+-- BEFORE ROW のトリガーは名前の順に動く：check_immutable（年度・団体の付け替えを invalid_input で止める）→ check_role_overlap → set_timestamps
+select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.year_roles'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
+  'check_immutable check_role_overlap set_timestamps', 'year_roles の BEFORE ROW のトリガーの順');
+select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.group_members'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
+  'check_immutable check_role_overlap set_timestamps', 'group_members の BEFORE ROW のトリガーの順');
 
 -- 時刻のトリガーが audit_logs 以外の 18 表にある
 select is((select count(distinct c.relname)::int from pg_trigger t join pg_class c on c.oid = t.tgrelid

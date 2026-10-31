@@ -2,31 +2,94 @@
 -- anon と PUBLIC に何もないことは 001_schema が確かめる。ここでは authenticated と supabase_auth_admin を一覧で比べる（supabase_auth_admin は T04 でフックを足した）。
 begin;
 \ir _helpers/personas.psql
-select plan(16);
+select plan(23);
+
+-- 一覧（T15 から版〔引数の型〕まで比べる。同じ名前の古い版〔4引数の invite など〕が残れば落ちる）
+create table tests.expected_fn (kind text not null, sig text primary key);
+insert into tests.expected_fn values
+  -- authenticated が実行できる public の関数（RPC 18 個）
+  ('rpc', 'public.set_year_status(uuid, public.year_status, text, integer)'),
+  ('rpc', 'public.update_year(uuid, jsonb, text)'),
+  ('rpc', 'public.create_year_from(uuid, text, date)'),
+  ('rpc', 'public.invite(uuid, text, public.app_role, uuid, public.group_role)'),
+  ('rpc', 'public.set_role(uuid, uuid, public.app_role, text)'),
+  ('rpc', 'public.remove_role(uuid, uuid, text)'),
+  ('rpc', 'public.revoke_invitation(uuid)'),
+  ('rpc', 'public.remove_group_member(uuid, uuid, text)'),
+  ('rpc', 'public.set_group_member_role(uuid, uuid, public.group_role, text)'),
+  ('rpc', 'public.accept_my_invitations()'),
+  ('rpc', 'public.save_auto_allocations(uuid, jsonb, text, integer)'),
+  ('rpc', 'public.save_allocation_rows(uuid, jsonb, text)'),
+  ('rpc', 'public.set_consent(uuid, uuid, uuid, public.consent_status, text)'),
+  ('rpc', 'public.submit_requests(uuid, jsonb, text)'),
+  ('rpc', 'public.update_requests_after_deadline(uuid, jsonb, text, jsonb)'),
+  ('rpc', 'public.check_delivery(uuid, public.delivery_status, text, boolean)'),
+  ('rpc', 'public.previous_year_stocks(uuid)'),
+  ('rpc', 'public.previous_year_requests(uuid)'),
+  -- authenticated が実行できる private の関数（ポリシー・トリガーが呼ぶ判定関数 17 個。0010 の集合の3個と、T15 の can_lead を含む）
+  ('predicate', 'private.has_role(uuid, public.app_role)'),
+  ('predicate', 'private.has_any_role(uuid, public.app_role[])'),
+  ('predicate', 'private.is_group_member(uuid)'),
+  ('predicate', 'private.group_year_id(uuid)'),
+  ('predicate', 'private.year_status(uuid)'),
+  ('predicate', 'private.can_read_year(uuid)'),
+  ('predicate', 'private.has_any_access()'),
+  ('predicate', 'private.is_admin_of_open_year()'),
+  ('predicate', 'private.can_see_profile(uuid)'),
+  ('predicate', 'private.can_admin(uuid)'),
+  ('predicate', 'private.can_lead(uuid)'),
+  ('predicate', 'private.can_write_stocks(uuid)'),
+  ('predicate', 'private.can_write_requests(uuid)'),
+  ('predicate', 'private.my_verified_email()'),
+  ('predicate', 'private.my_role_year_ids(public.app_role[])'),
+  ('predicate', 'private.my_group_ids()'),
+  ('predicate', 'private.my_role_group_ids(public.app_role[])'),
+  -- 兼任の禁止の補助とトリガー関数（0012。任意の人について答えるので、誰も実行できない）
+  ('overlap', 'private.lock_year_member(uuid, uuid)'),
+  ('overlap', 'private.year_member_has_department_role(uuid, uuid)'),
+  ('overlap', 'private.year_member_in_group(uuid, uuid)'),
+  ('overlap', 'private.tg_year_roles_check_overlap()'),
+  ('overlap', 'private.tg_group_members_check_overlap()');
 
 -- ---------------------------------------------------------------- 関数
+select is_empty($$ select sig from tests.expected_fn where to_regprocedure(sig) is null $$,
+  '一覧の関数がすべてある（名前と引数の型で）');
 select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
                      and has_function_privilege('anon', p.oid, 'execute') $$,
   'anon が実行できる public・private の関数はない');
-select set_eq($$ select p.proname::text from pg_proc p
+select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace = 'public'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
-  array['set_year_status','update_year','create_year_from','invite','set_role','remove_role','revoke_invitation',
-        'remove_group_member','accept_my_invitations','save_auto_allocations','save_allocation_rows','set_consent','submit_requests',
-        'update_requests_after_deadline','check_delivery','previous_year_stocks','previous_year_requests'],
-  'authenticated が実行できる public の関数は RPC 17 個だけ');
-select set_eq($$ select p.proname::text from pg_proc p
+  $$ select to_regprocedure(sig)::text from tests.expected_fn where kind = 'rpc' $$,
+  'authenticated が実行できる public の関数は RPC 18 個だけ（版まで比べる）');
+select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
-  array['has_role','has_any_role','is_group_member','group_year_id','year_status','can_read_year','has_any_access',
-        'is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks','can_write_requests','my_verified_email',
-        'my_role_year_ids','my_group_ids','my_role_group_ids'],
-  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 16 個だけ（0010 の集合の3個を含む。RPC の補助・トリガー関数・verified_email は実行できない）');
+  $$ select to_regprocedure(sig)::text from tests.expected_fn where kind = 'predicate' $$,
+  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 17 個だけ（0010 の集合の3個と can_lead を含む。RPC の補助・トリガー関数・verified_email・兼任の補助は実行できない）');
+-- 同じ名前の public の関数は版が1つだけ（2つあると、名前つきの引数で呼ぶ PostgREST が版を選べない。PGRST203）
+select is_empty($$ select p.proname::text from pg_proc p where p.pronamespace = 'public'::regnamespace
+                   and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+                   group by p.proname having count(*) > 1 $$,
+  'public に同じ名前の関数が2つない（T15 で4引数の invite を消した）');
+-- invite は今の画面の名前つきの呼び出し（{p_year_id, p_email, p_role} か {p_year_id, p_email, p_group_id}）で動く：引数名は変えず、
+-- 足した p_group_role も既定値つき（後ろの3つが既定値 null）
+select is((select array_to_string(p.proargnames, ',') || ' defaults=' || p.pronargdefaults
+           from pg_proc p where p.oid = to_regprocedure('public.invite(uuid, text, public.app_role, uuid, public.group_role)')),
+  'p_year_id,p_email,p_role,p_group_id,p_group_role defaults=3', 'invite の引数名と既定値（今の画面と後方互換）');
 -- Before User Created フック（0007、T04）と、フックが呼ぶ学校のドメインの関数だけ。トリガー関数・招待の受け入れの関数は実行できない
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
                    and has_function_privilege('supabase_auth_admin', p.oid, 'execute') $$,
   array['private.hook_before_user_created(jsonb)', 'private.school_domain()'],
   'supabase_auth_admin が実行できる public・private の関数は、フックとフックが呼ぶ school_domain だけ');
+select is_empty($$ select f.sig from tests.expected_fn f
+                   where f.kind = 'overlap'
+                     and (has_function_privilege('authenticated', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('anon', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('supabase_auth_admin', to_regprocedure(f.sig), 'execute')
+                          or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                                     where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
+  '兼任の禁止の補助とトリガー関数は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない');
 select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace = 'public'::regnamespace
                      and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
@@ -36,14 +99,34 @@ select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace) and p.prosecdef
                      and not coalesce(p.proconfig @> array['search_path=""'], false) $$,
   'SECURITY DEFINER の関数はすべて search_path = ""');
-select is_empty($$ select p.oid::regprocedure::text from pg_proc p
-                   where p.pronamespace = 'private'::regnamespace
-                     and p.proname in ('has_role','has_any_role','is_group_member','group_year_id','year_status','can_read_year',
-                                       'has_any_access','is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks',
-                                       'can_write_requests','my_verified_email','my_role_year_ids','my_group_ids',
-                                       'my_role_group_ids')
-                     and not (p.prosecdef and p.provolatile = 's') $$,
-  '判定関数はすべて SECURITY DEFINER・STABLE');
+select is_empty($$ select f.sig from tests.expected_fn f join pg_proc p on p.oid = to_regprocedure(f.sig)
+                   where f.kind = 'predicate' and not (p.prosecdef and p.provolatile = 's') $$,
+  '判定関数はすべて SECURITY DEFINER・STABLE（can_lead を含む）');
+
+-- 段の書き漏れの守り（T15。D-48：総務副部門長の権限は総務部門長と同じ）：関数の本体とポリシーの式で、head が出てくる所には
+-- いつも deputy_head も出てくる（数が同じ）。片方だけを足した・直した関数やポリシーがあれば落ちる。
+-- \m・\M は単語の境目なので、deputy_head の中の head は数えない
+select is_empty($$ select p.oid::regprocedure::text || ' head=' || regexp_count(p.prosrc, '\mhead\M')
+                          || ' deputy_head=' || regexp_count(p.prosrc, '\mdeputy_head\M')
+                   from pg_proc p
+                   where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
+                     and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+                     and regexp_count(p.prosrc, '\mhead\M') <> regexp_count(p.prosrc, '\mdeputy_head\M') $$,
+  '関数の本体で、head と deputy_head はいつも組で出てくる');
+select is_empty($$ select format('%s %s head=%s deputy_head=%s', tablename, policyname,
+                                 regexp_count(coalesce(qual, '') || ' ' || coalesce(with_check, ''), '\mhead\M'),
+                                 regexp_count(coalesce(qual, '') || ' ' || coalesce(with_check, ''), '\mdeputy_head\M'))
+                   from pg_policies
+                   where schemaname = 'public'
+                     and regexp_count(coalesce(qual, '') || ' ' || coalesce(with_check, ''), '\mhead\M')
+                         <> regexp_count(coalesce(qual, '') || ' ' || coalesce(with_check, ''), '\mdeputy_head\M') $$,
+  'ポリシーの式（using・with check）で、head と deputy_head はいつも組で出てくる');
+-- 守りが空振りしていない（段の配列を使う関数とポリシーがある）
+select ok((select count(*) >= 20 from pg_proc p
+           where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace) and p.prosrc ~ '\mdeputy_head\M')
+          and (select count(*) >= 10 from pg_policies
+               where schemaname = 'public' and coalesce(qual, '') || ' ' || coalesce(with_check, '') ~ '\mdeputy_head\M'),
+  'head・deputy_head の守りの対象が空でない（段の配列を書いた関数 20 個以上、ポリシー 10 個以上。can_lead を呼ぶポリシーは数えない）');
 
 -- ---------------------------------------------------------------- スキーマ・表・シーケンス
 select ok(has_schema_privilege('authenticated', 'private', 'usage') and not has_schema_privilege('authenticated', 'private', 'create')

@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(63);
+select plan(72);
 
 -- 行を JSON にする補助（camelCase。03 の AllocationRow）
 create function tests.arow(p_room text, p_group text, p_item text, p_req text, p_count numeric, p_keep boolean default null)
@@ -31,6 +31,15 @@ select tests.logout();
 select tests.login_as('admin2');
 select throws_ok($$ select public.save_auto_allocations(tests.id('Y1'), '[]', 'full', tests.ver()) $$, 'P0001', 'forbidden', '別の年度の admin は保存できない');
 select tests.logout();
+-- 部門長・副部門長（T15。振り分けの保存は部門長以上）：試して取り消す（tests.try_rpc）。版・状態の確かめは admin と同じ
+select is(tests.try_rpc(p, $$ select public.save_auto_allocations(tests.id('Y1'), jsonb_build_array(
+            tests.arow('R1', 'G1', 'desk', 'desk', 4), tests.arow('R2', 'G2', 'desk', 'desk', 4)), 'full', tests.ver()) $$), 'ok',
+          format('%s は自動振り分けを保存できる', p))
+from unnest(array['head', 'deputy']) p;
+select is(tests.try_rpc('head', $$ select public.save_auto_allocations(tests.id('Y1'), '[]', 'full', tests.ver() - 1) $$), 'conflict',
+  '部門長でも版が違えば conflict');
+select is(tests.try_rpc('deputy', $$ select public.save_auto_allocations(tests.id('Y1'), '[]', 'full', tests.ver()) $$, 'requesting'),
+  'invalid_state', '副部門長でも受付中は保存できない');
 select tests.login_as('admin');
 select throws_ok($$ select public.save_auto_allocations(tests.id('Y1'), '[]', 'full', tests.ver() - 1) $$, 'P0001', 'conflict', '版が違えば conflict');
 select throws_ok($$ select public.save_auto_allocations(tests.id('Y1'), '[]', 'full', null) $$, 'P0001', 'conflict', '版がなければ conflict');
@@ -120,6 +129,23 @@ select tests.login_as('admin2');
 select throws_ok($$ select public.save_allocation_rows(tests.id('Y1'), '[{"op":"delete","id":"00000000-0000-0000-0000-000000000000"}]', '理由') $$,
   'P0001', 'forbidden', '別の年度の admin は手で直せない');
 select tests.logout();
+-- 部門長・副部門長は手で直せる（試して取り消す）。理由は admin と同じく必須
+select is(tests.try_rpc(p, $$ select public.save_allocation_rows(tests.id('Y1'),
+            jsonb_build_array(tests.arow('R2', 'G1', 'chair', 'chair', 1) || '{"op":"insert"}'), '部門長が足す') $$), 'ok',
+          format('%s は手で振り分けを直せる', p))
+from unnest(array['head', 'deputy']) p;
+select is(tests.try_rpc('head', $$ select public.save_allocation_rows(tests.id('Y1'),
+            jsonb_build_array(tests.arow('R2', 'G1', 'chair', 'chair', 1) || '{"op":"insert"}'), '') $$), 'reason_required',
+  '部門長の手での変更も理由が必須');
+select tests.login_as('head');
+select lives_ok($$ select public.save_allocation_rows(tests.id('Y1'),
+                     jsonb_build_array(tests.arow('R2', 'G1', 'lectern', 'lectern', 1) || '{"op":"insert"}'), '部門長が足す') $$,
+  '部門長が手で行を足す');
+select tests.logout();
+select is((select user_id::text || ' ' || reason from public.audit_logs
+           where table_name = 'allocations' and action = 'insert' and after ->> 'item_id' = tests.id('lectern')::text),
+  tests.id('head')::text || ' 部門長が足す', '部門長の変更も監査に残る（人と理由）');
+delete from public.allocations where group_id = tests.id('G1') and item_id = tests.id('lectern');
 select tests.login_as('admin');
 select throws_ok(format($$ select public.save_allocation_rows(%L, %L, '') $$, tests.id('Y1'),
   jsonb_build_array(jsonb_build_object('op', 'delete', 'id', tests.id('A_G2'), 'updatedAt', '2000-01-01T00:00:00Z'))), 'P0001', 'reason_required', '理由は必須');

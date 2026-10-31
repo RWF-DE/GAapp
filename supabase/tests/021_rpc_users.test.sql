@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(131);
+select plan(172);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
 -- provider が google なら Google の identity、email なら email_verified: true の email の identity
@@ -54,11 +54,12 @@ select is((select reason from public.audit_logs where table_name = 'year_roles' 
            and row_pk ->> 'user_id' = tests.id('outsider')::text), '招待', 'ロールの追加の理由は「招待」');
 -- 未登録：招待だけ
 select tests.login_as('admin');
-select is(jsonb_array_length(public.invite(tests.id('Y1'), 'new@pgtap.test', 'staff', tests.id('G1')) -> 'invitation_ids'), 2,
-  'ロールと団体の両方なら招待は2つ');
-select is((public.invite(tests.id('Y1'), 'new@pgtap.test', 'viewer') ->> 'applied')::boolean, false, '未登録は招待だけ（applied: false）');
+-- viewer は同じ年度の団体代表を兼ねられるので、一度に頼める（部門のロールと団体を一度に頼むのは role_overlap。下の「兼任の禁止」）
+select is(jsonb_array_length(public.invite(tests.id('Y1'), 'new@pgtap.test', 'viewer', tests.id('G1')) -> 'invitation_ids'), 2,
+  'ロール（viewer）と団体の両方なら招待は2つ');
+select is((public.invite(tests.id('Y1'), 'new@pgtap.test', 'admin') ->> 'applied')::boolean, false, '未登録は招待だけ（applied: false）');
 select tests.logout();
-select is((select role from public.invitations where email = 'new@pgtap.test' and role is not null and used_at is null), 'viewer'::public.app_role,
+select is((select role from public.invitations where email = 'new@pgtap.test' and role is not null and used_at is null), 'admin'::public.app_role,
   '未使用のロールの招待は、招待し直すとロールが変わる（1件のまま）');
 -- メール未確認のアカウントにはその場で付けない（他人のメールを名乗った登録に招待を取らせない）
 insert into auth.users (instance_id, id, aud, role, email, email_confirmed_at, raw_user_meta_data, created_at, updated_at)
@@ -182,7 +183,7 @@ select is((select count(*)::int from public.invitations where email = 'closedinv
 select tests.set_scenario('requesting');
 
 -- ================================================================ remove_group_member
-insert into public.invitations (year_id, email, group_id, used_at) values (tests.id('Y1'), 'rep2@pgtap.test', tests.id('G2'), now());
+insert into public.invitations (year_id, email, group_id, group_role, used_at) values (tests.id('Y1'), 'rep2@pgtap.test', tests.id('G2'), 'manager', now());
 select tests.login_as('rep2');
 select is((select count(*)::int from public.invitations), 1, '団体代表は自分あての招待を読める');
 select throws_ok($$ select public.remove_group_member(tests.id('G1'), tests.id('rep'), null) $$, 'P0001', 'forbidden', '団体代表は他の代表を外せない');
@@ -209,7 +210,7 @@ select tests.logout();
 -- auth.users.email だけが招待された人のアドレスに変わった状態を作る
 select tests.set_scenario('requesting');
 insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'victim@pgtap.test', 'admin');
-insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'victim@pgtap.test', tests.id('G1'));
+insert into public.invitations (year_id, email, group_id, group_role) values (tests.id('Y1'), 'victim@pgtap.test', tests.id('G1'), 'manager');
 -- Google のユーザー：Google の identity のメールは自分のまま
 select tests.user_with_identity('sw_google', 'google');
 update auth.users set email = 'victim@pgtap.test' where id = tests.id('sw_google');
@@ -327,15 +328,16 @@ select ok(exists (select 1 from public.group_members where group_id = tests.id('
 -- ================================================================ 別のロールを持つ人へのロールの招待（マージの後の直し）
 -- invite の時点で本人のメールを確かめられなかった人（conflict の確認がかからない）が、その年度で別のロールを
 -- 持っていたら、受け入れのときに招待を使用済みにせず残す（ロールも変えない）。団体代表の招待は受け入れる
+-- （T15：ロールは viewer。staff なら兼任の禁止で団体代表の招待も飛ばされる。下の「兼任の禁止」）
 select tests.create_user('fu_conflict');
-insert into public.year_roles (year_id, user_id, role) values (tests.id('Y1'), tests.id('fu_conflict'), 'staff');
-insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_conflict@pgtap.test', 'viewer');
-insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'fu_conflict@pgtap.test', tests.id('G1'));
+insert into public.year_roles (year_id, user_id, role) values (tests.id('Y1'), tests.id('fu_conflict'), 'viewer');
+insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_conflict@pgtap.test', 'admin');
+insert into public.invitations (year_id, email, group_id, group_role) values (tests.id('Y1'), 'fu_conflict@pgtap.test', tests.id('G1'), 'manager');
 select tests.login_as('fu_conflict');
 select is(public.accept_my_invitations(), 1, '別のロールを持つ人は、ロールの招待を受け入れず、団体代表の招待だけを受け入れる');
 select is(public.accept_my_invitations(), 0, '残したロールの招待は、次のログインでも受け入れない');
 select tests.logout();
-select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_conflict')), 'staff'::public.app_role,
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_conflict')), 'viewer'::public.app_role,
   '別のロールを持つ人のロールは変わらない');
 select ok((select used_at is null from public.invitations where email = 'fu_conflict@pgtap.test' and role is not null),
   '別のロールを持つ人へのロールの招待は使用済みにならない（管理者の画面で未使用のまま見える）');
@@ -346,7 +348,7 @@ select ok((select used_at is not null from public.invitations where email = 'fu_
 -- 管理者がロールを外す（remove_role）と、その年度の本人あての未使用のロールの招待も取り消す（外した人に、次のログインで
 -- 残っていた招待のロールが付かないように。ロールを変えるのは set_role）。ほかの年度・ほかの人・団体代表の招待は消さない
 insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'fu_conflict@pgtap.test', 'staff');
-insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'fu_conflict@pgtap.test', tests.id('G2'));
+insert into public.invitations (year_id, email, group_id, group_role) values (tests.id('Y1'), 'fu_conflict@pgtap.test', tests.id('G2'), 'manager');
 insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_other@pgtap.test', 'staff');
 select tests.login_as('admin');
 select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('fu_conflict'), '交代') $$, '別のロールを持つ人へのロールの招待が残っていても外せる');
@@ -375,7 +377,7 @@ select tests.create_user('fu_unverified');
 insert into public.year_roles (year_id, user_id, role) values (tests.id('Y1'), tests.id('fu_unverified'), 'staff');
 insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_unverified@pgtap.test', 'admin');
 insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'fu_unverified@pgtap.test', 'viewer');
-insert into public.invitations (year_id, email, group_id) values (tests.id('Y1'), 'fu_unverified@pgtap.test', tests.id('G1'));
+insert into public.invitations (year_id, email, group_id, group_role) values (tests.id('Y1'), 'fu_unverified@pgtap.test', tests.id('G1'), 'manager');
 insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'fu_pending_to@pgtap.test', 'staff');
 update auth.users set email_change = 'fu_pending_to@pgtap.test' where id = tests.id('fu_unverified');
 select is(private.verified_email(tests.id('fu_unverified')), null, '前提：メールの変更の途中の人は、本人のメールを確かめられない');
@@ -450,6 +452,140 @@ select tests.logout();
 select ok((select used_at is not null from public.invitations where email = 'fu_none@pgtap.test'), 'ロールを持たない人への招待は使用済みになる');
 select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('fu_none')), 'viewer'::public.app_role,
   'ロールを持たない人に招待のロールが付く');
+
+-- ================================================================ 兼任の禁止（T15。D-49）：管理者の経路
+-- 部門のロール（head・deputy_head・staff）と同じ年度の団体代表（店長・副店長）は兼ねられない。admin・viewer は兼ねられる。
+-- 違う年度ならよい。invite は早めに role_overlap（detail の reason：requested_together・current_membership・pending_invitation）を返し、
+-- set_role はトリガー（0012）が止め、招待の受け入れは重なる招待を飛ばす（未使用のまま。例外を出さない）。
+-- 部門長・副部門長の段は 024、トリガーそのものは 014、ログイン（auth のトリガー）の経路は 030
+select tests.create_user(n) from unnest(array['ov_rep', 'ov_rep2', 'ov_staff', 'ov_view']) n;
+insert into public.group_members (group_id, user_id, role) values
+  (tests.id('G1'), tests.id('ov_rep'), 'manager'), (tests.id('G2'), tests.id('ov_rep2'), 'manager'),
+  (tests.id('G2'), tests.id('ov_view'), 'deputy_manager');
+insert into public.year_roles (year_id, user_id, role) values
+  (tests.id('Y1'), tests.id('ov_staff'), 'staff'), (tests.id('Y1'), tests.id('ov_view'), 'viewer');
+
+select tests.set_scenario('requesting');
+select tests.login_as('admin');
+-- 一度に頼んだ（部門のロールと団体）
+select is(tests.error_json($$ select public.invite(tests.id('Y1'), 'ov_new@pgtap.test', 'staff', tests.id('G1')) $$),
+  jsonb_build_object('code', 'role_overlap', 'detail', jsonb_build_object('year_id', tests.id('Y1'), 'reason', 'requested_together')),
+  'staff と団体を一度に頼むと role_overlap（requested_together。メールは detail に入れない）');
+select is(tests.error_json(format($$ select public.invite(%L, 'ov_new@pgtap.test', %L, %L) $$, tests.id('Y1'), r, tests.id('G1'))) ->> 'code',
+          'role_overlap', format('%s と団体を一度に頼むと role_overlap', r))
+from unnest(array['head', 'deputy_head']) r;
+select is(jsonb_array_length(public.invite(tests.id('Y1'), 'ov_adm@pgtap.test', 'admin', tests.id('G1')) -> 'invitation_ids'), 2,
+  'admin と団体は一度に頼める（admin は団体代表を兼ねられる）');
+-- 確かめられたアカウントの今の立場（current_membership）。別のロールの conflict が先
+select is(tests.error_json($$ select public.invite(tests.id('Y1'), 'ov_rep@pgtap.test', 'staff') $$),
+  jsonb_build_object('code', 'role_overlap',
+                     'detail', jsonb_build_object('year_id', tests.id('Y1'), 'user_id', tests.id('ov_rep'), 'reason', 'current_membership')),
+  'その年度の店長に staff を招待すると role_overlap（current_membership。アカウントが分かれば user_id も）');
+select is(tests.error_json($$ select public.invite(tests.id('Y1'), 'ov_rep@pgtap.test', 'head') $$) ->> 'code', 'role_overlap',
+  'その年度の店長に head を招待しても role_overlap');
+select is(tests.error_json($$ select public.invite(tests.id('Y1'), 'ov_staff@pgtap.test', null, tests.id('G1')) $$),
+  jsonb_build_object('code', 'role_overlap',
+                     'detail', jsonb_build_object('year_id', tests.id('Y1'), 'user_id', tests.id('ov_staff'), 'reason', 'current_membership')),
+  'その年度の staff を団体に招待すると role_overlap（反対の向き）');
+select is(tests.error_json($$ select public.invite(tests.id('Y1'), 'ov_view@pgtap.test', 'staff') $$),
+  jsonb_build_object('code', 'conflict', 'detail', jsonb_build_object('field', 'role', 'current', 'viewer')),
+  '閲覧のみの副店長に staff を招待すると、兼任より先に「別のロール」の conflict');
+select is(tests.error_json($$ select public.invite(tests.id('Y1'), 'ov_view@pgtap.test', null, tests.id('G2')) $$),
+  jsonb_build_object('code', 'conflict', 'detail', jsonb_build_object('field', 'group_role', 'current', 'deputy_manager')),
+  'その団体に副店長でいる人を店長（既定）で招待すると conflict（field: group_role）');
+select is((public.invite(tests.id('Y1'), 'ov_view@pgtap.test', null, tests.id('G2'), 'deputy_manager') ->> 'applied')::boolean, true,
+  '同じ立場（副店長）で招待し直すと、その場で受け入れ済みになる');
+select is((public.invite(tests.id('Y1'), 'ov_rep@pgtap.test', 'admin') ->> 'applied')::boolean, true,
+  '店長に admin を招待できる（admin は兼ねられる）');
+select is((public.invite(tests.id('Y1'), 'ov_rep2@pgtap.test', 'viewer') ->> 'applied')::boolean, true,
+  '店長に viewer を招待できる（閲覧のみは兼ねられる）');
+-- 反対側の未使用の招待（pending_invitation）
+select is((public.invite(tests.id('Y1'), 'ov_pend@pgtap.test', 'staff') ->> 'applied')::boolean, false, '準備：未登録の人への staff の招待');
+select is(tests.error_json($$ select public.invite(tests.id('Y1'), 'ov_pend@pgtap.test', null, tests.id('G1')) $$),
+  jsonb_build_object('code', 'role_overlap', 'detail', jsonb_build_object('year_id', tests.id('Y1'), 'reason', 'pending_invitation')),
+  '未使用の staff の招待があるメールを団体に招待すると role_overlap（pending_invitation）');
+select is((public.invite(tests.id('Y1'), 'ov_pgrp@pgtap.test', null, tests.id('G2')) ->> 'applied')::boolean, false, '準備：未登録の人への団体の招待');
+select is(tests.error_json(format($$ select public.invite(%L, 'ov_pgrp@pgtap.test', %L) $$, tests.id('Y1'), r)) ->> 'code',
+          'role_overlap', format('未使用の団体の招待があるメールに %s を招待すると role_overlap（反対の向き）', r))
+from unnest(array['staff', 'head', 'deputy_head']) r;
+select is(jsonb_array_length(public.invite(tests.id('Y1'), 'ov_pend@pgtap.test', 'viewer', tests.id('G1')) -> 'invitation_ids'), 2,
+  '未使用の staff の招待を viewer で招待し直しながら団体を足せる（この呼び出しの後の状態で見る）');
+select is(public.invite(tests.id('Y1'), 'ov_pend@pgtap.test', null, tests.id('G1'), 'deputy_manager') ->> 'applied', 'false',
+  '未使用の団体の招待を副店長で招待し直す');
+select is(tests.error_json($$ select public.invite(tests.id('Y1'), 'ov_x@pgtap.test', 'viewer', null, 'manager') $$),
+  jsonb_build_object('code', 'invalid_input', 'detail', jsonb_build_object('field', 'group_role')),
+  '団体なしで立場を渡すと invalid_input（field: group_role）');
+select tests.logout();
+select is((select string_agg(coalesce(role::text, 'G:' || group_role::text), ' ' order by role nulls last)
+           from public.invitations where email = 'ov_pend@pgtap.test' and used_at is null),
+  'viewer G:deputy_manager', '招待し直すと、ロールの招待はロールが、団体の招待は立場が変わる（どちらも1件のまま）');
+select is((select count(*)::int from public.invitations where email in ('ov_new@pgtap.test', 'ov_x@pgtap.test')), 0,
+  'エラーになった招待は作られない');
+select ok(exists (select 1 from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('ov_rep') and role = 'admin')
+          and exists (select 1 from public.group_members where group_id = tests.id('G1') and user_id = tests.id('ov_rep')),
+  'admin と店長を兼ねている');
+-- 違う年度ならよい（Y1 の staff を Y2 の団体に、Y1 の店長を Y2 の staff に。Y2 の admin が招待する）
+select tests.login_as('admin2');
+select is((public.invite(tests.id('Y2'), 'ov_staff@pgtap.test', null, tests.id('G3')) ->> 'applied')::boolean, true,
+  'Y1 の staff を Y2 の団体に招待できる（違う年度）');
+select is((public.invite(tests.id('Y2'), 'ov_rep2@pgtap.test', 'staff') ->> 'applied')::boolean, true,
+  'Y1 の店長を Y2 の staff に招待できる（違う年度）');
+select is(jsonb_array_length(public.invite(tests.id('Y2'), 'ov_pend@pgtap.test', null, tests.id('G3')) -> 'invitation_ids'), 1,
+  'Y1 に未使用の招待があっても、Y2 の団体には招待できる');
+select tests.logout();
+
+-- set_role：兼任になればトリガーが止める（閲覧のみの副店長を staff にするなど）。admin は兼ねられる
+select tests.login_as('admin');
+select is(tests.error_json($$ select public.set_role(tests.id('Y1'), tests.id('ov_view'), 'staff') $$),
+  jsonb_build_object('code', 'role_overlap', 'detail', jsonb_build_object('year_id', tests.id('Y1'), 'user_id', tests.id('ov_view'))),
+  '閲覧のみの副店長を staff にすると role_overlap（トリガー。detail は年度と人だけ）');
+select is(tests.error_json(format($$ select public.set_role(%L, %L, %L) $$, tests.id('Y1'), tests.id('ov_rep2'), r)) ->> 'code',
+          'role_overlap', format('閲覧のみの店長を %s にすると role_overlap', r))
+from unnest(array['head', 'deputy_head']) r;
+select is(tests.error_json($$ select public.set_role(tests.id('Y1'), tests.id('ov_view'), 'admin') $$) ->> 'code', 'ok',
+  '閲覧のみの副店長を admin にできる（admin は兼ねられる）');
+select tests.logout();
+select is((select string_agg(u.name || ':' || yr.role, ' ' order by u.name) from public.year_roles yr
+           join tests.ids u on u.id = yr.user_id and u.name in ('ov_view', 'ov_rep2') where yr.year_id = tests.id('Y1')),
+  'ov_rep2:viewer ov_view:admin', '止まった set_role はロールを変えない');
+
+-- 招待の受け入れ（accept_my_invitations）：兼任になる招待は飛ばして未使用のまま残し、数えない。例外は出さない
+select tests.create_user(n) from unnest(array['ac_rep', 'ac_both', 'ac_years', 'ac_adm']) n;
+insert into public.group_members (group_id, user_id, role) values (tests.id('G1'), tests.id('ac_rep'), 'manager');
+insert into public.invitations (year_id, email, role) values
+  (tests.id('Y1'), 'ac_rep@pgtap.test', 'staff'), (tests.id('Y1'), 'ac_both@pgtap.test', 'staff'),
+  (tests.id('Y1'), 'ac_years@pgtap.test', 'staff'), (tests.id('Y1'), 'ac_adm@pgtap.test', 'admin');
+insert into public.invitations (year_id, email, group_id, group_role) values
+  (tests.id('Y1'), 'ov_staff@pgtap.test', tests.id('G1'), 'manager'), (tests.id('Y1'), 'ac_both@pgtap.test', tests.id('G2'), 'manager'),
+  (tests.id('Y2'), 'ac_years@pgtap.test', tests.id('G3'), 'deputy_manager'), (tests.id('Y1'), 'ac_adm@pgtap.test', tests.id('G1'), 'manager');
+select tests.login_as('ac_rep');
+select is(public.accept_my_invitations(), 0, '店長への同じ年度の staff の招待は受け入れない（0件・例外なし）');
+select tests.logout();
+select tests.login_as('ov_staff');
+select is(public.accept_my_invitations(), 0, 'staff への同じ年度の団体の招待は受け入れない');
+select tests.logout();
+select tests.login_as('ac_both');
+select is(public.accept_my_invitations(), 1, '同じ年度の staff と団体の招待が両方あれば、ロールの招待だけを受け入れる（1回の呼び出しの中でも順に効く）');
+select is(public.accept_my_invitations(), 0, '残した招待は次のログインでも受け入れない');
+select tests.logout();
+select tests.login_as('ac_years');
+select is(public.accept_my_invitations(), 2, '違う年度の staff と団体の招待は両方受け入れる');
+select tests.logout();
+select tests.login_as('ac_adm');
+select is(public.accept_my_invitations(), 2, 'admin のロールの招待と同じ年度の団体の招待は両方受け入れる');
+select tests.logout();
+select is((select string_agg(email || ':' || (used_at is not null)::text, ' ' order by email, role nulls last)
+           from public.invitations where email in ('ac_rep@pgtap.test', 'ov_staff@pgtap.test', 'ac_both@pgtap.test')
+             and year_id = tests.id('Y1')),
+  'ac_both@pgtap.test:true ac_both@pgtap.test:false ac_rep@pgtap.test:false ov_staff@pgtap.test:false',
+  '飛ばした招待は未使用のまま（ac_both は staff の招待だけ使用済み）');
+select is((select count(*)::int from public.year_roles yr join tests.ids u on u.id = yr.user_id
+           where u.name in ('ac_rep', 'ac_both') and yr.year_id = tests.id('Y1') and yr.role = 'staff')
+          + (select count(*)::int from public.group_members gm join tests.ids u on u.id = gm.user_id
+             where u.name in ('ov_staff', 'ac_both') and gm.group_id in (tests.id('G1'), tests.id('G2'))), 1,
+  '兼任は作られない（ac_both の staff だけが付く）');
+select is((select role from public.group_members where group_id = tests.id('G3') and user_id = tests.id('ac_years')),
+  'deputy_manager'::public.group_role, '違う年度の団体の招待は、招待の立場（副店長）で付く');
 
 select * from finish();
 rollback;
