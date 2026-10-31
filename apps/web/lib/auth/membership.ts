@@ -115,8 +115,12 @@ export function hasAudience(m: Membership, allowed: readonly Audience[]): boolea
   return audiencesOf(m).some((a) => allowed.includes(a));
 }
 
+// head・deputy_head は T15 で DB に足した（D-48）。admin・staff の表示名を 02 の名前（管理者・総務部門員）にそろえ、
+// 段ごとの出し分けを入れるのは T15b（それまでは head・deputy_head を付けない。README の 5）
 export const ROLE_LABELS: Record<AppRole, string> = {
   admin: '総務管理者',
+  head: '総務部門長',
+  deputy_head: '総務副部門長',
   staff: '総務部員',
   viewer: '閲覧のみ',
 };

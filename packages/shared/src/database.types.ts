@@ -231,6 +231,7 @@ export type Database = {
         Row: {
           created_at: string;
           group_id: string;
+          role: Database["public"]["Enums"]["group_role"];
           updated_at: string;
           user_id: string;
         };
@@ -238,12 +239,14 @@ export type Database = {
         Insert: {
           created_at?: string;
           group_id: string;
+          role?: Database["public"]["Enums"]["group_role"];
           updated_at?: string;
           user_id: string;
         };
         Update: {
           created_at?: string;
           group_id?: string;
+          role?: Database["public"]["Enums"]["group_role"];
           updated_at?: string;
           user_id?: string;
         };
@@ -320,6 +323,7 @@ export type Database = {
           created_at: string;
           email: string;
           group_id: string | null;
+          group_role: Database["public"]["Enums"]["group_role"] | null;
           id: string;
           role: Database["public"]["Enums"]["app_role"] | null;
           updated_at: string;
@@ -331,6 +335,7 @@ export type Database = {
           created_at?: string;
           email: string;
           group_id?: string | null;
+          group_role?: Database["public"]["Enums"]["group_role"] | null;
           id?: string;
           role?: Database["public"]["Enums"]["app_role"] | null;
           updated_at?: string;
@@ -341,6 +346,7 @@ export type Database = {
           created_at?: string;
           email?: string;
           group_id?: string | null;
+          group_role?: Database["public"]["Enums"]["group_role"] | null;
           id?: string;
           role?: Database["public"]["Enums"]["app_role"] | null;
           updated_at?: string;
@@ -959,6 +965,7 @@ export type Database = {
         Args: {
           p_email: string;
           p_group_id?: string;
+          p_group_role?: Database["public"]["Enums"]["group_role"];
           p_role?: Database["public"]["Enums"]["app_role"];
           p_year_id: string;
         };
@@ -1021,6 +1028,15 @@ export type Database = {
           isOneToOne: true;
           isSetofReturn: false;
         };
+      };
+      set_group_member_role: {
+        Args: {
+          p_group_id: string;
+          p_group_role: Database["public"]["Enums"]["group_role"];
+          p_reason?: string;
+          p_user_id: string;
+        };
+        Returns: undefined;
       };
       set_role: {
         Args: {
@@ -1104,12 +1120,13 @@ export type Database = {
     };
     Enums: {
       alloc_origin: "auto" | "manual";
-      app_role: "admin" | "staff" | "viewer";
+      app_role: "admin" | "head" | "deputy_head" | "staff" | "viewer";
       consent_status: "not_asked" | "asked" | "accepted" | "declined";
       delivery_kind: "furniture" | "tent" | "weight" | "side_curtain";
       delivery_status: "pending" | "done" | "problem";
       festival_day: "day_minus2" | "day_minus1" | "day1" | "day2";
       group_category: "stall" | "department" | "company" | "rest_area";
+      group_role: "manager" | "deputy_manager";
       room_kind: "room" | "gym" | "outdoor" | "other";
       rule_kind: "substitute" | "source_restrict" | "fixed_request" | "keep";
       year_status: "preparing" | "requesting" | "allocating" | "confirmed" | "closed";
@@ -1229,12 +1246,13 @@ export const Constants = {
   public: {
     Enums: {
       alloc_origin: ["auto", "manual"],
-      app_role: ["admin", "staff", "viewer"],
+      app_role: ["admin", "head", "deputy_head", "staff", "viewer"],
       consent_status: ["not_asked", "asked", "accepted", "declined"],
       delivery_kind: ["furniture", "tent", "weight", "side_curtain"],
       delivery_status: ["pending", "done", "problem"],
       festival_day: ["day_minus2", "day_minus1", "day1", "day2"],
       group_category: ["stall", "department", "company", "rest_area"],
+      group_role: ["manager", "deputy_manager"],
       room_kind: ["room", "gym", "outdoor", "other"],
       rule_kind: ["substitute", "source_restrict", "fixed_request", "keep"],
       year_status: ["preparing", "requesting", "allocating", "confirmed", "closed"],

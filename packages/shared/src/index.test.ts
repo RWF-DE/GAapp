@@ -38,12 +38,15 @@ describe('生成された型（database.types.ts）', () => {
   it('列挙型は 02_data.md の値と並び順が同じ', () => {
     expect(Constants.public.Enums).toEqual({
       alloc_origin: ['auto', 'manual'],
-      app_role: ['admin', 'staff', 'viewer'],
+      // head・deputy_head は T15 の 0011 で admin の後に足した（D-48）
+      app_role: ['admin', 'head', 'deputy_head', 'staff', 'viewer'],
       consent_status: ['not_asked', 'asked', 'accepted', 'declined'],
       delivery_kind: ['furniture', 'tent', 'weight', 'side_curtain'],
       delivery_status: ['pending', 'done', 'problem'],
       festival_day: ['day_minus2', 'day_minus1', 'day1', 'day2'],
       group_category: ['stall', 'department', 'company', 'rest_area'],
+      // 店長・副店長（T15 の 0012）
+      group_role: ['manager', 'deputy_manager'],
       room_kind: ['room', 'gym', 'outdoor', 'other'],
       rule_kind: ['substitute', 'source_restrict', 'fixed_request', 'keep'],
       year_status: ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'],
@@ -56,7 +59,7 @@ describe('生成された型（database.types.ts）', () => {
     expect(year.status).toBe('allocating');
   });
 
-  it('RPC は 04_screens_api.md の DB 関数の表の 17 個（型のテスト）', () => {
+  it('RPC は 04_screens_api.md の DB 関数の表の 18 個（型のテスト）', () => {
     type Rpc = keyof Database['public']['Functions'];
     const rpcs = [
       'set_year_status',
@@ -67,6 +70,7 @@ describe('生成された型（database.types.ts）', () => {
       'remove_role',
       'revoke_invitation',
       'remove_group_member',
+      'set_group_member_role',
       'accept_my_invitations',
       'save_auto_allocations',
       'save_allocation_rows',
@@ -77,10 +81,24 @@ describe('生成された型（database.types.ts）', () => {
       'previous_year_stocks',
       'previous_year_requests',
     ] as const satisfies readonly Rpc[];
-    // 表にない RPC が DB にあれば、ここで型エラーになる
-    const missing: Exclude<Rpc, (typeof rpcs)[number]>[] = [];
-    expect(missing).toEqual([]);
-    expect(new Set(rpcs).size).toBe(17);
+    // 表にない RPC が DB にあれば、ここで型エラーになる（Exclude が never でなければ型が false になり、true を入れられない）
+    type Missing = Exclude<Rpc, (typeof rpcs)[number]>;
+    const noneMissing: [Missing] extends [never] ? true : false = true;
+    expect(noneMissing).toBe(true);
+    expect(new Set(rpcs).size).toBe(18);
+    // invite は T15 で p_group_role（省略可）を足した5引数の版だけ。今の画面の呼び方（ロールか団体のどちらか）も型が通る
+    const inviteRole: Database['public']['Functions']['invite']['Args'] = {
+      p_year_id: '00000000-0000-0000-0000-000000000000',
+      p_email: 'someone@example.test',
+      p_role: 'staff',
+    };
+    const inviteGroup: Database['public']['Functions']['invite']['Args'] = {
+      p_year_id: '00000000-0000-0000-0000-000000000000',
+      p_email: 'someone@example.test',
+      p_group_id: '00000000-0000-0000-0000-000000000000',
+      p_group_role: 'deputy_manager',
+    };
+    expect([inviteRole.p_role, inviteGroup.p_group_role]).toEqual(['staff', 'deputy_manager']);
     const args: Database['public']['Functions']['save_auto_allocations']['Args'] = {
       p_year_id: '00000000-0000-0000-0000-000000000000',
       p_rows: [],

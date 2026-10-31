@@ -129,6 +129,8 @@ const P0001_KINDS: Readonly<Record<string, ErrorKind>> = {
   conflict: 'conflict',
   invalid_input: 'input',
   reason_required: 'reason',
+  // 兼任の禁止（T15。D-49）：部門のロール（staff・head・deputy_head）と同じ年度の団体代表を兼ねる書き込み
+  role_overlap: 'conflict',
 };
 
 const looksLikeFetchFailure = (message: unknown) =>
@@ -337,8 +339,13 @@ function stateMessage(d: unknown, ctx: MessageContext): string {
   return generic;
 }
 
+const ROLE_OVERLAP_MESSAGE =
+  '総務の部門員・部門長・副部門長は、同じ年度の団体の店長・副店長を兼ねられません（管理者と閲覧のみは兼ねられます）';
+
 function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '他の人が先に変更しました。読み直しました';
+  // details（year_id・user_id・reason）によらず同じ文言（04 のエラーの一覧）
+  if (e.reason === 'role_overlap') return ROLE_OVERLAP_MESSAGE;
   if (e.code === '23505') return '同じものがすでにあります（ほかの人が先に足した可能性があります）';
   const d = e.details;
   if (!isRecord(d)) return generic;

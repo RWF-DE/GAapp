@@ -209,6 +209,8 @@ export const inviteFormSchema = z
     return { email: v.email, role: null, group_id: g.data };
   });
 export type InviteFormInput = z.input<typeof inviteFormSchema>;
+/** 送る値（role は INVITE_KINDS のロールだけ。app_role の head・deputy_head は T15b まで選べない） */
+export type InviteFormOutput = z.output<typeof inviteFormSchema>;
 
 // ---- 団体の CSV（3.2）----
 

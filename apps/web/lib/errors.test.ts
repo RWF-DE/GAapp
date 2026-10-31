@@ -81,6 +81,20 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     );
   });
 
+  it('P0001 role_overlap（兼任の禁止。T15）→ conflict。details によらず同じ文言で、読み直して入力を残す', () => {
+    const overlap = '総務の部門員・部門長・副部門長は、同じ年度の団体の店長・副店長を兼ねられません（管理者と閲覧のみは兼ねられます）';
+    const Y = '55555555-5555-4555-8555-555555555555';
+    const U = '66666666-6666-4666-8666-666666666666';
+    // トリガーの details は {year_id, user_id}（メールは入れない）
+    const e = p0001('role_overlap', { year_id: Y, user_id: U });
+    expect(classifyError(e)).toMatchObject({ kind: 'conflict', code: 'P0001', reason: 'role_overlap', details: { year_id: Y, user_id: U } });
+    expect(effectOf(classifyError(e))).toMatchObject({ reload: 'data', keepInput: true });
+    expect(msg(e)).toBe(overlap);
+    // invite の早めのエラー（reason つき）と details のないものも同じ
+    expect(msg(p0001('role_overlap', { year_id: Y, reason: 'pending_invitation' }), { rpc: 'invite' })).toBe(overlap);
+    expect(msg(p0001('role_overlap'))).toBe(overlap);
+  });
+
   it('P0001 invalid_input → input（欄の日本語名を添える）。入力を残す', () => {
     expect(kind(p0001('invalid_input', { field: 'note' }))).toBe('input');
     expect(effectOf(classifyError(p0001('invalid_input')))).toMatchObject({ reload: 'none', keepInput: true });

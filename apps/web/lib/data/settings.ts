@@ -369,7 +369,8 @@ export interface Members {
   repCount: Map<string, number>;
 }
 
-const ROLE_ORDER: Record<AppRole, number> = { admin: 0, staff: 1, viewer: 2 };
+// 列挙の並び（admin, head, deputy_head, staff, viewer。02）
+const ROLE_ORDER: Record<AppRole, number> = { admin: 0, head: 1, deputy_head: 2, staff: 3, viewer: 4 };
 
 /** 年度のメンバー（ロールと団体代表）と招待を読む（admin だけが全部を読める） */
 export async function fetchMembers(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<Members> {
