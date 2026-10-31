@@ -1,5 +1,5 @@
 // ログインの保存（storageState）と、API を直接呼ぶときのトークン（画面の設計 7.2。T09a）。
-// setup（e2e/setup/auth.setup.ts）が seed の admin・staff・viewer・rep に1回ずつログインして e2e/.auth/<user>.json に保存し、
+// setup（e2e/setup/auth.setup.ts）が seed の admin・head・staff・viewer・rep に1回ずつログインして e2e/.auth/<user>.json に保存し、
 // 各テストは `test.use({ storageState: storageStateFor('admin') })` で使う。
 // ログアウトを試すテストは storageState を使わない（画面からログインし直すか、createUser のユーザーで行う。7.2）。
 import path from 'node:path';
@@ -8,8 +8,11 @@ import type { APIRequestContext } from '@playwright/test';
 import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from '../helpers';
 import { TEST_PASSWORD, USERS, type SeedUser } from './users';
 
-/** storageState を保存する seed のユーザー（outsider は保存しない。ログイン後の画面が「招待されていません」だけのため） */
-export const STORED_USERS = ['admin', 'staff', 'viewer', 'rep'] as const;
+/**
+ * storageState を保存する seed のユーザー（outsider は保存しない。ログイン後の画面が「招待されていません」だけのため）。
+ * head（総務部門長）は T15b で足した。総務副部門長は seed にいないので、使い捨てのユーザーで画面からログインする（D-36）
+ */
+export const STORED_USERS = ['admin', 'head', 'staff', 'viewer', 'rep'] as const;
 export type StoredUser = (typeof STORED_USERS)[number];
 
 const AUTH_DIR = fileURLToPath(new URL('../.auth/', import.meta.url));

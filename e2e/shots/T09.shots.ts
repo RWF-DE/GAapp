@@ -77,7 +77,12 @@ test.describe('T09 マスタ設定（管理者）', () => {
 
       // ロールを外す確かめ（本人あての未使用のロールの招待も取り消すことを書く。押さずに閉じる）
       await page.getByTestId('settings-tab-users').click();
-      await page.getByRole('row').filter({ hasText: '総務管理者' }).getByRole('button', { name: 'ロールを外す' }).click();
+      await page
+        .getByRole('table', { name: 'メンバー' })
+        .getByRole('row')
+        .filter({ has: page.getByRole('cell', { name: '管理者', exact: true }) })
+        .getByRole('button', { name: 'ロールを外す' })
+        .click();
       await expect(page.getByRole('dialog')).toContainText('この人あての未使用のロールの招待も取り消します');
       await shoot(page, 'T09', 'settings-users-remove-role-pc');
       await page.keyboard.press('Escape');

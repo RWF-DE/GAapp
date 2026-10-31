@@ -44,7 +44,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await openDashboard(page);
 
       await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（申請受付中）`);
-      await expect(page.getByTestId('home-roles')).toHaveText('総務管理者');
+      await expect(page.getByTestId('home-roles')).toHaveText('管理者');
 
       const sub = page.getByTestId('dashboard-submissions');
       await expect(sub).toContainText('2 ／ 3団体');
@@ -311,7 +311,7 @@ test.describe('T09 ダッシュボード（部員）', () => {
       );
       await pinYear(page, SEED_USER_IDS.staff, s.yearId);
       await openDashboard(page);
-      await expect(page.getByTestId('home-roles')).toHaveText('総務部員');
+      await expect(page.getByTestId('home-roles')).toHaveText('総務部門員');
 
       await expect(page.getByTestId('dashboard-consents')).toContainText('未依頼 1');
       await expect(page.getByTestId('dashboard-problems')).toContainText('E2E-BROKEN');
@@ -341,7 +341,7 @@ test.describe('T09 ホーム（団体代表）', () => {
       await pinYear(page, SEED_USER_IDS.rep, s.yearId);
       await page.goto('/');
       await expect(page.getByRole('heading', { level: 1, name: 'ホーム' })).toBeVisible();
-      await expect(page.getByTestId('home-roles')).toHaveText(`${SMALL.groups.stall} の団体代表`);
+      await expect(page.getByTestId('home-roles')).toHaveText(`${SMALL.groups.stall} の店長`);
       const card = page.getByTestId('rep-card');
       await expect(card).toHaveCount(1);
       await expect(card.getByTestId('rep-submission')).toHaveText('提出済み（7/1 12:00）');
@@ -405,7 +405,7 @@ test('T09 管理者で団体代表も兼ねる人：団体代表のカードが�
   try {
     await sql('insert into public.group_members (group_id, user_id) values ($1, $2)', [s.ids.groups[SMALL.groups.department], u.id]);
     await loginWith(page, u);
-    await expect(page.getByTestId('home-roles')).toHaveText(`総務管理者${SMALL.groups.department} の団体代表`);
+    await expect(page.getByTestId('home-roles')).toHaveText(`管理者${SMALL.groups.department} の店長`);
     await expect(page.getByTestId('rep-card')).toHaveAttribute('data-group', SMALL.groups.department);
     await expect(page.getByTestId('dashboard-year')).toBeVisible();
     const repTop = (await page.getByTestId('rep-card').boundingBox())!.y;

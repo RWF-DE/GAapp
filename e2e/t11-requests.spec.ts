@@ -281,7 +281,7 @@ test.describe('T11 申請一覧（部員）', () => {
       await pinYear(page, SEED_USER_IDS.staff, s.yearId);
       await page.goto('/requests/');
       await expect(page.getByTestId('requests-table')).toBeVisible();
-      await expect(page.getByTestId('read-only-notice')).toHaveText('部員は申請一覧を見るだけです');
+      await expect(page.getByTestId('read-only-notice')).toHaveText('総務部門員は申請一覧を見るだけです');
       await expect(page.getByRole('textbox')).toHaveCount(0);
       await expect(page.getByRole('button', { name: /保存|代理入力|提出済みにする/ })).toHaveCount(0);
     } finally {

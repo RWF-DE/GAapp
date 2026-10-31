@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
 import { classifyError } from '../apps/web/lib/errors';
 import { accessToken, restPost, rpc } from './support/auth';
-import { createScenario, sql, type Scenario } from './support/db';
+import { createScenario, createUser, sql, type Scenario } from './support/db';
 import { SMALL } from './support/datasets';
 import { expectMessage } from './support/errors';
+import { ROLE_OVERLAP_MESSAGE } from './support/roles';
 import { SEED_USER_IDS } from './support/users';
 
 // T09a エラーの分類を本物の DB の応答で確かめる（画面の設計 2.5・7.2）。
@@ -183,5 +184,126 @@ test.describe('T09a エラーの分類（本物の DB）', () => {
     expect(r.status).toBe(401);
     expect(classifyError(r.error, r.status).code).toBe('PGRST301');
     expectMessage(r, 'auth', {}, 'ログインし直してください');
+  });
+});
+
+// T15b 兼任の禁止（role_overlap。D-49）と、招待の conflict（別の立場・別のロール）を本物の DB の応答で確かめる（04 のエラーの一覧、
+// D-50）。role_overlap は理由（details の reason）によらず同じ文言、conflict の field: role の後ろの文は段で変わる。
+// ロール・店長と副店長を付けるのは使い捨てのユーザー（D-36）。招待のメールは使い捨ての @example.test。
+test.describe('T15b 兼任の禁止と立場のエラー（本物の DB）', () => {
+  test('T15b invite・set_role の role_overlap（一度に頼む・今の立場・未使用の招待・トリガー）と conflict（group_role・role）、段の forbidden', async ({
+    request,
+  }) => {
+    const mgr = await createUser({ purpose: 'err-manager' });
+    const stf = await createUser({ purpose: 'err-staff' });
+    const vw = await createUser({ purpose: 'err-viewer' });
+    const s = await createScenario({
+      status: 'requesting',
+      dataset: 'small',
+      roles: { admin: true, head: true, staff: true },
+      grants: [
+        { userId: stf.id, role: 'staff' },
+        { userId: vw.id, role: 'viewer' },
+      ],
+      groupMembers: [
+        { userId: mgr.id, group: SMALL.groups.stall },
+        // 閲覧のみは店長・副店長を兼ねられる
+        { userId: vw.id, group: SMALL.groups.department, role: 'deputy_manager' },
+      ],
+    });
+    const fresh = (what: string) => `e2e-${what}-${s.yearId.slice(0, 8)}@example.test`;
+    try {
+      const [admin, head, staff] = await Promise.all([accessToken(request, 'admin'), accessToken(request, 'head'), accessToken(request, 'staff')]);
+      const stall = s.ids.groups[SMALL.groups.stall]!;
+      const department = s.ids.groups[SMALL.groups.department]!;
+      const ctx = { rpc: 'invite' };
+      const overlap = async (r: Parameters<typeof expectMessage>[0], reason: string, c = ctx) => {
+        const e = expectMessage(r, 'conflict', c, ROLE_OVERLAP_MESSAGE);
+        expect(e.reason).toBe('role_overlap');
+        expect(e.details).toMatchObject({ year_id: s.yearId, reason });
+        return e;
+      };
+
+      // 部門のロールと団体を一度に頼む（画面は1回に1つの立場だけを送る）
+      await overlap(
+        await rpc(request, admin, 'invite', { p_year_id: s.yearId, p_email: fresh('together'), p_role: 'staff', p_group_id: stall }),
+        'requested_together',
+      );
+      // 今の立場と兼任になる（確かめられたアカウント）：店長を総務部門員に、総務部門員を店長に
+      const asStaff = await overlap(await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: mgr.email, p_role: 'staff' }), 'current_membership');
+      expect(asStaff.details).toMatchObject({ user_id: mgr.id });
+      await overlap(
+        await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: stf.email, p_group_id: department, p_group_role: 'manager' }),
+        'current_membership',
+      );
+      // 反対側の未使用の招待（同じ年度・同じメール）がある
+      expect((await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: fresh('pending'), p_role: 'staff' })).error).toBeNull();
+      await overlap(
+        await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: fresh('pending'), p_group_id: stall, p_group_role: 'deputy_manager' }),
+        'pending_invitation',
+      );
+      // ロールの変更が兼任になる（閲覧のみの副店長を総務部門員に。year_roles のトリガー）
+      const trigger = expectMessage(
+        await rpc(request, admin, 'set_role', { p_year_id: s.yearId, p_user_id: vw.id, p_role: 'staff', p_reason: 'E2E' }),
+        'conflict',
+        { rpc: 'set_role' },
+        ROLE_OVERLAP_MESSAGE,
+      );
+      expect(trigger.reason).toBe('role_overlap');
+      expect(trigger.details).toMatchObject({ year_id: s.yearId, user_id: vw.id });
+
+      // 同じ団体に別の立場でいる（店長を副店長に招待する）：conflict の field: group_role
+      const position = expectMessage(
+        await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: mgr.email, p_group_id: stall, p_group_role: 'deputy_manager' }),
+        'conflict',
+        ctx,
+        'この人はすでにこの団体の店長です。店長・副店長の切り替えはメンバーの一覧から',
+      );
+      expect(position.details).toEqual({ field: 'group_role', current: 'manager' });
+
+      // 別のロールを持つ（閲覧のみの人を総務部門員に招待する）：conflict の field: role。後ろの文は、ロールを変えられる人か（段）で変わる
+      const other = await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: vw.email, p_role: 'staff' });
+      expectMessage(other, 'conflict', { ...ctx, canChangeRoles: false }, 'この人はすでに「閲覧のみ」です。ロールの変更は管理者に頼んでください');
+      expectMessage(other, 'conflict', { ...ctx, canChangeRoles: true }, 'この人はすでに「閲覧のみ」です。ロールの変更はメンバーの一覧から');
+
+      // 段：総務部門長は管理者を招待できず、総務部門員は店長⇄副店長を切り替えられない
+      expectMessage(
+        await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: fresh('admin'), p_role: 'admin' }),
+        'forbidden',
+        ctx,
+        '権限がありません。立場が変わった可能性があります',
+      );
+      expectMessage(
+        await rpc(request, staff, 'set_group_member_role', { p_group_id: stall, p_user_id: mgr.id, p_group_role: 'deputy_manager' }),
+        'forbidden',
+        { rpc: 'set_group_member_role' },
+        '権限がありません。立場が変わった可能性があります',
+      );
+
+      // どれも書き込みを残さない（成功した未使用の総務部門員の招待の1件だけ）
+      expect(await sql('select email, role::text, group_role::text from public.invitations where year_id = $1', [s.yearId])).toEqual([
+        { email: fresh('pending'), role: 'staff', group_role: null },
+      ]);
+      expect(
+        await sql('select user_id::text, role::text from public.year_roles where year_id = $1 and user_id = any($2::uuid[]) order by role', [
+          s.yearId,
+          [mgr.id, stf.id, vw.id],
+        ]),
+      ).toEqual([
+        { user_id: stf.id, role: 'staff' },
+        { user_id: vw.id, role: 'viewer' },
+      ]);
+      expect(
+        await sql('select gm.user_id::text, gm.role::text from public.group_members gm join public.groups g on g.id = gm.group_id where g.year_id = $1 order by gm.role', [
+          s.yearId,
+        ]),
+      ).toEqual([
+        { user_id: mgr.id, role: 'manager' },
+        { user_id: vw.id, role: 'deputy_manager' },
+      ]);
+    } finally {
+      await s.cleanup();
+      await Promise.all([mgr.cleanup(), stf.cleanup(), vw.cleanup()]);
+    }
   });
 });

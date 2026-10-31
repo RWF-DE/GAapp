@@ -5,9 +5,10 @@ import { TEST_PASSWORD, USERS } from '../helpers';
 export { TEST_PASSWORD, USERS };
 export type SeedUser = keyof typeof USERS;
 
-/** seed のユーザーの id（seed.sql の固定の id） */
+/** seed のユーザーの id（seed.sql の固定の id。head〔総務部門長〕は T15b で足した） */
 export const SEED_USER_IDS = {
   admin: '00000000-0000-4000-8000-000000000001',
+  head: '00000000-0000-4000-8000-000000000006',
   staff: '00000000-0000-4000-8000-000000000002',
   rep: '00000000-0000-4000-8000-000000000003',
   viewer: '00000000-0000-4000-8000-000000000004',

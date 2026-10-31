@@ -56,11 +56,14 @@ supabase start -x realtime,storage-api,imgproxy,mailpit,studio,edge-runtime,logf
 
 | メール | パスワード | R8 での立場 |
 | --- | --- | --- |
-| `admin@example.test` | `password123` | 総務管理者 |
-| `staff@example.test` | `password123` | 総務部員 |
-| `rep@example.test` | `password123` | 「テスト団体」の団体代表 |
+| `admin@example.test` | `password123` | 管理者 |
+| `head@example.test` | `password123` | 総務部門長 |
+| `staff@example.test` | `password123` | 総務部門員 |
+| `rep@example.test` | `password123` | 「テスト団体」の店長 |
 | `viewer@example.test` | `password123` | 閲覧のみ |
 | `outsider@example.test` | `password123` | 未招待（「総務から招待されていません」） |
+
+総務副部門長（deputy_head）のテストユーザーは seed にない（権限は総務部門長と同じ）。E2E はテストごとに使い捨てのユーザーに付ける（D-36）。
 
 テスト用ログインのフォームは、`NEXT_PUBLIC_ENABLE_TEST_LOGIN=true` でビルド（または `pnpm dev`）し、かつ Supabase の URL が `127.0.0.1`・`localhost` のときだけ出る。本番のビルド（deploy.yml）には入らない（CI の `pnpm check:no-test-login` で確かめる）。`pnpm dev` で使うときは apps/web/.env.local に次を書く（`supabase status -o env` の値）：
 
