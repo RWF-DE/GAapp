@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Constants, HIGHS_VERSION, INITIAL_ITEMS, ITEM_CODES, PACKAGE_NAME } from './index';
-import type { Database, Enums, Tables } from './index';
+import type { Database, Enums, Tables, TablesInsert, TablesUpdate } from './index';
 import { repoRoot } from './testing';
 
 describe('@gaapp/shared', () => {
@@ -43,6 +43,9 @@ describe('生成された型（database.types.ts）', () => {
       consent_status: ['not_asked', 'asked', 'accepted', 'declined'],
       delivery_kind: ['furniture', 'tent', 'weight', 'side_curtain'],
       delivery_status: ['pending', 'done', 'problem'],
+      // 予定と締切の対象（総務・団体・全員）と種類（締切・予定）：T18 の 0015。D-54
+      event_audience: ['soumu', 'groups', 'all'],
+      event_kind: ['deadline', 'event'],
       festival_day: ['day_minus2', 'day_minus1', 'day1', 'day2'],
       group_category: ['stall', 'department', 'company', 'rest_area'],
       // 店長・副店長（T15 の 0012）
@@ -159,5 +162,50 @@ describe('生成された型（database.types.ts）', () => {
     const target: Pick<Tables<'notice_groups'>, 'notice_id' | 'group_id' | 'year_id'> = { notice_id: N, group_id: G, year_id: Y };
     const audiences: Enums<'notice_audience'>[] = ['soumu', 'all_groups', 'groups'];
     expect([target.group_id, audiences.length]).toEqual([G, 3]);
+  });
+
+  it('予定と締切の表を画面から直接書く形で使える（T18。型のテスト）', () => {
+    const Y = '00000000-0000-0000-0000-000000000001';
+    const E = '00000000-0000-0000-0000-000000000004';
+    // 登録：要るのは年度・種類・対象・題名・開始だけ（id は画面が作って送れる。終わり・終日・メモは省ける。書いた人・日時は DB が入れる）
+    const insert: TablesInsert<'events'> = {
+      id: E,
+      year_id: Y,
+      kind: 'deadline',
+      audience: 'groups',
+      title: '申請の締切',
+      starts_at: '2027-09-30T17:00:00+09:00',
+    };
+    expect(Object.keys(insert)).toEqual(['id', 'year_id', 'kind', 'audience', 'title', 'starts_at']);
+    // 変更：送る列だけ（終日は Asia/Tokyo の 00:00 で、最後の日を含む。メモは空なら null）
+    const patch: TablesUpdate<'events'> = {
+      kind: 'event',
+      audience: 'all',
+      title: '祭の日',
+      starts_at: '2027-10-16T00:00:00+09:00',
+      ends_at: '2027-10-17T00:00:00+09:00',
+      all_day: true,
+      note: null,
+    };
+    expect(patch.all_day).toBe(true);
+    // 読んだ行：終わり・メモ・書いた人・直した人は null になりうる。updated_at は楽観ロックにそのまま使う
+    const row: Tables<'events'> = {
+      id: E,
+      year_id: Y,
+      kind: 'deadline',
+      audience: 'soumu',
+      title: '総務の締切',
+      starts_at: '2027-09-30T08:00:00+00:00',
+      ends_at: null,
+      all_day: false,
+      note: null,
+      created_by: null,
+      updated_by: null,
+      created_at: '2026-10-31T12:34:56.789012+00:00',
+      updated_at: '2026-10-31T12:34:56.789012+00:00',
+    };
+    const kinds: Enums<'event_kind'>[] = ['deadline', 'event'];
+    const audiences: Enums<'event_audience'>[] = ['soumu', 'groups', 'all'];
+    expect([row.updated_at, kinds.length, audiences.length]).toEqual([row.created_at, 2, 3]);
   });
 });

@@ -227,6 +227,63 @@ export type Database = {
         };
         Relationships: [];
       };
+      events: {
+        Row: {
+          all_day: boolean;
+          audience: Database["public"]["Enums"]["event_audience"];
+          created_at: string;
+          created_by: string | null;
+          ends_at: string | null;
+          id: string;
+          kind: Database["public"]["Enums"]["event_kind"];
+          note: string | null;
+          starts_at: string;
+          title: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          all_day?: boolean;
+          audience: Database["public"]["Enums"]["event_audience"];
+          created_at?: string;
+          created_by?: string | null;
+          ends_at?: string | null;
+          id?: string;
+          kind: Database["public"]["Enums"]["event_kind"];
+          note?: string | null;
+          starts_at: string;
+          title: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id: string;
+        };
+        Update: {
+          all_day?: boolean;
+          audience?: Database["public"]["Enums"]["event_audience"];
+          created_at?: string;
+          created_by?: string | null;
+          ends_at?: string | null;
+          id?: string;
+          kind?: Database["public"]["Enums"]["event_kind"];
+          note?: string | null;
+          starts_at?: string;
+          title?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "events_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       group_members: {
         Row: {
           created_at: string;
@@ -1246,6 +1303,8 @@ export type Database = {
       consent_status: "not_asked" | "asked" | "accepted" | "declined";
       delivery_kind: "furniture" | "tent" | "weight" | "side_curtain";
       delivery_status: "pending" | "done" | "problem";
+      event_audience: "soumu" | "groups" | "all";
+      event_kind: "deadline" | "event";
       festival_day: "day_minus2" | "day_minus1" | "day1" | "day2";
       group_category: "stall" | "department" | "company" | "rest_area";
       group_role: "manager" | "deputy_manager";
@@ -1373,6 +1432,8 @@ export const Constants = {
       consent_status: ["not_asked", "asked", "accepted", "declined"],
       delivery_kind: ["furniture", "tent", "weight", "side_curtain"],
       delivery_status: ["pending", "done", "problem"],
+      event_audience: ["soumu", "groups", "all"],
+      event_kind: ["deadline", "event"],
       festival_day: ["day_minus2", "day_minus1", "day1", "day2"],
       group_category: ["stall", "department", "company", "rest_area"],
       group_role: ["manager", "deputy_manager"],

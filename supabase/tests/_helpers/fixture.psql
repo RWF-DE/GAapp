@@ -138,3 +138,18 @@ insert into public.notice_groups (notice_id, year_id, group_id) values
   (tests.id('N_G12'), tests.id('Y1'), tests.id('G1')), (tests.id('N_G12'), tests.id('Y1'), tests.id('G2')),
   (tests.id('N_G4'), tests.id('Y1'), tests.id('G4')),
   (tests.id('N_Y2_G3'), tests.id('Y2'), tests.id('G3'));
+
+-- 予定と締切（T18。D-54）：対象ごとに Y1・Y2 に置く（011 の権限表・013 の D-47・030 の招待のない人で読む）。
+-- 書いた人は created_by・updated_by に直接入れる（auth.uid() のない書き込みでは set_actor は入れた値のまま。D-10）。
+-- E_ALL と E_Y2_ALL は終日（Asia/Tokyo の 00:00。E_ALL は2日間）。Y2 の団体・全員は、Y2 の閲覧のみの rep と、Y2 の G3 の店長の
+-- staff が読む（staff は Y2 では総務でない）。名前は題名の「T-」の後ろ
+with e as (
+  insert into public.events (year_id, kind, audience, title, starts_at, ends_at, all_day, created_by, updated_by) values
+    (tests.id('Y1'), 'event', 'soumu', 'T-E_SOUMU', '2027-10-14 09:00+09', '2027-10-14 10:00+09', false, tests.id('head'), tests.id('head')),
+    (tests.id('Y1'), 'deadline', 'groups', 'T-E_GROUPS', '2027-09-30 17:00+09', null, false, tests.id('admin'), tests.id('admin')),
+    (tests.id('Y1'), 'event', 'all', 'T-E_ALL', '2027-10-16 00:00+09', '2027-10-17 00:00+09', true, tests.id('deputy'), tests.id('deputy')),
+    (tests.id('Y2'), 'deadline', 'soumu', 'T-E_Y2_SOUMU', '2026-10-01 12:00+09', null, false, tests.id('admin2'), tests.id('admin2')),
+    (tests.id('Y2'), 'event', 'groups', 'T-E_Y2_GROUPS', '2026-10-14 13:00+09', '2026-10-14 15:00+09', false, tests.id('admin2'), tests.id('admin2')),
+    (tests.id('Y2'), 'event', 'all', 'T-E_Y2_ALL', '2026-10-16 00:00+09', null, true, tests.id('admin2'), tests.id('admin2'))
+  returning id, title)
+insert into tests.ids select substr(title, 3), id from e;
