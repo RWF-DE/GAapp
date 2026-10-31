@@ -565,6 +565,26 @@
 - **チケット**：T17（前半：DB〔0014_notices.sql・pgTAP・型〕。後半：画面〔/notices・ダッシュボードの欄。T16 のマージの後、同じブランチと PR〕）。
 - **状態**：T17 の前半（DB）は済んだ（2026-10-31。未マージ）：要件（01・02・04）に反映し、0014_notices.sql・pgTAP（14 ファイル）・生成した型（packages/shared）まで済ませ、レビューの指摘も直した（notes/T17.md の「実行したコマンドと結果」「実行したコマンドと結果（パート A）」「レビューで直したこと（パート A）」）。残りは T17 の後半の画面（/notices・ダッシュボードの欄。T16 のマージの後に、同じブランチと PR で作る）。
 
+## D-54 予定と締切（2026-10-31、ユーザーが承認した T18 の計画。T18）
+
+- **決定**：
+  - 総務アプリの機能「予定と締切」（画面は /calendar）を足す。年度ごとに、部門長以上が日時の決まった項目（表 events の1行。コードでは event）を登録する。種類（列挙 event_kind）：deadline（締切）・event（予定）。対象（列挙 event_audience）：soumu（総務）・groups（団体）・all（全員）。
+  - 表 events：id、year_id（years。on delete cascade）、kind、audience、title（前後の空白を除いて 1〜100 字。除く空白はお知らせの題名と同じ 25 文字〔JavaScript の trim と同じ〕で、CHECK は除いた形であることを確かめる。空白だけは不可）、starts_at（timestamptz、not null）、ends_at（timestamptz、null 可。CHECK で ends_at >= starts_at）、all_day（boolean、not null、既定 false）、note（null 可、1000 字まで）、created_by・updated_by（auth.users。on delete set null。お知らせと同じトリガー set_actor が auth.uid() を入れる）、created_at・updated_at（set_timestamps）、索引 (year_id, starts_at)。year_id は check_immutable、監査は tg_audit（D-11）。
+  - 終日の項目は、開始の日の Asia/Tokyo の 00:00 を starts_at に、2日以上なら最後の日の Asia/Tokyo の 00:00 を ends_at に入れる（最後の日を含む。1日だけなら ends_at は null）。画面は終日の項目を Asia/Tokyo の日付だけで出す。
+  - 読める人（RLS の select。D-47 の形）：その年度の総務（admin・head・deputy_head・staff）は全部。店長・副店長は、代表である年度の対象が団体・全員の項目。閲覧のみは、その年度の対象が団体・全員の項目。ほかの人は何も読めない（集合の関数 private.my_role_year_ids と、T17 の private.my_group_year_ids を使う）。
+  - 書き込み（insert・update・delete。RPC は作らない。理由の要らない、1つの表だけの書き込みなので、RLS を通した直接の書き込みにする）：その年度の部門長以上（admin・head・deputy_head）で、年度が終了でないとき（private.can_lead）。表の権限は authenticated に select・insert・update・delete、anon には何もない。楽観ロックは画面が updated_at で行う（`update … where id = … and updated_at = … returning`。0 行なら読み直して not_found・conflict・権限や状態の変化を分ける。画面の設計 2.6 の (B1)。ほかの1つの表の直接の書き込みと同じ）。
+  - ダッシュボードの「締切と予定」と /calendar（T18 の後半）は、この表の項目と、機能のデータから作る日付（年度の行の受付期間・祭の日など）をまとめて出す。
+  - 計画を SQL にするときに決めたこと（notes/T18.md の「判断したこと」。ユーザーに確かめたいものは「確認したいこと」）：
+    - 終日の保存のしかたを CHECK で確かめる（終日の項目の starts_at・ends_at は Asia/Tokyo の 00:00 だけ）。開始・終了の日付は 2000-01-01〜2200-12-31（Asia/Tokyo。年度の1日目と同じ範囲。D-18）に限る（infinity や、JavaScript の Date で扱えない日時を入れさせない）。
+    - 題名の空白は、DB では除かず CHECK で拒む（画面は zod の trim を通してから送る。書き込みを RPC にしないので、お知らせのように DB で除く所がない）。メモは空なら画面が null にする（D-33）。
+    - set_actor のトリガー関数は、お知らせのものを使い回さず、表ごとの名前（private.tg_events_set_actor。中身は同じ）で作る（0014 は書き換えない）。
+    - 振り分けの入力でないので、版（allocation_version）を増やさず、確定中の守りもない（確定中も書ける。終了の年度だけ RLS で読むだけ）。件数の上限は持たない。年度の複製（create_year_from）は予定と締切を写さない。
+    - 登録は、画面が id（uuid）を作って insert する（主キーが一意のキーになり、通信が切れても (B1) で扱える。後半の画面の約束。DB は id を受け付けるだけ）。
+- **理由**：総務と団体の予定・締切を、アプリの中の1か所にまとめる（ユーザーの決定。T16 の総務アプリの機能の1つ。D-51・D-52）。書き込みは部門長以上だけで、1つの表の行を足す・直す・消すだけなので、RPC にせず RLS で守る（CLAUDE.md の設計上の約束：理由が要る書き込みと、複数の表をまとめて変える書き込みだけを RPC にする）。対象を名前で並べて読み取りを書くのは、対象の種類を足しても、閲覧のみ・店長・副店長に黙って見えるようにならないため（お知らせと同じ）。
+- **反映先**：01（用語集の予定と締切・予定と締切の種類・予定と締切の対象）、02（列挙型・マイグレーションの一覧・予定と締切の表と終日の保存のしかた・設計上の決めごと〔監査・変えられない列・楽観ロック・予定と締切の項〕・権限とRLS〔段・判定関数・権限表と「予定と締切の権限」・D-47 の項〕）、04（予定と締切の節〔画面は T18 の後半〕、直接の書き込みの一覧、通信が切れたときの (B1)）、notes/T18.md（SQL の約束・テストの計画・判断したこと）。
+- **チケット**：T18（前半：DB〔0015_events.sql・pgTAP・型〕。後半：画面〔/calendar・ダッシュボードの「締切と予定」へのまとめ。T16 と T17 のマージの後、同じブランチと PR〕）。
+- **状態**：T18 の前半（DB）を進めている（2026-10-31。未マージ。notes/T18.md）。後半の画面は T16・T17 のマージの後。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。

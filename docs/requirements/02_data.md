@@ -17,6 +17,8 @@ create type festival_day as enum ('day_minus2','day_minus1','day1','day2');
 create type delivery_kind as enum ('furniture','tent','weight','side_curtain');
 create type delivery_status as enum ('pending','done','problem');
 create type notice_audience as enum ('soumu','all_groups','groups');     -- T17 の 0014（お知らせの宛先）
+create type event_kind as enum ('deadline','event');                     -- T18 の 0015（予定と締切の種類）
+create type event_audience as enum ('soumu','groups','all');             -- T18 の 0015（予定と締切の対象）
 ```
 
 | 型 | 値 | 表示名 |
@@ -33,12 +35,14 @@ create type notice_audience as enum ('soumu','all_groups','groups');     -- T17 
 | delivery_kind | furniture / tent / weight / side_curtain | 机等 / テント / 重し / 三方幕 |
 | delivery_status | pending / done / problem | 未 / 済 / 問題あり |
 | notice_audience | soumu / all_groups / groups | 総務内 / 全団体 / 指定の団体 |
+| event_kind | deadline / event | 締切 / 予定 |
+| event_audience | soumu / groups / all | 総務 / 団体 / 全員 |
 
 app_role の head（総務部門長）と deputy_head（総務副部門長）は T15 で足した（D-48。deputy_head の権限は head と同じ）。`alter type … add value` で足した値は、同じトランザクションの中では使えないので、値を足すだけのマイグレーション（0011）を分け、値を使うのは 0013 からにする。group_role の店長と副店長も権限は同じで、表示名だけが違う。画面の表示名は T15b でこの表の名前にそろえた（T15b より前の画面は admin を「総務管理者」、staff を「総務部員」と出していた。head・deputy_head は T15b を出してから、管理者が招待で付ける。README の 5）。団体代表は、画面では「{団体名} の店長」「{団体名} の副店長」と出す（04「共通レイアウト」。D-50）。
 
 ## テーブル定義
 
-マイグレーションは supabase/migrations に4桁の連番で置く。0001_init.sql（列挙型・表・ビュー）と 0002_triggers.sql（トリガー）は T02、0003〜0006（権限の関数・RLS・RPC）は T03、0007_auth.sql（auth.users のトリガーと Before User Created フック）は T04、0008_confirm_keep_both_ways.sql（確定の前の確認の E005 を両方向にする）は T07、0009_apply_invitations_keep_conflict.sql（別のロールを持つ人へのロールの招待を使用済みにしない。remove_role で本人あての未使用のロールの招待も取り消す）は T03 のマージの後の直しで作る。0010_rls_select_once.sql（行が多くなりうる表の select のポリシーを、判定関数を行ごとに呼ばない形にする。意味は変えない。D-47）は T14 の速さの改善で作る。0011_app_role_lead.sql（app_role に head・deputy_head を足すだけ）、0012_group_role.sql（group_role の型と group_members.role・invitations.group_role の列を足すだけ。今の関数のまま動く）、0013_role_overlap_lead_tier.sql（兼任の禁止〔適用の前の確かめ・invitations_group_role_check・トリガー〕と3つの段の判定関数・ポリシー・RPC。動きを変えるものは、古い関数とぶつからないように全部ここに入れ、1つのトランザクションで切り替える。D-48・D-49）は T15 で作る。0014_notices.sql（お知らせの宛先の型 notice_audience、表 notices・notice_groups とそのトリガー・RLS、RPC save_notice・delete_notice。足すだけで、今の表と関数は変えない。D-53）は T17 で作る。本番に適用したファイルは書き換えず、次の番号のファイルを足す。created_at・updated_at は audit_logs を除く全テーブルに付け（下では省略）、トリガーで入れる（クライアントが送った値は使わない）。日時は timestamptz で保存し、画面では Asia/Tokyo で入力・表示する。
+マイグレーションは supabase/migrations に4桁の連番で置く。0001_init.sql（列挙型・表・ビュー）と 0002_triggers.sql（トリガー）は T02、0003〜0006（権限の関数・RLS・RPC）は T03、0007_auth.sql（auth.users のトリガーと Before User Created フック）は T04、0008_confirm_keep_both_ways.sql（確定の前の確認の E005 を両方向にする）は T07、0009_apply_invitations_keep_conflict.sql（別のロールを持つ人へのロールの招待を使用済みにしない。remove_role で本人あての未使用のロールの招待も取り消す）は T03 のマージの後の直しで作る。0010_rls_select_once.sql（行が多くなりうる表の select のポリシーを、判定関数を行ごとに呼ばない形にする。意味は変えない。D-47）は T14 の速さの改善で作る。0011_app_role_lead.sql（app_role に head・deputy_head を足すだけ）、0012_group_role.sql（group_role の型と group_members.role・invitations.group_role の列を足すだけ。今の関数のまま動く）、0013_role_overlap_lead_tier.sql（兼任の禁止〔適用の前の確かめ・invitations_group_role_check・トリガー〕と3つの段の判定関数・ポリシー・RPC。動きを変えるものは、古い関数とぶつからないように全部ここに入れ、1つのトランザクションで切り替える。D-48・D-49）は T15 で作る。0014_notices.sql（お知らせの宛先の型 notice_audience、表 notices・notice_groups とそのトリガー・RLS、RPC save_notice・delete_notice。足すだけで、今の表と関数は変えない。D-53）は T17 で作る。0015_events.sql（予定と締切の種類 event_kind・対象 event_audience の型、表 events とそのトリガー・RLS。書き込みは画面から直接〔RLS〕で、RPC はない。足すだけで、今の表と関数は変えない。D-54）は T18 で作る。本番に適用したファイルは書き換えず、次の番号のファイルを足す。created_at・updated_at は audit_logs を除く全テーブルに付け（下では省略）、トリガーで入れる（クライアントが送った値は使わない）。日時は timestamptz で保存し、画面では Asia/Tokyo で入力・表示する。
 
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
 
@@ -321,35 +325,68 @@ create table notice_groups (
 create index on notice_groups (group_id);
 ```
 
+**予定と締切（T18。0015。D-54）**
+
+総務アプリの機能「予定と締切」の表。年度ごとに、部門長以上が日時の決まった項目（種類は締切・予定）を登録する。読める人は対象（event_audience）で決まり（下の「権限とRLS」の「予定と締切の権限」）、書き込みは画面から直接（RLS。理由の要らない、1つの表だけの書き込み。RPC はない）で行う。ダッシュボードの「締切と予定」と /calendar（T18 の後半）は、この表の項目と、機能のデータから作る日付（年度の行の受付期間・祭の日など）をまとめて出す（作った日付は表に入れない）。
+
+```sql
+-- 予定と締切
+create table events (
+  id uuid primary key default gen_random_uuid(),
+  year_id uuid not null references years on delete cascade,
+  kind event_kind not null,                   -- 締切・予定
+  audience event_audience not null,           -- 総務・団体・全員
+  title text not null,                        -- お知らせの題名と同じ：前後の空白（JavaScript の trim と同じ 25 文字）を除いた形で 1〜100 字
+  starts_at timestamptz not null,             -- 締切の日時・予定の始まり。終日なら開始の日の 00:00（Asia/Tokyo）
+  ends_at timestamptz,                        -- 任意（予定の終わり）。開始より前は不可。終日なら最後の日の 00:00（Asia/Tokyo。その日を含む）
+  all_day boolean not null default false,     -- 終日（日付だけの項目）
+  note text check (length(note) <= 1000),     -- メモ（任意。空なら null。D-33）
+  created_by uuid references auth.users on delete set null, -- 書いた人。DB が auth.uid() を入れる（変えない）
+  updated_by uuid references auth.users on delete set null, -- 最後に直した人。DB が auth.uid() を入れる
+  check (title <> ''                          -- 除く空白は notices の題名と同じ 25 文字
+    and title = btrim(title, E'\t\n\u000b\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff')
+    and length(title) <= 100),
+  check (ends_at >= starts_at),               -- 同じ日時はよい（終わりのない項目は null）
+  check (not all_day or ((starts_at at time zone 'Asia/Tokyo')::time = '00:00'   -- 終日は日付の 00:00（Asia/Tokyo）だけ
+                         and (ends_at is null or (ends_at at time zone 'Asia/Tokyo')::time = '00:00'))),
+  check ((starts_at at time zone 'Asia/Tokyo')::date between '2000-01-01' and '2200-12-31' -- 有限で現実的な日付（年度の1日目と同じ範囲。D-18）
+         and (ends_at is null or (ends_at at time zone 'Asia/Tokyo')::date between '2000-01-01' and '2200-12-31'))
+);
+create index on events (year_id, starts_at);
+```
+
+終日の項目（all_day）の日時は、日付を Asia/Tokyo の 00:00 で表して保存する：starts_at は開始の日の 00:00、ends_at は最後の日の 00:00（その日を含む。翌日の 00:00 ではない）で、1日だけなら ends_at は null（開始と同じ日時でもよい）。例：10月16日〜17日の2日間は starts_at = 2027-10-16 00:00+09:00、ends_at = 2027-10-17 00:00+09:00。画面は終日の項目を日付だけで出し（時刻を出さない）、日付は Asia/Tokyo で読む（UTC の日付にしない。Asia/Tokyo の 00:00 は UTC では前の日の 15:00）。終日でない項目は、starts_at・ends_at を時刻つきで Asia/Tokyo で入力・表示する。CHECK は、終日の項目の日時が Asia/Tokyo の 00:00 であることと、開始・終了の日付が 2000-01-01〜2200-12-31（Asia/Tokyo）であること（infinity や、JavaScript の Date で扱えない日時を入れさせない）を確かめる。
+
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
 - 残すは allocations の is_keep = true の行。is_keep は「運び元＝団体の使用場所」と一致させる（残す ⇔ 運び元が使用場所）。is_keep は、保存する RPC が「運び元＝団体の使用場所」かどうかで決める（クライアントの値は使わない）。「is_keep の行の運び元＝団体の使用場所」は CHECK ではなくトリガーで確かめる（他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。逆向き（使用場所からの行が残すでない）はトリガーでは止めず、保存の RPC が決め直して直す（RPC で書いた行はいつもそろう）。振り分けの後に団体の使用場所を変えると、どちらの向きにもずれ得るので、確定では両方向の不一致（残すなのに運び元が使用場所でない／使用場所からの行が残すでない）を検証 E005 として確かめる（`private.confirm_issues`）。年度の一致（行の year_id と団体の year_id）は複合外部キーで保証する
 - 使用不可の部屋は allocations を作らず、Excel 出力で「残す／使用不可」の行として出す
 - 理由が要る書き込み（締切後の申請修正、手での振り分け変更、確定と確定解除）と、複数の表をまとめて変える書き込み（自動振り分けの保存、年度の複製、了承の記録、申請の提出）は、すべて DB 関数（RPC）で行う。関数の中で権限を確かめ、`set_config('app.reason', reason, true)` で理由を置いてから同じトランザクションで書き込む。PostgREST は1リクエストを1トランザクションで処理するので、別の呼び出しで置いた理由は届かない
-- audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles と、room_years・groups・group_members・rooms・items・distance_overrides と、お知らせの notices・notice_groups（T17。notice_groups の行の group_id は宛先の団体）のトリガーで書く。invitations（メール）と profiles（氏名）は個人情報を写さないため記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''` にする（audit_logs には誰にも書き込みの権限を与えないので、部員の在庫入力などで失敗しないように）。トリガーは `current_setting('app.reason', true)` で理由を、`auth.uid()` で書いた人を読む。row_pk は主キーの列を JSON にしたもの、before・after は行全体。updated_at・版の列（allocation_version）・auto_allocated_at しか変わらない更新は記録しない（auto_allocated_at は自動振り分けの保存で allocations の行と一緒に変わり、その行が監査に残るため）。year_id・group_id は行から入れ（year_id を持たない表は団体から引く）、団体の連鎖削除で消えた行にも、消える前の団体の年度を入れる
+- audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles と、room_years・groups・group_members・rooms・items・distance_overrides と、お知らせの notices・notice_groups（T17。notice_groups の行の group_id は宛先の団体）と、予定と締切の events（T18）のトリガーで書く。invitations（メール）と profiles（氏名）は個人情報を写さないため記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''` にする（audit_logs には誰にも書き込みの権限を与えないので、部員の在庫入力などで失敗しないように）。トリガーは `current_setting('app.reason', true)` で理由を、`auth.uid()` で書いた人を読む。row_pk は主キーの列を JSON にしたもの、before・after は行全体。updated_at・版の列（allocation_version）・auto_allocated_at しか変わらない更新は記録しない（auto_allocated_at は自動振り分けの保存で allocations の行と一緒に変わり、その行が監査に残るため）。year_id・group_id は行から入れ（year_id を持たない表は団体から引く）、団体の連鎖削除で消えた行にも、消える前の団体の年度を入れる
 - 申請できる品目はトリガーで確かめる。数が1以上で、品目の「申請できる区分」に団体の区分がなければ E006 で拒否する。ただし企業以外の長机(3人掛)は通す（前処理で長机(2人掛)に読み替える。D-05）
 - stocks の counted_by・counted_at と、request_submissions の updated_by・submitted_at は、ログインしている人が書いたときにトリガーで入れる（クライアントが送った値は使わない）。例外は、部門長以上（admin・head・deputy_head）だけが呼べる RPC `update_requests_after_deadline` が CSV の取り込みでフォームのタイムスタンプ（submittedAt）を渡したときの submitted_at で、RPC がその書き込みの間だけ transaction-local の設定（`app.keep_submitted_at`）を立て、トリガーは値を置き換えない（団体代表は日時を偽れない。D-19）
 - distance_overrides の建物の組は向きを持たない。呼ぶ側が順序を気にしなくてよいよう、トリガーが C の照合順序（コードポイント順。DB の既定の照合順序や JavaScript の並べ替えに依存しない）で小さい方を building_a に入れ替える。同じ建物どうしは CHECK で拒否する
 - rules.year_id は作った後に変えられない（トリガーで拒否する。ルールを閉じた年度へ移す抜け道を、ポリシーに頼らず DB で止める）
-- 行を別の年度・団体へ動かす更新も止める。確定中・closed の守りと版の増分は新しい行の年度しか見ないので、動かせると確定中の年度から振り分けを抜き出せるため。年度を持つ表の year_id（room_years・stocks・groups・year_roles・invitations・allocations・slots・deliveries・notices）と、団体を主キーに含む表の group_id（group_members・request_submissions・requests・substitution_consents）は、作った後に変えられない（トリガー `check_immutable`。`invalid_input`）。notice_groups は鍵の列（notice_id・year_id・group_id）が全部変えられない（行は足すか消すだけ。T17）。allocations・deliveries・invitations の group_id は、複合外部キーで year_id と対になっているので、同じ年度の別の団体にだけ変えられる
+- 行を別の年度・団体へ動かす更新も止める。確定中・closed の守りと版の増分は新しい行の年度しか見ないので、動かせると確定中の年度から振り分けを抜き出せるため。年度を持つ表の year_id（room_years・stocks・groups・year_roles・invitations・allocations・slots・deliveries・notices・events）と、団体を主キーに含む表の group_id（group_members・request_submissions・requests・substitution_consents）は、作った後に変えられない（トリガー `check_immutable`。`invalid_input`）。notice_groups は鍵の列（notice_id・year_id・group_id）が全部変えられない（行は足すか消すだけ。T17）。allocations・deliveries・invitations の group_id は、複合外部キーで year_id と対になっているので、同じ年度の別の団体にだけ変えられる
 - anon と PUBLIC には、public・private スキーマの表・ビュー・シーケンス・関数の権限を何も与えない（PUBLIC への既定の execute も外す）。authenticated には、「権限とRLS」の表の権限（全表の select と、W の表の insert・update・delete）、RPC の execute、ポリシーが呼ぶ private の判定関数の execute と private の usage だけを与える。シーケンスの権限は誰にも与えない（audit_logs は SECURITY DEFINER のトリガーだけが書く）。pgTAP が has_*_privilege で全オブジェクトを棚卸しして、一覧と比べる
 - 前年度の複製（フェーズ1、RPC `create_year_from`）は、groups・rules・room_years を新しい year_id で作り直し、呼んだ人を新しい年度の admin にする（year_roles に1行）。呼べるのは複製元の年度の admin だけで（複製元が closed でもよい）、複製元は最新の年度（それを複製元にした年度も、1日目が同じかそれより後の年度もない）に限る。新しい年度の1日目は複製元より後にする（update_year で1日目を変えるときも、複製元より後で、その年度を複製元にした年度より前でなければならない。崩すと、どの年度も最新でなくなり次の年度を作れなくなる）。1日目は有限で現実的な範囲（2000-01-01〜2200-12-31）に限る（years の CHECK。update_year・create_year_from は invalid_input（field: festival_start）を返す）。infinity や date の上限を入れた年度を closed にすると、それより後の1日目がなくなり、誰も次の年度を作れなくなるため（D-18）。古い年度の admin や、ほかの年度の admin が年度を作って権限を取り戻したり、ロールのない年度を複製して読んだりできないようにするため。新しい年度の prev_year_id に複製元を入れる。rules.params の団体 id（group・groups）は、名前が同じ新しい団体に付け替える。付け替えられなかったルールは無効にして memo に理由を書く。stocks・requests・allocations・substitution_consents・year_roles（呼んだ人以外）・group_members・invitations は複製しない（在庫入力の「前年の数」と休憩所の申請の初期値は、RPC `previous_year_stocks`・`previous_year_requests` で前年度の数を読んで出す）。ロールは年度ごとなので、管理者が毎年、総務部門長・総務副部門長などを招待し直す（D-48）
 - 最初の年度と最初の admin は、オーナーが一度アプリにログインしてから、管理画面の SQL Editor で years と year_roles に1行ずつ入れて作る。最新の年度の admin が誰も残っていないときも同じ方法で admin を足す。手順は README に書く。卒業する admin は、年度を closed にする前後に remove_role で外す（closed でも外せる）
-- 同じ行を複数の管理者が同時に変えないよう、allocations と requests の更新は updated_at を条件に入れた楽観ロックにする（お知らせの更新と削除も同じ。save_notice・delete_notice の base_updated_at。T17）。クライアントは受け取った updated_at の文字列をそのまま返し、DB はミリ秒までで比べる。合わなければ「他の人が変更しました」と出して読み直す
+- 同じ行を複数の管理者が同時に変えないよう、allocations と requests の更新は updated_at を条件に入れた楽観ロックにする（お知らせの更新と削除も同じ。save_notice・delete_notice の base_updated_at。T17。予定と締切〔T18〕は、画面からの直接の update・delete に updated_at の条件を入れる。04 の (B1)）。クライアントは受け取った updated_at の文字列をそのまま返し、DB はミリ秒までで比べる。合わなければ「他の人が変更しました」と出して読み直す
 - 自動振り分けと確定は、years.allocation_version（振り分けの入力と結果の版）で、計算・検証している間に何かが変わっていないかを確かめる。年度が allocating の間に、allocate の入力になる表（stocks、room_years、groups、requests、request_submissions、rules、substitution_consents、allocations と、rooms・items・distance_overrides）が変わると、文ごとのトリガーで版が増える。状態を遷移したときも増える。画面は版をほかのデータより先に読み、入力を組み立てたときの版を save_auto_allocations と確定（set_year_status）に渡す。違えば conflict になって読み直す。書き込みの RPC は年度の行を `for no key update` でロックしてから書くので、同じ年度の保存は順に処理され、外部キーの確認（在庫の入力など）は待たされない
 - 確定中（confirmed）と終了（closed）の年度では、確定済みのデータに E001・E002・E005 を作る直接の書き込みをトリガーで止める：団体の削除と、使用場所・区分・年度の変更、振り分けのある部屋を使用不可にすること、振り分けの合計より少ない在庫にすること。allocations の変更も止める（団体の連鎖削除と postgres からの書き込みを含む）。表示名・並び順・メモの変更と、在庫を増やす数え直しはできる。直すときは確定を解除する。トリガーは年度の行をロックしてから状態を読むので、確定と同時に走っても順に処理される。ロックは、allocating の間は版の増分と同じ強さ（`for no key update`）を最初から取り、それ以外は `for share` にする（allocating の間の管理者どうしの直接の書き込みがデッドロックせず、受付中の部員の在庫入力どうしは並行に進む）。BEFORE ROW のトリガーはポリシーの with check より先に動くので、トリガーは最初に「書いている人がその表に書けるか」をポリシーと同じ条件で確かめ、書けない人（anon・authenticated で、ポリシーが拒否する人）ではロックを取らずに拒否を RLS に任せる（拒否される insert を繰り返して admin の RPC を待たせられないように）
 - closed の年度は読み取り専用にする。例外はルールの memo と、運搬・返却のチェックと、ロール・団体代表を外すこと（`remove_role`・`remove_group_member`）と未使用の招待の取り消し（`revoke_invitation`）だけで、「年間の業務の流れ」9 のとおりに運用でき、卒業した admin などの権限を残さない（ルールの memo はトリガーで memo 以外の変更を止める）
 - 兼任の禁止（D-49）：同じ年度で、部門のロール（head・deputy_head・staff）を year_roles に持つ人は、その年度の団体の group_members に入れない（admin と viewer は入れる。違う年度ならよい）。他の表を参照する CHECK は使えないので、BEFORE ROW のトリガー `check_role_overlap` で止める（year_roles の insert と update of role, user_id、group_members の insert と update of user_id, group_id。名前の順で check_immutable の後に動く。店長⇄副店長の role だけの更新では動かない）。トリガーは最初に、年度と人ごとの勧告的ロック `pg_advisory_xact_lock(hashtext('gaapp.year_member'), hashtext(year_id::text || '/' || user_id::text))`（`private.lock_year_member`）を取り、その後の文で反対側を確かめる（READ COMMITTED なので、ロックを待つ間に確定した行も見える。確かめる関数は VOLATILE）。違反は `role_overlap`（detail は `{year_id, user_id}`。メールは入れない）。年度の行はロックしない（在庫の保存・提出の lock_year_guard の for share とぶつかり、GoTrue のログインのトランザクションを長い振り分けの保存の後ろで待たせ、年度をまたいでデッドロックし得るため）。RPC `invite` は早めに role_overlap を返し、招待の受け入れ（`private.apply_invitations`）は同じロックの下で先に確かめて、重なる招待を飛ばす（未使用のまま残す。例外を出さない。「権限とRLS」の招待の受け入れ）。0013 は、適用する時点で違反しているデータがあれば `role_overlap …` で止まる（何も残らない。README の 5 の問い合わせで探して直してから流し直す）
 - お知らせ（T17。D-53）：書き込みは RPC（save_notice・delete_notice）だけで、表には insert・update・delete の権限を与えない（理由を書き込みと同じトランザクションで置き、お知らせと宛先の団体を1回で入れ替えるため）。created_by・updated_by はトリガー `set_actor` が auth.uid() を入れ（created_by は最初に書いた人のまま。seed・SQL Editor〔auth.uid() が null〕では入れた値のまま。D-10 と同じ）、created_at・updated_at は set_timestamps が入れる。宛先の団体の行（notice_groups）は、宛先が groups のお知らせにだけ置ける。他の表を参照する CHECK は使わないので、notice_groups の insert（`check_audience`）と notices の audience の更新（`check_groups`）のトリガーで確かめ（invalid_input。field: group_ids）、RLS はこれを前提にする（閲覧のみと店長・副店長が読む notice_groups の行は、団体あてのお知らせのものだけ）。宛先の団体はお知らせと同じ年度の団体だけ（複合外部キー）。団体を消すと宛先の団体の行も消え、お知らせは残る（宛先の団体が 0 になった指定の団体あては、総務と閲覧のみだけが読める。団体を消せるのは管理者で、確定中・終了の年度では消せない）。終了の年度では書けない（読むだけ。RPC が invalid_state）。確定中も書ける（振り分けの入力でないので、確定中の守りも版〔allocation_version〕の増分もない）。題名（100 字）・本文（4000 字）・宛先の団体の数（1000）のほかに、件数の上限は持たない（書けるのは招待した総務だけ）
+- 予定と締切（T18。D-54）：書き込みは画面から直接（RLS。理由の要らない、1つの表だけの書き込みなので RPC にしない。監査の理由は null）。insert・update・delete は、その年度の部門長以上で、年度が終了でないとき（`private.can_lead`。終了の年度は読むだけ）。直すときは画面が updated_at を条件に入れて変わった行を返させ（`update … where id = … and updated_at = …`。受け取った文字列のまま）、消すときも変わった行を受け取り、0 行なら読み直して not_found・conflict・権限や状態の変化を分ける（04 の (B1)）。作るときに画面が id（uuid）を作って送れば、送り直しても主キーの重複（23505）で二重にならない。created_by・updated_by はトリガー `set_actor` が auth.uid() を入れ（created_by は最初に書いた人のまま。seed・SQL Editor〔auth.uid() が null〕では入れた値のまま。D-10。お知らせと同じ）、created_at・updated_at は set_timestamps が入れる。year_id は変えられない（check_immutable）。監査は tg_audit（D-11。group_id は null）。題名・メモ・日時の形は CHECK で止める（上の「予定と締切」。違反は 23514）。振り分けの入力でないので、版（allocation_version）を増やさず、確定中の守りもない（確定中も書ける）。件数の上限は持たない（書けるのは部門長以上だけ）。年度の複製（create_year_from）は予定と締切を写さない（日付が年ごとに違うため）
 
 ## 権限とRLS
 
 全テーブルで RLS を有効にする。権限は3つの段で決める（D-48）：**管理者だけ**（admin）、**部門長以上**（admin・head・deputy_head。SQL ではロールの配列 `'{admin,head,deputy_head}'`）、**総務**（部門長以上と staff。`'{admin,head,deputy_head,staff}'`）。deputy_head は head と同じ。段ごとの中身：
 
 - 管理者だけ：マスタ（rooms・items・distance_overrides と groups の書き込み）、年度の作成（`create_year_from`）、終了（`set_year_status` の closed）、年度名と1日目（`update_year` の label・festival_start）、年度データの書き出し（画面だけ）、admin・head・deputy_head・viewer の招待・変更・外す・取り消し、年度のない履歴の読み取り
-- 部門長以上：状態の遷移（終了を除く）、受付期間（`update_year` の request_open_at・request_close_at）、ルール、振り分けの保存、了承の記録、締切後の申請の修正・前年度の申請・申請の代理入力、今年の使用（room_years）、時間枠・受け渡しの書き込み、年度の履歴の読み取り、staff と団体代表（店長・副店長）の招待・付ける・外す・取り消しと店長⇄副店長、その招待と year_roles・group_members の読み取り、全団体・指定の団体あてのお知らせとピン留め、ほかの人が書いたお知らせを直す・消す（T17）
-- 総務：在庫の書き込み、在庫・申請・提出・了承・振り分け・ルール・受け渡しとメンバーのプロフィールの読み取り、運搬・返却のチェック、前年度の在庫、総務内のお知らせを出すことと自分が書いたお知らせを直す・消すこと、その年度のお知らせと宛先の団体の読み取り（T17）
+- 部門長以上：状態の遷移（終了を除く）、受付期間（`update_year` の request_open_at・request_close_at）、ルール、振り分けの保存、了承の記録、締切後の申請の修正・前年度の申請・申請の代理入力、今年の使用（room_years）、時間枠・受け渡しの書き込み、年度の履歴の読み取り、staff と団体代表（店長・副店長）の招待・付ける・外す・取り消しと店長⇄副店長、その招待と year_roles・group_members の読み取り、全団体・指定の団体あてのお知らせとピン留め、ほかの人が書いたお知らせを直す・消す（T17）、予定と締切の書き込み（T18）
+- 総務：在庫の書き込み、在庫・申請・提出・了承・振り分け・ルール・受け渡しとメンバーのプロフィールの読み取り、運搬・返却のチェック、前年度の在庫、総務内のお知らせを出すことと自分が書いたお知らせを直す・消すこと、その年度のお知らせと宛先の団体の読み取り（T17）、その年度の予定と締切の読み取り（T18）
 
 判定の関数は公開しないスキーマ private に置き、どれも呼んだ人（auth.uid()）についてだけ答え、SECURITY DEFINER、`search_path = ''`、STABLE にして、ポリシーの中で表を読んでも再帰しないようにする（execute は authenticated だけ）：
 
@@ -358,12 +395,12 @@ create index on notice_groups (group_id);
 - `private.can_read_year(year_id)`：その年度のロールか団体代表がある。`private.has_any_access()`：どこかの年度のロールか団体代表がある
 - `private.is_admin_of_open_year()`：状態が closed でない年度のどれかで admin（年度を持たない表〔rooms・items・distance_overrides〕の書き込みと、年度のない履歴の読み取り。D-01）
 - `private.can_admin(year_id)`：その年度の admin で、年度が closed でない（groups の書き込み）
-- `private.can_lead(year_id)`：その年度の部門長以上で、年度が closed でない（room_years・slots・deliveries の書き込み、rules の追加と削除）
+- `private.can_lead(year_id)`：その年度の部門長以上で、年度が closed でない（room_years・slots・deliveries・events の書き込み、rules の追加と削除）
 - `private.can_write_stocks(year_id)`：部門長以上は closed 以外、staff は preparing・requesting のとき
 - `private.can_write_requests(group_id)`：部門長以上は preparing と締切前の requesting、団体代表は受付期間内（下の「締切前」）
 - `private.can_see_profile(user_id)`：自分と、自分が総務である年度のメンバー
 - `private.my_role_year_ids(roles)`・`private.my_group_ids()`・`private.my_role_group_ids(roles)`：行の多い表の select のポリシーで使う集合（下の D-47 の項）
-- `private.my_group_year_ids()`・`private.my_group_notice_ids()`：お知らせの select のポリシーで使う集合（自分が団体の代表である年度、自分が代表の団体を宛先の団体に含むお知らせ。T17）
+- `private.my_group_year_ids()`・`private.my_group_notice_ids()`：お知らせの select のポリシーで使う集合（自分が団体の代表である年度、自分が代表の団体を宛先の団体に含むお知らせ。T17）。my_group_year_ids は予定と締切の events の select のポリシーでも使う（T18）
 - `private.my_verified_email()`：本人のものと確かめられる今のメール（自分あての招待の読み取り）
 - ほかに、年度の状態と団体の年度を引く関数（`private.year_status`・`private.group_year_id`）
 
@@ -392,6 +429,7 @@ R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ
 | audit_logs | R（その年度。年度のない行は、年度をまたぐ3表の分を closed でない年度の admin が読む） | R（その年度。年度のない行は読めない） | — | — | — |
 | notices | R・RPC | R・RPC | R・RPC（読むのはその年度の全部。書くのは総務内のお知らせを出すことと、自分が書いたものを直す・消すことだけ。下の「お知らせの権限」） | R（代表である年度の全団体あてと、自団体を宛先の団体に含む指定の団体あて） | R（その年度の全団体あて・指定の団体あて。総務内は読めない） |
 | notice_groups | R・RPC | R・RPC | R | R（自団体の行だけ） | R（その年度の行） |
+| events | RW（closed でない年度） | RW（closed でない年度） | R | R（代表である年度の、対象が団体・全員の項目） | R（その年度の、対象が団体・全員の項目。総務の項目は読めない） |
 
 admin・head・deputy_head・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。「自分のメール」は、本人のものと確かめられる今のメール（`private.verified_email`。下の招待の受け入れと同じ判定。ポリシーは自分の分だけを返す `private.my_verified_email()` を呼ぶ）で、JWT の email とは比べない（email を他人のアドレスに変えた状態で、その人あての未使用の招待を読ませないため。D-17a）。head・deputy_head が読める招待は、その年度の staff のロールの招待と団体代表の招待（と自分のメールの行）で、admin・head・deputy_head・viewer のロールの招待は読めない。admin と viewer は、同じ年度の団体代表を兼ねられ、兼ねた人は両方の権限を持つ（例：admin が自団体の代表として申請を書く）。head・deputy_head・staff は、同じ年度の団体代表を兼ねられない（兼任の禁止。「設計上の決めごと」。違う年度なら兼ねてよい）。店長と副店長の権限は同じ。
 
@@ -410,9 +448,18 @@ admin・head・deputy_head・staff・viewer は、その行の年度でのロー
 | 自分が書いたお知らせを消す | ○ | ○ | ○ | — | — |
 | ほかの人が書いたお知らせを直す・消す | ○ | ○ | — | — | — |
 
+**予定と締切の権限**（T18。D-54）：書き込みは画面から直接（RLS。insert・update・delete のポリシーは `private.can_lead(year_id)`）。読み取りは年度の状態によらない。「その年度」は項目の年度。書けない人の insert は 42501、update・delete はエラーにならず 0 行（画面は読み直して分ける）。
+
+| 操作 | admin | head・deputy_head | staff | 団体代表（店長・副店長） | viewer |
+| --- | --- | --- | --- | --- | --- |
+| 対象が総務の項目を読む | その年度の全部 | その年度の全部 | その年度の全部 | — | — |
+| 対象が団体・全員の項目を読む | その年度の全部 | その年度の全部 | その年度の全部 | 代表である年度の全部 | その年度の全部 |
+| 足す・直す・消す（準備中・受付中・振り分け中・確定） | ○ | ○ | — | — | — |
+| 足す・直す・消す（終了） | — | — | — | — | — |
+
 - allocations は誰にも直接の書き込みを許さない。すべて RPC で書き、確定中は RPC がエラーを返す。団体の連鎖削除などで確定中・終了の年度の allocations が変わることも、トリガーが止める。これで確定後の書き込みは確実に止まる
 - 締切前：団体代表が申請を書けるのは、status が requesting で、request_open_at が null か過ぎていて、now() が request_close_at より前のとき。request_close_at が null なら締切前とみなさない（書けない）。部門長以上（admin・head・deputy_head）が RPC なしで書けるのは、status が preparing のときと、requesting で締切前のとき。受付開始（requesting への遷移）は request_close_at が未来でなければエラーにする
-- select のポリシーの書き方（D-47）：行が多くなりうる表（audit_logs・allocations・requests・request_submissions・substitution_consents・stocks・groups）では、行の列を判定関数に渡す形（`private.has_role(year_id, 'admin')` など）にしない。関数が残った行の数だけ呼ばれ、そのたびに year_roles などを引くため（audit_logs に 10 万行で、未招待の人の絞り込みなしの読みが約 1〜4 秒）。代わりに、呼んだ人の年度・団体の集合を問い合わせごとに1回だけ作る関数（`private.my_role_year_ids(roles)`：自分がそのロールを持つ年度、`private.my_group_ids()`：自分が代表の団体、`private.my_role_group_ids(roles)`：自分がそのロールを持つ年度の団体。どれも SECURITY DEFINER・`search_path = ''`・STABLE で、呼んだ人についてだけ答え、execute は authenticated だけ）を使い、`year_id in (select private.my_role_year_ids('{admin,head,deputy_head}'))` のように書く（段の配列を渡す。T15 で段を変えたときも、この形のまま配列だけを直した）。引数のない判定関数は `(select private.is_admin_of_open_year())` のように select で包む（どちらも1回だけ評価される）。見える行は行ごとの形と同じにする（pgTAP の 013 が、0004 の述語と行の中身ごと比べる）。行の少ない表と書き込みのポリシーは行ごとの形のままでよい。allocations の `private.year_status(year_id)` は見える側の行でしか呼ばれないので残す。お知らせの notices・notice_groups（T17）も同じ形で書く（`private.my_group_year_ids()`・`private.my_group_notice_ids()` を足した。notices のポリシーから宛先の団体を読むので、RLS を通らない DEFINER の関数で読む。宛先で分ける枝は `audience in ('all_groups','groups')` のように宛先を名前で並べ、宛先の種類を足しても黙って広がらないようにする）
+- select のポリシーの書き方（D-47）：行が多くなりうる表（audit_logs・allocations・requests・request_submissions・substitution_consents・stocks・groups）では、行の列を判定関数に渡す形（`private.has_role(year_id, 'admin')` など）にしない。関数が残った行の数だけ呼ばれ、そのたびに year_roles などを引くため（audit_logs に 10 万行で、未招待の人の絞り込みなしの読みが約 1〜4 秒）。代わりに、呼んだ人の年度・団体の集合を問い合わせごとに1回だけ作る関数（`private.my_role_year_ids(roles)`：自分がそのロールを持つ年度、`private.my_group_ids()`：自分が代表の団体、`private.my_role_group_ids(roles)`：自分がそのロールを持つ年度の団体。どれも SECURITY DEFINER・`search_path = ''`・STABLE で、呼んだ人についてだけ答え、execute は authenticated だけ）を使い、`year_id in (select private.my_role_year_ids('{admin,head,deputy_head}'))` のように書く（段の配列を渡す。T15 で段を変えたときも、この形のまま配列だけを直した）。引数のない判定関数は `(select private.is_admin_of_open_year())` のように select で包む（どちらも1回だけ評価される）。見える行は行ごとの形と同じにする（pgTAP の 013 が、0004 の述語と行の中身ごと比べる）。行の少ない表と書き込みのポリシーは行ごとの形のままでよい。allocations の `private.year_status(year_id)` は見える側の行でしか呼ばれないので残す。お知らせの notices・notice_groups（T17）も同じ形で書く（`private.my_group_year_ids()`・`private.my_group_notice_ids()` を足した。notices のポリシーから宛先の団体を読むので、RLS を通らない DEFINER の関数で読む。宛先で分ける枝は `audience in ('all_groups','groups')` のように宛先を名前で並べ、宛先の種類を足しても黙って広がらないようにする）。予定と締切の events（T18）の select のポリシーも同じ形で書く（`private.my_role_year_ids(…)` と `private.my_group_year_ids()`。対象で分ける枝は `audience in ('groups','all')` と名前で並べる）。書き込みのポリシー（`private.can_lead(year_id)`）は行ごとの形のまま
 - ポリシーの update は using と with check に同じ述語を書く。with check は更新後の行しか見られないので、「年度・団体を変えない」はトリガー（check_immutable、rules は guard_rules）で止める（「設計上の決めごと」）
 - deliveries の「状態・問題・返却だけ更新できる」は、RLS ではなく RPC `check_delivery` で実現する（RLS は列を制限できない）
 - ログインは Supabase Auth の Google プロバイダー（ブラウザの PKCE フロー）。Google 以外のプロバイダー（メールのサインアップなど）と、学校のドメイン以外は Before User Created フック（Postgres 関数 `private.hook_before_user_created`）で拒否する。関数は公開しないスキーマ private に置き、execute は supabase_auth_admin にだけ与える。許可するドメインは `g.kumamoto-nct.ac.jp`（D-04）で、関数 `private.school_domain()` の1か所に書き、フックはそれを呼ぶ（execute は supabase_auth_admin にだけ与える。テストはトランザクションの中でこの関数を予約済みのドメインを返すものに置き換えて、実在のドメインのメールアドレスを書かずに判定を確かめる）。フックの入力では、プロバイダーが `user.app_metadata.provider`、Google の hd クレームが `user.user_metadata.custom_claims.hd` に入る（GoTrue が ID トークンから hd を写す。userinfo で取ったときは入らない）。hd があれば hd とメールのドメインの両方、なければメールのドメインだけで判定する。拒否は HTTP 403 で、画面は「学校の Google アカウントでログインしてください」と出す。フックは GoTrue の API でユーザーを作るときだけ呼ばれ、seed・SQL Editor・管理 API での作成では呼ばれない
