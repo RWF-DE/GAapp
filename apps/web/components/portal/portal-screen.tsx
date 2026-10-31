@@ -3,10 +3,11 @@
 // ダッシュボード /（総務アプリのトップ。04「ダッシュボード」、D-51・D-52、notes/T16.md「固めた約束」2・5。T16）。
 // 並び：立場の一覧（home-year・home-roles）→ 見出し（総務は「ダッシュボード」、ほかは「ホーム」。今の年度と状態は立場の一覧に
 // あるので、見出しの横に出さない）→ 要対応と締切と予定
-// （広い PC〔lg 以上〕は横に 3:2、それより狭ければ縦）→ 代表する団体（店長・副店長を務める人）→ 機能ごとの状況（総務・閲覧のみ）。
-//   総務（soumu）：要対応・締切と予定・機能ごとのカード（店長・副店長も務める管理者は代表する団体も）
-//   閲覧のみ（viewer）：締切と予定・機能ごとのカード（読み取り）（店長・副店長も務める人は要対応と代表する団体も）
-//   店長・副店長（rep）：要対応・締切と予定・代表する団体
+// （広い PC〔lg 以上〕は横に 3:2、それより狭ければ縦）→ 総務内のお知らせ・お知らせ（T17。全幅。2つとも出す人は lg 以上で横に 1:1）
+// → 代表する団体（店長・副店長を務める人）→ 機能ごとの状況（総務・閲覧のみ）。
+//   総務（soumu）：要対応・締切と予定・総務内のお知らせ・機能ごとのカード（店長・副店長も務める管理者はお知らせと代表する団体も）
+//   閲覧のみ（viewer）：締切と予定・お知らせ・機能ごとのカード（読み取り）（店長・副店長も務める人は要対応と代表する団体も）
+//   店長・副店長（rep）：要対応・締切と予定・お知らせ・代表する団体
 // 欄ごとに別々に読み（components/portal/use-portal.ts。機能の読み取りは、その結果を使う欄〔query.widgets〕にだけ並べる）、欄ごとに
 // 読み込み中・失敗ともう一度・エラーの境界を持つ（1つの機能・1つの欄の失敗でほかを止めない。机椅子の読み込み中・失敗は要対応と
 // カードの欄にだけ出し、年度の行だけで決まる締切と予定の欄には出さない）。年度の行は立場と一緒に読んだキャッシュ（useYearRow。
@@ -26,6 +27,7 @@ import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { cn } from '@/lib/utils';
 import { DatedList } from './dated-list';
 import { ModuleCards } from './module-cards';
+import { NoticeDigests } from './notice-digests';
 import { TodoList } from './todo-list';
 import { showsWidget, useRefetchWidget } from './use-portal';
 import { PortalWidget, type YearGate } from './widget';
@@ -49,6 +51,8 @@ function Portal({ membership: m, yearId }: { membership: Membership; yearId: str
   const soumu = kinds.includes('soumu');
   const showTodos = showsWidget(kinds, 'todos');
   const showCards = showsWidget(kinds, 'cards');
+  const showSoumuNotices = showsWidget(kinds, 'soumuNotices');
+  const showNotices = showsWidget(kinds, 'notices');
   const showGroups = m.groups.length > 0;
 
   const gate: YearGate = year.data
@@ -63,6 +67,8 @@ function Portal({ membership: m, yearId }: { membership: Membership; yearId: str
   const refetchTodos = useRefetchWidget(ctxs, 'todos');
   const refetchDated = useRefetchWidget(ctxs, 'dated');
   const refetchCards = useRefetchWidget(ctxs, 'cards');
+  const refetchSoumuNotices = useRefetchWidget(ctxs, 'soumuNotices');
+  const refetchNotices = useRefetchWidget(ctxs, 'notices');
   const refetchGroups = () => {
     void queryClient.refetchQueries({ queryKey: furnitureRepOptions(yearId, m.groups.map((g) => g.id)).queryKey, exact: true });
     refetchYear();
@@ -102,6 +108,35 @@ function Portal({ membership: m, yearId }: { membership: Membership; yearId: str
           </WidgetBoundary>
         </PortalWidget>
       </div>
+      {/* お知らせの欄（T17）：全幅。2つとも出す人（店長・副店長も務める管理者）は広い PC（lg 以上）で横に 1:1（総務内のお知らせが先） */}
+      {showSoumuNotices || showNotices ? (
+        <div className={cn('grid gap-4', showSoumuNotices && showNotices && 'lg:grid-cols-2')}>
+          {showSoumuNotices ? (
+            <PortalWidget title="総務内のお知らせ" testId="portal-soumu-notices">
+              <WidgetBoundary
+                onRetry={() => {
+                  refetchSoumuNotices();
+                  refetchYear();
+                }}
+              >
+                <NoticeDigests ctxs={ctxs} gate={gate} widget="soumuNotices" />
+              </WidgetBoundary>
+            </PortalWidget>
+          ) : null}
+          {showNotices ? (
+            <PortalWidget title="お知らせ" testId="portal-notices">
+              <WidgetBoundary
+                onRetry={() => {
+                  refetchNotices();
+                  refetchYear();
+                }}
+              >
+                <NoticeDigests ctxs={ctxs} gate={gate} widget="notices" />
+              </WidgetBoundary>
+            </PortalWidget>
+          ) : null}
+        </div>
+      ) : null}
       {showGroups ? (
         <PortalWidget title="代表する団体" framed={false}>
           <WidgetBoundary onRetry={refetchGroups}>

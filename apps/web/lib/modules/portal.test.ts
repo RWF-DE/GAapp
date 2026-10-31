@@ -7,7 +7,10 @@ import { queryKeys } from '@/lib/query';
 import {
   EMPTY_PORTAL_SECTION,
   PORTAL_DATED_LIMIT,
+  PORTAL_NOTICE_LIMIT,
+  PORTAL_WIDGETS,
   datedTime,
+  latestNotices,
   mergePortalSections,
   moduleLabel,
   portalContextsOf,
@@ -18,6 +21,7 @@ import {
   upcomingDated,
   type DatedItem,
   type ModuleCardModel,
+  type NoticeDigest,
   type PortalContext,
   type PortalSection,
   type TodoItem,
@@ -239,5 +243,64 @@ describe('T16 mergePortalSections（兼ねた人の欄を機能ごとにまと�
     ]);
     expect(merged.map((m) => m.card?.title)).toEqual(['総務']);
     expect(mergePortalSections([])).toEqual([]);
+  });
+});
+
+describe('T17 お知らせの欄（PORTAL_WIDGETS・latestNotices・mergePortalSections の notices。D-52 の T17 の直し）', () => {
+  const digest = (id: string, at: string, pinned = false): NoticeDigest => ({
+    id,
+    moduleId: NOTICES,
+    title: id,
+    at,
+    pinned,
+    audience: 'soumu',
+    href: `/notices?notice=${id}`,
+  });
+
+  it('欄の並びは 要対応 → 締切と予定 → 総務内のお知らせ → お知らせ → 機能ごとのカード（04「ダッシュボード」）', () => {
+    expect(PORTAL_WIDGETS).toEqual(['todos', 'dated', 'soumuNotices', 'notices', 'cards']);
+  });
+
+  it('latestNotices：ピン留めのものを先に、その中と残りは出した日時の新しい順、同じなら id の順に 5 件。元の配列は変えない', () => {
+    const items = [
+      digest('a', '2026-10-01T00:00:00Z'),
+      digest('b', '2026-10-03T00:00:00Z'),
+      digest('p-old', '2026-09-01T00:00:00Z', true),
+      digest('p-new', '2026-09-02T00:00:00Z', true),
+      digest('c2', '2026-10-02T00:00:00Z'),
+      digest('c1', '2026-10-02T00:00:00Z'),
+      digest('z', '2026-08-01T00:00:00Z'),
+    ];
+    const before = items.map((x) => x.id);
+    expect(PORTAL_NOTICE_LIMIT).toBe(5);
+    expect(latestNotices(items).map((x) => x.id)).toEqual(['p-new', 'p-old', 'b', 'c1', 'c2']);
+    expect(items.map((x) => x.id)).toEqual(before);
+    expect(latestNotices(items, 2).map((x) => x.id)).toEqual(['p-new', 'p-old']);
+    expect(latestNotices(items, 0)).toEqual([]);
+    expect(latestNotices([])).toEqual([]);
+  });
+
+  it('latestNotices：読めない日時は同じ並びの中で後ろ', () => {
+    expect(latestNotices([digest('bad', 'nope'), digest('ok', '2026-10-01T00:00:00Z')]).map((x) => x.id)).toEqual(['ok', 'bad']);
+  });
+
+  it('mergePortalSections：お知らせは種類の順（総務 → 閲覧のみ → 団体代表）につなぎ、同じ id は最初の1件。どの部分も持たなければ付けない', () => {
+    const s1 = digest('s1', '2026-10-01T00:00:00Z');
+    const g1 = { ...digest('g1', '2026-10-02T00:00:00Z'), audience: 'all_groups' as const };
+    const g1Again = { ...g1, title: '重なり' };
+    const merged = mergePortalSections([
+      { moduleId: NOTICES, kind: 'rep', section: { card: null, todos: [], dated: [], notices: [g1Again] } },
+      { moduleId: 'furniture', kind: 'soumu', section: { card: null, todos: [], dated: [] } },
+      { moduleId: NOTICES, kind: 'soumu', section: { card: null, todos: [], dated: [], notices: [s1, g1] } },
+    ]);
+    expect(merged).toEqual([
+      { moduleId: 'furniture', card: null, todos: [], dated: [] },
+      { moduleId: NOTICES, card: null, todos: [], dated: [], notices: [s1, g1] },
+    ]);
+    expect('notices' in merged[0]!).toBe(false);
+    // 空の配列は「持つ」（欄は空の文を出す）
+    expect(mergePortalSections([{ moduleId: NOTICES, kind: 'viewer', section: { card: null, todos: [], dated: [], notices: [] } }])).toEqual([
+      { moduleId: NOTICES, card: null, todos: [], dated: [], notices: [] },
+    ]);
   });
 });

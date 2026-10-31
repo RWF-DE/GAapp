@@ -7,6 +7,7 @@ import type { AppRole, GroupSummary, Membership } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
+import { noticesLatestOptions } from '@/lib/modules/notices/latest';
 import { PORTAL_WIDGETS, portalContextsOf, portalWidgetQuery } from '@/lib/modules/portal';
 import { PORTAL_PROVIDERS } from '@/lib/modules/providers';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
@@ -121,19 +122,28 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
   };
   const home = (m: Membership) => planHomePrefetch(ctx('', m.groups.map((g) => g.id), m.role));
 
-  it.each(['admin', 'head', 'deputy_head', 'staff'] as const)('総務（%s）：机椅子の軽い読み取り（要対応とカードと同じキー）だけ', (role) => {
-    expect(keys(home(member(role)))).toEqual([furnitureSoumuOptions(Y).queryKey]);
-  });
+  it.each(['admin', 'head', 'deputy_head', 'staff'] as const)(
+    '総務（%s）：机椅子の軽い読み取り（要対応とカードと同じキー）と、T17 総務内のお知らせの新着（総務内のお知らせの欄と同じキー）',
+    (role) => {
+      expect(keys(home(member(role)))).toEqual([furnitureSoumuOptions(Y).queryKey, noticesLatestOptions(Y, 'soumu').queryKey]);
+    },
+  );
 
-  it('閲覧のみ：読まない（年度の行だけ）。ロールも団体もなければ読まない', () => {
-    expect(home(member('viewer'))).toEqual([]);
+  it('T17 閲覧のみ：団体あてのお知らせの新着だけ（年度の行のほかに。お知らせの欄と同じキー）。ロールも団体もなければ読まない', () => {
+    expect(keys(home(member('viewer')))).toEqual([noticesLatestOptions(Y, 'viewer').queryKey]);
     expect(home(member(null))).toEqual([]);
   });
 
-  it('店長・副店長：自団体の提出と了承（代表する団体の欄と要対応と同じキー。団体は立場の一覧の順）。兼ねた人は両方', () => {
-    expect(keys(home(member(null, [G1g, G2g])))).toEqual([furnitureRepOptions(Y, [G1, G2]).queryKey]);
-    expect(keys(home(member('admin', [G1g])))).toEqual([furnitureSoumuOptions(Y).queryKey, furnitureRepOptions(Y, [G1]).queryKey]);
-    expect(keys(home(member('viewer', [G1g])))).toEqual([furnitureRepOptions(Y, [G1]).queryKey]);
+  it('店長・副店長：自団体の提出と了承（代表する団体の欄と要対応と同じキー。団体は立場の一覧の順）と、T17 団体あてのお知らせの新着。兼ねた人は両方', () => {
+    expect(keys(home(member(null, [G1g, G2g])))).toEqual([furnitureRepOptions(Y, [G1, G2]).queryKey, noticesLatestOptions(Y, 'rep', [G1, G2]).queryKey]);
+    expect(keys(home(member('admin', [G1g])))).toEqual([
+      furnitureSoumuOptions(Y).queryKey,
+      noticesLatestOptions(Y, 'soumu').queryKey,
+      furnitureRepOptions(Y, [G1]).queryKey,
+      noticesLatestOptions(Y, 'rep', [G1]).queryKey,
+    ]);
+    // 閲覧のみで店長も務める人は、お知らせを閲覧のみとして1回だけ読む（団体あてで、読める範囲も同じ）
+    expect(keys(home(member('viewer', [G1g])))).toEqual([noticesLatestOptions(Y, 'viewer').queryKey, furnitureRepOptions(Y, [G1]).queryKey]);
   });
 
   it('先読みするキーは、同じ立場のダッシュボードの欄が並べるクエリのキーと同じ（同じキャッシュを読み、余分に読まない）', () => {
@@ -143,9 +153,12 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     }
   });
 
-  it('版・振り分けの行・ルール・スナップショットのキーは先読みしない（キーはどれも ["year", 年度, "portal", "furniture", …]）', () => {
-    for (const m of [member('admin', [G1g]), member('staff'), member(null, [G1g, G2g])]) {
-      for (const key of keys(home(m))) expect(key.slice(0, 4)).toEqual(['year', Y, 'portal', 'furniture']);
+  it('版・振り分けの行・ルール・スナップショットのキーは先読みしない（キーはどれも ["year", 年度, "portal", "furniture" か "notices", …]）', () => {
+    for (const m of [member('admin', [G1g]), member('staff'), member('viewer', [G2g]), member(null, [G1g, G2g])]) {
+      for (const key of keys(home(m))) {
+        expect(key.slice(0, 3)).toEqual(['year', Y, 'portal']);
+        expect(['furniture', 'notices']).toContain(key[3]);
+      }
     }
   });
 
@@ -160,6 +173,25 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     expect(rep!.usable!(member(null, [G1g]))).toBe(false);
     expect(rep!.usable!(member(null, [G2g, G1g]))).toBe(false);
   });
+
+  it('T17 お知らせの新着の usable：総務内は総務のまま、閲覧のみはロールが閲覧のみのまま、団体代表はロールが閲覧のみでなく団体の並びが同じ', () => {
+    const [, soumuNotices] = home(member('staff'));
+    expect(soumuNotices!.options.queryKey).toEqual(noticesLatestOptions(Y, 'soumu').queryKey);
+    expect(soumuNotices!.usable!(member('admin'))).toBe(true);
+    expect(soumuNotices!.usable!(member('viewer'))).toBe(false);
+    const [viewerNotices] = home(member('viewer'));
+    expect(viewerNotices!.usable!(member('viewer'))).toBe(true);
+    expect(viewerNotices!.usable!(member('viewer', [G1g]))).toBe(true);
+    expect(viewerNotices!.usable!(member('staff'))).toBe(false);
+    expect(viewerNotices!.usable!(member(null, [G1g]))).toBe(false);
+    const [, repNotices] = home(member(null, [G1g, G2g]));
+    expect(repNotices!.options.queryKey).toEqual(noticesLatestOptions(Y, 'rep', [G1, G2]).queryKey);
+    expect(repNotices!.usable!(member(null, [G1g, G2g]))).toBe(true);
+    expect(repNotices!.usable!(member('admin', [G1g, G2g]))).toBe(true);
+    // 閲覧のみになった人は閲覧のみとして読む（団体代表の新着は使わない）
+    expect(repNotices!.usable!(member('viewer', [G1g, G2g]))).toBe(false);
+    expect(repNotices!.usable!(member(null, [G1g]))).toBe(false);
+  });
 });
 
 describe('T16 ルートのレイアウトの JS（Providers が先読みの表を読む）', () => {
@@ -170,7 +202,12 @@ describe('T16 ルートのレイアウトの JS（Providers が先読みの表�
     expect(g.files).toContain('lib/data/screen-queries.ts');
     expect(g.files).toContain('lib/modules/furniture/soumu.ts');
     expect(g.files).toContain('lib/modules/furniture/rep.ts');
+    // T17：お知らせの新着の読み取り（latest.ts）だけ。欄の組み立て・一覧の読み取り・入力の zod は入れない
+    expect(g.files).toContain('lib/modules/notices/latest.ts');
     const heavy = [
+      'lib/modules/notices/portal.ts',
+      'lib/data/notices.ts',
+      'lib/schemas/notices.ts',
       'lib/modules/furniture/portal.ts',
       'lib/modules/furniture/counts.ts',
       'lib/modules/providers.ts',

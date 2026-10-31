@@ -5,13 +5,17 @@
 // - homeHref：機能の入口の画面（ROUTES にあり、section がその id のルート）
 // 並びは、ナビの見出しとダッシュボードのカードの並び。機能のチケット（T17〜T21）は最後に1行足す（D-52。05「チケット分割」）。
 
-export const MODULES = [{ id: 'furniture', label: '机椅子', homeHref: '/furniture' }] as const satisfies readonly {
+export const MODULES = [
+  { id: 'furniture', label: '机椅子', homeHref: '/furniture' },
+  // お知らせ（T17。D-53）。入口は「お知らせ一覧」（/notices。招待されている全員）
+  { id: 'notices', label: 'お知らせ', homeHref: '/notices' },
+] as const satisfies readonly {
   id: string;
   label: string;
   homeHref: string;
 }[];
 
-/** 機能の id（今は 'furniture'） */
+/** 機能の id（'furniture' | 'notices'） */
 export type ModuleId = (typeof MODULES)[number]['id'];
 
 export interface ModuleDef {

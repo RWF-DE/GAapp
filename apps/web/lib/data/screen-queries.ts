@@ -1,6 +1,7 @@
 // 画面を開くときに最初に読むもの（/stock?room=・/request・/my。画面の設計 2.1・2.2、D-45。T14 で lib/data/stocks.ts・requests.ts・
 // my.ts から移した。各モジュールは同じ名前で re-export する）と、ダッシュボード（/）の欄が読むもの（T16。lib/modules の机椅子の
-// クエリを使う。数え方や要対応の組み立て〔lib/modules/furniture/portal.ts〕はルートのレイアウトの JS に入れない）。
+// クエリと、T17 でお知らせの新着〔lib/modules/notices/latest.ts〕を使う。数え方や要対応・欄の組み立て〔lib/modules/*/portal.ts〕は
+// ルートのレイアウトの JS に入れない）。
 // ページを開いたときの先読み（lib/boot/early-load.ts）はルートのレイアウト（Providers）から始まり、画面の部品のモジュールは
 // 立場が届いて画面を描くまで読まれない。そこで、先読みに要るクエリ（キーと読み方）と、URL と覚えた id から読むものを決める
 // 関数（planStockPrefetch など）と表（SCREEN_PREFETCH）をこの軽いモジュールに置き、Providers から読む。
@@ -25,6 +26,7 @@ import {
 import { appError, toAppError } from '@/lib/errors';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
+import { noticesLatestOptions } from '@/lib/modules/notices/latest';
 import { queryKeys, STALE_TIME_MS } from '@/lib/query';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import { fetchYear, isAllocationFinal, seedYearRows } from './year';
@@ -322,21 +324,33 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
 
 /**
  * / の先読み（D-45・D-51。04「ダッシュボード」の読むもの）：立場の種類ごとに、ダッシュボードの欄が読むクエリと同じもの。
- * - 総務（ロールが総務）：机椅子の軽い読み取り（6つの表。furnitureSoumuOptions。要対応とカードが同じキーを読む）
- * - 団体代表（その年度で代表を務める団体がある）：自団体の提出と了承（furnitureRepOptions。代表する団体の欄と要対応が同じキーを読む）
- * - 閲覧のみ：読まない（年度の行だけ）
+ * - 総務（ロールが総務）：机椅子の軽い読み取り（6つの表。furnitureSoumuOptions。要対応とカードが同じキーを読む）と、
+ *   総務内のお知らせの新着（noticesLatestOptions の soumu。総務内のお知らせの欄と同じキー。T17）
+ * - 閲覧のみ（ロールが閲覧のみ）：団体あてのお知らせの新着（noticesLatestOptions の viewer。お知らせの欄と同じキー。T17）
+ * - 団体代表（その年度で代表を務める団体がある）：自団体の提出と了承（furnitureRepOptions。代表する団体の欄と要対応が同じキーを読む）と、
+ *   ロールが閲覧のみでなければ団体あてのお知らせの新着（noticesLatestOptions の rep。閲覧のみも務める人は閲覧のみとして1回だけ読む）
  * 版・振り分けの行・ルール・スナップショットは読まない（/ は版を使わないので、記録・先送りもしてよい。D-33）。
- * 立場が届いて、総務でなくなった・代表する団体が変わったときは使わない（usable。settleEarlyLoad が消す）。
+ * 立場が届いて、総務・閲覧のみでなくなった・代表する団体が変わったときは使わない（usable。settleEarlyLoad が消す）。
  *
  * @example
- * planHomePrefetch({ yearId, groupIds: [], role: 'staff', params }) // [{ options: furnitureSoumuOptions(yearId), usable }]
+ * planHomePrefetch({ yearId, groupIds: [], role: 'staff', params }) // 机椅子の総務の読み取りと、総務内のお知らせの新着
  */
 export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
   const list: PrefetchEntry[] = [];
-  if (isSoumu(ctx.role)) list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
+  if (isSoumu(ctx.role)) {
+    list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
+    list.push({ options: noticesLatestOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
+  }
+  if (ctx.role === 'viewer') list.push({ options: noticesLatestOptions(ctx.yearId, 'viewer'), usable: (m) => m.role === 'viewer' });
   if (ctx.groupIds.length > 0) {
     const ids = [...ctx.groupIds];
     list.push({ options: furnitureRepOptions(ctx.yearId, ids), usable: (m) => sameIds(m.groups.map((g) => g.id), ids) });
+    if (ctx.role !== 'viewer') {
+      list.push({
+        options: noticesLatestOptions(ctx.yearId, 'rep', ids),
+        usable: (m) => m.role !== 'viewer' && sameIds(m.groups.map((g) => g.id), ids),
+      });
+    }
   }
   return list;
 }

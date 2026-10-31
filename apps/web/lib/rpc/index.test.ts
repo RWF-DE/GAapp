@@ -142,3 +142,67 @@ describe('payload の zod', () => {
     expect(yearPatchPayload.safeParse({ festival_start: '2201-01-01' }).success).toBe(false);
   });
 });
+
+describe('T17 save_notice・delete_notice の引数（RPC_ARGS）', () => {
+  const N = '66666666-6666-4666-8666-666666666666';
+  const row = { id: N, year_id: Y, audience: 'soumu', title: 'お知らせ', body: null, pinned: false, created_by: null, created_at: 't', updated_by: null, updated_at: 't' };
+
+  it('出す：題名は前後の空白（全角を含む）を除いて送る。本文・団体・版を省ける。返り値はお知らせの行', async () => {
+    const { client, issued } = fake({ data: row });
+    const r = await callRpc('save_notice', { p_year_id: Y, p_audience: 'soumu', p_title: '\u3000お知らせ\t', p_pinned: false, p_group_ids: [] }, client);
+    expect(r).toEqual(row);
+    expect(issued[0]!.table).toBe('rpc:save_notice');
+    expect(issued[0]!.ops[0]!.args[0]).toEqual({ p_year_id: Y, p_audience: 'soumu', p_title: 'お知らせ', p_pinned: false, p_group_ids: [] });
+  });
+
+  it('直す：notice_id と base_updated_at（文字列のまま）を送る。本文の前後の空白と改行は残す', async () => {
+    const { client, issued } = fake({ data: row });
+    await callRpc(
+      'save_notice',
+      { p_year_id: Y, p_audience: 'groups', p_title: '団体へ', p_body: '  本文\n', p_pinned: true, p_group_ids: [G], p_notice_id: N, p_base_updated_at: '2026-10-01T00:00:00.123456+00:00' },
+      client,
+    );
+    expect(issued[0]!.ops[0]!.args[0]).toMatchObject({ p_body: '  本文\n', p_notice_id: N, p_base_updated_at: '2026-10-01T00:00:00.123456+00:00', p_group_ids: [G] });
+  });
+
+  it('送る前の確かめに落ちたら送らず、field は p_ を除いた引数の名前（title・body・group_ids。欄の下に DB と同じ文言）', async () => {
+    const cases: [Record<string, unknown>, string, string][] = [
+      [{ p_title: ' \u3000' }, 'title', '題名は、前後の空白を除いて 1〜100 字にしてください'],
+      [{ p_title: 'あ'.repeat(101) }, 'title', '題名は、前後の空白を除いて 1〜100 字にしてください'],
+      [{ p_body: 'あ'.repeat(4001) }, 'body', '本文は 4000 字までです'],
+      [{ p_group_ids: ['not-a-uuid'] }, 'group_ids', '入力の形が違います（宛先の団体）'],
+      [{ p_group_ids: Array.from({ length: 1001 }, () => G) }, 'group_ids', '入力の形が違います（宛先の団体）'],
+      [{ p_audience: 'everyone' }, 'audience', '入力の形が違います（宛先）'],
+      [{ p_notice_id: 'x' }, 'notice_id', '入力の形が違います'],
+    ];
+    for (const [over, field, message] of cases) {
+      const { client, issued } = fake({ data: row });
+      const info = await caught(callRpc('save_notice', { p_year_id: Y, p_audience: 'soumu', p_title: '題名', ...over } as never, client));
+      expect(issued, field).toHaveLength(0);
+      expect(info.details, field).toEqual({ field });
+      expect(messageFor(info, { rpc: 'save_notice' }), field).toBe(message);
+    }
+  });
+
+  it('本文は補助面の文字も1字と数える（4000 字の絵文字は送れる）', async () => {
+    const { client, issued } = fake({ data: row });
+    await callRpc('save_notice', { p_year_id: Y, p_audience: 'soumu', p_title: '題名', p_body: '😀'.repeat(4000) }, client);
+    expect(issued).toHaveLength(1);
+  });
+
+  it('delete_notice：notice_id と base_updated_at が要る', async () => {
+    const { client, issued } = fake({ data: null });
+    await callRpc('delete_notice', { p_notice_id: N, p_base_updated_at: 't' }, client);
+    expect(issued[0]!.ops[0]!.args[0]).toEqual({ p_notice_id: N, p_base_updated_at: 't' });
+    const info = await caught(callRpc('delete_notice', { p_notice_id: N, p_base_updated_at: '' }, client));
+    expect(info.details).toEqual({ field: 'base_updated_at' });
+    expect(messageFor(info)).toBe('入力の形が違います（お知らせの版）');
+  });
+
+  it('DB のエラー（conflict の details は id）は分類して投げる', async () => {
+    const { client } = fake({ error: { code: 'P0001', message: 'conflict', details: JSON.stringify({ id: N }) }, status: 400 });
+    const info = await caught(callRpc('delete_notice', { p_notice_id: N, p_base_updated_at: 't' }, client));
+    expect(info.kind).toBe('conflict');
+    expect(messageFor(info, { rpc: 'delete_notice' })).toBe('ほかの人がこのお知らせを先に変えました。読み直しました');
+  });
+});
