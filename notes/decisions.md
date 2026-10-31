@@ -540,6 +540,31 @@
 - **チケット**：T15b。
 - **状態**：実装した（T15b。未マージ）。本番へは、T15 のマージ → 本番に 0011〜0013 を流す（README の 5）→ この PR のマージ（deploy.yml）の順に出し、出した後に管理者が総務部門長・総務副部門長を招待する（README の 5、docs/runbook.md の 1.3）。
 
+## D-53 お知らせ（2026-10-31、ユーザーが承認した T17 の計画。T17）
+
+- **決定**：
+  - 総務アプリの機能「お知らせ」（notice）を足す。年度ごとに、宛先（列挙 notice_audience）を決めて出す：soumu（総務内）・all_groups（全団体）・groups（指定の団体。同じ年度の団体を1つ以上、notice_groups に並べる）。
+  - 表 notices：id、year_id（years。on delete cascade）、audience、title（前後の空白を除いて 1〜100 字。空白だけは不可）、body（4000 字まで。空でもよい）、pinned（既定 false）、created_by・created_at・updated_by・updated_at（DB が入れる。クライアントの値は使わない）、unique (id, year_id)（複合外部キーの参照先）。表 notice_groups：(notice_id, year_id, group_id)、主キー (notice_id, group_id)、複合外部キーでお知らせと団体が同じ年度であることを保証し、お知らせを消すと消える。year_id は check_immutable で変えられない。監査（tg_audit。D-11）は両方の表に付ける。
+  - 読める人（RLS の select）：総務（admin・head・deputy_head・staff）はその年度のお知らせと宛先の団体の全部。店長・副店長は、代表である年度の全団体あてと、自分の団体を宛先に含む指定の団体あて。宛先の団体の行は自分の団体の行だけ（ほかにどの団体へ出したかは見せない）。閲覧のみは、その年度の団体あて（全団体・指定の団体）とその宛先の団体の行（総務内は読めない）。ほかの人は何も読めない。ポリシーは D-47 の形（集合の関数 private.my_role_year_ids・my_group_ids と、新しい private.my_group_year_ids・my_group_notice_ids）。
+  - 書き込みは RPC だけ（表に insert・update・delete の権限を与えない）：
+    - `save_notice(p_year_id, p_audience, p_title, p_body default null, p_pinned default false, p_group_ids uuid[] default '{}', p_notice_id default null〔null は作る〕, p_base_updated_at default null) returns notices`：終了した年度では書けない（読むだけ）。総務内は総務、全団体・指定の団体は部門長以上。ピン留めは部門長以上。直すのは書いた人か部門長以上で、直した後の宛先にも段の決まりが効く。直すときは p_base_updated_at がその行の updated_at と同じでなければ conflict。指定の団体は1つ以上・すべてその年度の団体、ほかの宛先は団体なし。宛先の団体は1回で入れ替える。理由は「お知らせ」「お知らせの更新」。
+    - `delete_notice(p_notice_id, p_base_updated_at) returns void`：書いた人か部門長以上。終了した年度では消せない。楽観ロック。理由を置く（「お知らせの削除」）。
+    - エラーは 04 のコード（forbidden・not_found・invalid_input〔field〕・conflict・invalid_state）。not_found と forbidden で、呼んだ人が読めないお知らせの有無を漏らさない。
+  - v1 では作らない：既読、添付、予約の公開、メール・プッシュの通知。
+  - 計画を SQL にするときに決めたこと（notes/T17.md の「判断したこと」。ユーザーに確かめたいものは「確認したいこと」）：
+    - 引数の並び：PostgreSQL は既定値のある引数の後に既定値のない引数を置けないので、要る引数（p_year_id・p_audience・p_title）を先に、任意の引数を後に置いた（PostgREST は名前で呼ぶので呼び方は変わらない）。
+    - ピン留め：「pinned=true は部門長以上」を、ピン留めを付ける・外す（作るときに付けるのを含む）のは部門長以上と読んだ。書いた人（総務部門員）は、部門長以上が付けたピン留めをそのまま（true のまま）にして直せる（文字どおりに読むと、ピン留めされた自分のお知らせを外さずには直せなくなるため）。
+    - 本文は空白だけなら null（D-33 の任意の文字列と同じ）。題名は前後の空白（全角の空白・タブ・改行を含む）を除いてから確かめ、CHECK も除いた形であることを確かめる。
+    - 宛先の団体の行は、宛先が groups のお知らせにだけ置ける（トリガー check_audience・check_groups。他の表を参照する CHECK は使わない）。RLS はこれを前提にする。notice_groups の鍵の列（notice_id・year_id・group_id）は全部変えられない。
+    - どの書き込みも、まずその年度の総務であることを確かめる（ロールを外された人は、自分が書いたお知らせも直せず消せない）。入力の誤り（invalid_input）は段の forbidden より先に返す（invite・update_year と同じ）。
+    - 宛先の団体は差分で入れ替える（変わらない団体の行を消して作り直さず、監査に出さない）。直すときは何も変わらなくても行を書き、updated_at を進める（お知らせと宛先の団体を1つの版で守る）。
+    - 団体を消すと宛先の団体の行も消え、お知らせは残る（宛先の団体が 0 になることがある）。件数の上限は持たない（題名・本文・宛先の団体の数で大きさを抑える）。
+    - お知らせは振り分けの入力でないので、版（allocation_version）を増やさず、確定中も書ける。
+- **理由**：総務の中と団体への連絡を、アプリの中の1か所にまとめる（ユーザーの決定。T16 の総務アプリの機能の1つ。D-51・D-52）。書き込みを RPC だけにするのは、理由を同じトランザクションで置き、お知らせと宛先の団体を1回で入れ替えるため（02「設計上の決めごと」）。店長・副店長にほかの宛先の団体を見せないのは、団体どうしで、どこが何の連絡を受けたかを分からないようにするため。
+- **反映先**：01（用語集のお知らせ・宛先・宛先の団体・ピン留め）、02（列挙型・マイグレーションの一覧・お知らせの表・設計上の決めごと〔監査・変えられない列・楽観ロック・お知らせの項〕・権限とRLS〔段・集合の関数・表の権限・権限表と「お知らせの権限」・D-47 の項〕）、04（DB関数の save_notice・delete_notice、「お知らせ」の節〔画面は T17 の後半〕、通信が切れたときの (B1)・(B2)）、notes/T17.md（SQL の約束・テストの計画・判断したこと）。
+- **チケット**：T17（前半：DB〔0014_notices.sql・pgTAP・型〕。後半：画面〔/notices・ダッシュボードの欄。T16 のマージの後、同じブランチと PR〕）。
+- **状態**：要件に反映した（T17 の前半。2026-10-31）。0014 の実装・pgTAP・型と、画面（T17 の後半）はこれから。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。
