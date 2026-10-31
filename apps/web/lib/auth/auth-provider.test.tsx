@@ -286,3 +286,46 @@ describe('AuthProvider：アプリを開いたとき', () => {
     expect(window.localStorage.getItem(draftKey(fresh))).not.toBeNull();
   });
 });
+
+describe('AuthProvider：画面を開くまでの読み込み（D-45）', () => {
+  it('立場と一緒に読んだ年度の行をキャッシュに入れ、次に開いたときの先読みのために自分の年度と団体の id を覚える', async () => {
+    const row = { id: Y, label: 'R8', status: 'requesting', allocation_version: 2 };
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = {
+      ...sourceOf({ groups: [{ id: 'g1', name: '模擬店01', year_id: Y }] }),
+      years: [{ id: Y, label: 'R8', status: 'requesting', festival_start: '2026-10-17' }],
+      roles: [],
+      yearRows: { rows: [row as never], readStartedAt: Date.now() },
+    };
+    const queryClient = new QueryClient();
+    render(
+      <TestProviders queryClient={queryClient}>
+        <Probe />
+      </TestProviders>,
+    );
+    await vi.waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
+    expect(queryClient.getQueryData(['year', Y, 'row'])).toEqual(row);
+    expect(JSON.parse(window.localStorage.getItem('gaapp:prefetch:u1')!)).toEqual({ latestYearId: Y, years: { [Y]: ['g1'] } });
+  });
+
+  it('覚えた id は下書きと同じく、手動のログアウトでその人の分を消し、強制では残す', async () => {
+    await setup('u1');
+    window.localStorage.setItem('gaapp:prefetch:u1:requests', '{"paths":{}}');
+    await act(() => ctx().signOut('forced'));
+    expect(window.localStorage.getItem('gaapp:prefetch:u1')).not.toBeNull();
+    cleanup();
+    await setup('u1');
+    await act(() => ctx().signOut('manual'));
+    expect(window.localStorage.getItem('gaapp:prefetch:u1')).toBeNull();
+    expect(window.localStorage.getItem('gaapp:prefetch:u1:requests')).toBeNull();
+  });
+
+  it('別の利用者がログインしたら、前の人の覚えた id とリクエストを消す', async () => {
+    window.localStorage.setItem('gaapp:prefetch:u0', '{"latestYearId":null,"years":{}}');
+    window.localStorage.setItem('gaapp:prefetch:u0:requests', '{"paths":{}}');
+    await setup('u1');
+    expect(window.localStorage.getItem('gaapp:prefetch:u0')).toBeNull();
+    expect(window.localStorage.getItem('gaapp:prefetch:u0:requests')).toBeNull();
+    expect(window.localStorage.getItem('gaapp:prefetch:u1')).not.toBeNull();
+  });
+});

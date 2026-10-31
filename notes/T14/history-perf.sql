@@ -1,4 +1,5 @@
 -- T14 段 1：履歴の読み込みの速さ（audit_logs に 10 万行）。全部を1つのトランザクションで行い、最後に rollback する（何も残さない）。
+-- 2026-10-30：この案は 0010_rls_select_once.sql（D-47）で入った（関数は private.my_role_year_ids('{admin}') に一般化）。0010 の後に流すと、前半は 0010 のポリシーで測る。ほかの表も測る版は notes/T14/rls-perf.sql。
 -- 流し方（ローカルの Supabase。共有の DB はロックを取って）：psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -f notes/T14/history-perf.sql
 -- 最後に rollback するので、行も案の RLS も残らない。結果は notes/T14.md の「履歴の読み込みの速さ」。
 \set ON_ERROR_STOP on

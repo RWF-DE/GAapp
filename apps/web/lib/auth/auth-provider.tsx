@@ -4,6 +4,17 @@ import type { Session } from '@supabase/supabase-js';
 import { useQueryClient } from '@tanstack/react-query';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import {
+  discardEarlyLoad,
+  hintFromSource,
+  hintsOnSignIn,
+  hintsOnSignOut,
+  prefetchOpenedScreen,
+  settleEarlyLoad,
+  takeEarlyMembership,
+  writeHint,
+} from '@/lib/boot/early-load';
+import { seedYearRows } from '@/lib/data/year';
 import { draftsOnSignIn, draftsOnSignOut, pruneExpiredDrafts, type SignOutKind } from '@/lib/drafts';
 import { authStorageKey, getSupabase, supabaseConfigError, type AppSupabaseClient } from '@/lib/supabase/client';
 import { loadMembershipSource } from './load-membership';
@@ -130,6 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     if (userId) {
       draftsOnSignIn(userId); // (c)：自分以外の下書きを消す
+      hintsOnSignIn(userId); // 先読みのために覚えた id も同じく自分以外の分を消す（D-45）
       pruneExpiredDrafts(); // 24 時間を過ぎた下書きを捨てる（アプリを開いたとき・ログインしたときに1回）
     }
   }, [userId, queryClient]);
@@ -152,9 +164,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!userId) return;
     let active = true;
-    loadMembershipSource(getSupabase(), userId).then(
+    // 最初の読み込みは、ページを開いたときに Providers が始めた読み込みを使う（D-45。lib/boot/early-load.ts）
+    (takeEarlyMembership(userId) ?? loadMembershipSource(getSupabase(), userId)).then(
       (source) => {
         if (!active) return;
+        // 立場と一緒に読んだ年度の行をキャッシュに入れ（画面が年度の行のために往復しない）、次に開いたときの先読みのために
+        // 自分の年度と団体の id を覚える（D-45）
+        if (source.yearRows) seedYearRows(queryClient, source.yearRows.rows, source.yearRows.readStartedAt);
+        writeHint(userId, hintFromSource(source));
+        // 最初の読み込みでは、描画を待たずに開いた画面のデータを読み始める（D-45）
+        if (!loadedRef.current || loadedRef.current.userId !== userId) {
+          prefetchOpenedScreen(buildMembership(source, selectedRef.current));
+        }
         // 選んだ年度にロールも団体代表もなくなっていれば、覚えた値を消す（既定の最新の年度に戻る。D-31）
         const chosen = selectedRef.current;
         if (chosen && !myYears(source).some((y) => y.id === chosen)) {
@@ -177,7 +198,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [userId, reloadKey]);
+  }, [userId, reloadKey, queryClient]);
 
   const source = loaded && loaded.userId === userId ? loaded.source : null;
   const built = useMemo(() => (source ? buildMembership(source, selectedYearId) : null), [source, selectedYearId]);
@@ -189,6 +210,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return loaded.key === reloadKey ? { status: 'error', message: LOAD_ERROR } : { status: 'loading' };
   }, [userId, loaded, built, reloadKey]);
   const isRefreshing = membership.status === 'ready' && loaded !== null && loaded.key !== reloadKey;
+
+  // ページを開いたときの先読み（D-45）の後始末：立場が届いたら、開く年度・団体が同じものだけを残す。
+  // ログアウトの状態なら全部消す（前の人の先読みを、次にログインした人のキャッシュに残さない）
+  const sessionStatus = session.status;
+  useEffect(() => {
+    if (sessionStatus === 'signedOut') discardEarlyLoad();
+    else if (userId && built) settleEarlyLoad(userId, built);
+  }, [sessionStatus, userId, built]);
 
   const reloadMembership = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -204,8 +233,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(
     async (kind: SignOutKind = 'manual') => {
       queryClient.clear();
+      // 先読みと、開いたときのリクエストの記録をやめる（記録を覚えるのは立場が届いた 2 秒後なので、その前にログアウトしても残さない）
+      discardEarlyLoad();
       if (userId) {
         draftsOnSignOut(kind, userId);
+        hintsOnSignOut(kind, userId);
         clearSelectedYear(userId);
       }
       // メモリの選択は、セッションが消えた後に利用者が変わったときの effect で消す（ここで消すと通信の間に最新の年度へ切り替わる）

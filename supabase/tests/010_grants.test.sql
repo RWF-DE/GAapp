@@ -18,8 +18,9 @@ select set_eq($$ select p.proname::text from pg_proc p
 select set_eq($$ select p.proname::text from pg_proc p
                  where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   array['has_role','has_any_role','is_group_member','group_year_id','year_status','can_read_year','has_any_access',
-        'is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks','can_write_requests','my_verified_email'],
-  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 13 個だけ（RPC の補助・トリガー関数・verified_email は実行できない）');
+        'is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks','can_write_requests','my_verified_email',
+        'my_role_year_ids','my_group_ids','my_role_group_ids'],
+  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 16 個だけ（0010 の集合の3個を含む。RPC の補助・トリガー関数・verified_email は実行できない）');
 -- Before User Created フック（0007、T04）と、フックが呼ぶ学校のドメインの関数だけ。トリガー関数・招待の受け入れの関数は実行できない
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace in ('public'::regnamespace, 'private'::regnamespace)
@@ -39,7 +40,8 @@ select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace = 'private'::regnamespace
                      and p.proname in ('has_role','has_any_role','is_group_member','group_year_id','year_status','can_read_year',
                                        'has_any_access','is_admin_of_open_year','can_see_profile','can_admin','can_write_stocks',
-                                       'can_write_requests','my_verified_email')
+                                       'can_write_requests','my_verified_email','my_role_year_ids','my_group_ids',
+                                       'my_role_group_ids')
                      and not (p.prosecdef and p.provolatile = 's') $$,
   '判定関数はすべて SECURITY DEFINER・STABLE');
 

@@ -12,7 +12,13 @@
 //   ポートは E2E_PERF_H2_PORT（既定 3102）。openssl がなければ飛ばす。
 // どちらも Supabase（ローカル。HTTP/1.1）への往復は同じ。本番の DNS・TCP・TLS の初回の往復はどちらにも入っていない。
 // PERF_CPU_RATE で CPU の倍率を変えられる（原因を分けるとき。記録は既定の 4 倍で取る）。
-// PERF_TRACE=1 で Supabase へのリクエストの並び、PERF_TRACE=all で静的ファイルも並べて出す（1回目）。
+// PERF_TRACE=1 で Supabase へのリクエストの並び（失敗したリクエストも）、PERF_TRACE=all で静的ファイルも並べて出す（1回目）。
+// PERF_DEBUG=1 でページの console も並べる。
+// 開き方は2つ計る（D-45）：
+// - first：初めて開いた（先読みのために覚えた id〔localStorage の gaapp:prefetch:<user_id>〕がない）。
+// - again：前に開いたことがある（同じ画面を一度開いて覚えた id とリクエストを、計る前のコンテキストの localStorage に入れる。
+//   HTTP のキャッシュは使わない）。<head> の script が JS より先に Supabase へ送り、立場の読み込みと同時に画面のデータも読む。
+// PERF_VISIT=first・again で片方だけ、PERF_ONLY=stock・request・my（カンマ区切り）で画面を絞れる（原因を調べるとき）。
 // データはシナリオの年度（合成データ r8like。受付中。部員と団体代表〔模擬店10〕のロール）。
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -42,11 +48,36 @@ interface Target {
   name: string;
   user: StoredUser;
   url: (s: Scenario) => string;
-  /** 画面の主な内容が見えた（読み込みが終わった）ことの印 */
+  /** 画面の主な内容が見えた（読み込みが終わった）ことの印（Playwright で確かめる） */
   ready: (page: Page) => Promise<void>;
+  /**
+   * 同じ印をページの中で確かめる関数（引数は REP_GROUP・ROOM）。毎フレーム（requestAnimationFrame）調べて、最初に真になった
+   * performance.now()（ナビゲーションの始まりから）を表示までの時間にする（D-45。expect の再試行の間隔〔100・250・500・1000 ms〕で
+   * 測ると、見えてから気づくまでに最大 0.5 秒ほど遅れて出るため）。
+   */
+  shown: string;
 }
 
-const TARGETS: Target[] = [
+/** ページの中の DOM を調べる関数の文字列（ルートの tsconfig は DOM の型を持たないので、文字列で渡す） */
+const SHOWN = {
+  stock: `(a) => {
+    const name = document.querySelector('[data-testid="stock-room-name"]');
+    const input = document.querySelector('input[aria-label="机(木)の数"]');
+    return !!name && name.textContent.trim() === a.room && !!input && /^\\d+$/.test(input.value);
+  }`,
+  request: `(a) => {
+    const name = document.querySelector('[data-testid="request-group-name"]');
+    const button = [...document.querySelectorAll('button')].some((b) => b.textContent.includes('提出') && b.offsetParent !== null);
+    return !!name && name.textContent.trim() === a.group && button;
+  }`,
+  my: `(a) => {
+    const g = document.querySelector('[data-testid="my-group"]');
+    const p = document.querySelector('[data-testid="my-in-progress"]');
+    return !!g && g.textContent.includes(a.group) && !!p && p.textContent.includes('振り分け作業中');
+  }`,
+};
+
+const ALL_TARGETS: Target[] = [
   {
     name: '/stock?room=（部員）',
     user: 'staff',
@@ -55,6 +86,7 @@ const TARGETS: Target[] = [
       await expect(page.getByTestId('stock-room-name')).toHaveText(ROOM, { timeout: 30_000 });
       await expect(page.getByRole('textbox', { name: '机(木)の数' })).toHaveValue(/^\d+$/, { timeout: 30_000 });
     },
+    shown: SHOWN.stock,
   },
   {
     name: '/request（団体代表）',
@@ -64,6 +96,7 @@ const TARGETS: Target[] = [
       await expect(page.getByTestId('request-group-name')).toHaveText(REP_GROUP, { timeout: 30_000 });
       await expect(page.getByRole('button', { name: /提出/ }).first()).toBeVisible({ timeout: 30_000 });
     },
+    shown: SHOWN.request,
   },
   {
     name: '/my（団体代表）',
@@ -73,11 +106,23 @@ const TARGETS: Target[] = [
       await expect(page.getByTestId('my-group')).toContainText(REP_GROUP, { timeout: 30_000 });
       await expect(page.getByTestId('my-in-progress')).toContainText('振り分け作業中', { timeout: 30_000 });
     },
+    shown: SHOWN.my,
   },
 ];
 
+/** 先読みのために覚えた id の localStorage のキー（apps/web/lib/boot/early-load.ts の PREFETCH_HINT_PREFIX と同じ） */
+const PREFETCH_HINT_PREFIX = 'gaapp:prefetch:';
+type Visit = 'first' | 'again';
+const VISITS: Visit[] = process.env.PERF_VISIT === 'first' || process.env.PERF_VISIT === 'again' ? [process.env.PERF_VISIT] : ['first', 'again'];
+
+const ONLY = (process.env.PERF_ONLY ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+const TARGETS = ONLY.length > 0 ? ALL_TARGETS.filter((t) => ONLY.some((o) => t.name.startsWith(`/${o}`))) : ALL_TARGETS;
+
 interface Run {
+  /** ナビゲーションの始まりから、画面の主な内容が見えた最初のフレームまで（ms。ページの中の performance.now()） */
   ms: number;
+  /** 前の測り方（page.goto の前から Playwright の expect が通るまで。再試行の間隔のぶん遅く出る。比べるために残す） */
+  expectMs: number;
   /** ナビゲーションの DOMContentLoaded（ms） */
   dcl: number;
   /** 同じ origin の script の数と転送量（KB。圧縮後） */
@@ -158,28 +203,83 @@ async function startH2(tls: { key: Buffer; cert: Buffer }): Promise<{ origin: st
   return { origin: `https://localhost:${H2_PORT}`, close: () => new Promise((r) => server.close(() => r())) };
 }
 
-/** storageState の localStorage を別の origin（h2 のサーバー）に移す（Supabase のセッションは origin ごとの localStorage にある） */
-function storageStateAt(user: StoredUser, origin: string) {
+/**
+ * storageState（ログインのセッション）。先読みのために覚えた id は外す（ログインの準備で画面を開いたときに覚えたもの。
+ * 計る開き方は first・again で決める）。origin を渡すと localStorage をその origin（h2 のサーバー）に移す
+ * （Supabase のセッションは origin ごとの localStorage にある）。
+ */
+function storageStateAt(user: StoredUser, origin: string | null) {
   const state = JSON.parse(readFileSync(storageStateFor(user), 'utf8')) as {
     cookies: unknown[];
     origins: { origin: string; localStorage: { name: string; value: string }[] }[];
   };
-  return { cookies: [], origins: state.origins.map((o) => ({ ...o, origin })) };
+  return {
+    cookies: origin ? [] : state.cookies,
+    origins: state.origins.map((o) => ({
+      ...o,
+      origin: origin ?? o.origin,
+      localStorage: o.localStorage.filter((e) => !e.name.startsWith(PREFETCH_HINT_PREFIX)),
+    })),
+  };
 }
 
 // ---------------------------------------------------------------- 測る
 
-async function measure(browser: Browser, s: Scenario, t: Target, origin: string | null): Promise<Run> {
-  const context = await browser.newContext({
-    storageState: origin ? (storageStateAt(t.user, origin) as never) : storageStateFor(t.user),
+function contextOptions(t: Target, origin: string | null) {
+  return {
+    storageState: storageStateAt(t.user, origin) as never,
     viewport: MOBILE,
     isMobile: true,
     hasTouch: true,
     ...(origin ? { baseURL: origin, ignoreHTTPSErrors: true } : {}),
-  });
+  };
+}
+
+/** 一度（絞らずに）開いて、アプリが覚えた先読みの id（localStorage）を取り出す */
+async function learnHints(browser: Browser, s: Scenario, t: Target, origin: string | null): Promise<[string, string][]> {
+  const context = await browser.newContext(contextOptions(t, origin));
   try {
     const page = await context.newPage();
     await pinYear(page, SEED_USER_IDS[t.user], s.yearId);
+    await page.goto(t.url(s), { waitUntil: 'commit' });
+    await t.ready(page);
+    // 開いたときのリクエスト（<head> の script が先に送るもの）は、立場が届いてから少し後に覚える
+    await page.waitForFunction(
+      (prefix) => {
+        const ls = (globalThis as unknown as { localStorage: Storage }).localStorage;
+        for (let i = 0; i < ls.length; i++) if (ls.key(i)?.startsWith(prefix) && ls.key(i)?.endsWith(':requests')) return true;
+        return false;
+      },
+      PREFETCH_HINT_PREFIX,
+      { timeout: 15_000 },
+    );
+    const hints = await page.evaluate((prefix) => {
+      const ls = (globalThis as unknown as { localStorage: Storage }).localStorage;
+      const out: [string, string][] = [];
+      for (let i = 0; i < ls.length; i++) {
+        const k = ls.key(i);
+        if (k?.startsWith(prefix)) out.push([k, ls.getItem(k) ?? '']);
+      }
+      return out;
+    }, PREFETCH_HINT_PREFIX);
+    expect(hints.length, '開いた後に先読みの id を覚えている').toBeGreaterThan(0);
+    return hints;
+  } finally {
+    await context.close();
+  }
+}
+
+async function measure(browser: Browser, s: Scenario, t: Target, origin: string | null, hints: [string, string][] = []): Promise<Run> {
+  const context = await browser.newContext(contextOptions(t, origin));
+  try {
+    const page = await context.newPage();
+    await pinYear(page, SEED_USER_IDS[t.user], s.yearId);
+    if (hints.length > 0) {
+      await page.addInitScript((entries) => {
+        const ls = (globalThis as unknown as { localStorage: Storage }).localStorage;
+        for (const [k, v] of entries) ls.setItem(k, v);
+      }, hints);
+    }
     const cdp = await context.newCDPSession(page);
     await cdp.send('Network.enable');
     await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
@@ -203,10 +303,38 @@ async function measure(browser: Browser, s: Scenario, t: Target, origin: string 
       const u = new URL(r.url());
       waterfall.push({ at: begin, line: `${begin}〜${end} ${r.method()} ${u.pathname.replace(/^\/(rest|auth)\/v1\//, '')}${traceAll ? u.search.slice(0, 60) : ''}` });
     });
+    page.on('requestfailed', (r) => {
+      if (!isSupabase(r.url())) return;
+      const at = Date.now() - start;
+      waterfall.push({ at, line: `${at}〜 失敗（${r.failure()?.errorText ?? '?'}） ${r.method()} ${new URL(r.url()).pathname.replace(/^\/(rest|auth)\/v1\//, '')}` });
+    });
+    if (process.env.PERF_DEBUG) page.on('console', (m) => waterfall.push({ at: Date.now() - start, line: `console ${m.text()}` }));
+    // 印が真になった最初のフレームの時刻を、ページの中で記録する（読み込みの前から毎フレーム調べる）
+    await page.addInitScript(
+      ([fn, arg]) => {
+        const g = globalThis as unknown as { __perfShownAt?: number; requestAnimationFrame(cb: () => void): void; performance: { now(): number } };
+        const check = (0, eval)(fn) as (a: unknown) => boolean;
+        const tick = () => {
+          try {
+            if (check(arg)) {
+              g.__perfShownAt = g.performance.now();
+              return;
+            }
+          } catch {
+            // まだ DOM がない
+          }
+          g.requestAnimationFrame(tick);
+        };
+        g.requestAnimationFrame(tick);
+      },
+      [t.shown, { room: ROOM, group: REP_GROUP }] as const,
+    );
     start = Date.now();
     await page.goto(t.url(s), { waitUntil: 'commit' });
     await t.ready(page);
-    const ms = Date.now() - start;
+    const expectMs = Date.now() - start;
+    await page.waitForFunction(() => typeof (globalThis as unknown as { __perfShownAt?: number }).__perfShownAt === 'number', null, { timeout: 30_000 });
+    const ms = Math.round(await page.evaluate(() => (globalThis as unknown as { __perfShownAt: number }).__perfShownAt));
     // ルートの tsconfig は DOM の型を持たないので、使う形だけを書く
     const nav = await page.evaluate(() => {
       type Entry = { name: string; initiatorType?: string; transferSize?: number; domContentLoadedEventEnd?: number };
@@ -219,6 +347,7 @@ async function measure(browser: Browser, s: Scenario, t: Target, origin: string 
     });
     return {
       ms,
+      expectMs,
       dcl: Math.round(nav.dcl),
       scripts: nav.scripts,
       scriptKB: Math.round((nav.scriptBytes / 1024) * 10) / 10,
@@ -239,23 +368,27 @@ test('T14 4G での表示の速さ：/stock?room=・/request・/my を Fast 4G �
   if (!tls) testInfo.annotations.push({ type: '4G の速さ', description: 'openssl がないので h2（HTTP/2）の配り方を飛ばした' });
   const h2 = tls ? await startH2(tls) : null;
   const s = await createScenario({ dataset: 'synthetic', status: 'requesting', roles: { staff: true }, repGroup: REP_GROUP });
-  const results: { server: string; page: string; runs: Run[]; medianMs: number }[] = [];
+  const results: { server: string; visit: Visit; page: string; runs: Run[]; medianMs: number }[] = [];
   try {
     const servers: { name: string; origin: string | null }[] = [{ name: 'http1', origin: null }, ...(h2 ? [{ name: 'h2', origin: h2.origin }] : [])];
     for (const server of servers) {
-      for (const t of TARGETS) {
-        const runs: Run[] = [];
-        for (let i = 0; i < RUNS; i++) runs.push(await measure(browser, s, t, server.origin));
-        const medianMs = median(runs.map((r) => r.ms));
-        results.push({ server: server.name, page: t.name, runs: runs.map((r, i) => (i === 0 ? r : { ...r, waterfall: [] })), medianMs });
-        if (process.env.PERF_TRACE) console.log(`[${server.name}] ${t.name} の1回目：\n  ${runs[0]!.waterfall.join('\n  ')}`);
-        const r0 = runs[0]!;
-        const line =
-          `[${server.name}] ${t.name}：中央値 ${medianMs} ms（${runs.map((r) => r.ms).join('・')} ms。` +
-          `DOMContentLoaded ${runs.map((r) => r.dcl).join('・')} ms、最後の script ${runs.map((r) => r.lastScriptMs).join('・')} ms、` +
-          `script ${r0.scripts} 本 ${r0.scriptKB} KB、Supabase ${runs.map((r) => r.supabase).join('・')} 回）${medianMs > LIMIT_MS ? ' ※2 秒を超えた' : ''}`;
-        testInfo.annotations.push({ type: '4G の速さ', description: line });
-        console.log(line);
+      for (const visit of VISITS) {
+        for (const t of TARGETS) {
+          const hints = visit === 'again' ? await learnHints(browser, s, t, server.origin) : [];
+          const runs: Run[] = [];
+          for (let i = 0; i < RUNS; i++) runs.push(await measure(browser, s, t, server.origin, hints));
+          const medianMs = median(runs.map((r) => r.ms));
+          const label = `${server.name}・${visit}`;
+          results.push({ server: server.name, visit, page: t.name, runs: runs.map((r, i) => (i === 0 ? r : { ...r, waterfall: [] })), medianMs });
+          if (process.env.PERF_TRACE) console.log(`[${label}] ${t.name} の1回目：\n  ${runs[0]!.waterfall.join('\n  ')}`);
+          const r0 = runs[0]!;
+          const line =
+            `[${label}] ${t.name}：中央値 ${medianMs} ms（${runs.map((r) => r.ms).join('・')} ms。前の測り方〔expect〕の中央値 ${median(runs.map((r) => r.expectMs))} ms、` +
+            `DOMContentLoaded ${runs.map((r) => r.dcl).join('・')} ms、最後の script ${runs.map((r) => r.lastScriptMs).join('・')} ms、` +
+            `script ${r0.scripts} 本 ${r0.scriptKB} KB、Supabase ${runs.map((r) => r.supabase).join('・')} 回）${medianMs > LIMIT_MS ? ' ※2 秒を超えた' : ''}`;
+          testInfo.annotations.push({ type: '4G の速さ', description: line });
+          console.log(line);
+        }
       }
     }
   } finally {
@@ -267,5 +400,5 @@ test('T14 4G での表示の速さ：/stock?room=・/request・/my を Fast 4G �
   const body = JSON.stringify({ at: new Date().toISOString(), network: FAST_4G, cpuRate: CPU_RATE, results }, null, 2);
   writeFileSync(out, body);
   await testInfo.attach('perf.json', { body, contentType: 'application/json' });
-  expect(results.length).toBeGreaterThanOrEqual(TARGETS.length);
+  expect(results.length).toBeGreaterThanOrEqual(TARGETS.length * VISITS.length);
 });

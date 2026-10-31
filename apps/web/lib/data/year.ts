@@ -1,5 +1,7 @@
-// 年度の行を読む（画面の設計 1.5・2.2。T09a）。どの画面も最初に年度の行を読み、状態で書けるかを決める。
-import { useQuery } from '@tanstack/react-query';
+// 年度の行を読む（画面の設計 1.5・2.2。T09a）。どの画面も年度の行の状態で書けるかを決める。
+// 年度の行は立場の読み込み（loadMembershipSource）で一緒に読み、AuthProvider が seedYearRows でキャッシュに入れる
+// （画面を開くまでの往復を減らす。D-45。振り分けに関わらない画面は、画面のデータを年度の行と並行に読む。2.2）。
+import { queryOptions, useQuery, type QueryClient } from '@tanstack/react-query';
 import { appError, toAppError } from '@/lib/errors';
 import { COLUMNS, type YearRow, type YearStatus } from '@/lib/db/types';
 import { queryKeys } from '@/lib/query';
@@ -23,13 +25,38 @@ export async function fetchYearVersion(yearId: string, client: AppSupabaseClient
   return res.data.allocation_version;
 }
 
-/** 年度の行のクエリ（キーは `['year', yearId, 'row']`） */
-export function useYearRow(yearId: string | null | undefined) {
-  return useQuery({
+/** 年度の行のクエリの設定（キーは `['year', yearId, 'row']`） */
+export function yearRowOptions(yearId: string | null | undefined) {
+  return queryOptions({
     queryKey: queryKeys.yearRow(yearId ?? ''),
     queryFn: () => fetchYear(yearId!),
     enabled: !!yearId,
   });
+}
+
+/** 年度の行のクエリ（キーは `['year', yearId, 'row']`） */
+export function useYearRow(yearId: string | null | undefined) {
+  return useQuery(yearRowOptions(yearId));
+}
+
+/**
+ * 立場の読み込みで一緒に読んだ年度の行をキャッシュに入れる（D-45）。readStartedAt（読み始めた時刻）より後に
+ * 読んだ・書いたキャッシュがあれば、そちらが新しいので上書きしない。入れた行の数を返す。
+ * readStartedAt はアプリが読み取りを送ろうとした時刻。応答が <head> の script の先送り（lib/boot/early-fetch.ts。D-45）
+ * だったときは、実際に読んだのはページを開いたとき（JS を読み込む前。長くて EARLY_TTL_MS 前）で、キャッシュの行は
+ * その分だけ新しく見える。年度の行のキャッシュは表示（編集できるかの切り替えを含む）と読む順を決めるだけで、書き込みは
+ * DB が年度の状態と受付期間で確かめる（RPC・トリガー・RLS）ので、このずれは許す。
+ */
+export function seedYearRows(queryClient: QueryClient, rows: readonly YearRow[], readStartedAt: number): number {
+  let n = 0;
+  for (const row of rows) {
+    const key = queryKeys.yearRow(row.id);
+    const state = queryClient.getQueryState(key);
+    if (state && state.dataUpdatedAt > readStartedAt) continue;
+    queryClient.setQueryData(key, row, { updatedAt: readStartedAt });
+    n++;
+  }
+  return n;
 }
 
 /** 振り分けが決まった（確定・終了）か。viewer の振り分け表・団体代表の /my の確定後の表示・Excel のファイル名（Q3） */

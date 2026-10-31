@@ -1,4 +1,5 @@
 import type { Database } from '@gaapp/shared';
+import type { YearRow } from '../db/types';
 
 export type AppRole = Database['public']['Enums']['app_role'];
 export type YearStatus = Database['public']['Enums']['year_status'];
@@ -39,6 +40,8 @@ export interface Membership {
 export interface MembershipSource {
   displayName: string | null;
   years: YearSummary[];
+  /** 立場と一緒に読んだ年度の行（年度の行のキャッシュに入れる。D-45）と、その読み取りを送った時刻 */
+  yearRows?: { rows: YearRow[]; readStartedAt: number };
   roles: { year_id: string; role: AppRole }[];
   groups: GroupSummary[];
 }
