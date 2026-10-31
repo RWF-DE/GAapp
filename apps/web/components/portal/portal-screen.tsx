@@ -2,7 +2,7 @@
 
 // ダッシュボード /（総務アプリのトップ。04「ダッシュボード」、D-51・D-52、notes/T16.md「固めた約束」2・5。T16）。
 // 並び：立場の一覧（home-year・home-roles）→ 見出し（総務は「ダッシュボード」、ほかは「ホーム」）→ 要対応と締切と予定
-// （広い PC〔lg 以上〕は横に 2:1、それより狭ければ縦）→ 代表する団体（店長・副店長を務める人）→ 機能ごとの状況（総務・閲覧のみ）。
+// （広い PC〔lg 以上〕は横に 3:2、それより狭ければ縦）→ 代表する団体（店長・副店長を務める人）→ 機能ごとの状況（総務・閲覧のみ）。
 //   総務（soumu）：要対応・締切と予定・機能ごとのカード（店長・副店長も務める管理者は代表する団体も）
 //   閲覧のみ（viewer）：締切と予定・機能ごとのカード（読み取り）（店長・副店長も務める人は要対応と代表する団体も）
 //   店長・副店長（rep）：要対応・締切と予定・代表する団体
@@ -69,10 +69,11 @@ function Portal({ membership: m, yearId }: { membership: Membership; yearId: str
     <div className="mx-auto max-w-6xl space-y-4">
       <RoleSummary membership={m} />
       <PageHeader title={soumu ? 'ダッシュボード' : 'ホーム'} />
-      {/* 要対応と締切と予定は、広い PC（lg 以上）で横に 2:1。md では左のナビの分だけ狭く、締切と予定が 130px ほどになるので縦に */}
-      <div className={cn('grid gap-4', showTodos && 'lg:grid-cols-3')}>
+      {/* 要対応と締切と予定は、広い PC（lg 以上）で横に 3:2（要対応を広く）。md では左のナビの分だけ狭く、締切と予定が 130px ほどに
+          なるので縦に。2:1 では幅 1280px でも締切と予定の文が 130px ほどで折り返したので 3:2 にした（T16 の段 8 のスクリーンショット） */}
+      <div className={cn('grid gap-4', showTodos && 'lg:grid-cols-5')}>
         {showTodos ? (
-          <PortalWidget title="要対応" testId="portal-todos" className="lg:col-span-2">
+          <PortalWidget title="要対応" testId="portal-todos" className="lg:col-span-3">
             <WidgetBoundary
               onRetry={() => {
                 refetchTodos();
@@ -83,7 +84,7 @@ function Portal({ membership: m, yearId }: { membership: Membership; yearId: str
             </WidgetBoundary>
           </PortalWidget>
         ) : null}
-        <PortalWidget title="締切と予定" testId="portal-dated">
+        <PortalWidget title="締切と予定" testId="portal-dated" className={showTodos ? 'lg:col-span-2' : undefined}>
           <WidgetBoundary
             onRetry={() => {
               refetchDated();

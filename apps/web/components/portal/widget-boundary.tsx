@@ -39,7 +39,7 @@ export class WidgetBoundary extends Component<WidgetBoundaryProps, WidgetBoundar
         className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"
       >
         <AlertTriangle aria-hidden className="size-4 shrink-0 text-destructive" />
-        <p className="min-w-0 flex-1 text-destructive">この欄を表示できませんでした。</p>
+        <p className="min-w-0 grow basis-48 text-destructive">この欄を表示できませんでした。</p>
         <Button type="button" size="sm" variant="outline" onClick={this.retry}>
           もう一度
         </Button>

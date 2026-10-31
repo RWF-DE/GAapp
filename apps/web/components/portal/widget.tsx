@@ -87,7 +87,8 @@ export function ModuleError({
       className={cn('flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm', className)}
     >
       <AlertTriangle aria-hidden className="size-4 shrink-0 text-destructive" />
-      <p className="min-w-0 flex-1 text-destructive">
+      {/* 文は 12rem を基準に伸ばす（狭い欄では「もう一度」とリンクを次の行に送る。flex-1〔基準 0〕だと文が1字ずつに折り返す） */}
+      <p className="min-w-0 grow basis-48 text-destructive">
         {moduleLabel(moduleId)}：{messageFor(classifyError(error))}
       </p>
       <Button type="button" size="sm" variant="outline" onClick={onRetry}>
@@ -108,7 +109,7 @@ export function YearGateView({ gate }: { gate: Exclude<YearGate, { status: 'read
       className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"
     >
       <AlertTriangle aria-hidden className="size-4 shrink-0 text-destructive" />
-      <p className="min-w-0 flex-1 text-destructive">年度の情報：{messageFor(classifyError(gate.error))}</p>
+      <p className="min-w-0 grow basis-48 text-destructive">年度の情報：{messageFor(classifyError(gate.error))}</p>
       <Button type="button" size="sm" variant="outline" onClick={gate.retry}>
         もう一度
       </Button>

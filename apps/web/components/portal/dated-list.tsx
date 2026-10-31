@@ -64,10 +64,10 @@ function DatedRow({ item: d }: { item: DatedItem }) {
       >
         {KIND_LABEL[d.kind]}
       </Badge>
-      <span className="min-w-[8rem] flex-1 text-sm">{d.title}</span>
+      <span className="min-w-[10rem] flex-1 text-sm">{d.title}</span>
     </>
   );
-  // 狭い欄では、日付と種類の印の下に文を送る
+  // 狭い欄（文の幅が 10rem より狭くなるとき）では、日付と種類の印の下に文を送る（文を細い列で細かく折り返さない）
   const row = 'flex flex-wrap items-center gap-x-3 gap-y-1 py-2';
   return (
     <li data-testid="portal-dated-item" data-id={d.id} data-kind={d.kind}>
