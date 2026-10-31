@@ -14,6 +14,7 @@ import { FIXTURE_UPDATED_AT, fixtureSnapshot } from '@/lib/testing/fixture-rows'
 import { mergePortalSections, portalWidgetQuery, type PortalContext, type PortalKind, type PortalSection } from '../portal';
 import { consentGroupCounts } from './counts';
 import {
+  CONFIRM_TODO_TITLE,
   FURNITURE_SOUMU_SELECT,
   furniturePortal,
   furniturePortalProvider,
@@ -394,14 +395,17 @@ describe('T16 机椅子の総務の要対応（段ごと）', () => {
     for (const status of ['requesting', 'allocating', 'confirmed', 'closed'] as const) expect(todo(open - 1, year(status))).toBeUndefined();
   });
 
-  it('確定（レビューの T16-UX-01）：自動振り分けの後で了承の依頼中の団体がなければ、振り分けへ。読み取りの後だけ（了承の数で決める）', () => {
+  it('確定（レビューの T16-UX-01・2 回目）：自動振り分けの後で了承の依頼中・未依頼の団体がなければ、交換の画面で了承を確かめてから確定へ。読み取りの後だけ', () => {
     const y = year('allocating', { auto_allocated_at: '2026-10-07T00:00:00Z' });
     const now = at('2026-10-08T00:00:00Z');
     const answered: FurnitureSoumuRaw = { ...RAW, consents: [{ group_id: 'g1', status: 'accepted' }, { group_id: 'g2', status: 'declined' }] };
     const lead = (raw: ReturnType<typeof soumu> | null, yy: YearRow = y, role: AppRole = 'head') => furniturePortal(raw, ctx('soumu', yy, { role, now })).todos;
     expect(lead(soumu(answered))).toEqual([
-      { id: 'furniture:lead:confirm', moduleId: 'furniture', title: '検証の error を 0 件にして「確定」を押してください', severity: 'normal', href: '/allocation' },
+      { id: 'furniture:lead:confirm', moduleId: 'furniture', title: CONFIRM_TODO_TITLE, severity: 'normal', href: '/swaps' },
     ]);
+    expect(CONFIRM_TODO_TITLE).toContain('キャスター机交換の了承を確かめてから');
+    // 未依頼の了承の行があるうちは確定を出さない（流れの 5 を飛ばさせない）
+    expect(lead(soumu({ ...RAW, consents: [{ group_id: 'g1', status: 'accepted' }, { group_id: 'g2', status: 'not_asked' }] }))).toEqual([]);
     // 了承の行がない（交換の依頼をしない年）も確定へ
     expect(ids(furniturePortal(soumu({ ...RAW, consents: [] }), ctx('soumu', y, { role: 'admin', now })))).toEqual(['furniture:lead:confirm']);
     // 了承の依頼中があるうちは了承の要対応だけ。自動振り分けの前は自動振り分けだけ

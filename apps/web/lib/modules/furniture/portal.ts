@@ -122,6 +122,9 @@ function datedItems(ctx: PortalContext): DatedItem[] {
   return out;
 }
 
+/** 確定の要対応の文（キャスター机交換の了承を確かめてから確定する。流れの 5・6） */
+export const CONFIRM_TODO_TITLE = 'キャスター机交換の了承を確かめてから、検証の error を 0 件にして「確定」を押してください';
+
 /** 総務の要対応（段は roles.ts。counts が null〔読み込み前〕なら年度の行だけで決まるもの） */
 function soumuTodos(counts: FurnitureSoumuCounts | null, ctx: PortalContext): TodoItem[] {
   const { todos, add } = todoBuilder(ctx);
@@ -173,10 +176,13 @@ function soumuTodos(counts: FurnitureSoumuCounts | null, ctx: PortalContext): To
         href: '/swaps',
       });
     }
-    // 自動振り分けを保存し、了承の依頼中の団体がない振り分け中：次は「確定」（流れの 6）。押せるか〔検証の error 0〕はダッシュボードでは
-    // 読まない（検証は振り分けの画面で見る）。了承の数は読み取りの結果で分かるので、読み込みの後（counts があるとき）だけ作る
-    if (y.status === 'allocating' && y.auto_allocated_at && counts && counts.consents.asked === 0) {
-      add({ id: 'furniture:lead:confirm', title: '検証の error を 0 件にして「確定」を押してください', severity: 'normal', href: '/allocation' });
+    // 自動振り分けを保存し、了承の依頼中・未依頼の団体がない振り分け中：次は「確定」（流れの 6）。ただし、ダッシュボードは振り分けの行を
+    // 読まないので、置き換えた団体（了承の依頼が要る団体。流れの 5）がまだ了承の行を持たないかは分からない。そのため、確定の前に
+    // キャスター机交換の画面で了承を確かめるよう書き、行き先も交換の画面にする（流れの 5 を飛ばさせない。T16 の 2 回目のレビュー）。
+    // 押せるか〔検証の error 0〕はダッシュボードでは読まない（検証は振り分けの画面で見る）。了承の数は読み取りの結果で分かるので、
+    // 読み込みの後（counts があるとき）だけ作る
+    if (y.status === 'allocating' && y.auto_allocated_at && counts && counts.consents.asked === 0 && counts.consents.notAsked === 0) {
+      add({ id: 'furniture:lead:confirm', title: CONFIRM_TODO_TITLE, severity: 'normal', href: '/swaps' });
     }
   }
 

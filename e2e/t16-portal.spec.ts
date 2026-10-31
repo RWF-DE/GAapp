@@ -417,15 +417,15 @@ test('T16 部門長以上の要対応：受付期間が空・受付開始（過�
     // 総務部門員のカードにも了承の数は出る（キャスター机交換は開けないので、要対応にはしない）
     await expect(furnitureCard(staff).getByRole('listitem').last()).toHaveText('了承の依頼中 1 団体');
 
-    // 自動振り分けを保存し、了承の依頼に答えが来た（依頼中がない）→ 確定（振り分けへ。レビューの T16-UX-01）
+    // 自動振り分けを保存し、了承の依頼に答えが来た（依頼中・未依頼がない）→ 交換の画面で了承を確かめてから確定（レビューの T16-UX-01・2 回目）
     await sql(`update public.years set auto_allocated_at = now() where id = $1`, [s.yearId]);
     await insertConsent(s.ids.groups[SMALL.groups.stall]!, 'accepted');
     await openPortal(head, 'ダッシュボード');
     expect(await todoIds(head)).toEqual(['furniture:lead:confirm']);
     const confirmTodo = todo(head, 'furniture:lead:confirm');
     await expect(confirmTodo).toHaveAttribute('data-severity', 'normal');
-    await expect(confirmTodo).toContainText('検証の error を 0 件にして「確定」を押してください');
-    await expect(confirmTodo.getByRole('link')).toHaveAttribute('href', /\/allocation\/?$/);
+    await expect(confirmTodo).toContainText('キャスター机交換の了承を確かめてから、検証の error を 0 件にして「確定」を押してください');
+    await expect(confirmTodo.getByRole('link')).toHaveAttribute('href', /\/swaps\/?$/);
     await openPortal(staff, 'ダッシュボード');
     await expect(staff.getByTestId('portal-todos-empty')).toBeVisible();
   } finally {
