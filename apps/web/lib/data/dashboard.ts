@@ -146,7 +146,7 @@ export interface SummarizeOptions {
 type DashboardSource = Pick<Snapshot, 'year'> & Pick<YearTables, 'items' | 'rooms' | 'roomYears' | 'groups' | 'submissions' | 'stocks' | 'rules' | 'consents' | 'allocations'>;
 
 /**
- * ダッシュボードの数（3.1）。snapshot は part = full（総務）。validation は useValidation の結果。
+ * 机椅子の状況（/furniture）の数（3.1）。snapshot は part = full（総務）。validation は useValidation の結果。
  *
  * @example
  * const v = useValidation(snap.data);

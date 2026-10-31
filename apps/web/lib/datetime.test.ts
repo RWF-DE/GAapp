@@ -4,6 +4,7 @@ import {
   formatDate,
   formatDateTime,
   formatDateTimeSeconds,
+  formatShortDate,
   formatShortDateTime,
   formatTime,
   fromDateTimeLocal,
@@ -105,5 +106,23 @@ describe('T16 addDays（日付の足し引き）', () => {
     expect(addDays('2026-02-30', 1)).toBe('');
     expect(addDays('2026-10-17T00:00:00Z', 1)).toBe('');
     expect(addDays('2026-10-17', 0.5)).toBe('');
+  });
+});
+
+describe('T16 formatShortDate（日付だけの短い形。ダッシュボードの締切と予定）', () => {
+  it('YYYY-MM-DD を M/D に（先頭の 0 を落とす。タイムゾーンを通さない）', () => {
+    expect(formatShortDate('2026-10-16')).toBe('10/16');
+    expect(formatShortDate('2027-01-05')).toBe('1/5');
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Pacific/Kiritimati']) {
+      process.env.TZ = tz;
+      expect(formatShortDate('2027-01-01')).toBe('1/1');
+    }
+  });
+
+  it('日付だけの形でなければ空文字（時刻のある値は formatShortDateTime）', () => {
+    expect(formatShortDate(null)).toBe('');
+    expect(formatShortDate('')).toBe('');
+    expect(formatShortDate('2026-10-16T00:00:00+09:00')).toBe('');
+    expect(formatShortDate('2026/10/16')).toBe('');
   });
 });

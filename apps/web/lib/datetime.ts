@@ -52,6 +52,19 @@ export function formatShortDateTime(v: string | Date | null | undefined): string
   return `${p.mo}/${p.d} ${pad(p.h)}:${pad(p.mi)}`;
 }
 
+/**
+ * 日付だけ（`YYYY-MM-DD`。1日目などの date）の短い形 `10/16`（ダッシュボードの締切と予定。T16）。タイムゾーンを通さない。
+ * 形が違えば空文字。時刻のある値は formatShortDateTime（`10/5 17:00`）。
+ *
+ * @example
+ * formatShortDate('2026-10-16') // '10/16'
+ */
+export function formatShortDate(date: string | null | undefined): string {
+  if (!date) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  return m ? `${Number(m[2])}/${Number(m[3])}` : '';
+}
+
 /** `18:01`（下書きの「保存していない入力があります（hh:mm）」など） */
 export function formatTime(v: string | Date | number | null | undefined): string {
   if (v === null || v === undefined) return '';

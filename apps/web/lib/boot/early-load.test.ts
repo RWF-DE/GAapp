@@ -260,8 +260,10 @@ describe('開いたときのリクエストの記録（early-fetch.ts）を覚�
     }
   });
 
-  it.each(['/', '/allocation/', '/swaps/'])(
-    '先読みの表にない画面（%s。振り分けに関わり、版を先に読む）は記録しない（localStorage に残らない）',
+  // 記録・先送りしないパス：振り分けに関わる画面（/furniture・/allocation・/swaps。版を先に読む）と、ダッシュボード（/。版は読まないが
+  // T16 では表に入れない。D-51）
+  it.each(['/', '/furniture/', '/allocation/', '/swaps/'])(
+    '先読みの表にない画面（%s。振り分けに関わり版を先に読む画面と、T16 のダッシュボード）は記録しない（localStorage に残らない）',
     async (url) => {
       vi.useFakeTimers();
       try {

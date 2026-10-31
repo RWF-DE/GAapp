@@ -16,7 +16,7 @@ import {
   yearOptionLabel,
   type Membership,
 } from '@/lib/auth/membership';
-import { navItemsFor } from '@/lib/navigation';
+import { navSectionsFor } from '@/lib/navigation';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { cn } from '@/lib/utils';
 import { AppNav } from './app-nav';
@@ -101,7 +101,8 @@ function Frame({ membership, onSignOut, children }: { membership: Membership; on
   const { isRefreshing } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
   const year = membership.year;
-  const items = navItemsFor(audiencesOf(membership), year?.status);
+  // ナビは見出し（ホーム・機能ごと・共通）ごと（T16。PC の左とスマホのメニューで同じもの）
+  const sections = navSectionsFor(audiencesOf(membership), year?.status);
   // 立場：ロールの表示名と、代表する団体ごとの「{団体名} の店長」「{団体名} の副店長」（T15b。ホームの立場の一覧と同じ言い方）
   const roles = positionLabels(membership);
   // スマホ（md 未満）では年度の選択があれば印を隠す（選択に今の年度が出る。幅 390px でヘッダーがはみ出さないように）
@@ -156,13 +157,13 @@ function Frame({ membership, onSignOut, children }: { membership: Membership; on
           <div className="px-3 pb-2 text-xs text-muted-foreground">
             {membership.displayName ?? '名前未設定'}（{roles.join('・')}）
           </div>
-          <AppNav items={items} onNavigate={() => setMenuOpen(false)} />
+          <AppNav sections={sections} onNavigate={() => setMenuOpen(false)} />
         </div>
       ) : null}
 
       <div className="flex flex-1">
         <aside className="hidden w-56 shrink-0 border-r bg-sidebar p-3 md:block print:hidden">
-          <AppNav items={items} />
+          <AppNav sections={sections} />
         </aside>
         <main className="min-w-0 flex-1 p-4 md:p-6 print:p-0">
           {/* 年度が変わったら画面を作り直す（前の年度の入力を持ち越さない。入力は前の年度の下書きに残る。1.3.1）。

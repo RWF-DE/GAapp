@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizePath } from '@/lib/navigation';
+import { NAV_SECTIONS, normalizePath, routeFor } from '@/lib/navigation';
 import { staticImportGraph } from '@/lib/testing/import-graph';
 import { PORTAL_PROVIDERS } from './providers';
 import { MODULES } from './registry';
@@ -21,6 +21,21 @@ describe('T16 機能の登録（MODULES）', () => {
       expect(m.homeHref).toMatch(/^\/[a-z]/);
       expect(normalizePath(m.homeHref)).toBe(m.homeHref);
     }
+  });
+
+  it('入口（homeHref）は ROUTES にあり、その見出し（section）が機能の id で、ナビに出る', () => {
+    for (const m of MODULES) {
+      const r = routeFor(m.homeHref);
+      expect(r?.href).toBe(m.homeHref);
+      expect(r?.section).toBe(m.id);
+      expect(r?.nav).toBe(true);
+    }
+  });
+
+  it('ナビの機能の見出しは MODULES と同じ並び・同じ名前（ホームと共通の間）', () => {
+    expect(NAV_SECTIONS[0]?.id).toBe('home');
+    expect(NAV_SECTIONS.at(-1)?.id).toBe('common');
+    expect(NAV_SECTIONS.slice(1, -1)).toEqual(MODULES.map((m) => ({ id: m.id, heading: m.label })));
   });
 
   it('PORTAL_PROVIDERS は登録にある機能を1つずつ、登録の順に並べる', () => {

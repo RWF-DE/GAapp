@@ -53,7 +53,7 @@ export function SettingsScreen() {
   if (tabs.length === 0) return <ForbiddenState />;
   const tab = parseSettingsTab(params.get('tab'), tabs);
   // 年度の行がまだないときだけ ErrorState。あるときの読み直し（書き込みの失敗の後など）の失敗は、タブ（開いているフォーム・
-  // ダイアログと入力を含む）を外さずに、上の帯で知らせる（2.5・2.6。ダッシュボード・QueryState と同じ）
+  // ダイアログと入力を含む）を外さずに、上の帯で知らせる（2.5・2.6。机椅子の状況・QueryState と同じ）
   if (yearQ.isError && !yearQ.data) {
     return <ErrorState message={messageFor(classifyError(yearQ.error))} onRetry={() => void yearQ.refetch()} />;
   }

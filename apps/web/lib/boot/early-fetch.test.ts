@@ -31,8 +31,11 @@ const TOKEN = 'token-1';
 const PREFIX = 'gaapp:prefetch:';
 /** 先送りしてよい画面（lib/data/screen-queries.ts の EARLY_FETCH_PATHS と同じ） */
 const PATHS = ['/stock', '/request', '/my'];
-/** 振り分けに関わる画面（スナップショットで版を先に読む。D-33） */
-const SNAPSHOT_PATHS = ['/', '/allocation', '/swaps'];
+/**
+ * 記録・先送りしないパス：振り分けに関わる画面（/furniture・/allocation・/swaps。スナップショットで版を先に読む。D-33）と、
+ * ダッシュボード（/。版は読まないが T16 では許可リストに入れない。D-51）
+ */
+const SNAPSHOT_PATHS = ['/', '/furniture', '/allocation', '/swaps'];
 
 const win = () => window as unknown as Record<string, unknown>;
 

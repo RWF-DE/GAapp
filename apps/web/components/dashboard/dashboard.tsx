@@ -1,9 +1,10 @@
 'use client';
 
-// 総務（管理者・総務部門長・総務副部門長・総務部門員）のダッシュボード（画面の設計 3.1・6。T09）。版を先に読むスナップショット →
-// useValidation → summarizeDashboard。状態の遷移と確定の流れは T09a の YearStatusActions（部門長以上に出る。終了とその確認の書き出しは
-// 管理者だけ。T15b）。総務部門員は読み取り（キャスター机交換・ルール・マスタ設定へのリンクは canOpen で出さず、数だけ）。
-// 版の見張りで、ほかの人の変更に気づいたら帯を出す。
+// 机椅子の状況（/furniture。04「机椅子の状況」、画面の設計 3.1・6。T09。T16 より前は / のダッシュボード。D-51）。総務（管理者・
+// 総務部門長・総務副部門長・総務部門員）。版を先に読むスナップショット → useValidation → summarizeDashboard。状態の遷移と確定の流れは
+// T09a の YearStatusActions（部門長以上に出る。終了とその確認の書き出しは管理者だけ。T15b）。総務部門員は読み取り（キャスター机交換・
+// ルール・マスタ設定へのリンクは canOpen で出さず、数だけ）。版の見張りで、ほかの人の変更に気づいたら帯を出す。
+// T16 で / から移した（部品の名前と data-testid は変えない）。使うのは /furniture（components/dashboard/furniture-screen.tsx）だけ。
 import { AlertTriangle } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -46,7 +47,7 @@ export function Dashboard({ yearId, audiences }: { yearId: string; audiences: re
 
   const header = (
     <PageHeader
-      title="ダッシュボード"
+      title="机椅子の状況"
       loadedAt={snap.data?.loadedAt ?? null}
       onReload={() => void snap.refetch()}
       reloading={snap.isFetching}

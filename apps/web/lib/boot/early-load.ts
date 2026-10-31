@@ -209,8 +209,9 @@ export function startEarlyLoad(queryClient: QueryClient, opts: StartEarlyLoadOpt
   };
   early = e;
   // ページを開いたときに送るリクエストを覚え始める（次に開いたときに <head> の script が先に送る。early-fetch.ts）。
-  // 覚えるのは先読みの表（routes）にある、版を使わない画面だけ。振り分けに関わる画面（/・/allocation・/swaps）は覚えない
-  // （スナップショットは版を読み終えてから残りを読む。D-33。先送りすると版とデータが同時に読まれる）
+  // 覚えるのは先読みの表（routes）にある、版を使わない画面だけ。振り分けに関わる画面（/furniture・/allocation・/swaps）は覚えない
+  // （スナップショットは版を読み終えてから残りを読む。D-33。先送りすると版とデータが同時に読まれる）。ダッシュボード（/）は版を
+  // 使わないが、T16 では表に入れない（団体代表の / の 4G の速さを計ってから決める。D-51）
   const path = normalizePath(location.pathname);
   if (Object.prototype.hasOwnProperty.call(e.routes, path)) startRecording(path, location);
   else stopRecording();

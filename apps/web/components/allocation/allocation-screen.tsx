@@ -94,10 +94,10 @@ export function AllocationScreen() {
         <Toolbar disabled lead={isLead(role)} canExport={false} />
         <EmptyState
           title="締切の後に振り分けます"
-          description="申請の締切（振り分けを始める）はホームのダッシュボードから行います。"
+          description="申請の締切（振り分けを始める）は机椅子の状況から行います。"
           action={
-            <AppLink href="/" className="underline underline-offset-2">
-              ホームへ
+            <AppLink href="/furniture" className="underline underline-offset-2">
+              机椅子の状況へ
             </AppLink>
           }
         />
