@@ -32,7 +32,7 @@ create type delivery_status as enum ('pending','done','problem');
 | delivery_kind | furniture / tent / weight / side_curtain | 机等 / テント / 重し / 三方幕 |
 | delivery_status | pending / done / problem | 未 / 済 / 問題あり |
 
-app_role の head（総務部門長）と deputy_head（総務副部門長）は T15 で足した（D-48。deputy_head の権限は head と同じ）。`alter type … add value` で足した値は、同じトランザクションの中では使えないので、値を足すだけのマイグレーション（0011）を分け、値を使うのは 0013 からにする。group_role の店長と副店長も権限は同じで、表示名だけが違う。画面の表示名を直すのは T15b で、それまでの画面は admin を「総務管理者」、staff を「総務部員」と出す（head・deputy_head は T15b を出すまで付けない。README の 5）。
+app_role の head（総務部門長）と deputy_head（総務副部門長）は T15 で足した（D-48。deputy_head の権限は head と同じ）。`alter type … add value` で足した値は、同じトランザクションの中では使えないので、値を足すだけのマイグレーション（0011）を分け、値を使うのは 0013 からにする。group_role の店長と副店長も権限は同じで、表示名だけが違う。画面の表示名は T15b でこの表の名前にそろえた（T15b より前の画面は admin を「総務管理者」、staff を「総務部員」と出していた。head・deputy_head は T15b を出すまで付けない。README の 5）。団体代表は、画面では「{団体名} の店長」「{団体名} の副店長」と出す（04「共通レイアウト」。D-50）。
 
 ## テーブル定義
 
@@ -368,7 +368,7 @@ admin・head・deputy_head・staff・viewer は、その行の年度でのロー
   - **Confirm email** と **Secure email change** は有効。Confirm email が無効だと、GoTrue はメールの変更を古いアドレスに届いたリンクだけで終え、email の identity を新しいアドレスと email_verified: true に書き換えるか、新しく作る（Email プロバイダーを無効にしていても。Secure email change が有効でも）。email だけのアカウントはそれで他人の招待を取れる。Secure email change が無効だと、変更は新しいアドレスの確認だけで終わり、古いアドレスの持ち主に確かめない（盗まれたセッションからメールを付け替えられる）
   - **Allow manual linking** は無効。有効だと、利用者が identity を足したり外したりできる。Confirm email も無効だと、Google のユーザーがメールを変えて email の identity を作り（上）、Google の identity を外して email だけのアカウントになり、「Google の identity のメールだけを見る」守りを抜けて他人の招待を取れる（T03 の攻撃での確認）。無効なら Google のユーザーは Google の identity を外せないので、Confirm email が崩れても止まる
   - ローカルの supabase/config.toml も `enable_confirmations = true`・`double_confirm_changes = true`・`enable_manual_linking = false`・`enable_anonymous_sign_ins = false` にする（Email プロバイダーはテストユーザーのパスワードログインのためだけに有効）。本番は全員が Google の identity を持つので、Confirm email か Secure email change だけが崩れても「Google の identity のメールだけを見る」で止まる。Google の identity のない email だけのアカウント（ローカルのテストユーザー）は、Confirm email と Secure email change に頼る（既知の依存。D-17a）
-- E2E・CI のテストユーザー（管理者・部員・団体代表・閲覧のみ・未招待）は supabase/seed.sql で auth.users と auth.identities に直接入れる（フックは通らないが、上のトリガーは動く）。年度・団体・招待を先に入れておき、email_confirmed_at を入れたユーザーと、同じメールで email_verified が true の email の identity を足して、identity の追加のトリガーでロールを付ける。メールは予約済みのドメイン（`@example.test`）、パスワードはローカル専用の固定値にする。seed は本番に流さず、本番ではメールログインを無効にする（D-02）。画面のメール＋パスワードのログインは、ビルド時のフラグがあり、Supabase がローカルのときだけ出る
+- E2E・CI のテストユーザー（管理者・総務部門長・総務部門員・団体代表〔店長〕・閲覧のみ・未招待。総務部門長は T15b で足す）は supabase/seed.sql で auth.users と auth.identities に直接入れる（フックは通らないが、上のトリガーは動く）。年度・団体・招待を先に入れておき、email_confirmed_at を入れたユーザーと、同じメールで email_verified が true の email の identity を足して、identity の追加のトリガーでロールを付ける。メールは予約済みのドメイン（`@example.test`）、パスワードはローカル専用の固定値にする。seed は本番に流さず、本番ではメールログインを無効にする（D-02）。画面のメール＋パスワードのログインは、ビルド時のフラグがあり、Supabase がローカルのときだけ出る
 - 学校の Google Workspace では、18歳未満に指定された利用者は、管理者が許可していない外部アプリにログインできない。1〜3年生が使えるかは情報担当への確認待ち（[概要](00_overview.md) の未決事項）
 - RLS と RPC の権限は pgTAP（`supabase test db`）でロールごとにテストする。権限表の全セルは、期待値の表（表・操作・年度の状態・ペルソナごとの可否）から生成して確かめる。確定中の守りも、confirmed のセルとして確かめる。関数の execute と表の権限の棚卸し（anon が何も実行・参照できないこと、authenticated が実行できるのは RPC とポリシーの判定関数だけであること、supabase_auth_admin が実行できるのはフックと、フックが呼ぶ private.school_domain() だけであること）もテストする
 
