@@ -115,3 +115,18 @@ export function tokyoStartOfNextDay(date: string): string {
 export function tokyoToday(now: Date = new Date()): string {
   return tokyoDate(now);
 }
+
+/**
+ * 日付（`YYYY-MM-DD`）に日数を足す（負なら引く）。日付のまま UTC の暦で数え、タイムゾーンを通さない（月・年の境目と閏年も
+ * そのまま。1日目から前々日・2日目を出すのに使う）。読めない日付（形が違う・ない日）と整数でない日数は空文字。
+ *
+ * @example
+ * addDays('2027-03-01', -2) // '2027-02-27'
+ */
+export function addDays(date: string, days: number): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isInteger(days)) return '';
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== date) return '';
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}

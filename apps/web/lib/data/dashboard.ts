@@ -1,18 +1,28 @@
-// ダッシュボードの集計とホームのカード（画面の設計 3.1・6。T09）。summarizeDashboard は純粋関数で、3.1 の数をすべて返す。
-// 了承の集計は /swaps（T13）と同じ swapRows を使う（同じ数え方を2か所に書かない）。リンクは今の立場で開ける画面だけを返す
-// （開けなければ href を null にする。総務部門員にキャスター机交換・ルール・マスタ設定へのリンクを、部門長・副部門長に管理者だけの
-// マスタ設定のタブ〔団体など〕へのリンクを出さない。1.1 の canOpen。D-50）。
-import { compareBySortOrder, type GroupCategory, type InputError, type Issue } from '@gaapp/shared';
+// 机椅子の状況（/furniture）の集計（画面の設計 3.1・6。T09。T16 より前は / のダッシュボード。D-51）。summarizeDashboard は
+// 純粋関数で、3.1 の数をすべて返す。提出・在庫・了承の状況ごとの団体の数は lib/modules/furniture/counts.ts の関数で数える
+// （ダッシュボード〔/〕の机椅子と同じ数え方。D-52）。了承の集計は /swaps（T13）と同じ swapRows を使う（同じ数え方を2か所に
+// 書かない）。リンクは今の立場で開ける画面だけを返す（開けなければ href を null にする。総務部門員にキャスター机交換・ルール・
+// マスタ設定へのリンクを、部門長・副部門長に管理者だけのマスタ設定のタブ〔団体など〕へのリンクを出さない。1.1 の canOpen。D-50）。
+// 団体代表のカード（repGroupCards・requestWindowOpen・loadRepHome）は T16 で lib/modules/furniture/rep.ts に移した（/ の JS に
+// このファイル〔swaps.ts の ruleSchema〕を入れないため）。今の import のために、ここから同じ名前で出し直す。
+import type { GroupCategory, InputError, Issue } from '@gaapp/shared';
 import type { Audience, YearStatus } from '@/lib/auth/membership';
-import { fetchAll } from '@/lib/db/fetch-all';
-import { COLUMNS, type ConsentDbRow, type SubmissionRow, type YearTables } from '@/lib/db/types';
-import { toAppError } from '@/lib/errors';
+import type { YearTables } from '@/lib/db/types';
 import { CATEGORY_LABELS } from '@/lib/labels';
+import { consentGroupCounts, storageCounts, submissionCounts } from '@/lib/modules/furniture/counts';
 import { canOpen } from '@/lib/navigation';
-import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import type { Snapshot } from './snapshot';
 import { swapRows } from './swaps';
 import type { ValidationResult } from './validation';
+
+export {
+  loadRepHome,
+  repGroupCards,
+  requestWindowOpen,
+  type RepGroupCard,
+  type RepHomeRows,
+  type RepHomeSource,
+} from '@/lib/modules/furniture/rep';
 
 /** 一覧に名前を出す数（続きはリンクの先で見る） */
 export const DASHBOARD_LIST_LIMIT = 5;
@@ -150,26 +160,18 @@ export function summarizeDashboard(
   const status = snapshot.year.status;
   const link = (href: string): string | null => (canOpen(href, opts.audiences, status) ? href : null);
 
-  // 申請
-  const groups = snapshot.groups
-    .map((g) => ({ id: g.id, name: g.name, sortOrder: g.sort_order, category: g.category }))
-    .sort(compareBySortOrder);
-  const submitted = new Set(snapshot.submissions.filter((s) => s.submitted_at !== null).map((s) => s.group_id));
+  // 申請（counts.ts。団体の並びは sort_order → 名前 → id）
+  const sub = submissionCounts(snapshot.groups, snapshot.submissions);
   const byCategory: CategoryCount[] = CATEGORY_ORDER.flatMap((category) => {
-    const gs = groups.filter((g) => g.category === category);
+    const gs = snapshot.groups.filter((g) => g.category === category);
     if (gs.length === 0) return [];
-    return [{ category, label: CATEGORY_LABELS[category], submitted: gs.filter((g) => submitted.has(g.id)).length, total: gs.length }];
+    return [{ category, label: CATEGORY_LABELS[category], submitted: gs.filter((g) => sub.submittedGroupIds.has(g.id)).length, total: gs.length }];
   });
-  const unsubmitted = groups.filter((g) => !submitted.has(g.id));
+  const unsubmitted = sub.unsubmitted;
 
-  // 在庫（使用不可の部屋を除く保管場所）
-  const unusable = new Set(snapshot.roomYears.filter((r) => !r.usable).map((r) => r.room_id));
-  const storages = snapshot.rooms
-    .filter((r) => r.is_storage && !unusable.has(r.id))
-    .map((r) => ({ id: r.id, name: r.name, sortOrder: r.sort_order }))
-    .sort(compareBySortOrder);
-  const countedRooms = new Set(snapshot.stocks.map((s) => s.room_id));
-  const uncounted = storages.filter((r) => !countedRooms.has(r.id));
+  // 在庫（使用不可の部屋を除く保管場所。counts.ts）
+  const stock = storageCounts(snapshot.rooms, snapshot.roomYears, snapshot.stocks.map((s) => s.room_id));
+  const uncounted = stock.uncounted;
 
   // 検証
   const phase: ValidationPhase =
@@ -183,8 +185,10 @@ export function summarizeDashboard(
   const issues = phase === 'ok' ? validation.issues : [];
   const count = (s: Issue['severity']) => issues.filter((i) => i.severity === s).length;
 
-  // 了承（/swaps と同じ swapRows。今の置き換えがある行だけ。団体の数は状況ごとに数える〔1つの団体に複数の品目の組があれば、それぞれの状況に入る〕）
+  // 了承（/swaps と同じ swapRows。今の置き換えがある行だけ。団体の数は状況ごとに数える〔1つの団体に複数の品目の組があれば、
+  // それぞれの状況に入る〕。状況ごとの数は counts.ts。ダッシュボードの机椅子は振り分けの行を読まないので、了承の行をそのまま数える）
   const swaps = swapRows(snapshot).filter((r) => r.current > 0);
+  const consents = consentGroupCounts(swaps);
   const groupsWhere = (pred: (r: (typeof swaps)[number]) => boolean) => new Set(swaps.filter(pred).map((r) => r.groupId)).size;
 
   return {
@@ -193,8 +197,8 @@ export function summarizeDashboard(
     requestCloseAt: snapshot.year.request_close_at,
     autoAllocatedAt: snapshot.year.auto_allocated_at,
     submissions: {
-      submitted: groups.filter((g) => submitted.has(g.id)).length,
-      total: groups.length,
+      submitted: sub.submitted,
+      total: sub.total,
       byCategory,
       unsubmitted: unsubmitted.slice(0, DASHBOARD_LIST_LIMIT).map((g) => ({ id: g.id, name: g.name })),
       unsubmittedCount: unsubmitted.length,
@@ -202,8 +206,8 @@ export function summarizeDashboard(
       emptyHref: link('/settings?tab=groups'),
     },
     stocks: {
-      counted: storages.length - uncounted.length,
-      total: storages.length,
+      counted: stock.counted,
+      total: stock.total,
       uncounted: uncounted.slice(0, DASHBOARD_LIST_LIMIT).map((r) => ({ id: r.id, name: r.name, href: link(`/stock?room=${r.id}`) })),
       uncountedCount: uncounted.length,
       emptyHref: link('/settings?tab=rooms'),
@@ -218,11 +222,11 @@ export function summarizeDashboard(
     },
     problems: problemLines(validation.problems, link),
     consents: {
-      groups: groupsWhere(() => true),
-      notAsked: groupsWhere((r) => r.status === 'not_asked'),
-      asked: groupsWhere((r) => r.status === 'asked'),
-      accepted: groupsWhere((r) => r.status === 'accepted'),
-      declined: groupsWhere((r) => r.status === 'declined'),
+      groups: consents.groups,
+      notAsked: consents.notAsked,
+      asked: consents.asked,
+      accepted: consents.accepted,
+      declined: consents.declined,
       reask: groupsWhere((r) => r.attention === 'reask' || r.attention === 'w102'),
       rerun: groupsWhere((r) => r.attention === 'rerun'),
       href: link('/swaps'),
@@ -237,72 +241,4 @@ function problemLines(problems: readonly InputError[], link: (href: string) => s
     ruleCode: p.ruleCode ?? null,
     href: p.ruleCode ? link(`/rules?code=${encodeURIComponent(p.ruleCode)}`) : link('/settings'),
   }));
-}
-
-// ---- 団体代表・閲覧のみのホーム ----
-
-export interface RepGroupCard {
-  groupId: string;
-  name: string;
-  /** 提出した日時（なければ未提出） */
-  submittedAt: string | null;
-  /** キャスター机への交換の依頼（status = asked）があるか */
-  consentAsked: boolean;
-  /** 振り分けが決まった（確定・終了） */
-  final: boolean;
-}
-
-export interface RepHomeSource {
-  groups: readonly { id: string; name: string }[];
-  submissions: readonly Pick<SubmissionRow, 'group_id' | 'submitted_at'>[];
-  consents: readonly Pick<ConsentDbRow, 'group_id' | 'status'>[];
-}
-
-/** 団体代表のカード（代表する団体ごと。並びは立場の一覧と同じ名前の順） */
-export function repGroupCards(src: RepHomeSource, status: YearStatus): RepGroupCard[] {
-  const submittedAt = new Map(src.submissions.map((s) => [s.group_id, s.submitted_at]));
-  const asked = new Set(src.consents.filter((c) => c.status === 'asked').map((c) => c.group_id));
-  return src.groups.map((g) => ({
-    groupId: g.id,
-    name: g.name,
-    submittedAt: submittedAt.get(g.id) ?? null,
-    consentAsked: asked.has(g.id),
-    final: status === 'confirmed' || status === 'closed',
-  }));
-}
-
-/** 団体代表が申請を書けるか（02 の「締切前」と同じ：requesting・受付開始が null か過ぎた・締切の前） */
-export function requestWindowOpen(year: Pick<Snapshot['year'], 'status' | 'request_open_at' | 'request_close_at'>, now: number): boolean {
-  if (year.status !== 'requesting' || !year.request_close_at) return false;
-  if (year.request_open_at && new Date(year.request_open_at).getTime() > now) return false;
-  return new Date(year.request_close_at).getTime() > now;
-}
-
-/**
- * 団体代表のホームに要る行（自団体の提出と了承。RLS で自団体の行だけが返る）。
- * 年度の行（締切）は useYearRow で読む。
- */
-export async function loadRepHome(
-  groupIds: readonly string[],
-  client: AppSupabaseClient = getSupabase(),
-): Promise<Pick<RepHomeSource, 'submissions' | 'consents'>> {
-  if (groupIds.length === 0) return { submissions: [], consents: [] };
-  const [sub, con] = await Promise.all([
-    client.from('request_submissions').select(COLUMNS.request_submissions).in('group_id', [...groupIds]).order('group_id'),
-    fetchAll((from, to) =>
-      client
-        .from('substitution_consents')
-        .select(COLUMNS.substitution_consents)
-        .in('group_id', [...groupIds])
-        .order('group_id')
-        .order('from_item_id')
-        .order('to_item_id')
-        .range(from, to),
-    ),
-  ]);
-  if (sub.error) throw toAppError(sub.error, sub.status);
-  return {
-    submissions: (sub.data ?? []) as unknown as SubmissionRow[],
-    consents: con as unknown as ConsentDbRow[],
-  };
 }
