@@ -59,6 +59,7 @@ Supabase の無料プランは、1週間ほど使われないと一時停止す�
 ### 1.4 開発者が確かめること
 
 - 依存の更新・マイグレーションの適用は、PR → CI → マージ → Actions の Migrate production DB（ブランチ main、承認つき）の順（README の 5）。本番 DB に直接 SQL を流さない（SQL Editor は年度の最初の管理者を足すときなどだけ）。
+- 本番 DB に流していないマイグレーションが残っていないかを確かめる（README の 5 の `supabase_migrations.schema_migrations` の問い合わせ）。T15〜T18 の 0009〜0015 は、本番を使い始める前に README の 5 の手順で流す。
 - 7月の前に、ローカルで `supabase start` → `supabase db reset` → `pnpm build:e2e` → `pnpm e2e` が通ることを確かめておく（1年で Supabase の CLI やイメージが変わっていることがある）。
 
 ## 2. ルールの変え方
