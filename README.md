@@ -207,6 +207,37 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
 
 マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で、**ブランチに `main` を選んで**手動実行する（先に 2 の環境 `production` を設定しておく。Required reviewers の承認の後に動く）。
 
+#### 0011〜0013（T15 のロールの見直し。D-48・D-49）を適用するとき
+
+- 3つのファイルを順に流す（CLI はファイルごとに1つのトランザクションで流す）。0011 は app_role に head（総務部門長）・deputy_head（総務副部門長）を足すだけ（足した値は同じトランザクションの中では使えないので、ファイルを分けてある）。0012 は団体代表の立場（店長・副店長）と兼任の禁止、0013 は3つの段の権限。
+- 0012 は、同じ年度で部員（staff）のロールと団体代表を兼ねている人がいると `role_overlap: …` で止まる（0012 の変更は何も残らない。先に流れた 0011 は残るが害はなく、流し直すと 0012 から続く）。流す前に、管理画面の SQL Editor で次の問い合わせを流して探す（結果のメールは SQL Editor の画面で見るだけにし、どこにも保存しない。`role::text` で比べるので、0011 の前でも後でも流せる）：
+
+  ```sql
+  select y.label, u.email, yr.role, g.name as group_name
+  from public.year_roles yr
+  join public.years y on y.id = yr.year_id
+  join public.groups g on g.year_id = yr.year_id
+  join public.group_members gm on gm.group_id = g.id and gm.user_id = yr.user_id
+  join auth.users u on u.id = yr.user_id
+  where yr.role::text in ('staff', 'head', 'deputy_head')
+  order by y.festival_start, u.email, g.name;
+  ```
+
+  行があれば、その年度の管理者がアプリのマスタ設定 → ユーザーで直す（団体代表を外すか、ロールを閲覧のみに変えるか外す。管理者のロールなら団体代表を兼ねられる）。0 行になったら、もう一度 Migrate production DB を流す。
+- 止めないもの：同じ年度・同じメールに、未使用の部員のロールの招待と、未使用の団体代表の招待の両方があるもの。ログインのときに先に作った方（同じ時刻ならロールの招待）だけが付き、もう片方は未使用のまま残る（管理者の画面に見える）。前もって片方を取り消すなら、次で探す：
+
+  ```sql
+  select y.label, r.email
+  from public.invitations r
+  join public.invitations g on g.year_id = r.year_id and g.email = r.email
+                           and g.group_id is not null and g.used_at is null
+  join public.years y on y.id = r.year_id
+  where r.role::text in ('staff', 'head', 'deputy_head') and r.used_at is null
+  order by y.festival_start, r.email;
+  ```
+
+- 総務部門長・総務副部門長のロールは、T15b（画面）を出すまで付けない（今の画面はこの2つのロールを知らず、ナビゲーションに何も出ない）。今までの admin・staff・viewer・団体代表は、そのまま使える（今の団体代表は店長になる）。
+
 ### 6. 最初の年度と最初の管理者（D-01）
 
 最初の年度と admin だけは、オーナーが SQL Editor で作る。以後の年度は、最新の年度の admin がアプリの create_year_from で作る。

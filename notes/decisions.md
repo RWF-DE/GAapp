@@ -495,6 +495,37 @@
 - **チケット**：T14（速さの改善。feat/T14-speedup）。
 - **状態**：実装した（2026-10-30。未マージ）。本番へは README の 5（migrate.yml）のまま適用する。
 
+## D-48 ロールの段（2026-10-31、ユーザーの回答。T15）
+
+- **決定**：
+  - ロールは年度ごとのまま（year_roles の主キーは (year_id, user_id) で、1人に年度ごと1つ）。app_role を admin・head・deputy_head・staff・viewer の順にする（表示名：管理者・総務部門長・総務副部門長・総務部門員・閲覧のみ）。deputy_head の権限は head と同じ。年度の複製（create_year_from）は今までどおり作った人の admin しか作らないので、管理者が毎年、総務部門長・総務副部門長を招待し直す。
+  - 団体代表に、団体の中の立場 group_role（manager 店長・deputy_manager 副店長）を持たせる。権限は同じで、表示名だけが違う。人数の上限はない。group_members.role（not null・既定 manager。今の団体代表は店長になる）と invitations.group_role（group_id があるときだけ。CHECK）。
+  - 権限を3つの段に分ける：
+    - 管理者だけ：マスタ（rooms・items・distance_overrides は is_admin_of_open_year、groups は can_admin。tg_groups_before_write の前置きの確かめも）、年度の作成（create_year_from。今のまま）、終了（set_year_status の closed）、年度名と1日目（update_year の label・festival_start）、年度データの書き出し（画面だけ。DB には何もない）、admin・head・deputy_head・viewer の招待・変更・外す・取り消し、年度のない履歴の行。
+    - 部門長以上（lead＝admin・head・deputy_head）：set_year_status（受付開始・締切・確定・確定の解除）、update_year の request_open_at・request_close_at、ルール（追加・削除は can_lead、更新は has_any_role で closed の memo の扱いは guard_rules のまま）、save_auto_allocations・save_allocation_rows、set_consent、update_requests_after_deadline・previous_year_requests・submit_requests（と can_write_requests）、room_years の書き込みと tg_room_years_guard の前置きの確かめ（今年の使用は振り分けの作業）、slots・deliveries の書き込み、年度のある履歴、remove_group_member、店長⇄副店長（新しい RPC set_group_member_role。closed ではできない）、staff と団体代表の招待・取り消し、その招待の読み取り（staff のロールの招待と団体の招待。自分のメールの行は今のまま）、year_roles・group_members の読み取り（自分の行か部門長以上）。
+    - 総務（soumu＝部門長以上と staff）：can_write_stocks（head・deputy_head は今の admin と同じ。staff は今のまま）、can_see_profile、0010 の集合で '{admin,staff}' のもの（D-47 の形のまま。groups は viewer も）、rules_select・deliveries_select（行ごとの形のまま head・deputy_head を足す）、check_delivery、previous_year_stocks。
+  - RPC の中の段：部門長・副部門長が扱えるのは staff と団体代表だけ。invite(p_year_id, p_email, p_role, p_group_id, p_group_role default null)（4引数の版は消す）では staff の招待と団体の招待だけで、未使用の staff 以外のロールの招待にぶつかれば forbidden（今の on conflict の上書きで、管理者・部門長・閲覧のみの招待を書き換えさせない）。set_role は、ロールがないか staff の人に staff を付けるだけ。remove_role は先に相手のロールを読み（なければ not_found）、staff 以外は forbidden（ほかは 0009 のまま）。revoke_invitation は for update の後で、staff と団体の招待のほかは forbidden（見つからないときと同じ）。set_year_status は部門長以上でロックし、closed へは admin。update_year はキーの確かめの後で、admin でない人の request_open_at・request_close_at 以外のキーは forbidden。
+  - 判定は新しい `private.can_lead(year)`（can_admin と同じ形）と、ロールの配列 `'{admin,head,deputy_head}'`・`'{admin,head,deputy_head,staff}'` で書く。
+  - T15 は DB だけを変え、今の画面のまま動く（足した引数は既定値つき、引数名は変えない）。画面は T15b、総務アプリの土台は T16。出す順は、この PR のマージ → ユーザーが migrate.yml を流す → T15b。
+- **理由**：アプリを総務部門のアプリにするにあたって、業務の決定を部門長・副部門長に、アプリの設定を管理者に分ける（ユーザーの決定）。
+- **反映先**：01（用語集・年間の業務の流れ）、00（利用者とロール）、02（列挙型・テーブル定義・設計上の決めごと・権限とRLS・状態遷移）、04（DB関数・エラー）、05（チケット表）、README の 5、notes/T15.md（全部の判定の段の表と SQL の約束）。
+- **チケット**：T15（DB。0011〜0013・pgTAP）、T15b（画面）。
+- **状態**：要件定義に反映済み（T15 の PR の最初のコミット）。DB の実装は T15 の続き。
+
+## D-49 兼任の禁止（2026-10-31、ユーザーの回答。T15）
+
+- **決定**：
+  - 年度ごとに、部門のロール（head・deputy_head・staff）を year_roles に持つ人は、同じ年度の団体の group_members（店長・副店長）になれない。admin と viewer は兼ねられる。違う年度ならよい。
+  - DB の最後の守りは BEFORE トリガー `check_role_overlap`（year_roles の insert と update of role, user_id、group_members の insert と update of user_id, group_id）。どちらも最初に private の補助で `pg_advisory_xact_lock(hashtext('gaapp.year_member'), hashtext(year_id::text || '/' || user_id::text))` を取ってから反対側を確かめる。違反は `private.fail('role_overlap', {year_id, user_id})`（P0001。detail にメールは入れない）。年度の行はロックしない。
+  - invite は早めに role_overlap を返す：部門のロールと p_group_id を一度に頼んだとき、確かめられたアカウントがその年度で反対側を持っているとき、同じ年度・同じメールに反対側の未使用の招待があるとき。
+  - apply_invitations（0007 の auth のトリガー、accept_my_invitations、invite から呼ぶ）は、招待ごとに同じ勧告的ロックを取って先に確かめ、重なり（と、団体にもう別の立場でいるとき。0009 と同じ扱い）ではその招待を飛ばす（未使用のまま残し、数えない）。例外は出さない。
+  - 0012 は、既に違反しているデータがあれば DO ブロックで `role_overlap …` を出して止まる。README の 5 に、探して直す問い合わせを書く。
+  - エラーの約束：P0001 の新しいコード role_overlap（04 のコードの一覧）。画面の対応は P0001_KINDS の `role_overlap = 'conflict'` で、文言は「総務の部門員・部門長・副部門長は、同じ年度の団体の店長・副店長を兼ねられません（管理者と閲覧のみは兼ねられます）」。
+- **理由**：ユーザーの決定。仕組みの理由：トリガーなら RPC・受け入れ・SQL Editor のどこから書いても止まる。勧告的ロックなら「確かめてから書く」の間に反対側が入らない。年度の行をロックしないのは、在庫の保存・submit_requests の lock_year_guard の for share とぶつかり、GoTrue のログインのトランザクションを長い振り分けの保存の後ろで待たせ、年度をまたいでデッドロックし得るため。受け入れが例外を出さないのは、on_auth_user_confirmed が GoTrue のトランザクションの中で動き、例外がログインの失敗になるため。
+- **反映先**：01（用語集）、00（利用者とロール）、02（設計上の決めごと・権限とRLS）、04（DB関数・エラーのコード）、README の 5、notes/T15.md。
+- **チケット**：T15（DB と、lib/errors.ts の対応。notes/T15.md の「判断したこと」）、T15b（招待のフォームなどの画面の作り）。
+- **状態**：要件定義に反映済み（T15 の PR の最初のコミット）。DB の実装は T15 の続き。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。

@@ -4,6 +4,8 @@
 
 画面は[概要](00_overview.md)の画面一覧に対応する。Next.js の静的書き出し（output: 'export'）で作るため、id をパスに埋め込む動的な URL は使わず、クエリ文字列で渡す（/stock?room=…）。画面の中の切り替え（タブ・品目・団体・行・絞り込み）もクエリ文字列に入れ、再読み込みと共有で同じ表示に戻れるようにする。サーバーのデータは TanStack Query で持ち、書き込みの後に関係するものを読み直す。UI 部品は shadcn/ui（ソースを手で置く）、表は TanStack Table。すべての画面で、読み込み中・データが空・権限なしの3状態と、読み込みの失敗（もう一度読み込むボタンつき）を表示する。年度の状態で書けないときは入力欄を無効にし、理由を帯で出す（「年度が確定中のため編集できません」など）。日時は Asia/Tokyo で表示する。データの多い画面には、最後に読み込んだ日時と「読み直す」を出す。招待されていない人がログインすると「総務から招待されていません」だけを表示する。
 
+T15 で DB の権限を3つの段（管理者だけ・部門長以上・総務。02「権限とRLS」、D-48）にし、兼任の禁止（D-49）を入れた。この節の画面ごとの出し分け（admin・staff・viewer・団体代表）は T15 の前のままで、総務部門長・総務副部門長の画面、店長・副店長の表示と切り替え、段ごとのナビゲーション、兼任のエラーの出し方は T15b で直す。
+
 ### 共通レイアウト（P-03）
 
 - ログインが要る画面は共通レイアウトの中に置く。ログインしていなければ /login に送り、ログイン後に元のページへ戻す（戻り先は同じサイトのパスだけ）
@@ -153,27 +155,28 @@
 
 **DB関数（RPC）**
 
-引数名は PL/pgSQL の列名とぶつからないよう `p_` を付ける（下の表では省略。supabase-js では `supabase.rpc('save_auto_allocations', { p_year_id, p_rows, p_mode, p_base_version })` のように呼ぶ）。
+引数名は PL/pgSQL の列名とぶつからないよう `p_` を付ける（下の表では省略。supabase-js では `supabase.rpc('save_auto_allocations', { p_year_id, p_rows, p_mode, p_base_version })` のように呼ぶ）。「呼べる人」の段（D-48）：部門長以上＝admin・head・deputy_head、総務＝部門長以上と staff。部門のロール＝head・deputy_head・staff（同じ年度の団体代表を兼ねられない。D-49）。
 
 | 名前 | 呼べる人 | 動作 |
 | --- | --- | --- |
-| set_year_status(year_id, to, reason, base_version) | admin | 状態遷移の図に合わない遷移はエラー。requesting へは締切が未来のときだけ。confirmed へは、base_version（検証に使った版）が今の版と同じで、E001・E002・E005 がないときだけ。確定と確定の解除は理由必須。遷移のたびに版を増やす |
-| update_year(year_id, patch, reason) | admin | 年度名・1日目・受付期間を変える（patch に入れたキーだけ。ほかのキーは invalid_input）。1日目は複製元（prev_year_id）より後で、この年度を複製元にした年度より前（違えば invalid_input）。1日目は 2000-01-01〜2200-12-31（infinity なども含め、範囲外は invalid_input（field: festival_start）。D-18）。requesting の間は締切を消せない。終了した年度は変えられない |
+| set_year_status(year_id, to, reason, base_version) | 部門長以上（終了〔closed〕へは admin だけ。head・deputy_head が closed を頼むと、遷移の確かめより先に forbidden） | 状態遷移の図に合わない遷移はエラー。requesting へは締切が未来のときだけ。confirmed へは、base_version（検証に使った版）が今の版と同じで、E001・E002・E005 がないときだけ。確定と確定の解除は理由必須。遷移のたびに版を増やす |
+| update_year(year_id, patch, reason) | 部門長以上（年度名・1日目は admin だけ。キーの確かめの後で、head・deputy_head の patch に request_open_at・request_close_at 以外のキーがあれば forbidden） | 年度名・1日目・受付期間を変える（patch に入れたキーだけ。ほかのキーは invalid_input）。1日目は複製元（prev_year_id）より後で、この年度を複製元にした年度より前（違えば invalid_input）。1日目は 2000-01-01〜2200-12-31（infinity なども含め、範囲外は invalid_input（field: festival_start）。D-18）。requesting の間は締切を消せない。終了した年度は変えられない |
 | create_year_from(prev_year_id, label, festival_start) | 複製元の年度の admin（複製元が終了していてもよい） | 複製元が最新の年度のときだけ（それを複製元にした年度も、1日目が同じか後の年度もない）。1日目は複製元より後で、2000-01-01〜2200-12-31（範囲外は invalid_input（field: festival_start））。年度を作り、団体・ルール・場所の状態を複製してルールの団体 id を付け替える。呼んだ人を新しい年度の admin にする |
-| invite(year_id, email, role, group_id) | admin | 招待を作る。今のメールが本人のものと確かめられるアカウント（02「権限とRLS」の `private.verified_email`）があればその場でロールを付ける（別のロールを持っていればエラー）。終了した年度には招待できない。返り値は招待の id と、その場で付けたか（applied） |
-| set_role(year_id, user_id, role, reason) | admin | ロールを付ける・変える（role は必須。null は invalid_input。ロールを変えるときはこれを使い、remove_role で外してから招待し直さない）。終了した年度ではできない。最後の admin は降格できない |
-| remove_role(year_id, user_id, reason) | admin | ロールを外す（終了した年度でも。卒業した admin を外すため）。外すと、その年度の、本人のものと確定しているメール（`private.verified_email`〔取れれば〕、auth.users.email〔確定するまで変わらない〕、email_verified が真の Google の identity のメール。メールの変更の途中で verified_email が取れないときも同じ。確定していない変更先〔email_change〕は使わない）あての未使用のロールの招待も取り消す（残すと次のログインでそのロールが付き、外した人に権限が戻るため。団体代表の招待は消さない）。最後の admin は外せない。ロールがなければ not_found |
-| revoke_invitation(invitation_id) | admin | 未使用の招待を取り消す（終了した年度でも）。招待が見つからなければ forbidden（有無を漏らさない） |
-| remove_group_member(group_id, user_id, reason) | admin | 団体代表を外す（終了した年度でも） |
-| accept_my_invitations() | ログインしている人 | 自分のメール（本人のものと確かめられるときだけ。`private.verified_email`）あての未使用の招待（終了していない年度）を受け入れ、件数を返す。その年度で別のロールを持っていれば、そのロールの招待は受け入れず（件数に数えず、ロールも変えない）未使用のまま残す（ロールを変えるなら管理者が `set_role` で変えるか、招待を取り消す）。画面がログインのたびに呼ぶ |
-| save_auto_allocations(year_id, rows, mode, base_version) | admin | 版が base_version と同じときだけ、auto かつ未固定の行を差分で入れ替える。年度の一致・E002・E005 を保存前に、在庫超過を保存後に確かめ、だめなら全体を取り消す。振り分け中のみ（確定中はエラー） |
-| save_allocation_rows(year_id, changes, reason) | admin | 行の追加・変更・削除・固定。データを変えた行は origin = manual。各行の updated_at で楽観ロック。理由必須。ロックした時点の版と保存後の版を返す。振り分け中のみ（確定中はエラー） |
-| set_consent(group_id, from_item, to_item, status, note) | admin、その団体の代表 | 依頼済みにすると、その時点の置き換え台数を count に入れる。了承なら該当の置き換え行を pinned にし、拒否なら pinned を外す。団体代表は依頼済み以降に了承・拒否だけを記録できる。依頼した台数より置き換えが増えていれば了承は conflict。振り分け中のみ |
-| submit_requests(group_id, rows, note) | 団体代表（受付期間内）、admin（準備中と締切前） | 申請（品目ごとの数）と提出（備考、提出日時）を1回で保存する |
-| update_requests_after_deadline(group_id, rows, reason, submission) | admin | 締切後の申請修正（行ごとに updated_at で楽観ロック。新しい品目の行は updated_at なし）。理由必須。submission は `{ submitted: true, submittedAt, note }`（どれも省略可）で、提出済みにすることと備考を直すことができる。submittedAt（オフセットつきの ISO 8601 の日時。未来は不可）を渡すと、提出済みにして提出日時をその値にする（CSV の取り込みでフォームのタイムスタンプを残すため。提出済みでも置き換える。admin だけが呼べるので、団体代表は日時を偽れない。submit_requests と直接の書き込みの提出日時は DB の now()）。未提出には戻さない（D-07 で需要が fixed_request に変わり、振り分けが変わるため。`submitted: false` はエラー）。準備中・受付中・振り分け中のみ（確定中はエラー） |
-| check_delivery(delivery_id, status, problem_note, returned) | admin、staff | 運搬の状態・問題・返却を更新（フェーズ2）。確定中と終了後 |
-| previous_year_stocks(year_id) | admin、staff | 前年度（複製元）の在庫の数を返す（読み取りのみ） |
-| previous_year_requests(year_id) | admin | 前年度の申請の数を団体名つきで返す（休憩所の初期値。読み取りのみ） |
+| invite(year_id, email, role, group_id, group_role) | 部門長以上（head・deputy_head は role が staff の招待と団体代表の招待だけ。ほかの role は forbidden。同じ年度・同じメールの未使用の staff 以外のロールの招待にぶつかったときも forbidden〔管理者の招待を上書きさせない〕） | 招待を作る。group_role（manager 店長・deputy_manager 副店長）は団体の招待のときだけ使い、省くと店長（group_id なしで group_role を渡すと invalid_input〔field: group_role〕）。未使用のロールの招待を招待し直すとロールが、未使用の団体の招待を招待し直すと立場が変わる。今のメールが本人のものと確かめられるアカウント（02「権限とRLS」の `private.verified_email`）があればその場で付ける（その年度で別のロールを持っていれば conflict〔field: role〕、その団体に別の立場でいれば conflict〔field: group_role〕）。兼任の禁止：部門のロールと団体を一度に頼む、確かめられたアカウントがその年度で反対側を持つ、同じ年度・同じメールに反対側の未使用の招待がある（この呼び出しで上書きした後で見る）、のどれかなら role_overlap。終了した年度には招待できない。返り値は招待の id と、その場で付けたか（applied）。T15 で4引数の版を消した（同じ名前の版が2つあると PostgREST が選べない）。エラーの順は notes/T15.md |
+| set_role(year_id, user_id, role, reason) | 部門長以上（head・deputy_head は、その年度のロールがないか staff の人に staff を付けるだけ。ほかは forbidden） | ロールを付ける・変える（role は必須。null は invalid_input。ロールを変えるときはこれを使い、remove_role で外してから招待し直さない）。終了した年度ではできない。最後の admin は降格できない。兼任になるなら role_overlap（閲覧のみの店長を staff にするなど） |
+| remove_role(year_id, user_id, reason) | 部門長以上（head・deputy_head は staff を外すだけ。相手のロールを先に読み、なければ not_found、staff 以外なら forbidden） | ロールを外す（終了した年度でも。卒業した admin を外すため）。外すと、その年度の、本人のものと確定しているメール（`private.verified_email`〔取れれば〕、auth.users.email〔確定するまで変わらない〕、email_verified が真の Google の identity のメール。メールの変更の途中で verified_email が取れないときも同じ。確定していない変更先〔email_change〕は使わない）あての未使用のロールの招待も取り消す（残すと次のログインでそのロールが付き、外した人に権限が戻るため。団体代表の招待は消さない）。最後の admin は外せない。ロールがなければ not_found |
+| revoke_invitation(invitation_id) | 部門長以上（head・deputy_head は staff のロールの招待と団体代表の招待だけ。ほかの招待は、見つからないときと同じ forbidden） | 未使用の招待を取り消す（終了した年度でも）。招待が見つからなければ forbidden（有無を漏らさない） |
+| remove_group_member(group_id, user_id, reason) | 部門長以上 | 団体代表を外す（終了した年度でも） |
+| set_group_member_role(group_id, user_id, group_role, reason) | 部門長以上 | 団体代表の立場を店長・副店長で切り替える（権限は変わらない。T15 で足した）。終了した年度ではできない。団体が見つからなければ forbidden、団体代表でなければ not_found、group_role が null なら invalid_input（field: group_role）。返り値なし |
+| accept_my_invitations() | ログインしている人 | 自分のメール（本人のものと確かめられるときだけ。`private.verified_email`）あての未使用の招待（終了していない年度）を受け入れ、件数を返す。その年度で別のロールを持っていれば、そのロールの招待は受け入れず（件数に数えず、ロールも変えない）未使用のまま残す（ロールを変えるなら管理者が `set_role` で変えるか、招待を取り消す）。兼任になる招待と、その団体に別の立場でいるときの団体の招待も、同じく未使用のまま残す（例外は出さない）。画面がログインのたびに呼ぶ |
+| save_auto_allocations(year_id, rows, mode, base_version) | 部門長以上 | 版が base_version と同じときだけ、auto かつ未固定の行を差分で入れ替える。年度の一致・E002・E005 を保存前に、在庫超過を保存後に確かめ、だめなら全体を取り消す。振り分け中のみ（確定中はエラー） |
+| save_allocation_rows(year_id, changes, reason) | 部門長以上 | 行の追加・変更・削除・固定。データを変えた行は origin = manual。各行の updated_at で楽観ロック。理由必須。ロックした時点の版と保存後の版を返す。振り分け中のみ（確定中はエラー） |
+| set_consent(group_id, from_item, to_item, status, note) | 部門長以上、その団体の代表 | 依頼済みにすると、その時点の置き換え台数を count に入れる。了承なら該当の置き換え行を pinned にし、拒否なら pinned を外す。団体代表は依頼済み以降に了承・拒否だけを記録できる。依頼した台数より置き換えが増えていれば了承は conflict。振り分け中のみ |
+| submit_requests(group_id, rows, note) | 団体代表（受付期間内）、部門長以上（準備中と締切前） | 申請（品目ごとの数）と提出（備考、提出日時）を1回で保存する |
+| update_requests_after_deadline(group_id, rows, reason, submission) | 部門長以上 | 締切後の申請修正（行ごとに updated_at で楽観ロック。新しい品目の行は updated_at なし）。理由必須。submission は `{ submitted: true, submittedAt, note }`（どれも省略可）で、提出済みにすることと備考を直すことができる。submittedAt（オフセットつきの ISO 8601 の日時。未来は不可）を渡すと、提出済みにして提出日時をその値にする（CSV の取り込みでフォームのタイムスタンプを残すため。提出済みでも置き換える。部門長以上だけが呼べるので、団体代表は日時を偽れない。submit_requests と直接の書き込みの提出日時は DB の now()）。未提出には戻さない（D-07 で需要が fixed_request に変わり、振り分けが変わるため。`submitted: false` はエラー）。準備中・受付中・振り分け中のみ（確定中はエラー） |
+| check_delivery(delivery_id, status, problem_note, returned) | 総務 | 運搬の状態・問題・返却を更新（フェーズ2）。確定中と終了後 |
+| previous_year_stocks(year_id) | 総務 | 前年度（複製元）の在庫の数を返す（読み取りのみ） |
+| previous_year_requests(year_id) | 部門長以上 | 前年度の申請の数を団体名つきで返す（休憩所の初期値。読み取りのみ） |
 
 **ブラウザ側の処理**
 
@@ -188,7 +191,7 @@
 | resolveResponses(parsed, groups, items, manual) | packages/importer | 読み取った回答を団体に対応させ、申請（読み替えの後、団体・品目ごとに1行）と提出（フォームのタイムスタンプ）を作る。合わない行・古い回答を返す |
 
 - RPC は SECURITY DEFINER にして `search_path = ''` を設定し、関数の最初でロールを確かめる。次に年度の行をロックし（`for no key update`）、ロールをもう一度確かめてから状態を確かめ、入力を確かめてから理由を置いて書き込む。入力はブラウザで zod、DB では関数の中でもう一度確かめる
-- エラーは `raise exception`（SQLSTATE P0001）で返し、message にコード、detail に該当する行の id などを JSON で入れる（メールアドレスは入れない）。PostgREST は HTTP 400 で `{ code: 'P0001', message, details }` を返す。コードは forbidden（ロールがない。対象が見つからないときも）、not_found、invalid_state（状態が違う、確定中に変えられない）、conflict（版・updated_at が違う、重複）、invalid_input（形や参照が違う、上限を超える）、reason_required、検証コード（E001・E002・E005・E006）。RPC の中で起きた形の誤り（jsonb の中の uuid・日付など）と CHECK 違反も invalid_input にして、生の SQLSTATE は返さない。ただし、RPC のトップレベルの型つきの引数（uuid・enum・date・integer）は PostgREST が関数の前に変換するので、形が違うと 22P02・22007 などがそのまま返る（関数の中では直せない）。画面は zod で先に確かめ、22 で始まる SQLSTATE は「入力の形が違う」として扱う。画面で日本語に直して表示する
+- エラーは `raise exception`（SQLSTATE P0001）で返し、message にコード、detail に該当する行の id などを JSON で入れる（メールアドレスは入れない）。PostgREST は HTTP 400 で `{ code: 'P0001', message, details }` を返す。コードは forbidden（ロールがない、段の外。対象が見つからないときも）、not_found、invalid_state（状態が違う、確定中に変えられない）、conflict（版・updated_at が違う、重複、別のロール〔field: role〕・別の立場〔field: group_role〕を持つ）、invalid_input（形や参照が違う、上限を超える）、reason_required、role_overlap（兼任の禁止。同じ年度で部門のロールと団体代表を兼ねる書き込み。detail は year_id と、分かれば user_id。invite の早めのエラーでは reason〔requested_together・current_membership・pending_invitation〕も入れる。D-49）、検証コード（E001・E002・E005・E006）。画面は role_overlap を種類 conflict として扱い、「総務の部門員・部門長・副部門長は、同じ年度の団体の店長・副店長を兼ねられません（管理者と閲覧のみは兼ねられます）」と出す。RPC の中で起きた形の誤り（jsonb の中の uuid・日付など）と CHECK 違反も invalid_input にして、生の SQLSTATE は返さない。ただし、RPC のトップレベルの型つきの引数（uuid・enum・date・integer）は PostgREST が関数の前に変換するので、形が違うと 22P02・22007 などがそのまま返る（関数の中では直せない）。画面は zod で先に確かめ、22 で始まる SQLSTATE は「入力の形が違う」として扱う。画面で日本語に直して表示する
 - 楽観ロックの updated_at は、受け取った文字列をそのまま返す（Date に変換しない）
 - 振り分けの行を渡す JSON は、03 の AllocationRow と同じ camelCase（sourceRoomId、groupId、itemId、requestedItemId、count、isKeep）にする
 - 書き込みがデッドロック（SQLSTATE 40P01。PostgREST は HTTP 500 で返す）で失敗したときは、何も保存されていない（1リクエスト＝1トランザクション）ので、入力を残したまま「ほかの人の保存と重なりました。もう一度保存してください」と出す。HTTP 500 を一律に扱わず、エラーの code で分ける
