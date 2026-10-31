@@ -9,6 +9,11 @@ describe('T16 機能の登録（MODULES）', () => {
     expect(MODULES[0]).toEqual({ id: 'furniture', label: '机椅子', homeHref: '/furniture' });
   });
 
+  it('T17 お知らせ：名前は「お知らせ」、入口は /notices（机椅子の後。見出しとカードの並び）', () => {
+    expect(MODULES[1]).toEqual({ id: 'notices', label: 'お知らせ', homeHref: '/notices' });
+    expect(MODULES.map((m) => m.id)).toEqual(['furniture', 'notices']);
+  });
+
   it('id は英字の小文字で重ならない。名前も重ならない', () => {
     const ids = MODULES.map((m) => m.id);
     for (const id of ids) expect(id).toMatch(/^[a-z]+$/);
@@ -71,6 +76,21 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
     expect(g.files.filter((f) => f.startsWith('lib/data/') || f.startsWith('components/') || f.startsWith('app/'))).toEqual([]);
     expect(g.packages.filter((p) => /^(@gaapp\/(allocator|exporter|importer)|highs|react|react-dom|next)(\/|$)/.test(p))).toEqual([]);
     expect(g.files).toContain('lib/modules/furniture/portal.ts');
+    expect(g.files).toContain('lib/modules/notices/portal.ts');
+  });
+
+  it('T17 PORTAL_PROVIDERS は 机椅子 → お知らせ（MODULES と同じ並び）', () => {
+    expect(PORTAL_PROVIDERS.map((p) => p.moduleId)).toEqual(['furniture', 'notices']);
+  });
+
+  it('T17 / の先読みが使うお知らせの新着（notices/latest.ts）は、並べ方・欄の組み立て・ダッシュボードの型と関数・ナビゲーション・一覧の画面を読まない', () => {
+    const g = staticImportGraph('lib/modules/notices/latest.ts');
+    for (const f of ['lib/modules/notices/portal.ts', 'lib/modules/portal.ts', 'lib/navigation.ts', 'lib/datetime.ts', 'lib/data/notices.ts', 'lib/schemas/notices.ts']) {
+      expect(g.files).not.toContain(f);
+    }
+    expect(g.files.filter((f) => f.startsWith('lib/data/') || f.startsWith('components/') || f.startsWith('app/'))).toEqual([]);
+    expect(g.files).toContain('lib/modules/query-key.ts');
+    expect(g.packages.filter((p) => p.startsWith('@gaapp/') || p === 'zod')).toEqual([]);
   });
 
   it('T16 / の先読みが使う机椅子のクエリ（soumu.ts・rep.ts）は、数え方・要対応の組み立て・ダッシュボードの型と関数・ナビゲーションを読まない（ルートのレイアウトの JS を軽く）', () => {

@@ -349,6 +349,13 @@ function stateMessage(d: unknown, ctx: MessageContext): string {
 const ROLE_OVERLAP_MESSAGE =
   '総務の部門員・部門長・副部門長は、同じ年度の団体の店長・副店長を兼ねられません（管理者と閲覧のみは兼ねられます）';
 
+/** お知らせの RPC（T17・D-53。conflict・not_found の文言を分ける） */
+const NOTICE_RPCS: readonly string[] = ['save_notice', 'delete_notice'];
+/** お知らせの conflict（save_notice・delete_notice。details は {id}。04「お知らせ一覧」のエラー） */
+export const NOTICE_CONFLICT_MESSAGE = 'ほかの人がこのお知らせを先に変えました。読み直しました';
+/** お知らせの not_found（直す間にお知らせが消えた。04「お知らせ一覧」のエラー） */
+export const NOTICE_MISSING_MESSAGE = 'このお知らせは見つかりません（ほかの人が削除した可能性があります）';
+
 function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '他の人が先に変更しました。読み直しました';
   // details（year_id・user_id・reason）によらず同じ文言（04 のエラーの一覧）
@@ -389,9 +396,20 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
     }
     return '振り分けの入力がほかの人に変えられました。読み直しました';
   }
+  // お知らせ（save_notice・delete_notice の details は {id}。振り分けの行の id と分ける）
+  if (ctx.rpc && NOTICE_RPCS.includes(ctx.rpc) && 'id' in d) return NOTICE_CONFLICT_MESSAGE;
   if ('id' in d) return 'ほかの人が同じ振り分けの行を先に変えました。読み直しました';
   return generic;
 }
+
+/** save_notice の invalid_input（field: group_ids）の reason ごとの文言（04「お知らせ一覧」のエラー） */
+const NOTICE_GROUP_MESSAGES: Readonly<Record<string, string>> = {
+  required: '宛先の団体を1つ以上選んでください',
+  too_many: '宛先の団体は 1000 までです',
+  invalid: '同じ団体が重なっています',
+  not_in_year: '選んだ団体の中に、この年度にない団体があります（消された可能性があります）。団体を読み直しました',
+  not_allowed: '総務内・全団体のお知らせには団体を選べません',
+};
 
 function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '入力の形が違います';
@@ -432,6 +450,16 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
         ? `フォームのタイムスタンプが読めないか、未来の日時です（${group}）`
         : 'フォームのタイムスタンプが読めないか、未来の日時です';
     }
+    // お知らせ（save_notice。T17）：欄の下に出す文言。group_ids は reason ごと（reason がなければ下の「入力の形が違います（宛先の団体）」）
+    case 'title':
+      return '題名は、前後の空白を除いて 1〜100 字にしてください';
+    case 'body':
+      return '本文は 4000 字までです';
+    case 'group_ids': {
+      const m = typeof d.reason === 'string' && Object.hasOwn(NOTICE_GROUP_MESSAGES, d.reason) ? NOTICE_GROUP_MESSAGES[d.reason] : undefined;
+      if (m) return m;
+      break;
+    }
   }
   const label = typeof d.field === 'string' ? labelOf(FIELD_LABELS, d.field) : '';
   return label ? `入力の形が違います（${label}）` : generic;
@@ -450,6 +478,7 @@ export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string
       return '権限がありません。立場が変わった可能性があります';
     case 'not_found':
       if (e.reason === 'lock_missing') return 'すでに消えていました（ほかの人が消した可能性があります）。読み直しました';
+      if (ctx.rpc && NOTICE_RPCS.includes(ctx.rpc)) return NOTICE_MISSING_MESSAGE;
       return isRecord(e.details) && e.details.field === 'user_id'
         ? 'この人のアカウントが見つかりません'
         : '対象が見つかりません（ほかの人が消した可能性があります）';

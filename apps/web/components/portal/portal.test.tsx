@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 // ダッシュボード（/）の欄（04「ダッシュボード」、notes/T16.md「固めた約束」2・5。T16）：立場ごとの欄と h1、欄ごとの読み込み中・
 // 失敗ともう一度・エラーの境界（1つの機能・1つの欄の失敗でほかを止めない）、読むもの（版・振り分けの行・ルールを読まない）、
-// / の部品がスナップショット・検証・机椅子の状況の部品を import しないこと。
+// / の部品がスナップショット・検証・机椅子の状況の部品を import しないこと。T17：お知らせの欄（総務内のお知らせ・お知らせ）の
+// 立場ごとの出し分け・並び・読むもの・失敗の切り分けと、/ がお知らせ一覧の画面とダイアログを import しないこと。
 // Supabase は偽のクライアント（lib/testing/fake-supabase.ts）、立場は useAuth の差し替え、年度の行は立場と一緒に読んだキャッシュ
 // （QueryClient に入れておく）。時計は Date だけを止める（ダッシュボードを開いた時刻）。
 import { QueryClient, QueryClientProvider, queryOptions } from '@tanstack/react-query';
@@ -21,7 +22,7 @@ import { PortalScreen } from './portal-screen';
 const h = vi.hoisted(() => ({
   membership: { status: 'idle' } as MembershipState,
   client: null as unknown,
-  /** PORTAL_PROVIDERS の差し替え（机椅子の本物のプロバイダの後ろに、テストのプロバイダを足せる） */
+  /** PORTAL_PROVIDERS の差し替え（机椅子・お知らせの本物のプロバイダの後ろに、テストのプロバイダを足せる） */
   providers: [] as PortalProvider[],
   /** 真なら要対応の並べ替え（sortTodos）で例外を投げる（欄の描画の例外） */
   throwInTodos: false,
@@ -36,7 +37,8 @@ vi.mock('@/lib/supabase/client', async (orig) => ({
 }));
 vi.mock('@/lib/modules/providers', async () => {
   const { furniturePortalProvider } = await import('@/lib/modules/furniture/portal');
-  h.providers.push(furniturePortalProvider);
+  const { noticesPortalProvider } = await import('@/lib/modules/notices/portal');
+  h.providers.push(furniturePortalProvider, noticesPortalProvider);
   return { PORTAL_PROVIDERS: h.providers };
 });
 vi.mock('@/lib/modules/portal', async (orig) => {
@@ -123,6 +125,9 @@ const REP_ROWS: Record<string, unknown[]> = {
   ],
 };
 
+/** お知らせの新着の応答（T17。既定は 0 件。テストが入れる） */
+let noticeRows: Record<string, unknown>[] = [];
+
 /** 偽の Supabase の応答。override が FakeResult か Promise を返せばそれを使う */
 let override: ((call: FakeCall) => FakeResult | Promise<FakeResult> | undefined) | null = null;
 let issued: FakeCall[] = [];
@@ -130,6 +135,11 @@ let issued: FakeCall[] = [];
 function handler(call: FakeCall): FakeResult | Promise<FakeResult> {
   const o = override?.(call);
   if (o) return o;
+  // お知らせの新着（T17）：宛先の絞り込み（eq の audience = soumu か、in の all_groups・groups）を当てて返す
+  if (call.table === 'notices') {
+    const soumu = opArgs(call, 'eq').some(([col, v]) => col === 'audience' && v === 'soumu');
+    return { data: noticeRows.filter((r) => (soumu ? r.audience === 'soumu' : r.audience !== 'soumu')) };
+  }
   const byRep = opArgs(call, 'in').length > 0;
   const rows = (byRep ? REP_ROWS : SOUMU_ROWS)[call.table];
   if (!rows) return { error: { code: '42501', message: `読まない表：${call.table}` }, status: 403 };
@@ -160,11 +170,12 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(AFTER_CLOSE));
   override = null;
+  noticeRows = [];
   const fake = createFakeSupabase(handler);
   h.client = fake.client;
   issued = fake.issued;
   h.throwInTodos = false;
-  h.providers.splice(1);
+  h.providers.splice(2);
 });
 afterEach(() => {
   cleanup();
@@ -175,7 +186,7 @@ afterEach(() => {
 // ---------------------------------------------------------------- 立場ごとの欄
 
 describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
-  it('総務（管理者）：h1「ダッシュボード」、立場の一覧 → 要対応・締切と予定 → 機能ごとの状況。代表する団体はない', async () => {
+  it('総務（管理者）：h1「ダッシュボード」、立場の一覧 → 要対応・締切と予定 → 総務内のお知らせ（T17）→ 機能ごとの状況。代表する団体はない', async () => {
     renderPortal(member('admin', [], 'requesting'));
     expect(h1()).toBe('ダッシュボード');
     expect(screen.getByTestId('home-year').textContent).toBe('R8（申請受付中）');
@@ -197,8 +208,15 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(screen.getAllByTestId('portal-todo-due').map((x) => x.textContent)).toEqual(['締切 10/5 17:00 を過ぎました', '締切 10/5 17:00 を過ぎました']);
     // 今の年度と状態は立場の一覧にあるので、見出し（h1）の横には出さない（レビューの T16-UX-11）
     expect(screen.getByRole('heading', { level: 1 }).parentElement?.textContent).toBe('ダッシュボード');
-    // 見出し（h2）と DOM の並び
-    expect(screen.getAllByRole('heading', { level: 2 }).map((x) => x.textContent)).toEqual(['あなたの立場', '要対応', '締切と予定', '機能ごとの状況']);
+    // 見出し（h2）と DOM の並び。お知らせはカードを作らない（機能ごとの状況は机椅子だけ）
+    expect(screen.getAllByRole('heading', { level: 2 }).map((x) => x.textContent)).toEqual([
+      'あなたの立場',
+      '要対応',
+      '締切と予定',
+      '総務内のお知らせ',
+      '機能ごとの状況',
+    ]);
+    expect(screen.getAllByTestId('module-card').map((c) => c.getAttribute('data-module'))).toEqual(['furniture']);
   });
 
   it('総務部門員も h1「ダッシュボード」。部門長以上の要対応（締切を押す）は出ず、総務の分だけ', async () => {
@@ -208,7 +226,7 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(todoIds()).toEqual(['furniture:soumu:unsubmitted', 'furniture:soumu:uncounted']);
   });
 
-  it('閲覧のみ：h1「ホーム」、要対応の欄がない。机椅子のカード（確定前はリンクなし）と締切と予定。何も読まない', async () => {
+  it('閲覧のみ：h1「ホーム」、要対応の欄がない。机椅子のカード（確定前はリンクなし）と締切と予定。読むのはお知らせの新着だけ（T17）', async () => {
     renderPortal(member('viewer', [], 'allocating'));
     expect(h1()).toBe('ホーム');
     expect(screen.queryByTestId('portal-todos')).toBeNull();
@@ -218,8 +236,9 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(datedIds()).toHaveLength(4);
     // 締切と予定は閲覧のみにはリンクにしない（申請一覧・申請を開けない）
     expect(within(screen.getByTestId('portal-dated')).queryAllByRole('link')).toEqual([]);
+    await screen.findByTestId('portal-notices-empty');
     expect(screen.queryByTestId('portal-loading')).toBeNull();
-    expect(issued).toEqual([]);
+    expect(tablesRead()).toEqual(['notices']);
   });
 
   it('閲覧のみ（確定）：カードに「振り分けが決まりました」と「振り分け表を見る」（/allocation）', () => {
@@ -229,7 +248,7 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(within(card).getByRole('link', { name: '振り分け表を見る' }).getAttribute('href')).toBe('/allocation');
   });
 
-  it('店長：h1「ホーム」、要対応・締切と予定・代表する団体。機能ごとのカードはない。自団体の提出と了承だけを読む（1回ずつ）', async () => {
+  it('店長：h1「ホーム」、要対応・締切と予定・お知らせ（T17）・代表する団体。機能ごとのカードはない。自団体の提出と了承とお知らせの新着だけを読む（1回ずつ）', async () => {
     vi.setSystemTime(new Date(IN_WINDOW));
     renderPortal(member(null, [G1], 'requesting'));
     expect(h1()).toBe('ホーム');
@@ -248,11 +267,18 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(close.textContent).toContain('10/5 17:00');
     expect(close.textContent).toContain('締切');
     // 代表する団体の欄と要対応は同じキャッシュ（リクエストは1回ずつ）。版・在庫・振り分けの行・ルールは読まない
-    expect(tablesRead()).toEqual(['request_submissions', 'substitution_consents']);
-    expect(screen.getAllByRole('heading', { level: 2 }).map((x) => x.textContent)).toEqual(['あなたの立場', '要対応', '締切と予定', '代表する団体']);
+    await screen.findByTestId('portal-notices-empty');
+    expect(tablesRead()).toEqual(['notices', 'request_submissions', 'substitution_consents']);
+    expect(screen.getAllByRole('heading', { level: 2 }).map((x) => x.textContent)).toEqual([
+      'あなたの立場',
+      '要対応',
+      '締切と予定',
+      'お知らせ',
+      '代表する団体',
+    ]);
   });
 
-  it('管理者で店長も務める人：ダッシュボードに代表する団体のカードと自団体の要対応。並びは要対応・締切と予定 → 代表する団体 → 機能ごとの状況', async () => {
+  it('管理者で店長も務める人：ダッシュボードに代表する団体のカードと自団体の要対応。並びは要対応・締切と予定 → 総務内のお知らせ・お知らせ → 代表する団体 → 機能ごとの状況', async () => {
     vi.setSystemTime(new Date(IN_WINDOW));
     renderPortal(member('admin', [G1], 'requesting'));
     expect(h1()).toBe('ダッシュボード');
@@ -265,6 +291,8 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
       'あなたの立場',
       '要対応',
       '締切と予定',
+      '総務内のお知らせ',
+      'お知らせ',
       '代表する団体',
       '機能ごとの状況',
     ]);
@@ -288,10 +316,11 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
 // ---------------------------------------------------------------- 読むもの
 
 describe('T16 ダッシュボード：読むもの（版・振り分けの行・ルールを読まない。D-51）', () => {
-  it('総務：机椅子の軽い読み取りの6つの表を1回ずつ（欄が3つでも同じキーは1回）。years・allocations・rules・requests は読まない', async () => {
+  it('総務：机椅子の軽い読み取りの6つの表と、T17 総務内のお知らせの新着を1回ずつ（欄が3つでも同じキーは1回）。years・allocations・rules・requests は読まない', async () => {
     renderPortal(member('admin', [], 'requesting'));
     await screen.findByTestId('module-card');
-    expect(tablesRead()).toEqual(['groups', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']);
+    await screen.findByTestId('portal-notices-empty');
+    expect(tablesRead()).toEqual(['groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']);
     const stocks = issued.find((c) => c.table === 'stocks')!;
     expect(opArgs(stocks, 'select')).toEqual([['room_id']]);
   });
@@ -316,9 +345,9 @@ describe('T16 ダッシュボード：最後に読み込んだ日時と「読み
       who: '総務（管理者）',
       m: () => member('admin', [], 'requesting'),
       ready: 'module-card',
-      tables: ['groups', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents'],
+      tables: ['groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents'],
     },
-    { who: '店長', m: () => member(null, [G1], 'requesting'), ready: 'rep-card', tables: ['request_submissions', 'substitution_consents'] },
+    { who: '店長', m: () => member(null, [G1], 'requesting'), ready: 'rep-card', tables: ['notices', 'request_submissions', 'substitution_consents'] },
   ])('$who：アプリの QueryClient の既定のまま、30 秒以内に戻れば読み直さず、30 秒を過ぎて戻れば読み直す', async ({ m, ready, tables }) => {
     const t0 = Date.parse(IN_WINDOW);
     vi.setSystemTime(new Date(t0));
@@ -453,10 +482,13 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     renderPortal(member('viewer', [], 'requesting'), { year: null });
     expect(within(screen.getByTestId('portal-dated')).getByTestId('portal-loading')).toBeTruthy();
     expect(within(screen.getByTestId('portal-cards')).getByTestId('portal-loading')).toBeTruthy();
+    expect(within(screen.getByTestId('portal-notices')).getByTestId('portal-loading')).toBeTruthy();
     release();
     await screen.findByTestId('module-card');
     expect(datedIds()).toHaveLength(4);
-    expect(issued.map((c) => c.table)).toEqual(['years']);
+    // 年度の行は1回だけ。お知らせの新着（T17）は年度の行が届いてから読む
+    await screen.findByTestId('portal-notices-empty');
+    expect(issued.map((c) => c.table)).toEqual(['years', 'notices']);
   });
 
   it('年度の行の読み込みの失敗：欄ごとに失敗ともう一度（年度の行を読み直す）', async () => {
@@ -465,7 +497,8 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     const user = userEvent.setup({ advanceTimers: () => {} });
     renderPortal(member('viewer', [], 'requesting'), { year: null });
     const errs = await screen.findAllByTestId('portal-year-error');
-    expect(errs).toHaveLength(2);
+    // 締切と予定・お知らせ（T17）・機能ごとの状況
+    expect(errs).toHaveLength(3);
     expect(errs[0]!.textContent).toContain('通信できませんでした');
     fail = false;
     await user.click(within(errs[0]!).getByRole('button', { name: 'もう一度' }));
@@ -577,6 +610,185 @@ describe('T16 ダッシュボード：0 件の文言と「ほか N 件」', () =
   });
 });
 
+// ---------------------------------------------------------------- お知らせの欄（T17）
+
+/** お知らせの新着の行（RLS の結果の代わり。題名で並びを見分ける） */
+const notice = (id: string, audience: 'soumu' | 'all_groups' | 'groups', created_at: string, pinned = false) => ({
+  id,
+  audience,
+  title: `題名${id}`,
+  pinned,
+  created_at,
+});
+const noticeIds = (root: HTMLElement) => within(root).queryAllByTestId('portal-notice').map((x) => x.getAttribute('data-id'));
+
+describe('T17 ダッシュボード：お知らせの欄（04「ダッシュボード」・「お知らせ一覧」の「ダッシュボードに出すもの」）', () => {
+  it('総務：「総務内のお知らせ」に総務内の新着（ピン留めが先、出した日時の新しい順）。1件は一覧のそのお知らせへのリンク・ピン留めの印・日時。宛先の印は出さない', async () => {
+    noticeRows = [
+      notice('n1', 'soumu', '2026-10-01T00:00:00Z'),
+      notice('n2', 'soumu', '2026-10-03T00:00:00Z'),
+      notice('n3', 'soumu', '2026-09-20T00:00:00Z', true),
+      notice('g1', 'all_groups', '2026-10-04T00:00:00Z', true),
+    ];
+    renderPortal(member('staff', [], 'requesting'));
+    const w = screen.getByTestId('portal-soumu-notices');
+    expect(within(w).getByRole('heading', { level: 2 }).textContent).toBe('総務内のお知らせ');
+    await waitFor(() => expect(noticeIds(w)).toEqual(['n3', 'n2', 'n1']));
+    expect(screen.queryByTestId('portal-notices')).toBeNull();
+    const [first] = within(w).getAllByTestId('portal-notice');
+    expect(first!.getAttribute('data-pinned')).toBe('true');
+    expect(first!.getAttribute('data-audience')).toBe('soumu');
+    expect(within(first!).getByRole('link').getAttribute('href')).toBe('/notices?notice=n3');
+    expect(first!.textContent).toContain('ピン留め');
+    expect(first!.textContent).toContain('題名n3');
+    // 9/20 9:00（Asia/Tokyo。formatShortDateTime の形）
+    expect(first!.querySelector('time')?.textContent).toBe('9/20 09:00');
+    expect(first!.textContent).not.toContain('総務内');
+    expect(within(w).getAllByTestId('portal-notice')[1]!.textContent).not.toContain('ピン留め');
+    // 欄の下のリンクは総務内で絞った一覧
+    expect(within(w).getByTestId('portal-notices-link').getAttribute('href')).toBe('/notices?audience=soumu');
+    expect(within(w).getByTestId('portal-notices-link').textContent).toBe('お知らせ一覧へ');
+  });
+
+  it('総務：読むのは notices の id・宛先・題名・ピン留め・出した日時だけ（総務内で、年度で絞り、ピン留め → 新しい順 → id に 5 件）', async () => {
+    renderPortal(member('admin', [], 'requesting'));
+    await screen.findByTestId('portal-notices-empty');
+    const calls = issued.filter((c) => c.table === 'notices');
+    expect(calls).toHaveLength(1);
+    const c = calls[0]!;
+    expect(opArgs(c, 'select')).toEqual([['id, audience, title, pinned, created_at']]);
+    expect(opArgs(c, 'eq')).toEqual([
+      ['year_id', Y],
+      ['audience', 'soumu'],
+    ]);
+    expect(opArgs(c, 'in')).toEqual([]);
+    expect(opArgs(c, 'order')).toEqual([['pinned', { ascending: false }], ['created_at', { ascending: false }], ['id']]);
+    expect(opArgs(c, 'limit')).toEqual([[5]]);
+    expect(screen.getByTestId('portal-notices-empty').textContent).toBe('総務内のお知らせはありません');
+  });
+
+  it('新着は 5 件まで（ピン留めのものを先に）。6 件以上あっても 5 件', async () => {
+    noticeRows = [1, 2, 3, 4, 5, 6].map((d) => notice(`s${d}`, 'soumu', `2026-10-0${d}T00:00:00Z`, d === 1));
+    renderPortal(member('head', [], 'requesting'));
+    const w = screen.getByTestId('portal-soumu-notices');
+    await waitFor(() => expect(noticeIds(w)).toEqual(['s1', 's6', 's5', 's4', 's3']));
+  });
+
+  it('閲覧のみ：「お知らせ」に団体あての新着（宛先の印つき）。総務内のお知らせの欄はない。読むのは団体あて（in の全団体・指定の団体）を1回', async () => {
+    noticeRows = [notice('a1', 'all_groups', '2026-10-02T00:00:00Z'), notice('a2', 'groups', '2026-10-03T00:00:00Z'), notice('x', 'soumu', '2026-10-04T00:00:00Z')];
+    renderPortal(member('viewer', [], 'requesting'));
+    expect(screen.queryByTestId('portal-soumu-notices')).toBeNull();
+    const w = screen.getByTestId('portal-notices');
+    expect(within(w).getByRole('heading', { level: 2 }).textContent).toBe('お知らせ');
+    await waitFor(() => expect(noticeIds(w)).toEqual(['a2', 'a1']));
+    const items = within(w).getAllByTestId('portal-notice');
+    expect(items.map((x) => x.getAttribute('data-audience'))).toEqual(['groups', 'all_groups']);
+    expect(items[0]!.textContent).toContain('指定の団体');
+    expect(items[1]!.textContent).toContain('全団体');
+    expect(within(w).getByTestId('portal-notices-link').getAttribute('href')).toBe('/notices');
+    const calls = issued.filter((c) => c.table === 'notices');
+    expect(calls).toHaveLength(1);
+    expect(opArgs(calls[0]!, 'in')).toEqual([['audience', ['all_groups', 'groups']]]);
+    expect(opArgs(calls[0]!, 'eq')).toEqual([['year_id', Y]]);
+  });
+
+  it('店長：「お知らせ」に団体あての新着。0 件なら「お知らせはありません」', async () => {
+    vi.setSystemTime(new Date(IN_WINDOW));
+    renderPortal(member(null, [G1], 'requesting'));
+    const w = screen.getByTestId('portal-notices');
+    expect((await within(w).findByTestId('portal-notices-empty')).textContent).toBe('お知らせはありません');
+    expect(screen.queryByTestId('portal-soumu-notices')).toBeNull();
+  });
+
+  it('管理者で店長も務める人：総務内のお知らせ（総務として）とお知らせ（団体あて）の両方。広い PC で横に並べ、総務内が先。読み取りは2回', async () => {
+    vi.setSystemTime(new Date(IN_WINDOW));
+    noticeRows = [notice('s1', 'soumu', '2026-10-02T00:00:00Z'), notice('a1', 'all_groups', '2026-10-03T00:00:00Z')];
+    renderPortal(member('admin', [G1], 'requesting'));
+    const soumu = screen.getByTestId('portal-soumu-notices');
+    const groups = screen.getByTestId('portal-notices');
+    await waitFor(() => expect(noticeIds(soumu)).toEqual(['s1']));
+    await waitFor(() => expect(noticeIds(groups)).toEqual(['a1']));
+    expect(soumu.parentElement).toBe(groups.parentElement);
+    expect(soumu.parentElement?.className).toContain('lg:grid-cols-2');
+    expect(!!(soumu.compareDocumentPosition(groups) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(issued.filter((c) => c.table === 'notices')).toHaveLength(2);
+  });
+
+  it('閲覧のみで店長も務める人：お知らせの欄は1つ、読み取りは閲覧のみとしての1回（同じお知らせを重ねない）', async () => {
+    vi.setSystemTime(new Date(IN_WINDOW));
+    noticeRows = [notice('a1', 'all_groups', '2026-10-03T00:00:00Z')];
+    renderPortal(member('viewer', [G1], 'requesting'));
+    await screen.findByTestId('rep-card');
+    const w = screen.getByTestId('portal-notices');
+    await waitFor(() => expect(noticeIds(w)).toEqual(['a1']));
+    expect(screen.getAllByTestId('portal-notices')).toHaveLength(1);
+    expect(screen.queryByTestId('portal-soumu-notices')).toBeNull();
+    expect(issued.filter((c) => c.table === 'notices')).toHaveLength(1);
+  });
+
+  it('お知らせの読み込み中は、お知らせの欄にだけ Skeleton（data-module=notices）。ほかの欄は出す', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    override = (call) => (call.table === 'notices' ? gate.then(() => ({ data: [notice('s1', 'soumu', '2026-10-02T00:00:00Z')] })) : undefined);
+    renderPortal(member('admin', [], 'requesting'));
+    await screen.findByTestId('module-card');
+    const w = screen.getByTestId('portal-soumu-notices');
+    expect(within(w).getByTestId('portal-loading').getAttribute('data-module')).toBe('notices');
+    expect(within(w).queryByTestId('portal-notices-empty')).toBeNull();
+    for (const id of ['portal-todos', 'portal-dated', 'portal-cards']) {
+      expect(within(screen.getByTestId(id)).queryByTestId('portal-loading'), id).toBeNull();
+    }
+    release();
+    await waitFor(() => expect(noticeIds(w)).toEqual(['s1']));
+    expect(screen.queryByTestId('portal-loading')).toBeNull();
+  });
+
+  it('お知らせの読み込みの失敗：お知らせの欄にだけ「お知らせ：…」ともう一度（と、お知らせ一覧へ）。要対応・締切と予定・カードは出る。もう一度で直る', async () => {
+    let fail = true;
+    override = (call) => (call.table === 'notices' && fail ? NETWORK : undefined);
+    const user = userEvent.setup({ advanceTimers: () => {} });
+    renderPortal(member('admin', [], 'requesting'));
+    const w = screen.getByTestId('portal-soumu-notices');
+    const err = await within(w).findByTestId('portal-module-error');
+    expect(err.getAttribute('data-module')).toBe('notices');
+    expect(err.textContent).toContain('お知らせ：通信できませんでした。電波の良い所でもう一度');
+    expect(within(w).getByTestId('portal-notices-link').getAttribute('href')).toBe('/notices?audience=soumu');
+    expect(within(w).queryByTestId('portal-notices-empty')).toBeNull();
+    // ほかの欄は机椅子の分を出し、お知らせの失敗を出さない
+    await screen.findByTestId('module-card');
+    expect(todoIds()).toEqual(['furniture:lead:close-requests', 'furniture:soumu:unsubmitted', 'furniture:soumu:uncounted']);
+    for (const id of ['portal-todos', 'portal-dated', 'portal-cards']) {
+      expect(within(screen.getByTestId(id)).queryByTestId('portal-module-error'), id).toBeNull();
+    }
+    noticeRows = [notice('s1', 'soumu', '2026-10-02T00:00:00Z')];
+    fail = false;
+    await user.click(within(err).getByRole('button', { name: 'もう一度' }));
+    await waitFor(() => expect(noticeIds(w)).toEqual(['s1']));
+    expect(screen.queryByTestId('portal-module-error')).toBeNull();
+  });
+
+  it('机椅子の読み込みの失敗は、お知らせの欄に出ない（お知らせは出る）', async () => {
+    override = (call) => (call.table === 'request_submissions' ? NETWORK : undefined);
+    noticeRows = [notice('s1', 'soumu', '2026-10-02T00:00:00Z')];
+    renderPortal(member('admin', [], 'requesting'));
+    await within(screen.getByTestId('portal-todos')).findByTestId('portal-module-error');
+    const w = screen.getByTestId('portal-soumu-notices');
+    await waitFor(() => expect(noticeIds(w)).toEqual(['s1']));
+    expect(within(w).queryByTestId('portal-module-error')).toBeNull();
+  });
+
+  it('エラーの境界：お知らせの欄の描画で例外が起きると、その欄だけ「この欄を表示できませんでした。」。ほかの欄は出る', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    // 題名に描けない値（object。React の子にできない）を入れて、欄の描画を例外にする
+    noticeRows = [{ id: 'bad', audience: 'soumu', title: { broken: true }, pinned: false, created_at: '2026-10-02T00:00:00Z' }];
+    renderPortal(member('admin', [], 'requesting'));
+    const w = screen.getByTestId('portal-soumu-notices');
+    expect((await within(w).findByTestId('portal-widget-error')).textContent).toContain('この欄を表示できませんでした。');
+    await screen.findByTestId('module-card');
+    expect(within(screen.getByTestId('portal-todos')).queryByTestId('portal-widget-error')).toBeNull();
+  });
+});
+
 // ---------------------------------------------------------------- / の JS
 
 describe('T16 / の部品の import（スナップショット・検証・机椅子の状況の部品を / の JS に入れない。D-51）', () => {
@@ -599,6 +811,22 @@ describe('T16 / の部品の import（スナップショット・検証・机椅
     expect(g.packages.filter((p) => HEAVY_PACKAGES.test(p))).toEqual([]);
     // ダッシュボードの部品と、代表する団体の欄は入る
     for (const f of ['components/portal/portal-screen.tsx', 'components/dashboard/rep-home.tsx', 'lib/modules/providers.ts']) expect(g.files).toContain(f);
+  });
+
+  it('T17 / はお知らせの欄の部品と新着の読み取りだけを読み、お知らせ一覧の画面・ダイアログ・一覧の読み取り・入力の zod を読まない', () => {
+    const g = staticImportGraph('app/(app)/page.tsx');
+    for (const f of ['components/portal/notice-digests.tsx', 'lib/modules/notices/portal.ts', 'lib/modules/notices/latest.ts']) expect(g.files).toContain(f);
+    expect(g.files.filter((f) => f.startsWith('components/notices/'))).toEqual([]);
+    expect(g.files).not.toContain('lib/data/notices.ts');
+    expect(g.files).not.toContain('lib/schemas/notices.ts');
+    expect(g.files).not.toContain('lib/modules/notices/permissions.ts');
+  });
+
+  it('T17 /notices（お知らせ一覧）はスナップショット・検証・机椅子の状況を読まない', () => {
+    const g = staticImportGraph('app/(app)/notices/page.tsx');
+    expect(g.files).toContain('components/notices/notices-screen.tsx');
+    expect(g.files.filter((f) => HEAVY_FILES.includes(f))).toEqual([]);
+    expect(g.packages.filter((p) => HEAVY_PACKAGES.test(p))).toEqual([]);
   });
 
   it('app/(app)/furniture/page.tsx（机椅子の状況）は Dashboard を読む（比べるための確かめ）', () => {

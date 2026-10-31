@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 // ページを開いたときの先読み（D-45）：覚える id・立場の読み込みの使い回し・先読みを使う／捨てる条件・ユーザーが変わったら消す。
 // T16：覚える id に年度ごとのロールを足し（/ の先読みで立場の種類を決める）、先読みに「立場に合うか（usable）」を足した
+// T17：覚えたロールが閲覧のみなら、/ の先読みはお知らせの新着（団体あて）だけを読む（本物の planHomePrefetch で確かめる）
 import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildMembership, type MembershipSource } from '@/lib/auth/membership';
+import { planHomePrefetch } from '@/lib/data/screen-queries';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
+import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
 import { EARLY_GLOBAL, earlyAwareFetch } from './early-fetch';
 import {
   discardEarlyLoad,
@@ -33,9 +36,16 @@ const loadMembershipSource = vi.fn(async (_c: unknown, userId: string) => {
 });
 vi.mock('@/lib/env', () => ({ SUPABASE_URL: 'https://db.example.test', SUPABASE_PUBLISHABLE_KEY: 'pk', BASE_PATH: '' }));
 vi.mock('@/lib/auth/load-membership', () => ({ loadMembershipSource: (c: unknown, u: string) => loadMembershipSource(c, u) }));
+// 画面のクエリ（本物の planHomePrefetch の読み取り）が使う Supabase（T17。偽のクライアント）
+const db = vi.hoisted(() => ({ client: null as unknown }));
+vi.mock('@/lib/supabase/client', async (orig) => ({
+  ...(await orig<typeof import('@/lib/supabase/client')>()),
+  getSupabase: () => db.client,
+}));
 
 const U1 = '00000000-0000-4000-8000-000000000001';
 const U2 = '00000000-0000-4000-8000-000000000002';
+const U3 = '00000000-0000-4000-8000-000000000003';
 const Y8 = '00000000-0000-4000-8000-0000000000a8';
 const Y9 = '00000000-0000-4000-8000-0000000000a9';
 const G1 = '00000000-0000-4000-8000-0000000000b1';
@@ -54,6 +64,8 @@ const sources: Record<string, MembershipSource> = {
     ],
   },
   [U2]: { displayName: '部員', years: [year(Y9, 'R9', '2027-10-16')], roles: [{ year_id: Y9, role: 'staff' }], groups: [] },
+  // T17：閲覧のみ
+  [U3]: { displayName: '閲覧', years: [year(Y9, 'R9', '2027-10-16')], roles: [{ year_id: Y9, role: 'viewer' }], groups: [] },
 };
 
 /** getSession の呼び出しを記録する偽の supabase */
@@ -301,6 +313,32 @@ describe('ページを開いたときの読み込み', () => {
     expect(qc.getQueryData(['year', Y9, 'my', G1])).toEqual({ group: G1 });
     window.history.replaceState(null, '', '/history/');
     expect(prefetchOpenedScreen(buildMembership(sources[U1]!, null), window.location)).toBe(0); // 先読みのない画面
+  });
+
+  it('T17 覚えたロールが閲覧のみなら、/ の先読み（本物の planHomePrefetch）はお知らせの新着（団体あて）だけを読む。閲覧のみのままなら残す', async () => {
+    const fake = createFakeSupabase(() => ({ data: [] }));
+    db.client = fake.client;
+    writeHint(U3, hintFromSource(sources[U3]!));
+    window.history.replaceState(null, '', '/');
+    const qc = new QueryClient();
+    startEarlyLoad(qc, { supabase: fakeSupabase(U3), routes: { '/': planHomePrefetch } });
+    await vi.waitFor(() => expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toEqual([]));
+    expect(fake.issued.map((c) => c.table)).toEqual(['notices']);
+    expect(opArgs(fake.issued[0]!, 'in')).toEqual([['audience', ['all_groups', 'groups']]]);
+    expect(opArgs(fake.issued[0]!, 'select')).toEqual([['id, audience, title, pinned, created_at']]);
+    expect(settleEarlyLoad(U3, buildMembership(sources[U3]!, null))).toEqual({ kept: 1, removed: 0 });
+  });
+
+  it('T17 閲覧のみと覚えていたが、立場が届くと総務部門員だった：お知らせの新着（団体あて）の先読みは捨てる', async () => {
+    db.client = createFakeSupabase(() => ({ data: [] })).client;
+    writeHint(U3, hintFromSource(sources[U3]!));
+    window.history.replaceState(null, '', '/');
+    const qc = new QueryClient();
+    startEarlyLoad(qc, { supabase: fakeSupabase(U3), routes: { '/': planHomePrefetch } });
+    await vi.waitFor(() => expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toEqual([]));
+    const staff = buildMembership({ ...sources[U3]!, roles: [{ year_id: Y9, role: 'staff' }] }, null);
+    expect(settleEarlyLoad(U3, staff)).toEqual({ kept: 0, removed: 1 });
+    expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toBeUndefined();
   });
 
   it('T16 立場が届いたときの先読みには、立場のロールを渡す（/ の総務の読み取り）', async () => {

@@ -7,8 +7,10 @@
 // 3. 欄に出すのは portalSectionOf(provider, ctx, data)：query の data（select の後。fromYear の分を含む）があればそれ、
 //    なければ fromYear(ctx)（リクエストを送らない）。読み込み中・失敗は、並べた query の分だけ欄がプロバイダ × 種類ごとに出す
 //    （query.widgets にない欄には出さない。年度の行だけで決まる欄に、使わない読み取りの読み込み中・失敗を出さない）。
-// 4. mergePortalSections で機能ごとにまとめ（兼ねた人の重なりを消す）、要対応は sortTodos、締切と予定は upcomingDated で並べる。
+// 4. mergePortalSections で機能ごとにまとめ（兼ねた人の重なりを消す）、要対応は sortTodos、締切と予定は upcomingDated、
+//    お知らせの欄（T17）は latestNotices で並べる。
 // React・Supabase・lib/data を import しない（型と、membership・roles・datetime・registry の小さな関数だけ）。
+import type { Database } from '@gaapp/shared';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { audiencesOf, type Audience, type GroupSummary, type Membership } from '@/lib/auth/membership';
 import { isSoumu, type AppRole } from '@/lib/auth/roles';
@@ -20,11 +22,14 @@ import { MODULES, type ModuleId } from './registry';
 /** 立場の種類：総務（管理者・総務部門長・総務副部門長・総務部門員）・閲覧のみ・団体代表（店長・副店長） */
 export type PortalKind = 'soumu' | 'viewer' | 'rep';
 
-/** ダッシュボードの欄（読み込みを分けるもの）：要対応・締切と予定・機能ごとのカード */
-export type PortalWidgetId = 'todos' | 'dated' | 'cards';
+/**
+ * ダッシュボードの欄（読み込みを分けるもの）：要対応・締切と予定・総務内のお知らせ（T17。総務）・お知らせ（T17。閲覧のみ・
+ * 店長・副店長）・機能ごとのカード
+ */
+export type PortalWidgetId = 'todos' | 'dated' | 'soumuNotices' | 'notices' | 'cards';
 
 /** 欄の一覧（04「ダッシュボード」の欄の順） */
-export const PORTAL_WIDGETS: readonly PortalWidgetId[] = ['todos', 'dated', 'cards'];
+export const PORTAL_WIDGETS: readonly PortalWidgetId[] = ['todos', 'dated', 'soumuNotices', 'notices', 'cards'];
 
 /** 種類の順（兼ねた人の欄の中の並びと、カードを選ぶ順） */
 export const PORTAL_KINDS: readonly PortalKind[] = ['soumu', 'viewer', 'rep'];
@@ -77,11 +82,28 @@ export interface ModuleCardModel {
   linkLabel: string;
 }
 
+/** お知らせの欄の1件（T17。D-52 の T17 の直し） */
+export interface NoticeDigest {
+  /** お知らせの id（兼ねた人の重なりを消す） */
+  id: string;
+  /** 'notices' */
+  moduleId: ModuleId;
+  title: string;
+  /** 出した日時（created_at。timestamptz の ISO） */
+  at: string;
+  pinned: boolean;
+  audience: Database['public']['Enums']['notice_audience'];
+  /** `/notices?notice=${id}`（一覧でそのお知らせを目立たせる） */
+  href: string;
+}
+
 /** 1つの機能が1つの種類に出すもの */
 export interface PortalSection {
   card: ModuleCardModel | null;
   todos: readonly TodoItem[];
   dated: readonly DatedItem[];
+  /** お知らせの欄に出すもの（T17。お知らせの機能だけが持つ。省略は空） */
+  notices?: readonly NoticeDigest[];
 }
 
 /** 機能が出すものを決める材料（立場の種類ごとに1つ） */
@@ -263,6 +285,24 @@ export function upcomingDated(items: readonly DatedItem[], now: number, limit = 
   return { items: upcoming.slice(0, n), more: Math.max(0, upcoming.length - n) };
 }
 
+/** お知らせの欄に出す数（04「ダッシュボード」。lib/modules/notices/latest.ts の NOTICES_LATEST_LIMIT と同じ） */
+export const PORTAL_NOTICE_LIMIT = 5;
+
+/**
+ * お知らせの欄の並び（04「ダッシュボード」）：ピン留めのものを先に、その中と残りはそれぞれ出した日時の新しい順（読めない日時は後）、
+ * 同じなら id の順に limit 件。元の配列は変えない。
+ */
+export function latestNotices(items: readonly NoticeDigest[], limit = PORTAL_NOTICE_LIMIT): NoticeDigest[] {
+  const at = (iso: string) => {
+    const t = Date.parse(iso);
+    return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+  };
+  const sorted = [...items].sort(
+    (a, b) => Number(b.pinned) - Number(a.pinned) || at(b.at) - at(a.at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  return sorted.slice(0, Math.max(0, Math.floor(limit)));
+}
+
 /** 1つの機能の1つの種類の PortalSection（mergePortalSections の入力） */
 export interface PortalPart {
   moduleId: ModuleId;
@@ -279,24 +319,37 @@ const KIND_INDEX: Record<PortalKind, number> = { soumu: 0, viewer: 1, rep: 2 };
 
 /**
  * 種類ごとの PortalSection を機能ごとにまとめる（兼ねた人。04「ダッシュボード」）。並びは機能の登録の順（parts にある機能だけ）。
- * 要対応と締切と予定は種類の順（総務 → 閲覧のみ → 団体代表）につなぎ、同じ id は最初の1件だけにする。
- * カードは、種類の順で最初の null でないもの。
+ * 要対応と締切と予定とお知らせ（T17）は種類の順（総務 → 閲覧のみ → 団体代表）につなぎ、同じ id は最初の1件だけにする。
+ * お知らせは、どの部分も notices を持たなければ付けない。カードは、種類の順で最初の null でないもの。
  */
 export function mergePortalSections(parts: readonly PortalPart[]): ModulePortalSection[] {
   const sorted = parts
     .map((p, k) => ({ p, k }))
     .sort((a, b) => moduleIndex(a.p.moduleId) - moduleIndex(b.p.moduleId) || KIND_INDEX[a.p.kind] - KIND_INDEX[b.p.kind] || a.k - b.k)
     .map((x) => x.p);
-  const out = new Map<ModuleId, { card: ModuleCardModel | null; todos: Map<string, TodoItem>; dated: Map<string, DatedItem> }>();
+  const out = new Map<
+    ModuleId,
+    { card: ModuleCardModel | null; todos: Map<string, TodoItem>; dated: Map<string, DatedItem>; notices: Map<string, NoticeDigest> | null }
+  >();
   for (const p of sorted) {
     let m = out.get(p.moduleId);
     if (!m) {
-      m = { card: null, todos: new Map(), dated: new Map() };
+      m = { card: null, todos: new Map(), dated: new Map(), notices: null };
       out.set(p.moduleId, m);
     }
     m.card ??= p.section.card;
     for (const t of p.section.todos) if (!m.todos.has(t.id)) m.todos.set(t.id, t);
     for (const d of p.section.dated) if (!m.dated.has(d.id)) m.dated.set(d.id, d);
+    if (p.section.notices) {
+      m.notices ??= new Map();
+      for (const n of p.section.notices) if (!m.notices.has(n.id)) m.notices.set(n.id, n);
+    }
   }
-  return [...out].map(([moduleId, m]) => ({ moduleId, card: m.card, todos: [...m.todos.values()], dated: [...m.dated.values()] }));
+  return [...out].map(([moduleId, m]) => ({
+    moduleId,
+    card: m.card,
+    todos: [...m.todos.values()],
+    dated: [...m.dated.values()],
+    ...(m.notices ? { notices: [...m.notices.values()] } : {}),
+  }));
 }

@@ -116,3 +116,25 @@ with d as (
 insert into tests.ids select case when group_id = tests.id('G1') then 'D_G1' else 'D_G2' end, id from d;
 
 insert into public.distance_overrides (building_a, building_b, cost) values ('pgtap棟A', 'pgtap棟B', 4);
+
+-- お知らせ（T17。D-53）：宛先ごとに Y1・Y2 に置く（011 の権限表・013 の D-47・025 の RPC・030 の招待のない人で読む）。
+-- 書いた人は created_by・updated_by に直接入れる（auth.uid() のない書き込みでは set_actor は入れた値のまま。D-10）。
+-- N_G12 は G1・G2 あて（rep には G1 の行だけ、rep2 には G2 の行だけが見える）、N_G4 は rep の団体でない G4（viewer が副店長）あて。
+-- Y2 の N_Y2_G3 は staff が店長の G3 あて（staff は Y2 では総務でない）。名前は題名の「T-」の後ろ
+with n as (
+  insert into public.notices (year_id, audience, title, pinned, created_by, updated_by) values
+    (tests.id('Y1'), 'soumu', 'T-N_SOUMU', false, tests.id('staff'), tests.id('staff')),
+    (tests.id('Y1'), 'all_groups', 'T-N_ALL', true, tests.id('head'), tests.id('head')),
+    (tests.id('Y1'), 'groups', 'T-N_G1', false, tests.id('head'), tests.id('head')),
+    (tests.id('Y1'), 'groups', 'T-N_G12', false, tests.id('deputy'), tests.id('deputy')),
+    (tests.id('Y1'), 'groups', 'T-N_G4', false, tests.id('admin'), tests.id('admin')),
+    (tests.id('Y2'), 'soumu', 'T-N_Y2_SOUMU', false, tests.id('admin2'), tests.id('admin2')),
+    (tests.id('Y2'), 'all_groups', 'T-N_Y2_ALL', false, tests.id('admin2'), tests.id('admin2')),
+    (tests.id('Y2'), 'groups', 'T-N_Y2_G3', false, tests.id('admin2'), tests.id('admin2'))
+  returning id, title)
+insert into tests.ids select substr(title, 3), id from n;
+insert into public.notice_groups (notice_id, year_id, group_id) values
+  (tests.id('N_G1'), tests.id('Y1'), tests.id('G1')),
+  (tests.id('N_G12'), tests.id('Y1'), tests.id('G1')), (tests.id('N_G12'), tests.id('Y1'), tests.id('G2')),
+  (tests.id('N_G4'), tests.id('Y1'), tests.id('G4')),
+  (tests.id('N_Y2_G3'), tests.id('Y2'), tests.id('G3'));

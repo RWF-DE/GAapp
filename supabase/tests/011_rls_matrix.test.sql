@@ -1,4 +1,4 @@
--- 011_rls_matrix：権限表の全セル（表 × 操作 × 年度の状態 × ペルソナ）（T03。T15 で総務部門長・副部門長を足した）
+-- 011_rls_matrix：権限表の全セル（表 × 操作 × 年度の状態 × ペルソナ）（T03。T15 で総務部門長・副部門長を、T17 でお知らせの notices・notice_groups を足した）
 -- 期待値の表（tests.expect）から、試す SQL（tests.cell_sql）と、Y1 の6つの状態（preparing、requesting、requesting:after＝締切後、
 -- allocating、confirmed、closed）と、8人のペルソナ（admin staff rep viewer outsider admin2 head deputy）を掛け合わせてセルを作る。
 -- yn は期待値の列の順（admin staff rep viewer outsider admin2 head）に Y（allowed）/N（denied）を並べた7文字。どのペルソナがどの列で
@@ -130,7 +130,27 @@ insert into tests.cell_sql values
  ('audit_logs(global)','select','select count(*) from public.audit_logs where year_id is null'),
  ('audit_logs','insert','insert into public.audit_logs(table_name, row_pk, action) values (''x'', ''{}'', ''insert'')'),
  ('audit_logs','update','update public.audit_logs set reason = ''x'''),
- ('audit_logs','delete','delete from public.audit_logs');
+ ('audit_logs','delete','delete from public.audit_logs'),
+ -- お知らせ（T17）：宛先ごとのお知らせ（fixture）を1件ずつ読む。N_G1 は rep の団体 G1 あて、N_G4 は rep の団体でない G4 あて
+ -- （viewer が副店長）、Y2 の N_Y2_G3 は staff が店長の G3 あて。書き込みは RPC だけ（表に権限がない）
+ ('notices','select','select count(*) from public.notices where id = :N_SOUMU'),
+ ('notices(all_groups)','select','select count(*) from public.notices where id = :N_ALL'),
+ ('notices(G1)','select','select count(*) from public.notices where id = :N_G1'),
+ ('notices(G4)','select','select count(*) from public.notices where id = :N_G4'),
+ ('notices(Y2 soumu)','select','select count(*) from public.notices where id = :N_Y2_SOUMU'),
+ ('notices(Y2 all_groups)','select','select count(*) from public.notices where id = :N_Y2_ALL'),
+ ('notices(Y2 G3)','select','select count(*) from public.notices where id = :N_Y2_G3'),
+ ('notices','insert','insert into public.notices(year_id, audience, title) values (:Y1, ''soumu'', ''x'')'),
+ ('notices','update','update public.notices set title = title where year_id = :Y1'),
+ ('notices','delete','delete from public.notices where year_id = :Y1'),
+ -- 宛先の団体：団体ごとの行を読む（N_G12 の G2 の行は、G1 の rep が読める N_G12 の、ほかの団体の行）
+ ('notice_groups','select','select count(*) from public.notice_groups where group_id = :G1'),
+ ('notice_groups(G2)','select','select count(*) from public.notice_groups where group_id = :G2'),
+ ('notice_groups(G4)','select','select count(*) from public.notice_groups where group_id = :G4'),
+ ('notice_groups(Y2 G3)','select','select count(*) from public.notice_groups where group_id = :G3'),
+ ('notice_groups','insert','insert into public.notice_groups(notice_id, year_id, group_id) values (:N_G1, :Y1, :G2)'),
+ ('notice_groups','update','update public.notice_groups set group_id = group_id where year_id = :Y1'),
+ ('notice_groups','delete','delete from public.notice_groups where year_id = :Y1');
 
 -- 期待値（列の順：admin staff rep viewer outsider admin2 head。deputy は head の列）
 insert into tests.expect values
@@ -236,7 +256,24 @@ insert into tests.expect values
  -- audit_logs：その年度の部門長以上。年度のない行（年度をまたぐ3表）は closed でない年度の admin だけ
  ('audit_logs','select','*','YNNNNNY'),
  ('audit_logs(global)','select','*','YNNNNYN'), ('audit_logs(global)','select','closed','NNNNNYN'),
- ('audit_logs','insert','*','NNNNNNN'), ('audit_logs','update','*','NNNNNNN'), ('audit_logs','delete','*','NNNNNNN');
+ ('audit_logs','insert','*','NNNNNNN'), ('audit_logs','update','*','NNNNNNN'), ('audit_logs','delete','*','NNNNNNN'),
+ -- notices（T17。02「お知らせの権限」）：総務（admin・head・deputy_head・staff）はその年度の全部。閲覧のみはその年度の全団体あて・
+ -- 指定の団体あて（総務内は読めない）。団体代表は代表である年度の全団体あてと、自団体を宛先に含む指定の団体あて。年度の状態によらない。
+ -- staff は Y2 では G3 の店長（総務でない）なので、Y2 の全団体あてと G3 あてだけ。rep は Y1 の G1 の店長で Y2 の閲覧のみ
+ ('notices','select','*','YYNNNNY'),
+ ('notices(all_groups)','select','*','YYYYNNY'),
+ ('notices(G1)','select','*','YYYYNNY'),
+ ('notices(G4)','select','*','YYNYNNY'),
+ ('notices(Y2 soumu)','select','*','NNNNNYN'),
+ ('notices(Y2 all_groups)','select','*','NYYNNYN'),
+ ('notices(Y2 G3)','select','*','NYYNNYN'),
+ ('notices','insert','*','NNNNNNN'), ('notices','update','*','NNNNNNN'), ('notices','delete','*','NNNNNNN'),
+ -- notice_groups：総務と閲覧のみはその年度の全部。団体代表は自団体の行だけ（ほかにどの団体へ出したかは読めない）
+ ('notice_groups','select','*','YYYYNNY'),
+ ('notice_groups(G2)','select','*','YYNYNNY'),
+ ('notice_groups(G4)','select','*','YYNYNNY'),
+ ('notice_groups(Y2 G3)','select','*','NYYNNYN'),
+ ('notice_groups','insert','*','NNNNNNN'), ('notice_groups','update','*','NNNNNNN'), ('notice_groups','delete','*','NNNNNNN');
 
 -- ペルソナと期待値の列。deputy は head の列で確かめる（総務副部門長の権限は総務部門長と同じ。D-48）
 create table tests.persona_col (persona text primary key, col int not null, ord int not null unique);
@@ -267,7 +304,7 @@ select plan((select count(*)::int from tests.cells) + 6 + 24);
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
 select is_empty($$ select e.tbl, e.op from tests.expect e left join tests.cell_sql c using (tbl, op) where c.tbl is null $$,
   '期待値の表に、試す SQL のない行がない');
-select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 20, '19 表と v_remaining をすべて試す');
+select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 22, '21 表（T17 のお知らせの2表を含む）と v_remaining をすべて試す');
 select is_empty($$ select tbl, op, scenario, yn from tests.expect where yn !~ '^[YN]{7}$' $$,
   '期待値はどの行も7列（admin staff rep viewer outsider admin2 head）');
 select is((select string_agg(persona || '=' || col, ' ' order by ord) from tests.persona_col),

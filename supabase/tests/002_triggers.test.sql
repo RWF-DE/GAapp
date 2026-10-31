@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(152);
+select plan(188);
 
 -- ---------------------------------------------------------------- 時刻（created_at・updated_at）
 select lives_ok($$ insert into public.rooms (name, created_at, updated_at) values ('pgtap-T', '2000-01-01', '2000-01-01') $$, '時刻を指定した insert');
@@ -270,6 +270,123 @@ update public.allocations set group_id = tests.id('G1') where id = tests.id('A_G
 select lives_ok(format($$ update public.groups set year_id = year_id, name = name where id = %L $$, tests.id('G4')),
   '値が同じなら year_id を指定した update も通る');
 
+-- ---------------------------------------------------------------- お知らせ（T17）：書いた人・宛先の団体の決まり・変えられない列・監査・連鎖
+-- （ここでは G2 はもう消えているので、fixture の N_G12 の宛先の団体は G1 だけ）
+-- set_actor：ログインしている人の書き込みでは、created_by・updated_by は DB が auth.uid() を入れる（created_by は最初に書いた人のまま）
+select tests.act_as('staff');
+insert into public.notices (year_id, audience, title, created_by, updated_by, created_at, updated_at)
+values (tests.id('Y1'), 'soumu', 'T-trg', tests.id('admin'), tests.id('admin'), '2000-01-01', '2000-01-01');
+select tests.act_clear();
+insert into tests.ids select 'N_TRG', id from public.notices where title = 'T-trg';
+select is((select created_by || ' ' || updated_by from public.notices where id = tests.id('N_TRG')),
+  tests.id('staff') || ' ' || tests.id('staff'), 'お知らせの insert：created_by・updated_by は書いた人（クライアントの値は使わない）');
+select ok((select created_at = now() and updated_at = now() from public.notices where id = tests.id('N_TRG')),
+  'お知らせの insert：created_at・updated_at は DB が入れる');
+select set_config('app.reason', '題名の直し', true);
+select tests.act_as('head');
+update public.notices set title = 'T-trg2', created_by = tests.id('rep'), updated_by = tests.id('rep') where id = tests.id('N_TRG');
+select tests.act_clear();
+select set_config('app.reason', '', true);
+select is((select created_by || ' ' || updated_by from public.notices where id = tests.id('N_TRG')),
+  tests.id('staff') || ' ' || tests.id('head'), 'お知らせの update：created_by は最初に書いた人のまま、updated_by は直した人');
+select is((select reason || ' ' || (before ->> 'title') || '>' || (after ->> 'title') || ' ' || (user_id = tests.id('head'))::text
+           from public.audit_logs where table_name = 'notices' and action = 'update' and row_pk ->> 'id' = tests.id('N_TRG')::text
+           order by id limit 1),
+  '題名の直し T-trg>T-trg2 true', 'お知らせの更新の監査に、理由（app.reason）・前後の行・直した人が残る');
+update public.notices set created_by = tests.id('admin'), updated_by = tests.id('rep') where id = tests.id('N_TRG');
+select is((select created_by || ' ' || updated_by from public.notices where id = tests.id('N_TRG')),
+  tests.id('admin') || ' ' || tests.id('rep'), 'auth.uid() がない書き込み（seed・SQL Editor）は入れた値のまま（D-10）');
+select is((select format('%s %s %s %s %s', action, (row_pk = jsonb_build_object('id', tests.id('N_TRG')))::text, (year_id = tests.id('Y1'))::text,
+                         (group_id is null)::text, (user_id = tests.id('staff'))::text)
+           from public.audit_logs where table_name = 'notices' and action = 'insert' and row_pk ->> 'id' = tests.id('N_TRG')::text),
+  'insert true true true true', 'お知らせの監査：row_pk は id、year_id は行から、group_id は null、user_id は書いた人');
+-- 中身を変えない保存：同じ人なら updated_at だけの変更（監査に書かない）、ほかの人なら updated_by の変更として残る
+select tests.act_as('head');
+update public.notices set title = title where id = tests.id('N_TRG');
+select coalesce(max(id), 0) as n0 from public.audit_logs \gset
+update public.notices set title = title where id = tests.id('N_TRG');
+select tests.act_clear();
+select is((select count(*)::int from public.audit_logs where id > :n0 and table_name = 'notices'), 0,
+  '同じ人が中身を変えずにお知らせを直す（updated_at だけの変更）は監査に書かない');
+select tests.act_as('deputy');
+update public.notices set title = title where id = tests.id('N_TRG');
+select tests.act_clear();
+select is((select (before ->> 'updated_by') || '>' || (after ->> 'updated_by') from public.audit_logs where id > :n0 and table_name = 'notices'),
+  tests.id('head') || '>' || tests.id('deputy'), 'ほかの人が中身を変えずに直すと、updated_by の変更として監査に残る');
+
+-- 宛先の団体の行は、宛先が groups のお知らせにだけ置ける（check_audience・check_groups。invalid_input の detail は group_ids・not_allowed）
+select is(tests.error_json(format($$ insert into public.notice_groups (notice_id, year_id, group_id) values (%L, %L, %L) $$,
+            tests.id('N_TRG'), tests.id('Y1'), tests.id('G1'))),
+  '{"code": "invalid_input", "detail": {"field": "group_ids", "reason": "not_allowed"}}'::jsonb,
+  '総務内のお知らせに宛先の団体を置けない（check_audience）');
+select is(tests.error_json(format($$ insert into public.notice_groups (notice_id, year_id, group_id) values (%L, %L, %L) $$,
+            tests.id('N_ALL'), tests.id('Y1'), tests.id('G1'))),
+  '{"code": "invalid_input", "detail": {"field": "group_ids", "reason": "not_allowed"}}'::jsonb,
+  '全団体あてのお知らせにも宛先の団体を置けない');
+select lives_ok(format($$ insert into public.notice_groups (notice_id, year_id, group_id) values (%L, %L, %L) $$,
+  tests.id('N_G1'), tests.id('Y1'), tests.id('G4')), '指定の団体あてには宛先の団体を足せる');
+select throws_ok(format($$ insert into public.notice_groups (notice_id, year_id, group_id) values (gen_random_uuid(), %L, %L) $$,
+  tests.id('Y1'), tests.id('G1')), '23503', null, 'ないお知らせの宛先の団体は外部キーのエラー（check_audience は外部キーに任せる）');
+select throws_ok(format($$ insert into public.notice_groups (notice_id, year_id, group_id) values (%L, %L, %L) $$,
+  tests.id('N_G1'), tests.id('Y1'), tests.id('G3')), '23503', null, '宛先の団体はお知らせと同じ年度の団体だけ（ほかの年度の団体は複合外部キーのエラー）');
+select throws_ok(format($$ insert into public.notice_groups (notice_id, year_id, group_id) values (%L, %L, %L) $$,
+  tests.id('N_G1'), tests.id('Y2'), tests.id('G3')), '23503', null, '年度をお知らせと違えても入れられない（お知らせへの複合外部キー）');
+select is(tests.error_json(format($$ update public.notices set audience = 'soumu' where id = %L $$, tests.id('N_G1'))),
+  '{"code": "invalid_input", "detail": {"field": "group_ids", "reason": "not_allowed"}}'::jsonb,
+  '宛先の団体のある指定の団体あてを総務内に変えられない（check_groups）');
+select is(tests.error_json(format($$ update public.notices set audience = 'all_groups' where id = %L $$, tests.id('N_G1'))),
+  '{"code": "invalid_input", "detail": {"field": "group_ids", "reason": "not_allowed"}}'::jsonb,
+  '宛先の団体のある指定の団体あてを全団体あてにも変えられない');
+select lives_ok(format($$ update public.notices set audience = 'groups', title = 'T-N_G1改' where id = %L $$, tests.id('N_G1')),
+  '宛先を groups のまま（audience を書いても）直すのは通る');
+insert into public.notices (year_id, audience, title) values (tests.id('Y1'), 'groups', 'T-空の指定');
+select lives_ok($$ update public.notices set audience = 'soumu' where title = 'T-空の指定' $$,
+  '宛先の団体のない指定の団体あては、総務内に変えられる');
+
+-- 年度・お知らせ・団体の付け替えを止める（check_immutable。invalid_input の detail は列と immutable）
+select is(tests.error_json(format($$ update public.notices set year_id = %L where id = %L $$, tests.id('Y2'), tests.id('N_TRG'))),
+  '{"code": "invalid_input", "detail": {"column": "year_id", "reason": "immutable"}}'::jsonb, 'notices.year_id は変えられない');
+select is(tests.error_json(format($$ update public.notice_groups set group_id = %L where notice_id = %L and group_id = %L $$,
+            tests.id('G4'), tests.id('N_G12'), tests.id('G1'))),
+  '{"code": "invalid_input", "detail": {"column": "group_id", "reason": "immutable"}}'::jsonb,
+  'notice_groups.group_id は変えられない（同じ年度の団体へも。行は足すか消すだけ）');
+select is(tests.error_json(format($$ update public.notice_groups set notice_id = %L where notice_id = %L and group_id = %L $$,
+            tests.id('N_G4'), tests.id('N_G12'), tests.id('G1'))),
+  '{"code": "invalid_input", "detail": {"column": "notice_id", "reason": "immutable"}}'::jsonb, 'notice_groups.notice_id は変えられない');
+select is(tests.error_json(format($$ update public.notice_groups set year_id = %L where notice_id = %L and group_id = %L $$,
+            tests.id('Y2'), tests.id('N_G1'), tests.id('G1'))),
+  '{"code": "invalid_input", "detail": {"column": "year_id", "reason": "immutable"}}'::jsonb, 'notice_groups.year_id は変えられない');
+select is((select format('%s %s %s', (row_pk = jsonb_build_object('notice_id', tests.id('N_G1'), 'group_id', tests.id('G4')))::text,
+                         (group_id = tests.id('G4'))::text, (year_id = tests.id('Y1'))::text)
+           from public.audit_logs where table_name = 'notice_groups' and action = 'insert'
+             and row_pk ->> 'notice_id' = tests.id('N_G1')::text and row_pk ->> 'group_id' = tests.id('G4')::text),
+  'true true true', '宛先の団体の監査：row_pk は (notice_id, group_id)、group_id は宛先の団体、year_id は行から');
+
+-- 連鎖：団体を消すと宛先の団体の行だけが消え、お知らせは残る。お知らせを消すと宛先の団体の行も消える
+with g as (insert into public.groups (year_id, name, category) values (tests.id('Y1'), 'T-G6', 'stall') returning id)
+insert into tests.ids select 'G6', id from g;
+with n as (insert into public.notices (year_id, audience, title) values (tests.id('Y1'), 'groups', 'T-N_G6') returning id)
+insert into tests.ids select 'N_G6', id from n;
+insert into public.notice_groups (notice_id, year_id, group_id) values
+  (tests.id('N_G6'), tests.id('Y1'), tests.id('G6')), (tests.id('N_G6'), tests.id('Y1'), tests.id('G1'));
+select lives_ok($$ delete from public.groups where id = tests.id('G6') $$, '宛先の団体にした団体を消す（受付中）');
+select is((select string_agg(t.name, ' ' order by t.name) from public.notice_groups ng join tests.ids t on t.id = ng.group_id
+           where ng.notice_id = tests.id('N_G6')), 'G1', '団体を消すと、その団体の宛先の団体の行だけが消える');
+select is((select count(*)::int from public.notices where id = tests.id('N_G6')), 1, '団体を消してもお知らせは残る');
+select is((select count(*)::int from public.audit_logs
+           where table_name = 'notice_groups' and action = 'delete' and group_id = tests.id('G6') and year_id = tests.id('Y1')), 1,
+  '連鎖で消えた宛先の団体の監査に、団体と年度が入る');
+select coalesce(max(id), 0) as n1 from public.audit_logs \gset
+select set_config('app.reason', 'お知らせの片付け', true);
+select lives_ok($$ delete from public.notices where id = tests.id('N_G6') $$, 'お知らせを消す');
+select set_config('app.reason', '', true);
+select is((select count(*)::int from public.notice_groups where notice_id = tests.id('N_G6')), 0, 'お知らせを消すと宛先の団体の行も消える');
+select is((select string_agg(a.table_name || ' ' || a.action || ' ' || coalesce(t.name, '-') || ' ' || coalesce(a.reason, 'null'), ', '
+                             order by a.table_name collate "C")
+           from public.audit_logs a left join tests.ids t on t.id = a.group_id where a.id > :n1),
+  'notice_groups delete G1 お知らせの片付け, notices delete - お知らせの片付け',
+  '理由（app.reason）は、消したお知らせと、連鎖で消えた宛先の団体の監査の両方に残る');
+
 -- ---------------------------------------------------------------- lock_year_guard
 select is(private.lock_year_guard(tests.id('Y1')), 'requesting'::public.year_status, 'lock_year_guard は状態を返す');
 select is(private.lock_year_guard(gen_random_uuid()), null, 'lock_year_guard は年度がなければ null');
@@ -313,6 +430,10 @@ select is(tests.ver(), :v1 + 13, '年度をまたぐ distance_overrides');
 select is(tests.ver_of('Y2'), 0, 'allocating でない年度（Y2）の版は増えない');
 update public.slots set label = '版' where year_id = tests.id('Y2');
 select is(tests.ver(), :v1 + 13, '入力にならない表（slots）では増えない');
+insert into public.notices (year_id, audience, title) values (tests.id('Y1'), 'soumu', 'T-版');
+update public.notices set title = 'T-版2' where title = 'T-版';
+delete from public.notice_groups where notice_id = tests.id('N_G1') and group_id = tests.id('G4');
+select is(tests.ver(), :v1 + 13, 'お知らせ（notices・notice_groups）の書き込みでは増えない（振り分けの入力でない。T17）');
 update public.rooms set sort_order = sort_order where id = tests.id('R4');
 select is(tests.ver(), :v1 + 14, '値が同じ update でも、文が行に当たれば増える（監査は書かない）');
 select is((select count(*)::int from public.audit_logs where table_name = 'years' and (after ->> 'allocation_version')::int > :v0), 0,
@@ -350,6 +471,8 @@ select throws_ok(format($$ insert into public.allocations (year_id, source_room_
   values (%L, %L, %L, %L, %L, 1, 'manual') $$, tests.id('Y1'), tests.id('R1'), tests.id('G4'), tests.id('desk'), tests.id('desk')),
   'P0001', 'invalid_state', '確定中は振り分けを足せない');
 select lives_ok($$ update public.rules set enabled = false where id = tests.id('RULE1') $$, '確定中のルールは直せる（解除してからの運用は画面側）');
+select lives_ok($$ update public.notices set title = 'T-確定中' where id = tests.id('N_TRG') $$,
+  '確定中もお知らせは直せる（お知らせに確定中の守りはない。T17）');
 
 -- closed
 update public.years set status = 'closed' where id = tests.id('Y1');
@@ -360,6 +483,8 @@ select throws_ok($$ update public.rules set enabled = true where id = tests.id('
 select throws_ok($$ update public.rules set params = '{}', memo = 'x' where id = tests.id('RULE1') $$, 'P0001', 'invalid_state', 'memo と一緒でも、ほかの列を変えれば止める');
 select throws_ok($$ update public.rules set year_id = tests.id('Y2') where id = tests.id('RULE1') $$, 'P0001', 'invalid_input', 'closed の年度のルールを別の年度へ移せない');
 select lives_ok($$ update public.deliveries set returned = true where id = tests.id('D_G1') $$, 'closed でも返却のチェックは書ける（受け渡しは守りの対象外）');
+select lives_ok($$ update public.notices set title = 'T-終了' where id = tests.id('N_TRG') $$,
+  'closed の年度のお知らせも SQL Editor からは直せる（トリガーの守りはない。終了の年度の読み取り専用は RPC が守る。T17）');
 
 -- ---------------------------------------------------------------- 年度ごと消す（連鎖）は守りに止められない
 select coalesce(max(id), 0) as a0 from public.audit_logs \gset
@@ -369,7 +494,15 @@ select is((select count(*)::int from public.audit_logs where id > :a0 and table_
   '年度の連鎖削除で消えた振り分けの監査にも年度が入る');
 select is((select count(*)::int from public.audit_logs where id > :a0 and action = 'delete' and year_id is null and table_name <> 'years'), 0,
   '年度の連鎖削除で消えた行の監査に、年度が null のものがない');
+select is((select count(*)::int from public.notices where year_id = tests.id('Y1'))
+          + (select count(*)::int from public.notice_groups where year_id = tests.id('Y1')), 0,
+  '年度を消すと、その年度のお知らせと宛先の団体も消える（T17）');
+select ok((select count(*) > 0 from public.audit_logs where id > :a0 and table_name = 'notices' and action = 'delete' and year_id = tests.id('Y1'))
+          and (select count(*) > 0 from public.audit_logs where id > :a0 and table_name = 'notice_groups' and action = 'delete' and year_id = tests.id('Y1')),
+  '年度の連鎖削除で消えたお知らせと宛先の団体の監査にも年度が入る');
 select lives_ok($$ delete from public.groups where id = tests.id('G3') $$, '受付前の年度（Y2）の団体は消せる');
+select is((select count(*)::int from public.notice_groups where group_id = tests.id('G3')), 0,
+  'Y2 の団体を消すと、その団体の宛先の団体の行も消える');
 
 select * from finish();
 rollback;

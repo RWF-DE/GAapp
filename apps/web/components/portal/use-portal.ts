@@ -27,10 +27,15 @@ import type { ModuleId } from '@/lib/modules/registry';
 /** ダッシュボードの欄（読み込みを分けるもの。型は lib/modules/portal.ts） */
 export type { PortalWidgetId } from '@/lib/modules/portal';
 
-/** 欄ごとに使う立場の種類（要対応：総務・団体代表、締切と予定：全部、カード：総務・閲覧のみ。04「ダッシュボード」の欄と立場の表） */
+/**
+ * 欄ごとに使う立場の種類（要対応：総務・団体代表、締切と予定：全部、総務内のお知らせ：総務、お知らせ：閲覧のみ・団体代表〔T17〕、
+ * カード：総務・閲覧のみ。04「ダッシュボード」の欄と立場の表）
+ */
 export const WIDGET_KINDS: Readonly<Record<PortalWidgetId, readonly PortalKind[]>> = {
   todos: ['soumu', 'rep'],
   dated: ['soumu', 'viewer', 'rep'],
+  soumuNotices: ['soumu'],
+  notices: ['viewer', 'rep'],
   cards: ['soumu', 'viewer'],
 };
 

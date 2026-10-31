@@ -13,6 +13,7 @@ import {
   CATEGORY_LABELS,
   CONSENT_STATUS_LABELS,
   GROUP_ROLE_LABELS,
+  NOTICE_AUDIENCE_LABELS,
   ORIGIN_LABELS,
   ROLE_LABELS,
   ROOM_KIND_LABELS,
@@ -42,6 +43,9 @@ export const AUDIT_TABLES = [
   'rooms',
   'items',
   'distance_overrides',
+  // お知らせ（T17。足すだけ）
+  'notices',
+  'notice_groups',
 ] as const;
 export type AuditTable = (typeof AUDIT_TABLES)[number];
 
@@ -481,6 +485,8 @@ const ENUM_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = 
   // 招待の立場（invitations.group_role。invitations は監査しないので今は出ない。T15b の守り）
   group_role: GROUP_ROLE_LABELS,
   origin: ORIGIN_LABELS,
+  // お知らせの宛先（notices.audience。T17）
+  audience: NOTICE_AUDIENCE_LABELS,
 };
 
 /** 値の表示（null は「なし」、真偽は「はい・いいえ」、参照は名前、日時は Asia/Tokyo、列挙は日本語） */
@@ -493,7 +499,7 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     const ref = UUID_REF_KEYS[key];
     if (ref) return lookups?.[ref]?.get(v) ?? v;
     if (key === 'year_id' || key === 'prev_year_id') return lookups?.years?.get(v) ?? v;
-    if (key === 'user_id' || key === 'counted_by' || key === 'updated_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
+    if (key === 'user_id' || key === 'counted_by' || key === 'updated_by' || key === 'created_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
     if (key === 'status') {
       if (table === 'years') return labelOf(YEAR_STATUS_LABELS, v, v);
       if (table === 'substitution_consents') return labelOf(CONSENT_STATUS_LABELS, v, v);
@@ -574,6 +580,11 @@ export function auditTarget(row: Pick<AuditLogRow, 'table_name' | 'row_pk' | 'be
         return [str('label')];
       case 'year_roles':
         return [user(str('user_id'))];
+      // お知らせ（T17）：題名。宛先の団体の行は団体の名前
+      case 'notices':
+        return [str('title')];
+      case 'notice_groups':
+        return [groupName(str('group_id'))];
       default:
         return [];
     }
@@ -613,7 +624,18 @@ export function useHistoryNames(yearId: string, rows: readonly AuditLogRow[], op
   const groupIds = new Set<string>();
   const currentGroups = new Set(options?.groups.map((g) => g.id) ?? []);
   for (const r of rows) {
-    for (const v of [r.user_id, asRecord(r.after)?.user_id, asRecord(r.before)?.user_id, asRecord(r.after)?.counted_by, asRecord(r.before)?.counted_by, asRecord(r.after)?.updated_by, asRecord(r.before)?.updated_by]) {
+    for (const v of [
+      r.user_id,
+      asRecord(r.after)?.user_id,
+      asRecord(r.before)?.user_id,
+      asRecord(r.after)?.counted_by,
+      asRecord(r.before)?.counted_by,
+      asRecord(r.after)?.updated_by,
+      asRecord(r.before)?.updated_by,
+      // お知らせの書いた人（notices.created_by。T17）
+      asRecord(r.after)?.created_by,
+      asRecord(r.before)?.created_by,
+    ]) {
       if (typeof v === 'string' && !known.has(v)) userIds.add(v);
     }
     if (r.group_id && !currentGroups.has(r.group_id)) groupIds.add(r.group_id);

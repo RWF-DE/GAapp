@@ -393,3 +393,64 @@ describe('補助', () => {
     );
   });
 });
+
+describe('T17 お知らせ（save_notice・delete_notice）の文言（04「お知らせ一覧」のエラー、notes/T17.md「後半（画面）の約束」5）', () => {
+  const save: MessageContext = { rpc: 'save_notice' };
+  const del: MessageContext = { rpc: 'delete_notice' };
+
+  it('invalid_input の title・body は欄の下に出す文言', () => {
+    expect(msg(p0001('invalid_input', { field: 'title' }), save)).toBe('題名は、前後の空白を除いて 1〜100 字にしてください');
+    expect(msg(p0001('invalid_input', { field: 'body' }), save)).toBe('本文は 4000 字までです');
+    expect(effectOf(classifyError(p0001('invalid_input', { field: 'title' }))).reload).toBe('none');
+  });
+
+  it('invalid_input の group_ids は reason ごと', () => {
+    const cases: [string, string][] = [
+      ['required', '宛先の団体を1つ以上選んでください'],
+      ['too_many', '宛先の団体は 1000 までです'],
+      ['invalid', '同じ団体が重なっています'],
+      ['not_in_year', '選んだ団体の中に、この年度にない団体があります（消された可能性があります）。団体を読み直しました'],
+      ['not_allowed', '総務内・全団体のお知らせには団体を選べません'],
+    ];
+    for (const [reason, text] of cases) expect(msg(p0001('invalid_input', { field: 'group_ids', reason }), save), reason).toBe(text);
+    // 知らない reason・reason なしは「入力の形が違います（宛先の団体）」
+    expect(msg(p0001('invalid_input', { field: 'group_ids', reason: 'x' }), save)).toBe('入力の形が違います（宛先の団体）');
+    expect(msg(p0001('invalid_input', { field: 'group_ids' }), save)).toBe('入力の形が違います（宛先の団体）');
+    expect(msg(p0001('invalid_input', { field: 'group_ids', reason: '__proto__' }), save)).toBe('入力の形が違います（宛先の団体）');
+  });
+
+  it('invalid_input のほかの field は「入力の形が違います（{欄の日本語名}）」', () => {
+    const cases: [string, string][] = [
+      ['audience', '宛先'],
+      ['pinned', 'ピン留め'],
+      ['base_updated_at', 'お知らせの版'],
+      ['notice', 'お知らせ'],
+    ];
+    for (const [field, label] of cases) expect(msg(p0001('invalid_input', { field }), save), field).toBe(`入力の形が違います（${label}）`);
+  });
+
+  it('conflict（details は id）は「ほかの人がこのお知らせを先に変えました。読み直しました」。振り分けの行の id の文言と分ける', () => {
+    const N = '55555555-5555-4555-8555-555555555555';
+    expect(msg(p0001('conflict', { id: N }), save)).toBe('ほかの人がこのお知らせを先に変えました。読み直しました');
+    expect(msg(p0001('conflict', { id: N }), del)).toBe('ほかの人がこのお知らせを先に変えました。読み直しました');
+    expect(msg(p0001('conflict', { id: N }), { rpc: 'save_allocation_rows' })).toBe('ほかの人が同じ振り分けの行を先に変えました。読み直しました');
+    // 応答が届かなかった後に画面が作る conflict（id つき）も同じ文言
+    expect(messageFor(appError('conflict', 'lock_conflict', { id: N }).info, save)).toBe('ほかの人がこのお知らせを先に変えました。読み直しました');
+    expect(effectOf(classifyError(p0001('conflict', { id: N }))).reload).toBe('data');
+  });
+
+  it('not_found は「このお知らせは見つかりません（ほかの人が削除した可能性があります）」', () => {
+    expect(msg(p0001('not_found'), save)).toBe('このお知らせは見つかりません（ほかの人が削除した可能性があります）');
+    expect(msg(p0001('not_found'), del)).toBe('このお知らせは見つかりません（ほかの人が削除した可能性があります）');
+    expect(messageFor(appError('not_found', 'notice_missing', { id: 'n' }).info, save)).toBe('このお知らせは見つかりません（ほかの人が削除した可能性があります）');
+    // ほかの RPC は今のまま
+    expect(msg(p0001('not_found'))).toBe('対象が見つかりません（ほかの人が消した可能性があります）');
+  });
+
+  it('forbidden・invalid_state は今の文言のまま（年度の行と立場を読み直す）', () => {
+    expect(msg(p0001('forbidden'), save)).toBe('権限がありません。立場が変わった可能性があります');
+    expect(msg(p0001('invalid_state', { status: 'closed' }), save)).toBe('年度が「終了」のため、この操作はできません');
+    expect(effectOf(classifyError(p0001('invalid_state', { status: 'closed' }))).reload).toBe('year');
+    expect(msg(pg('40P01'), save)).toBe('ほかの人の保存と重なりました。もう一度保存してください');
+  });
+});

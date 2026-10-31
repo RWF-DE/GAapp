@@ -13,6 +13,7 @@ import {
   uuidSchema,
   yearLabelSchema,
 } from '@/lib/schemas/common';
+import { charCount, NOTICE_BODY_MAX, NOTICE_GROUPS_MAX, noticeTitleSchema } from '@/lib/schemas/notice-fields';
 
 const E = Constants.public.Enums;
 const uuid = uuidSchema;
@@ -156,6 +157,23 @@ export const RPC_ARGS = {
     p_problem_note: note.optional(),
     p_returned: z.boolean().optional(),
   }),
+  // お知らせ（T17・D-53）。題名は前後の空白を除いて 1〜100 字（DB と同じ 25 文字の空白）、本文は 4000 字まで（null にせず、
+  // 空にするときは送らない。lib/schemas/notices.ts の toSaveNoticeArgs）。送る前の確かめに落ちたときの field は p_ を除いた
+  // 引数の名前（title・body・group_ids。DB の invalid_input の field と同じ）なので、欄の下に同じ文言を出せる
+  save_notice: z.object({
+    p_year_id: uuid,
+    p_audience: z.enum(E.notice_audience),
+    p_title: noticeTitleSchema,
+    p_body: z
+      .string()
+      .refine((s) => charCount(s) <= NOTICE_BODY_MAX)
+      .optional(),
+    p_pinned: z.boolean().optional(),
+    p_group_ids: z.array(uuid).max(NOTICE_GROUPS_MAX).optional(),
+    p_notice_id: uuid.optional(),
+    p_base_updated_at: updatedAt.optional(),
+  }),
+  delete_notice: z.object({ p_notice_id: uuid, p_base_updated_at: updatedAt }),
 } as const;
 
 // ---- jsonb の返り値 ----

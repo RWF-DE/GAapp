@@ -7,7 +7,7 @@ test.describe('ロールごとの表示', () => {
   test('管理者：総務の画面がすべてメニューに出る', async ({ page }) => {
     await loginAs(page, 'admin');
     expect(await navLabels(page)).toEqual([
-      'ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'マスタ設定', '履歴',
+      'ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', 'マスタ設定', '履歴',
     ]);
     await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
     await expect(page.getByTestId('home-roles')).toHaveText('管理者');
@@ -17,28 +17,28 @@ test.describe('ロールごとの表示', () => {
   test('総務部門長：管理者と同じ画面がメニューに出る', async ({ page }) => {
     await loginAs(page, 'head');
     expect(await navLabels(page)).toEqual([
-      'ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'マスタ設定', '履歴',
+      'ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', 'マスタ設定', '履歴',
     ]);
     await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
     await expect(page.getByTestId('home-roles')).toHaveText('総務部門長');
   });
 
-  // Q1（D-39。T09a）：総務部門員は振り分けをいつでも読み取り専用で開ける
-  test('総務部門員：机椅子の状況・在庫・申請一覧と振り分け（閲覧）だけ（マスタ設定・団体の画面は出ない）', async ({ page }) => {
+  // Q1（D-39。T09a）：総務部門員は振り分けをいつでも読み取り専用で開ける。お知らせ一覧（T17）は招待されている全員
+  test('総務部門員：机椅子の状況・在庫・申請一覧と振り分け（閲覧）とお知らせ一覧だけ（マスタ設定・団体の画面は出ない）', async ({ page }) => {
     await loginAs(page, 'staff');
-    expect(await navLabels(page)).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
+    expect(await navLabels(page)).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧']);
     await expect(page.getByTestId('home-roles')).toHaveText('総務部門員');
   });
 
-  test('団体代表（店長）：申請と自団体の振り分けだけ', async ({ page }) => {
+  test('団体代表（店長）：申請と自団体の振り分けとお知らせ一覧だけ', async ({ page }) => {
     await loginAs(page, 'rep');
-    expect(await navLabels(page)).toEqual(['ホーム', '申請', '自団体の振り分け']);
+    expect(await navLabels(page)).toEqual(['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧']);
     await expect(page.getByTestId('home-roles')).toHaveText('テスト団体 の店長');
   });
 
-  test('閲覧のみ：ホームだけ', async ({ page }) => {
+  test('閲覧のみ：ホームとお知らせ一覧だけ', async ({ page }) => {
     await loginAs(page, 'viewer');
-    expect(await navLabels(page)).toEqual(['ホーム']);
+    expect(await navLabels(page)).toEqual(['ホーム', 'お知らせ一覧']);
     await expect(page.getByTestId('home-roles')).toHaveText('閲覧のみ');
   });
 
@@ -95,6 +95,6 @@ test.describe('スマホ幅', () => {
     await loginAs(page, 'rep');
     await expect(page.getByRole('navigation')).toHaveCount(0);
     await page.getByRole('button', { name: 'メニューを開く' }).click();
-    expect(await navLabels(page)).toEqual(['ホーム', '申請', '自団体の振り分け']);
+    expect(await navLabels(page)).toEqual(['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧']);
   });
 });

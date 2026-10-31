@@ -5,6 +5,8 @@
 -- ② 新しい関数（my_role_year_ids・my_group_ids・my_role_group_ids）が呼んだ人についてだけ答えることと、実行の権限。
 -- ③ audit_logs の年度をまたぐ表の行（year_id が null）と、開いていない（closed の）年度の扱い。
 -- ④ 7 表の select のポリシーが、行の列を判定関数に渡していないこと（書き方の決まり。02 の「権限とRLS」）。
+-- T17：お知らせの notices・notice_groups（0014）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「お知らせの権限」
+-- から書いた）、②に集合の関数 my_group_year_ids・my_group_notice_ids、④に2表のポリシーの形と実行計画を足した。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
@@ -14,7 +16,7 @@ begin;
 insert into public.audit_logs (table_name, row_pk, action, year_id, before, after)
 values ('years', '{}', 'update', null, '{"a":1}', '{"a":2}'), ('profiles', '{}', 'update', null, '{"a":1}', '{"a":2}');
 
-select plan(46);
+select plan(67);
 
 -- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
 -- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
@@ -30,7 +32,17 @@ insert into tests.old_pred values
   ('request_submissions', $p$ private.has_any_role(private.group_year_id(group_id), '{admin,head,deputy_head,staff}') or private.is_group_member(group_id) $p$),
   ('substitution_consents', $p$ private.has_any_role(private.group_year_id(group_id), '{admin,head,deputy_head,staff}') or private.is_group_member(group_id) $p$),
   ('stocks', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$),
-  ('groups', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff,viewer}') or private.is_group_member(id) $p$);
+  ('groups', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff,viewer}') or private.is_group_member(id) $p$),
+  -- お知らせ（T17）：総務はその年度の全部。閲覧のみはその年度の団体あて。団体の代表は、代表である年度の全団体あてと、自団体を
+  -- 宛先の団体に含む指定の団体あて（行ごとに判定関数を呼ぶ形。t は比べる表の行）
+  ('notices', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}')
+                  or (audience in ('all_groups', 'groups') and private.has_role(year_id, 'viewer'))
+                  or (audience = 'all_groups'
+                      and exists (select 1 from public.groups g where g.year_id = t.year_id and private.is_group_member(g.id)))
+                  or (audience = 'groups'
+                      and exists (select 1 from public.notice_groups ng where ng.notice_id = t.id and private.is_group_member(ng.group_id))) $p$),
+  -- 宛先の団体：総務と閲覧のみはその年度の全部、団体の代表は自団体の行だけ
+  ('notice_groups', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff,viewer}') or private.is_group_member(group_id) $p$);
 
 -- 行の中身をまとめた指紋（件数と、行の文字列を並べた md5）
 create function tests.visible_old(p_tbl text, p_persona text) returns text language plpgsql as $$
@@ -73,11 +85,12 @@ select tests.compare_all();
 
 select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
   format('%s：0010 の形（0013 の段）のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態）', t))
-from unnest(array['audit_logs', 'allocations', 'requests', 'request_submissions', 'substitution_consents', 'stocks', 'groups']) t;
+from unnest(array['audit_logs', 'allocations', 'requests', 'request_submissions', 'substitution_consents', 'stocks', 'groups',
+                   'notices', 'notice_groups']) t;
 -- 比べたものに中身がある（全員 0 行や全員同じでは比べたことにならない）
 select is_empty($q$ select tbl from tests.compared group by tbl
                     having count(distinct new) < 2 or not bool_or(new !~ '^0:') $q$,
-  '7 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
+  '9 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
 
 -- ---------------------------------------------------------------- ② 新しい関数は呼んだ人についてだけ答える
 select tests.login_as('admin');
@@ -153,6 +166,53 @@ select tests.login_anon();
 select throws_ok($q$ select private.my_group_ids() $q$, '42501', null, 'anon は新しい関数を呼べない');
 select tests.logout();
 
+-- お知らせの集合（T17。0014）：my_group_year_ids は自分が団体の代表（店長・副店長）である年度、my_group_notice_ids は自分が代表の
+-- 団体を宛先の団体に含むお知らせ。どちらも呼んだ人についてだけ答え、ロール（総務・閲覧のみ）では答えない
+select tests.login_as('rep');
+select set_eq($q$ select private.my_group_year_ids() $q$, array[tests.id('Y1')], 'rep：代表である年度は Y1 だけ（Y2 は閲覧のみで、代表でない）');
+select set_eq($q$ select private.my_group_notice_ids() $q$, array[tests.id('N_G1'), tests.id('N_G12')],
+  'rep：自団体（G1）を宛先に含むお知らせは N_G1・N_G12（G4 あての N_G4 は入らない）');
+select tests.logout();
+select tests.login_as('rep2');
+select set_eq($q$ select private.my_group_year_ids() $q$, array[tests.id('Y1')], 'rep2：代表である年度は Y1');
+select set_eq($q$ select private.my_group_notice_ids() $q$, array[tests.id('N_G12')], 'rep2：自団体（G2）を宛先に含むお知らせは N_G12 だけ');
+select tests.logout();
+select tests.login_as('viewer');
+select set_eq($q$ select private.my_group_year_ids() $q$, array[tests.id('Y1')], 'viewer：G4 の副店長として Y1（副店長も店長と同じ）');
+select set_eq($q$ select private.my_group_notice_ids() $q$, array[tests.id('N_G4')], 'viewer：G4 を宛先に含むお知らせは N_G4');
+select tests.logout();
+select tests.login_as('staff');
+select set_eq($q$ select private.my_group_year_ids() $q$, array[tests.id('Y2')], 'staff：G3 の店長として Y2（staff の Y1 は入らない）');
+select set_eq($q$ select private.my_group_notice_ids() $q$, array[tests.id('N_Y2_G3')], 'staff：G3 を宛先に含むお知らせは N_Y2_G3');
+select tests.logout();
+select tests.login_as('admin');
+select is_empty($q$ select private.my_group_year_ids() union all select private.my_group_notice_ids() $q$,
+  'admin：団体の代表でないので、どちらも何も返さない（総務の年度・お知らせは入らない）');
+select tests.logout();
+select tests.login_as('outsider');
+select is_empty($q$ select private.my_group_year_ids() union all select private.my_group_notice_ids() $q$,
+  '未招待の人：お知らせの集合の関数は何も返さない');
+select tests.logout();
+select set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+set local role authenticated;
+select is_empty($q$ select private.my_group_year_ids() union all select private.my_group_notice_ids() $q$,
+  'auth.uid() が null なら、お知らせの集合の関数は何も返さない');
+select tests.logout();
+select is_empty($q$ select p.oid::regprocedure::text from pg_proc p
+                   where p.pronamespace = 'private'::regnamespace and p.proname in ('my_group_year_ids', 'my_group_notice_ids')
+                     and not (p.pronargs = 0 and p.prosecdef and p.provolatile = 's' and p.proretset
+                              and p.prorettype = 'uuid'::regtype and coalesce(p.proconfig @> array['search_path=""'], false)) $q$,
+  'お知らせの集合の関数は引数を取らず（ほかの人については答えられない）、SECURITY DEFINER・STABLE・setof uuid・search_path = ""');
+select is((select count(*)::int from pg_proc p
+           where p.pronamespace = 'private'::regnamespace and p.proname in ('my_group_year_ids', 'my_group_notice_ids')
+             and has_function_privilege('authenticated', p.oid, 'execute') and not has_function_privilege('anon', p.oid, 'execute')
+             and not has_function_privilege('supabase_auth_admin', p.oid, 'execute')
+             and not exists (select 1 from aclexplode(p.proacl) a where a.grantee = 0)), 2,
+  'お知らせの集合の関数は authenticated だけが実行できる（anon・supabase_auth_admin・PUBLIC は実行できない）');
+select tests.login_anon();
+select throws_ok($q$ select private.my_group_notice_ids() $q$, '42501', null, 'anon はお知らせの集合の関数を呼べない');
+select tests.logout();
+
 -- ---------------------------------------------------------------- ③ audit_logs：年度をまたぐ表の行と、開いていない年度
 create function tests.audit_counts(p_persona text) returns text language plpgsql as $$
 declare v text;
@@ -218,6 +278,28 @@ select tests.login_as('outsider');
 select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.audit_logs')) x(l))
           !~ 'Filter: .*private\.has_role',
   'audit_logs の読みの計画の Filter に、行ごとの has_role が出ない');
+select tests.logout();
+
+-- お知らせ（T17）：notices・notice_groups の select のポリシーも集合を1回作る形。宛先で分ける枝は宛先を名前で並べる
+-- （否定〔<> 'soumu'〕で書くと、宛先の種類を足したときに閲覧のみ・団体の代表へ黙って広がる）
+select is_empty($q$ select tablename::text || ': ' || qual from pg_policies
+                   where schemaname = 'public' and cmd = 'SELECT' and tablename in ('notices', 'notice_groups')
+                     and qual ~ '(?<!SELECT )private\.[a-z_]+\((year_id|group_id|id|user_id|audience|private\.)' $q$,
+  'お知らせの2表の select のポリシーは、行の列を判定関数に渡さない（集合を1回作る形）');
+select ok((select qual ~ 'SELECT private\.my_role_year_ids' and qual ~ 'SELECT private\.my_group_year_ids\(\)'
+                  and qual ~ 'SELECT private\.my_group_notice_ids\(\)' and qual !~ '<>' and qual !~ '\mNOT\M'
+           from pg_policies where schemaname = 'public' and policyname = 'notices_select'),
+  'notices_select は my_role_year_ids・my_group_year_ids・my_group_notice_ids の集合を使い、宛先を否定で書かない');
+select ok((select qual ~ 'SELECT private\.my_role_year_ids' and qual ~ 'SELECT private\.my_group_ids\(\)'
+           from pg_policies where schemaname = 'public' and policyname = 'notice_groups_select'),
+  'notice_groups_select は my_role_year_ids・my_group_ids の集合を使う');
+select tests.login_as('outsider');
+select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.notices')) x(l))
+          !~ '(?n)Filter: .*private\.',
+  'notices の読みの計画の Filter に、行ごとの判定関数が出ない（hashed SubPlan だけ）');
+select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.notice_groups')) x(l))
+          !~ '(?n)Filter: .*private\.',
+  'notice_groups の読みの計画の Filter に、行ごとの判定関数が出ない');
 select tests.logout();
 
 select * from finish();

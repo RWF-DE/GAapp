@@ -86,6 +86,9 @@ export const ROUTES: readonly RouteDef[] = [
   { href: '/swaps', label: 'キャスター机交換', section: 'furniture', audiences: LEAD, nav: true, ticket: 'T13' },
   { href: '/request', label: '申請', section: 'furniture', audiences: REP, nav: true, ticket: 'T11' },
   { href: '/my', label: '自団体の振り分け', section: 'furniture', audiences: REP, nav: true, ticket: 'T13' },
+  // お知らせ（notices。T17・D-53）：招待されている全員（総務・閲覧のみ・店長・副店長）。項目は見出し（お知らせ）と同じ言葉を
+  // 縦に並べないよう「お知らせ一覧」（notes/T17.md の後半の判断したことの 1）
+  { href: '/notices', label: 'お知らせ一覧', section: 'notices', audiences: ALL, nav: true, ticket: 'T17' },
   // 共通（部門長・副部門長はマスタ設定の一部のタブだけ。settingsTabsFor）
   { href: '/settings', label: 'マスタ設定', section: 'common', audiences: LEAD, nav: true, ticket: 'T09' },
   { href: '/history', label: '履歴', section: 'common', audiences: LEAD, nav: true, ticket: 'T14' },
@@ -207,7 +210,7 @@ export interface NavSection {
  * 項目は navItemsFor と同じもの（見出しごとの items を順につなぐと navItemsFor と同じ並び）。
  *
  * @example
- * navSectionsFor(['staff']).map((s) => s.heading) // ['ホーム', '机椅子']
+ * navSectionsFor(['staff']).map((s) => s.heading) // ['ホーム', '机椅子', 'お知らせ']
  */
 export function navSectionsFor(
   audiences: readonly Audience[],
