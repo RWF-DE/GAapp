@@ -7,7 +7,9 @@ import {
   finalOnlyNoteFor,
   isActivePath,
   NAV_ITEMS,
+  NAV_SECTIONS,
   navItemsFor,
+  navSectionsFor,
   normalizePath,
   ROUTES,
   routeFor,
@@ -17,7 +19,9 @@ import {
 
 const labels = (a: Parameters<typeof navItemsFor>[0], s?: Parameters<typeof navItemsFor>[1]) => navItemsFor(a, s).map((i) => i.label);
 
-const SOUMU_SCREENS = ['ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴'];
+/** 机椅子の見出しの総務の画面（部門長以上。T16 で机椅子の状況を足し、マスタ設定・履歴は共通の見出しへ） */
+const FURNITURE_LEAD = ['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換'];
+const SOUMU_SCREENS = ['ホーム', ...FURNITURE_LEAD, 'マスタ設定', '履歴'];
 
 describe('navItemsFor', () => {
   it('管理者は総務の画面をすべて見る（団体の画面は見ない）', () => {
@@ -28,9 +32,9 @@ describe('navItemsFor', () => {
     expect(labels(['deputy_head'])).toEqual(SOUMU_SCREENS);
     expect(labels(['head'], 'confirmed')).toEqual(SOUMU_SCREENS);
   });
-  it('総務部門員は在庫・申請一覧と振り分け（いつでも読み取り。Q1）', () => {
-    expect(labels(['staff'])).toEqual(['ホーム', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
-    expect(labels(['staff'], 'requesting')).toEqual(['ホーム', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
+  it('総務部門員は机椅子の状況・在庫・申請一覧と振り分け（いつでも読み取り。Q1）', () => {
+    expect(labels(['staff'])).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
+    expect(labels(['staff'], 'requesting')).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
   });
   it('閲覧のみは、確定・終了の年度でだけ振り分けを見る（Q1）', () => {
     expect(labels(['viewer'])).toEqual(['ホーム']);
@@ -42,8 +46,8 @@ describe('navItemsFor', () => {
   it('団体代表（店長・副店長）は申請と自団体の振り分け', () => {
     expect(labels(['rep'])).toEqual(['ホーム', '申請', '自団体の振り分け']);
   });
-  it('兼ねた人（管理者・閲覧のみで店長・副店長も務める人。D-49）は両方', () => {
-    expect(labels(['admin', 'rep'])).toEqual([...SOUMU_SCREENS, '申請', '自団体の振り分け']);
+  it('兼ねた人（管理者・閲覧のみで店長・副店長も務める人。D-49）は両方（団体の画面は机椅子の見出しの最後）', () => {
+    expect(labels(['admin', 'rep'])).toEqual(['ホーム', ...FURNITURE_LEAD, '申請', '自団体の振り分け', 'マスタ設定', '履歴']);
     expect(labels(['viewer', 'rep'], 'confirmed')).toEqual(['ホーム', '振り分け', '申請', '自団体の振り分け']);
   });
   it('立場がなければ何もない', () => {
@@ -59,6 +63,102 @@ describe('navItemsFor', () => {
   });
 });
 
+describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通レイアウト」、D-51・D-52）', () => {
+  const headings = (a: Parameters<typeof navSectionsFor>[0], st?: Parameters<typeof navSectionsFor>[1]) =>
+    navSectionsFor(a, st).map((x) => x.heading);
+  const itemsOf = (a: Parameters<typeof navSectionsFor>[0], st?: Parameters<typeof navSectionsFor>[1]) =>
+    Object.fromEntries(navSectionsFor(a, st).map((x) => [x.heading, x.items.map((i) => i.label)]));
+
+  it('見出しはホーム → 機能（今は机椅子）→ 共通の順', () => {
+    expect(NAV_SECTIONS).toEqual([
+      { id: 'home', heading: 'ホーム' },
+      { id: 'furniture', heading: '机椅子' },
+      { id: 'common', heading: '共通' },
+    ]);
+  });
+
+  it('ROUTES は見出しごとにひと続きで、見出しは NAV_SECTIONS の順（navItemsFor の平らな並びと表示の並びが同じ）', () => {
+    const order = NAV_SECTIONS.map((x) => x.id);
+    const runs = ROUTES.map((r) => r.section).filter((sec, k, all) => k === 0 || all[k - 1] !== sec);
+    expect(runs).toEqual(order);
+  });
+
+  it('各ルートの見出し：ホームは home、机椅子の画面は furniture、マスタ設定・履歴は common', () => {
+    const sectionOf = (href: string) => routeFor(href)?.section;
+    expect(sectionOf('/')).toBe('home');
+    for (const href of ['/furniture', '/stock', '/stocks', '/stocks/qr', '/requests', '/rules', '/allocation', '/swaps', '/request', '/my']) {
+      expect(sectionOf(href)).toBe('furniture');
+    }
+    expect(sectionOf('/settings')).toBe('common');
+    expect(sectionOf('/history')).toBe('common');
+    for (const item of NAV_ITEMS) expect(item.section).toBe(routeFor(item.href)?.section);
+  });
+
+  it('/furniture：「机椅子の状況」、総務（部門長以上と総務部門員）、ナビに出す、T16。ホームも T16', () => {
+    const r = routeFor('/furniture/');
+    expect(r).toMatchObject({ href: '/furniture', label: '机椅子の状況', section: 'furniture', nav: true, ticket: 'T16' });
+    expect(audiencesFor('/furniture')).toEqual(['admin', 'head', 'deputy_head', 'staff']);
+    expect(routeFor('/')?.ticket).toBe('T16');
+    // 机椅子の見出しの最初の項目
+    expect(NAV_ITEMS.filter((i) => i.section === 'furniture')[0]?.href).toBe('/furniture');
+  });
+
+  it('canOpen(/furniture)：総務は真、閲覧のみ・団体代表は偽（年度の状態によらない）', () => {
+    for (const role of ['admin', 'head', 'deputy_head', 'staff'] as const) expect(canOpen('/furniture', [role])).toBe(true);
+    for (const st of ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'] as const) {
+      expect(canOpen('/furniture', ['viewer'], st)).toBe(false);
+      expect(canOpen('/furniture', ['rep'], st)).toBe(false);
+      expect(canOpen('/furniture', ['viewer', 'rep'], st)).toBe(false);
+    }
+    expect(canOpen('/furniture', ['admin', 'rep'])).toBe(true);
+  });
+
+  it('管理者・総務部門長・総務副部門長：ホーム／机椅子の状況〜キャスター机交換／マスタ設定・履歴', () => {
+    for (const role of ['admin', 'head', 'deputy_head'] as const) {
+      expect(headings([role])).toEqual(['ホーム', '机椅子', '共通']);
+      expect(itemsOf([role])).toEqual({ ホーム: ['ホーム'], 机椅子: FURNITURE_LEAD, 共通: ['マスタ設定', '履歴'] });
+    }
+  });
+
+  it('総務部門員：共通の見出しがない（マスタ設定・履歴は部門長以上）', () => {
+    expect(headings(['staff'])).toEqual(['ホーム', '机椅子']);
+    expect(itemsOf(['staff'])).toEqual({ ホーム: ['ホーム'], 机椅子: ['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け'] });
+  });
+
+  it('閲覧のみ：受付中はホームだけ、確定・終了で机椅子の見出しに振り分け', () => {
+    expect(headings(['viewer'], 'requesting')).toEqual(['ホーム']);
+    expect(headings(['viewer'], 'allocating')).toEqual(['ホーム']);
+    for (const st of ['confirmed', 'closed'] as const) {
+      expect(itemsOf(['viewer'], st)).toEqual({ ホーム: ['ホーム'], 机椅子: ['振り分け'] });
+    }
+  });
+
+  it('店長・副店長：ホームと、机椅子の見出しに申請・自団体の振り分け', () => {
+    expect(itemsOf(['rep'])).toEqual({ ホーム: ['ホーム'], 机椅子: ['申請', '自団体の振り分け'] });
+  });
+
+  it('管理者で店長も務める人：管理者の机椅子の見出しの最後に申請・自団体の振り分け', () => {
+    expect(itemsOf(['admin', 'rep'])).toEqual({
+      ホーム: ['ホーム'],
+      机椅子: [...FURNITURE_LEAD, '申請', '自団体の振り分け'],
+      共通: ['マスタ設定', '履歴'],
+    });
+  });
+
+  it('見出しごとの項目をつなぐと navItemsFor と同じ（どの立場・年度の状態でも）。項目のない見出しは出さない', () => {
+    const cases: [Parameters<typeof navSectionsFor>[0], Parameters<typeof navSectionsFor>[1]][] = [];
+    for (const a of [[], ['admin'], ['head'], ['deputy_head'], ['staff'], ['viewer'], ['rep'], ['admin', 'rep'], ['viewer', 'rep']] as const) {
+      for (const st of [undefined, null, 'preparing', 'requesting', 'allocating', 'confirmed', 'closed'] as const) cases.push([a, st]);
+    }
+    for (const [a, st] of cases) {
+      const sections = navSectionsFor(a, st);
+      expect(sections.flatMap((x) => x.items)).toEqual(navItemsFor(a, st));
+      for (const x of sections) expect(x.items.length).toBeGreaterThan(0);
+    }
+    expect(navSectionsFor([])).toEqual([]);
+  });
+});
+
 describe('audiencesFor・canOpen（立場はロールの段から作る。D-50）', () => {
   it('クエリと末尾の / を無視してルートを引く', () => {
     expect(normalizePath('/stock/?room=abc#x')).toBe('/stock');
@@ -69,7 +169,7 @@ describe('audiencesFor・canOpen（立場はロールの段から作る。D-50�
     const LEAD = ['admin', 'head', 'deputy_head'];
     const SOUMU = [...LEAD, 'staff'];
     for (const href of ['/settings', '/rules', '/swaps', '/history']) expect(audiencesFor(href)).toEqual(LEAD);
-    for (const href of ['/stock', '/stocks', '/stocks/qr', '/requests']) expect(audiencesFor(href)).toEqual(SOUMU);
+    for (const href of ['/furniture', '/stock', '/stocks', '/stocks/qr', '/requests']) expect(audiencesFor(href)).toEqual(SOUMU);
     expect(audiencesFor('/allocation')).toEqual(SOUMU);
     expect(audiencesFor('/allocation', 'allocating')).toEqual(SOUMU);
     expect(audiencesFor('/allocation', 'confirmed')).toEqual([...SOUMU, 'viewer']);
@@ -176,5 +276,10 @@ describe('isActivePath', () => {
     expect(isActivePath('/stocks/', '/stocks')).toBe(true);
     expect(isActivePath('/', '/')).toBe(true);
     expect(isActivePath('/stock/', '/stocks')).toBe(false);
+  });
+  it('T16 /furniture/ は机椅子の状況（ホームではない）', () => {
+    expect(isActivePath('/furniture/', '/furniture')).toBe(true);
+    expect(isActivePath('/furniture/', '/')).toBe(false);
+    expect(isActivePath('/', '/furniture')).toBe(false);
   });
 });

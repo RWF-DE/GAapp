@@ -68,7 +68,7 @@ function Login() {
   return (
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center gap-6 p-6">
       <div className="space-y-1 text-center">
-        <p className="text-sm text-muted-foreground">電波祭 総務 机椅子管理</p>
+        <p className="text-sm text-muted-foreground">電波祭 総務</p>
         <h1 className="text-2xl font-bold">ログイン</h1>
       </div>
       {session.status === 'configError' ? (

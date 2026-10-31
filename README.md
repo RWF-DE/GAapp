@@ -1,6 +1,6 @@
-# 電波祭 総務 机椅子管理アプリ
+# 電波祭 総務アプリ
 
-熊本高専の電波祭で、総務部門が机・椅子などの備品を団体に振り分けるための Web アプリ。Next.js の静的書き出しと Supabase で動かし、振り分けの計算と Excel 出力は管理者のブラウザで行う。仕様は [SPEC.md](SPEC.md) と `docs/requirements/` を見る。
+熊本高専の電波祭で、総務部門の仕事をまとめる Web アプリ（画面の名前は「電波祭 総務」）。仕事は機能ごとに足していき、最初の機能は、机・椅子などの備品を団体に振り分ける「机椅子」。トップはダッシュボード（要対応の一覧・締切と予定・機能ごとのカード）。Next.js の静的書き出しと Supabase で動かし、振り分けの計算と Excel 出力は使う人のブラウザで行う。仕様は [SPEC.md](SPEC.md) と `docs/requirements/` を見る。
 
 毎年の運用（7月の再開と年度の始め方・ルールの変え方・年度末の書き出し・障害時の対応・オーナーの引き継ぎ）は [docs/runbook.md](docs/runbook.md) にまとめた。
 
@@ -79,7 +79,7 @@ CI では流さない E2E（環境変数のときだけ playwright.config.ts に
 
 ```bash
 pnpm e2e:shots --grep "T14 "   # スクリーンショット（notes/<チケット>/。--grep はチケット ID と空白で絞る）
-pnpm e2e:perf                   # 4G での表示の速さ（/stock・/request・/my。結果は test-results/perf/）
+pnpm e2e:perf                   # 4G での表示の速さ（/stock・/request・/my・団体代表の /。PERF_ONLY=home などで絞る。結果は test-results/perf/）
 pnpm e2e:manual                 # 手での確かめ（画面の受け入れ）の年度とユーザーを作り、ログインの情報を出す。片付けは MANUAL_CLEANUP=1
 ```
 

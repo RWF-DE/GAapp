@@ -1,10 +1,12 @@
 // 画面を開くときに最初に読むもの（/stock?room=・/request・/my。画面の設計 2.1・2.2、D-45。T14 で lib/data/stocks.ts・requests.ts・
-// my.ts から移した。各モジュールは同じ名前で re-export する）。
+// my.ts から移した。各モジュールは同じ名前で re-export する）と、ダッシュボード（/）の欄が読むもの（T16。lib/modules の机椅子の
+// クエリを使う。数え方や要対応の組み立て〔lib/modules/furniture/portal.ts〕はルートのレイアウトの JS に入れない）。
 // ページを開いたときの先読み（lib/boot/early-load.ts）はルートのレイアウト（Providers）から始まり、画面の部品のモジュールは
 // 立場が届いて画面を描くまで読まれない。そこで、先読みに要るクエリ（キーと読み方）と、URL と覚えた id から読むものを決める
 // 関数（planStockPrefetch など）と表（SCREEN_PREFETCH）をこの軽いモジュールに置き、Providers から読む。
 // 画面のフック（useStockMaster など）も同じクエリの設定（stockMasterOptions など）を使うので、先読みしたキャッシュをそのまま使う。
 import { queryOptions, type QueryClient } from '@tanstack/react-query';
+import { isSoumu } from '@/lib/auth/roles';
 import type { PrefetchEntry, RoutePrefetchContext, RoutePrefetcher } from '@/lib/boot/early-load';
 import { fetchAll } from '@/lib/db/fetch-all';
 import {
@@ -21,6 +23,8 @@ import {
   type YearRow,
 } from '@/lib/db/types';
 import { appError, toAppError } from '@/lib/errors';
+import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
+import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
 import { queryKeys, STALE_TIME_MS } from '@/lib/query';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import { fetchYear, isAllocationFinal, seedYearRows } from './year';
@@ -312,10 +316,36 @@ export function pickMyGroup<T extends { id: string }>(groups: readonly T[], para
   return groups.find((g) => g.id === param) ?? groups[0] ?? null;
 }
 
+// ---------------------------------------------------------------- ダッシュボード /（T16）
+
+const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, k) => id === b[k]);
+
+/**
+ * / の先読み（D-45・D-51。04「ダッシュボード」の読むもの）：立場の種類ごとに、ダッシュボードの欄が読むクエリと同じもの。
+ * - 総務（ロールが総務）：机椅子の軽い読み取り（6つの表。furnitureSoumuOptions。要対応とカードが同じキーを読む）
+ * - 団体代表（その年度で代表を務める団体がある）：自団体の提出と了承（furnitureRepOptions。代表する団体の欄と要対応が同じキーを読む）
+ * - 閲覧のみ：読まない（年度の行だけ）
+ * 版・振り分けの行・ルール・スナップショットは読まない（/ は版を使わないので、記録・先送りもしてよい。D-33）。
+ * 立場が届いて、総務でなくなった・代表する団体が変わったときは使わない（usable。settleEarlyLoad が消す）。
+ *
+ * @example
+ * planHomePrefetch({ yearId, groupIds: [], role: 'staff', params }) // [{ options: furnitureSoumuOptions(yearId), usable }]
+ */
+export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
+  const list: PrefetchEntry[] = [];
+  if (isSoumu(ctx.role)) list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
+  if (ctx.groupIds.length > 0) {
+    const ids = [...ctx.groupIds];
+    list.push({ options: furnitureRepOptions(ctx.yearId, ids), usable: (m) => sameIds(m.groups.map((g) => g.id), ids) });
+  }
+  return list;
+}
+
 // ---------------------------------------------------------------- 先読みの表
 
 /** 画面のパス（basePath と末尾の / を外したもの）→ 先読みするものの決め方（Providers が startEarlyLoad に渡す） */
 export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
+  '/': planHomePrefetch,
   '/stock': planStockPrefetch,
   '/request': planRequestPrefetch,
   '/my': planMyPrefetch,
@@ -323,7 +353,8 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
 
 /**
  * 開いたときのリクエストを覚え、次に開いたときに <head> の script が JS より先に送ってよい画面のパス（lib/boot/early-fetch.ts。
- * 許可リスト）。版を使わない画面（先読みの表と同じ）だけで、振り分けに関わる画面（/・/allocation・/swaps）は入れない
- * （スナップショット〔lib/data/snapshot.ts〕は年度の行〔版〕を読み終えてから残りを読む。D-33）
+ * 許可リスト）。版を使わない画面（先読みの表と同じ。/・/stock・/request・/my）だけで、振り分けに関わる画面（/furniture・
+ * /allocation・/swaps）は入れない（スナップショット〔lib/data/snapshot.ts〕は年度の行〔版〕を読み終えてから残りを読む。D-33）。
+ * ダッシュボード（/）は版・振り分けの行を読まないので、T16 で入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）
  */
 export const EARLY_FETCH_PATHS: readonly string[] = Object.freeze(Object.keys(SCREEN_PREFETCH));

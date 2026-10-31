@@ -305,7 +305,8 @@ describe('AuthProvider：画面を開くまでの読み込み（D-45）', () => 
     );
     await vi.waitFor(() => expect(screen.getByTestId('status').textContent).toBe('ready'));
     expect(queryClient.getQueryData(['year', Y, 'row'])).toEqual(row);
-    expect(JSON.parse(window.localStorage.getItem('gaapp:prefetch:u1')!)).toEqual({ latestYearId: Y, years: { [Y]: ['g1'] } });
+    // 年度ごとのロールも覚える（T16。/ の先読みで総務かを決める。この人はロールがない）
+    expect(JSON.parse(window.localStorage.getItem('gaapp:prefetch:u1')!)).toEqual({ latestYearId: Y, years: { [Y]: ['g1'] }, roles: {} });
   });
 
   it('覚えた id は下書きと同じく、手動のログアウトでその人の分を消し、強制では残す', async () => {
