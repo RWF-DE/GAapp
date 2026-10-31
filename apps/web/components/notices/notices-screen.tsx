@@ -8,6 +8,8 @@
 // - 書く・編集・削除は総務だけ（段は lib/modules/notices/permissions.ts。終了した年度は読むだけで、総務には帯を出す）。閲覧のみ・
 //   店長・副店長には書くためのもの（ボタン・帯）を何も出さない。
 // - 削除は確かめてから delete_notice（読んだときの updated_at）。応答が届かなかった・forbidden・conflict は読み直して決める（(B1)）。
+//   消せたか分からずに終わった後のもう一度で消えていたら「「{題名}」は削除されていました」（前の削除が通っていた可能性があるので、
+//   ほかの人が削除したとは言わない。レビューの T17-R2）。
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
@@ -97,13 +99,17 @@ function NoticesBoard({ yearId, yearStatus, role, userId }: { yearId: string; ye
   const confirmDelete = async () => {
     const n = deleting;
     if (!n) return;
+    // 同じ確かめのダイアログで、前の削除が消せたか分からずに終わった（deleteError は unknown のときだけ立ち、閉じると消える）
+    const afterUnknown = deleteError !== null;
     setDeleteError(null);
     const r = await runNoticeDelete({ send: () => deleteNotice(n), reread: () => readNotice(n.id), baseVersion: n.updated_at }, onAuthError);
     switch (r.type) {
       case 'deleted':
         dropNoticeFromCache(queryClient, yearId, n.id);
         invalidateNotices(queryClient, yearId);
-        if (r.before) toast.info(ALREADY_DELETED_MESSAGE);
+        // 止められて読み直すともうなかった：前の削除が通っていた可能性があるなら「削除されていました」（ほかの人とは言わない）
+        if (r.before && afterUnknown) toast.success(`「${n.title}」は削除されていました`);
+        else if (r.before) toast.info(ALREADY_DELETED_MESSAGE);
         else toast.success(`「${n.title}」を削除しました`);
         return;
       case 'changed':

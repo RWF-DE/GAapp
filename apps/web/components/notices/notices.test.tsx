@@ -16,7 +16,14 @@ import { draftKey } from '@/lib/drafts';
 import { unknownOutcomeMessage } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
-import { CONFLICT_NOTICE, PINNED_NOTE, REREAD_FAILED_NOTICE, STAFF_AUDIENCE_TEXT, UNCONFIRMED_NOTICE } from './notice-form-dialog';
+import {
+  CONFLICT_NOTICE,
+  NOT_EDITABLE_NOTICE,
+  PINNED_NOTE,
+  REREAD_FAILED_NOTICE,
+  STAFF_AUDIENCE_TEXT,
+  UNCONFIRMED_NOTICE,
+} from './notice-form-dialog';
 import { ALREADY_DELETED_MESSAGE, CLOSED_NOTICE, DELETE_CHANGED_MESSAGE, NoticesScreen } from './notices-screen';
 
 const toast = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn(), success: vi.fn() }));
@@ -24,6 +31,8 @@ vi.mock('sonner', () => ({ toast }));
 
 const h = vi.hoisted(() => ({
   membership: { status: 'idle' } as MembershipState,
+  /** 偽の DB が段を決めるロール（renderScreen の立場） */
+  role: 'head' as AppRole | null,
   userId: 'u-head',
   client: null as unknown,
   params: new URLSearchParams(),
@@ -205,8 +214,13 @@ const p0001 = (message: string, details?: unknown): FakeResult => ({
 const argsOf = (call: FakeCall) => call.ops[0]!.args[0] as Record<string, unknown>;
 const nextAt = () => `2026-10-${String(10 + ++clock).padStart(2, '0')}T00:00:00.000000+00:00`;
 
-/** save_notice の DB の動き（楽観ロック・作る・直す）。返り値はお知らせの行（宛先の団体は埋め込まない） */
+/**
+ * save_notice の DB の動き（段・楽観ロック・作る・直す）。返り値はお知らせの行（宛先の団体は埋め込まない）。
+ * 確かめる順は 0014 と同じ：宛先の段 → ない（not_found）→ 書いた人 → ピン留めを変える → 楽観ロック（conflict）。
+ * ピン留めの確かめが楽観ロックより先なので、ほかの人がピン留めを付け外しした後に古いピン留めで送ると forbidden になる。
+ */
 function dbSave(a: Record<string, unknown>): FakeResult {
+  const lead = h.role === 'admin' || h.role === 'head' || h.role === 'deputy_head';
   const groups = a.p_audience === 'groups' ? ((a.p_group_ids as string[]) ?? []).map((group_id) => ({ group_id })) : [];
   const fields = {
     audience: a.p_audience as DbNotice['audience'],
@@ -216,15 +230,19 @@ function dbSave(a: Record<string, unknown>): FakeResult {
     notice_groups: groups,
   };
   const at = nextAt();
+  if (fields.audience !== 'soumu' && !lead) return p0001('forbidden');
   if (a.p_notice_id) {
     const k = rows.findIndex((r) => r.id === a.p_notice_id);
     if (k < 0) return p0001('not_found');
+    if (rows[k]!.created_by !== h.userId && !lead) return p0001('forbidden');
+    if (rows[k]!.pinned !== fields.pinned && !lead) return p0001('forbidden');
     if (rows[k]!.updated_at !== a.p_base_updated_at) return p0001('conflict', { id: a.p_notice_id });
     rows[k] = { ...rows[k]!, ...fields, updated_by: h.userId, updated_at: at };
     const { notice_groups, ...row } = rows[k]!;
     void notice_groups;
     return { data: row };
   }
+  if (fields.pinned && !lead) return p0001('forbidden');
   const created: DbNotice = { ...dbNotice(uuid(200 + clock), {}), ...fields, created_by: h.userId, updated_by: h.userId, created_at: at, updated_at: at };
   rows.push(created);
   const { notice_groups, ...row } = created;
@@ -264,6 +282,7 @@ function handler(call: FakeCall): FakeResult | Promise<FakeResult> {
 
 function renderScreen(role: AppRole | null, opts: { groups?: GroupSummary[]; status?: YearStatus; userId?: string; search?: string } = {}) {
   const status = opts.status ?? 'requesting';
+  h.role = role;
   h.userId = opts.userId ?? (role === 'staff' ? STAFF : HEAD);
   h.params = new URLSearchParams(opts.search ?? '');
   h.membership = { status: 'ready', membership: member(role, opts.groups ?? [], status) };
@@ -795,6 +814,119 @@ describe('T17 読み直し：編集（(B1)）', () => {
   });
 });
 
+describe('T17 読み直し：総務部門員の編集（宛先とピン留めは入力の元の行のまま。レビューの T17-R1）', () => {
+  /** 開いた後に、部門長が自分の総務内のお知らせ（在庫の数え方）を直した（版が進む） */
+  const leadChanged = (patch: Partial<DbNotice>) => {
+    rows = rows.map((r) => (r.id === N_SOUMU_MINE ? { ...r, ...patch, updated_by: HEAD, updated_at: '2026-10-07T01:00:00.000000+00:00' } : r));
+  };
+  const mine = () => rows.find((r) => r.id === N_SOUMU_MINE)!;
+  const pinnedNote = () => screen.queryByTestId('notice-pinned-note');
+
+  it.each([
+    { what: '付けた', from: false, first: 'forbidden' },
+    { what: '外した', from: true, first: 'forbidden' },
+    { what: '付けた（1回目の応答が届かなかった）', from: false, first: 'network' },
+  ] as const)(
+    '部門長が間にピン留めを$what：1回目は開いたときのピン留めで送る（DB はピン留めの確かめが楽観ロックより先なので forbidden）。読み直して conflict と同じに扱い、もう一度の保存は読み直した版とピン留めで送る',
+    async ({ from, first }) => {
+      rows = rows.map((r) => (r.id === N_SOUMU_MINE ? { ...r, pinned: from } : r));
+      const user = userEvent.setup();
+      renderScreen('staff');
+      await openEdit(user, '在庫の数え方');
+      expect(pinnedNote() !== null).toBe(from);
+      leadChanged({ pinned: !from });
+      if (first === 'network') {
+        // 1回目は応答が届かない（DB は古いピン留めを forbidden で止め、何も変えていない）
+        let sent = 0;
+        override = (call) => (call.table === 'rpc:save_notice' && sent++ === 0 ? NETWORK : undefined);
+      }
+      await user.type(screen.getByLabelText('本文（任意）'), '本文を足した');
+      await user.click(screen.getByRole('button', { name: '保存' }));
+      const box = await screen.findByTestId('notice-conflict');
+      expect(argsOf(saveCalls()[0]!)).toMatchObject({ p_pinned: from, p_base_updated_at: '2026-10-06T03:00:00.000000+00:00' });
+      expect(box.textContent).toContain(CONFLICT_NOTICE);
+      expect(box.textContent).toContain('今の題名：在庫の数え方');
+      expect(box.textContent).toContain('更新：2026/10/07 10:00');
+      // forbidden の帯と立場の読み直しは出さない（立場は変わっていない）。ピン留めの知らせは読み直した行の値。入力は残す
+      expect(within(form()).queryByTestId('error-banner')).toBeNull();
+      expect(h.reloadMembership).not.toHaveBeenCalled();
+      expect(pinnedNote() !== null).toBe(!from);
+      expect((screen.getByLabelText('本文（任意）') as HTMLTextAreaElement).value).toBe('本文を足した');
+      await user.click(screen.getByRole('button', { name: '保存' }));
+      await waitFor(() => expect(screen.queryByTestId('notice-form')).toBeNull());
+      expect(argsOf(saveCalls()[1]!)).toMatchObject({
+        p_audience: 'soumu',
+        p_pinned: !from,
+        p_body: '本文を足した',
+        p_base_updated_at: '2026-10-07T01:00:00.000000+00:00',
+      });
+      expect(toast.success).toHaveBeenCalledWith('「在庫の数え方」を保存しました');
+      expect(mine()).toMatchObject({ audience: 'soumu', pinned: !from, body: '本文を足した', updated_by: STAFF });
+    },
+  );
+
+  it('部門長が間に宛先を全団体に変えた：conflict。総務部門員の編集できないお知らせになったので「保存」を押せなくし、理由と今の題名・宛先・更新の日時を出す（黙って総務内に戻さない）', async () => {
+    const user = userEvent.setup();
+    renderScreen('staff');
+    await openEdit(user, '在庫の数え方');
+    leadChanged({ audience: 'all_groups', title: '全団体への連絡に変えた' });
+    await user.type(screen.getByLabelText('本文（任意）'), '本文を足した');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const box = await screen.findByTestId('notice-not-editable');
+    expect(argsOf(saveCalls()[0]!)).toMatchObject({ p_audience: 'soumu', p_pinned: false });
+    expect(box.textContent).toContain(NOT_EDITABLE_NOTICE);
+    expect(box.textContent).toContain('今の題名：全団体への連絡に変えた');
+    expect(box.textContent).toContain('今の宛先：全団体');
+    expect(box.textContent).toContain('更新：2026/10/07 10:00');
+    expect(screen.queryByTestId('notice-conflict')).toBeNull();
+    const save = screen.getByRole('button', { name: '保存' });
+    expect(save.hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText('今の立場・年度の状態では保存できません')).toBeTruthy();
+    await user.click(save);
+    expect(saveCalls()).toHaveLength(1);
+    expect(mine()).toMatchObject({ audience: 'all_groups', title: '全団体への連絡に変えた', body: null, updated_by: HEAD });
+    expect((screen.getByLabelText('本文（任意）') as HTMLTextAreaElement).value).toBe('本文を足した');
+  });
+
+  it('下書きを戻しても、宛先とピン留めは開いたときの行のまま（戻すのは題名と本文）。下書きの版が古ければ conflict になり、読み直した版で保存できる', async () => {
+    // 下書きを書いた後に、部門長がピン留めを付けた（下書きのピン留めは外れたまま）
+    rows = rows.map((r) => (r.id === N_SOUMU_MINE ? { ...r, pinned: true } : r));
+    const key = draftKey({ userId: STAFF, yearId: Y, screen: 'notices', target: N_SOUMU_MINE });
+    const values = { audience: 'soumu', title: '下書きの題名', body: '下書きの本文', pinned: false, groupIds: [] };
+    window.localStorage.setItem(key, JSON.stringify({ value: { values, baseUpdatedAt: '2026-10-05T00:00:00.000000+00:00' }, savedAt: Date.now() }));
+    const user = userEvent.setup();
+    renderScreen('staff');
+    await openEdit(user, '在庫の数え方');
+    expect(pinnedNote()?.textContent).toBe(PINNED_NOTE);
+    await user.click(screen.getByRole('button', { name: '戻す' }));
+    expect((screen.getByLabelText('題名') as HTMLInputElement).value).toBe('下書きの題名');
+    expect((screen.getByLabelText('本文（任意）') as HTMLTextAreaElement).value).toBe('下書きの本文');
+    expect(pinnedNote()?.textContent).toBe(PINNED_NOTE);
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    expect(await screen.findByTestId('notice-conflict')).toBeTruthy();
+    expect(argsOf(saveCalls()[0]!)).toMatchObject({ p_title: '下書きの題名', p_pinned: true, p_base_updated_at: '2026-10-05T00:00:00.000000+00:00' });
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(screen.queryByTestId('notice-form')).toBeNull());
+    expect(argsOf(saveCalls()[1]!)).toMatchObject({ p_pinned: true, p_base_updated_at: '2026-10-06T03:00:00.000000+00:00' });
+    expect(mine()).toMatchObject({ title: '下書きの題名', body: '下書きの本文', pinned: true });
+  });
+
+  it('forbidden で、読み直すと版が同じ（立場が変わった）：今までの forbidden の扱い（失敗の帯と立場の読み直し。入力は残す）', async () => {
+    override = (call) => (call.table === 'rpc:save_notice' ? p0001('forbidden') : undefined);
+    const user = userEvent.setup();
+    renderScreen('staff');
+    await openEdit(user, '在庫の数え方');
+    await user.type(screen.getByLabelText('本文（任意）'), '本文');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    expect((await within(form()).findByTestId('error-banner')).textContent).toContain('権限がありません。立場が変わった可能性があります');
+    expect(h.reloadMembership).toHaveBeenCalled();
+    expect(screen.queryByTestId('notice-conflict')).toBeNull();
+    // そのお知らせを1回読み直して確かめた
+    expect(issued.filter((c) => c.table === 'notices' && c.ops.some((o) => o.op === 'maybeSingle'))).toHaveLength(1);
+    expect((screen.getByLabelText('本文（任意）') as HTMLTextAreaElement).value).toBe('本文');
+  });
+});
+
 describe('T17 読み直し：出す（(B2)）', () => {
   it('応答が届かず、自分が出した最近のお知らせに同じ中身の新しいものがあれば「出されていました」で閉じる', async () => {
     override = (call) => {
@@ -915,6 +1047,60 @@ describe('T17 削除', () => {
     override = null;
     await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '削除する' }));
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('「総務の集合」を削除しました'));
+  });
+
+  it('消せたか分からなかった後に、もう一度押すと消えていた：「「…」は削除されていました」（ほかの人が削除したとは言わない。レビューの T17-R2）', async () => {
+    let reachable = false;
+    override = (call) => {
+      if (reachable) return undefined;
+      if (call.table === 'rpc:delete_notice') {
+        dbDelete(argsOf(call)); // 1回目の削除は DB に届いたが、応答が届かない
+        return NETWORK;
+      }
+      // 読み直しも届かない（消せたか決められない）
+      if (call.table === 'notices' && call.ops.some((o) => o.op === 'maybeSingle')) return NETWORK;
+      return undefined;
+    };
+    const user = userEvent.setup();
+    renderScreen('head');
+    await waitFor(() => expect(itemIds()).toHaveLength(6));
+    await user.click(screen.getByRole('button', { name: '「総務の集合」を削除' }));
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '削除する' }));
+    expect((await screen.findByTestId('notice-delete-error')).textContent).toBe(unknownOutcomeMessage('削除'));
+    // 通信が戻ってもう一度：delete_notice は、ないお知らせに forbidden。読み直すともうない
+    reachable = true;
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '削除する' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('「総務の集合」は削除されていました'));
+    expect(toast.info).not.toHaveBeenCalledWith(ALREADY_DELETED_MESSAGE);
+    expect(deleteCalls()).toHaveLength(2);
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await waitFor(() => expect(itemIds()).not.toContain(N_SOUMU_OTHER));
+  });
+
+  it('消せたか分からなかった後に「やめる」で閉じ、開き直して消えていた：前の知らせは持ち越さず「すでに削除されていました」', async () => {
+    let reachable = false;
+    override = (call) => {
+      if (reachable) return undefined;
+      if (call.table === 'rpc:delete_notice') return NETWORK;
+      if (call.table === 'notices' && call.ops.some((o) => o.op === 'maybeSingle')) return NETWORK;
+      return undefined;
+    };
+    const user = userEvent.setup();
+    renderScreen('head');
+    await waitFor(() => expect(itemIds()).toHaveLength(6));
+    await user.click(screen.getByRole('button', { name: '「総務の集合」を削除' }));
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '削除する' }));
+    expect(await screen.findByTestId('notice-delete-error')).toBeTruthy();
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'やめる' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    // 閉じている間に、ほかの人が消した
+    reachable = true;
+    rows = rows.filter((r) => r.id !== N_SOUMU_OTHER);
+    await user.click(screen.getByRole('button', { name: '「総務の集合」を削除' }));
+    expect(screen.queryByTestId('notice-delete-error')).toBeNull();
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '削除する' }));
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith(ALREADY_DELETED_MESSAGE));
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it('応答が届かず、読み直すともうない：消せたとして「「…」を削除しました」', async () => {

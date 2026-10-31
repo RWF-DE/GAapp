@@ -32,11 +32,19 @@ export function canPinNotices(role: AppRole | null): boolean {
   return isLead(role);
 }
 
-/** そのお知らせに「編集」を出すか（部門長以上はどれでも、総務部門員は自分が書いた総務内のお知らせだけ） */
-export function canEditNotice(n: Pick<NoticeRow, 'created_by' | 'audience'>, me: NoticeActor): boolean {
-  if (!canWriteNotices(me.role, me.status)) return false;
+/**
+ * 段で、そのお知らせを直せるか（年度の状態は見ない）：部門長以上はどれでも、総務部門員は自分が書いた総務内のお知らせだけ。
+ * 編集のダイアログが、入力の元の行（conflict の後は読み直した行）を今の段で直せるかにも使う（宛先が総務内でなくなったら、
+ * 総務部門員の保存で黙って総務内に戻さない。レビューの T17-R1）。
+ */
+export function canEditNoticeByTier(n: Pick<NoticeRow, 'created_by' | 'audience'>, me: Pick<NoticeActor, 'role' | 'userId'>): boolean {
   if (isLead(me.role)) return true;
-  return !!me.userId && n.created_by === me.userId && n.audience === 'soumu';
+  return isSoumu(me.role) && !!me.userId && n.created_by === me.userId && n.audience === 'soumu';
+}
+
+/** そのお知らせに「編集」を出すか（書けて〔総務で、終了でない〕、段で直せる：部門長以上はどれでも、総務部門員は自分が書いた総務内だけ） */
+export function canEditNotice(n: Pick<NoticeRow, 'created_by' | 'audience'>, me: NoticeActor): boolean {
+  return canWriteNotices(me.role, me.status) && canEditNoticeByTier(n, me);
 }
 
 /** そのお知らせに「削除」を出すか（部門長以上はどれでも、総務部門員は自分が書いたお知らせ） */

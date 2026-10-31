@@ -466,6 +466,96 @@ test('T17 編集の衝突：2つのセッション（総務部門長と管理者
   }
 });
 
+test('T17 総務部門員の編集の衝突：部門長が間にピン留めを付けると、読み直してピン留めのまま保存できる。宛先を全団体に変えると「保存」を押せず、総務内に戻さない（レビューの T17-R1）', async ({
+  browser,
+}) => {
+  const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { staff: true, head: true } });
+  const staff = await openAs(browser, 'staff', s);
+  const head = await openAs(browser, 'head', s);
+  const title = 'E2E 部員の総務内';
+  try {
+    const [id] = await insertNotices(s.yearId, [{ audience: 'soumu', title, body: '元の本文', createdBy: SEED_USER_IDS.staff }]);
+    const sd = staff.getByRole('dialog', { name: 'お知らせを編集' });
+    const hd = head.getByRole('dialog', { name: 'お知らせを編集' });
+    /** 部門長が一覧を開き直して編集を開く（いつも今の版で開く） */
+    const headEdits = async () => {
+      await openNotices(head);
+      await noticeItem(head, id).getByRole('button', { name: `「${title}」を編集` }).click();
+      await expect(hd).toBeVisible();
+    };
+
+    // 部員が自分の総務内の編集を開く（ピン留めはない）
+    await openNotices(staff);
+    await noticeItem(staff, id).getByRole('button', { name: `「${title}」を編集` }).click();
+    await expect(sd.getByTestId('notice-audience-fixed')).toBeVisible();
+    await expect(sd.getByTestId('notice-pinned-note')).toHaveCount(0);
+
+    // その間に部門長がピン留めを付けて保存
+    await headEdits();
+    await hd.getByRole('switch', { name: 'ピン留めする' }).click();
+    await hd.getByRole('button', { name: '保存' }).click();
+    await expect(head.getByText(`「${title}」を保存しました`)).toBeVisible();
+    await expect(hd).toHaveCount(0);
+
+    // 部員が本文を直して保存：開いたときのピン留め（なし）で送るので、DB はピン留めの確かめ（楽観ロックより先）で forbidden を返す。
+    // 画面は読み直して conflict と同じ知らせを出し、ピン留めの知らせも読み直した値で出す（失敗の帯は出さない）
+    await sd.getByLabel('本文（任意）').fill('部員が直した本文');
+    await sd.getByRole('button', { name: '保存' }).click();
+    const conflict = sd.getByTestId('notice-conflict');
+    await expect(conflict).toContainText(
+      'ほかの人がこのお知らせを先に変えました。読み直しました。入力は残してあります。確かめてから、もう一度「保存」を押してください（押すと、この入力で上書きします）',
+    );
+    await expect(conflict).toContainText(`更新：${await noticeTimeLabel(id, 'updated_at')}`);
+    await expect(sd.getByTestId('notice-pinned-note')).toHaveText('ピン留めされています（付け外しは部門長以上）');
+    await expect(sd.getByTestId('error-banner')).toHaveCount(0);
+    await expect(sd.getByLabel('本文（任意）')).toHaveValue('部員が直した本文');
+    expect((await noticesOf(s.yearId))[0]).toMatchObject({ pinned: true, body: '元の本文', updated_by: SEED_USER_IDS.head });
+
+    // もう一度「保存」：読み直した版とピン留め（付いたまま）で送り、保存できる
+    await sd.getByRole('button', { name: '保存' }).click();
+    await expect(staff.getByText(`「${title}」を保存しました`)).toBeVisible();
+    await expect(sd).toHaveCount(0);
+    expect((await noticesOf(s.yearId))[0]).toMatchObject({
+      audience: 'soumu',
+      pinned: true,
+      body: '部員が直した本文',
+      created_by: SEED_USER_IDS.staff,
+      updated_by: SEED_USER_IDS.staff,
+    });
+    await expect(noticeItem(staff, id)).toHaveAttribute('data-pinned', 'true');
+
+    // 部員がもう一度開いた後に、部門長が宛先を全団体に変える
+    await noticeItem(staff, id).getByRole('button', { name: `「${title}」を編集` }).click();
+    await expect(sd.getByTestId('notice-pinned-note')).toBeVisible();
+    await headEdits();
+    await hd.getByRole('radio', { name: '全団体' }).click();
+    await hd.getByRole('button', { name: '保存' }).click();
+    await expect(head.getByText(`「${title}」を保存しました`)).toBeVisible();
+    await expect(hd).toHaveCount(0);
+
+    // 部員が題名を直して保存：conflict。読み直したお知らせは部員の編集できない全団体あてなので、「保存」を押せなくし、理由と今の宛先を出す
+    await sd.getByLabel('題名', { exact: true }).fill('E2E 部員が直した題名');
+    await sd.getByRole('button', { name: '保存' }).click();
+    const blocked = sd.getByTestId('notice-not-editable');
+    await expect(blocked).toContainText(
+      'ほかの人がこのお知らせを先に変えました。読み直しました。総務部門員が編集できるのは、自分が書いた総務内のお知らせだけなので、このお知らせは保存できません。入力は残してあります。必要なら写してから閉じてください',
+    );
+    await expect(blocked).toContainText(`今の題名：${title}`);
+    await expect(blocked).toContainText('今の宛先：全団体');
+    await expect(sd.getByTestId('notice-conflict')).toHaveCount(0);
+    await expect(sd.getByRole('button', { name: '保存' })).toBeDisabled();
+    await expect(sd.getByText('今の立場・年度の状態では保存できません')).toBeVisible();
+    await expect(sd.getByLabel('題名', { exact: true })).toHaveValue('E2E 部員が直した題名');
+    // DB は部門長の全団体あてのまま（部員の保存で総務内に戻していない）。部員の一覧（ダイアログの後ろ）も読み直している
+    expect((await noticesOf(s.yearId))[0]).toMatchObject({ audience: 'all_groups', title, pinned: true, updated_by: SEED_USER_IDS.head });
+    await expect(noticeItem(staff, id)).toHaveAttribute('data-audience', 'all_groups');
+  } finally {
+    await staff.context().close().catch(() => undefined);
+    await head.context().close().catch(() => undefined);
+    await s.cleanup();
+  }
+});
+
 test('T17 削除：確かめてから削除すると一覧とダッシュボードの欄から消える。もう消えたお知らせを別のセッションで削除すると「すでに削除されていました」', async ({
   browser,
 }) => {

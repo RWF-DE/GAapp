@@ -234,9 +234,11 @@ test.describe('T17 書く・編集のダイアログ', () => {
 });
 
 test.describe('T17 編集の衝突と終了した年度', () => {
-  test('T17 編集の衝突の知らせ（管理者のダイアログ。入力を残し、今の題名と更新の日時）と、終了した年度の一覧（帯と、操作なし）', async ({ browser }) => {
+  test('T17 編集の衝突の知らせ（管理者のダイアログ。入力を残し、今の題名と更新の日時）、総務部門員の編集できなくなった衝突、終了した年度の一覧（帯と、操作なし）', async ({
+    browser,
+  }) => {
     test.setTimeout(180_000);
-    const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true, head: true } });
+    const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true, head: true, staff: true } });
     const closed = await createScenario({ status: 'closed', requestWindow: 'closed', dataset: 'small', roles: { head: true } });
     const pages: Page[] = [];
     try {
@@ -263,6 +265,25 @@ test.describe('T17 編集の衝突と終了した年度', () => {
       await expect(ad.getByTestId('notice-conflict')).toBeVisible();
       await expect(ad.getByTestId('notice-conflict')).toContainText('今の題名：搬入日の集合（時間を変更）');
       await shoot(admin, 'T17', 'notice-conflict-pc');
+
+      // 総務部門員の編集の衝突（レビューの T17-R1）：開いた後に部門長が宛先を全団体に変えた。読み直すと総務部門員の編集できない
+      // お知らせなので、理由と今の宛先を出して「保存」を押せない（撮影なので部門長の変更は SQL で。E2E は画面から）
+      const [mine] = await insertNotices(s.yearId, [
+        { audience: 'soumu', title: '倉庫Bの鍵の受け渡し', body: '倉庫Bの鍵は、前日の17時に総務の部屋で受け渡します。', createdBy: S },
+      ]);
+      await backdateNotices([{ id: mine, createdMinutesAgo: 300 }]);
+      const staff = await openAs(browser, 'staff', s);
+      pages.push(staff);
+      await openNotices(staff);
+      await noticeItem(staff, mine).getByRole('button', { name: '「倉庫Bの鍵の受け渡し」を編集' }).click();
+      const sd = staff.getByRole('dialog', { name: 'お知らせを編集' });
+      await expect(sd).toBeVisible();
+      await sql(`update public.notices set audience = 'all_groups', title = '倉庫Bの鍵の受け渡し（全団体へ）', updated_by = $2 where id = $1`, [mine, H]);
+      await sd.getByLabel('本文（任意）').fill('倉庫Bの鍵は、前日の17時に総務の部屋で受け渡します。\n受け取ったら、鍵の貸し出し表に書いてください。');
+      await sd.getByRole('button', { name: '保存' }).click();
+      await expect(sd.getByTestId('notice-not-editable')).toContainText('今の宛先：全団体');
+      await expect(sd.getByRole('button', { name: '保存' })).toBeDisabled();
+      await shoot(staff, 'T17', 'notice-conflict-staff-pc');
 
       // 終了した年度（総務部門長）：読み取り専用の帯、「お知らせを書く」「編集」「削除」なし。終了した年度はふつう前の年度なので、
       // 1日目は動かさない（「最新でない年度」の帯も出る）

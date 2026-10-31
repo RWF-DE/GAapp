@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { YearStatus } from '@/lib/auth/membership';
 import type { AppRole } from '@/lib/auth/roles';
 import type { NoticeAudience } from '@/lib/data/notices';
-import { canDeleteNotice, canEditNotice, canPinNotices, canWriteNotices, noticeAudiencesFor } from './permissions';
+import { canDeleteNotice, canEditNotice, canEditNoticeByTier, canPinNotices, canWriteNotices, noticeAudiencesFor } from './permissions';
 
 const ROLES: (AppRole | null)[] = ['admin', 'head', 'deputy_head', 'staff', 'viewer', null];
 const STATUSES: YearStatus[] = ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'];
@@ -57,6 +57,22 @@ describe('T17 お知らせの段', () => {
     expect(canEditNotice({ created_by: ME, audience: 'all_groups' }, me)).toBe(false);
     expect(canDeleteNotice({ created_by: ME }, me)).toBe(true);
     expect(canEditNotice({ created_by: ME, audience: 'soumu' }, me)).toBe(true);
+  });
+
+  it('段で直せるか（年度の状態は見ない。ダイアログの入力の元の行に使う。レビューの T17-R1）：部門長以上はどれでも、総務部門員は自分が書いた総務内だけ、閲覧のみ・ロールなしは何も', () => {
+    for (const role of ROLES) {
+      for (const author of [ME, OTHER, null]) {
+        for (const audience of AUDIENCES) {
+          const expected = LEAD.has(role) || (role === 'staff' && author === ME && audience === 'soumu');
+          expect(canEditNoticeByTier({ created_by: author, audience }, { role, userId: ME }), `${role}・${author}・${audience}`).toBe(expected);
+          // 終了の年度は段によらず出さない（canEditNotice は書けるかと段の両方）
+          expect(canEditNotice({ created_by: author, audience }, { role, status: 'closed', userId: ME })).toBe(false);
+        }
+      }
+    }
+    // 自分の総務内のお知らせが、ほかの人に全団体あてへ変えられた（conflict で読み直した行）：総務部門員は直せない
+    expect(canEditNoticeByTier({ created_by: ME, audience: 'all_groups' }, { role: 'staff', userId: ME })).toBe(false);
+    expect(canEditNoticeByTier({ created_by: ME, audience: 'soumu' }, { role: 'staff', userId: null })).toBe(false);
   });
 
   it('自分の user_id が分からなければ、総務部門員は自分のお知らせを見分けられないので出さない（部門長以上は出す）', () => {

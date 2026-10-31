@@ -4,6 +4,9 @@
 // T17・D-53）。
 // - 段で出し分ける（lib/modules/notices/permissions.ts）：部門長以上は宛先を3つから選び（指定の団体なら宛先の団体の一覧）、ピン留めを
 //   付け外しできる。総務部門員は宛先を選べず（総務内だけ）、ピン留めの欄を出さない（ピン留めされたお知らせを直すときは今の値のまま送る）。
+//   総務部門員の宛先・ピン留め・宛先の団体は、いつも入力の元の行（開いたときの行。conflict の後は読み直した行）の値で送り、表示する
+//   （下書きの値は使わない。古いピン留めで送ると save_notice が forbidden で止める。レビューの T17-R1）。入力の元の行を今の段で直せない
+//   （総務部門員で、宛先が総務内でなくなった）ときは「保存」を押せなくする（黙って総務内に戻さない）。
 // - 送る前に zod（lib/schemas/notices.ts。DB と同じ trim と字数）で確かめ、欄の下にエラーを出す。DB の invalid_input（field）も同じ欄に出す。
 // - 編集は全部の欄と、読んだときの updated_at の文字列（入力の元の版）を送る。何も変えていなければ送らずに「変更はありません」で閉じる。
 // - 応答が届かなかったとき・止められたときは notice-write.ts（2.6 の (B1)・(B2)）。conflict は読み直した行を入力の元にして入力を残し
@@ -47,7 +50,7 @@ import { formatDateTime } from '@/lib/datetime';
 import { createDraftWriter, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
 import { classifyError, effectOf, messageFor, NOTICE_CONFLICT_MESSAGE, NOTICE_MISSING_MESSAGE, unknownOutcomeMessage, type MessageContext } from '@/lib/errors';
 import { NOTICE_AUDIENCE_LABELS } from '@/lib/labels';
-import { canPinNotices, noticeAudiencesFor } from '@/lib/modules/notices/permissions';
+import { canEditNoticeByTier, canPinNotices, noticeAudiencesFor } from '@/lib/modules/notices/permissions';
 import {
   charCount,
   checkNoticeForm,
@@ -97,6 +100,10 @@ export const STAFF_AUDIENCE_TEXT = '総務内（総務部門員が出せるの�
 export const PINNED_NOTE = 'ピン留めされています（付け外しは部門長以上）';
 /** conflict：読み直した行を入力の元にして入力を残す（(B1)） */
 export const CONFLICT_NOTICE = `${NOTICE_CONFLICT_MESSAGE}。入力は残してあります。確かめてから、もう一度「保存」を押してください（押すと、この入力で上書きします）`;
+/** conflict で読み直したお知らせを、今の段で直せない（総務部門員で、宛先が総務内でなくなった）。「保存」を押せない（レビューの T17-R1） */
+export const NOT_EDITABLE_NOTICE = `${NOTICE_CONFLICT_MESSAGE}。総務部門員が編集できるのは、自分が書いた総務内のお知らせだけなので、このお知らせは保存できません。入力は残してあります。必要なら写してから閉じてください`;
+/** 送るボタンを押せないとき（書けない・入力の元の行を今の段で直せない）の足もとの文 */
+export const CANNOT_SAVE_TEXT = '今の立場・年度の状態では保存できません';
 /** 止められた後に読み直せなかった（「読み直しました」とは言わない） */
 export const REREAD_FAILED_NOTICE = 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度保存してください';
 /** 出すの応答が届かず、読み直せなかった（(B2)） */
@@ -138,6 +145,17 @@ export function normalizeNoticeDraft(v: unknown): NoticeDraft | null {
 /** そのお知らせの今の値（編集の入力の元） */
 function formOf(n: NoticeRow): NoticeFormValues {
   return { audience: n.audience, title: n.title, body: n.body ?? '', pinned: n.pinned, groupIds: [...n.groupIds] };
+}
+
+/** 段で変えられない欄（宛先・ピン留め・宛先の団体） */
+type FixedFields = Pick<NoticeFormValues, 'audience' | 'pinned' | 'groupIds'>;
+
+/**
+ * 総務部門員（宛先とピン留めを変えられない段）が送る宛先・ピン留め・宛先の団体：入力の元の行（開いたときの行。conflict の後は
+ * 読み直した行）の値。作るときは総務内・ピン留めなし。
+ */
+function fixedFieldsOf(row: NoticeRow | null): FixedFields {
+  return row ? { audience: row.audience, pinned: row.pinned, groupIds: [...row.groupIds] } : { audience: 'soumu', pinned: false, groupIds: [] };
 }
 
 export function NoticeFormDialog(props: NoticeFormDialogProps) {
@@ -204,6 +222,11 @@ function NoticeFormBody({
 
   const audiences = noticeAudiencesFor(role);
   const canPin = canPinNotices(role);
+  // 総務部門員（ピン留めと宛先を変えられない段）は、宛先・ピン留め・宛先の団体を入力の元の行のまま送り、ピン留めの知らせもその値で出す
+  // （開いたときの値や下書きの値で送ると、ほかの人がピン留めを付け外しした後に forbidden で止まり続ける。レビューの T17-R1）
+  const fixed = canPin ? null : fixedFieldsOf(savedRow);
+  // 入力の元の行を今の段で直せない（総務部門員で、conflict で読み直した宛先が総務内でなくなった・立場が変わった）：保存を押せなくする
+  const blocked = savedRow !== null && !canEditNoticeByTier(savedRow, { role, userId });
   const order = useMemo(() => groupOrderOf(groups), [groups]);
   const dirty = useMemo(() => JSON.stringify(values) !== JSON.stringify(initial), [values, initial]);
   // 応答が届かなかった後・止められた後に読み直せなかったときは、DB の行が入力の元と同じか分からないので、「変更はありません」で閉じずに送る
@@ -310,9 +333,11 @@ function NoticeFormBody({
   };
 
   const save = async () => {
-    if (pending || !writable || submit?.type === 'missing' || submit?.type === 'unconfirmed') return;
-    // 宛先の団体は、今の一覧にある団体だけを団体の並びで送る（消えた団体は選べない）
-    const normalized: NoticeFormValues = { ...values, groupIds: orderGroupIds(values.groupIds, order).filter((id) => order.has(id)) };
+    if (pending || !writable || blocked || submit?.type === 'missing' || submit?.type === 'unconfirmed') return;
+    // 総務部門員は宛先・ピン留め・宛先の団体を入力の元の行のまま送る。宛先の団体は、今の一覧にある団体だけを団体の並びで送る
+    // （消えた団体は選べない）
+    const input: NoticeFormValues = fixed ? { ...values, ...fixed } : values;
+    const normalized: NoticeFormValues = { ...input, groupIds: orderGroupIds(input.groupIds, order).filter((id) => order.has(id)) };
     const r = checkNoticeForm(normalized);
     setErrors(r.errors);
     if (!r.write) return;
@@ -360,7 +385,9 @@ function NoticeFormBody({
 
   const restoreDraft = () => {
     if (!draft) return;
-    setValues(draft.value.values);
+    const d = draft.value.values;
+    // 総務部門員は宛先とピン留めを変えられないので、戻すのは題名と本文だけ（宛先・ピン留めは入力の元の行のまま。下書きの値は古いことがある）
+    setValues(canPin ? d : { ...values, title: d.title, body: d.body });
     // 直すときは、下書きを書いたときの版で送る（間にほかの人が変えていれば conflict になり、読み直して決める）
     if (editing) setLockUpdatedAt(draft.value.baseUpdatedAt ?? editing.updated_at);
     setDraft(null);
@@ -396,7 +423,7 @@ function NoticeFormBody({
           </DialogDescription>
         </DialogHeader>
         <div ref={bodyRef} data-testid="notice-form" className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
-          <SubmitNotice submit={submit} onReload={onReload} />
+          <SubmitNotice submit={submit} blocked={blocked} onReload={onReload} />
           {draft ? <DraftNotice savedAt={draft.savedAt} onRestore={restoreDraft} onDiscard={discardDraft} /> : null}
 
           <div data-field="audience" className="space-y-2">
@@ -506,14 +533,14 @@ function NoticeFormBody({
                 </p>
               </div>
             </div>
-          ) : values.pinned ? (
+          ) : fixed?.pinned ? (
             <p data-testid="notice-pinned-note" className="text-sm text-muted-foreground">
               {PINNED_NOTE}
             </p>
           ) : null}
         </div>
         <DialogFooter className="flex-row flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
-          {!writable ? <p className="mr-auto text-sm text-muted-foreground">今の立場・年度の状態では保存できません</p> : null}
+          {!writable || blocked ? <p className="mr-auto text-sm text-muted-foreground">{CANNOT_SAVE_TEXT}</p> : null}
           <Button variant="outline" onClick={requestClose} disabled={pending}>
             やめる
           </Button>
@@ -524,7 +551,7 @@ function NoticeFormBody({
           ) : (
             <Button
               onClick={() => void save()}
-              disabled={pending || !writable || submit?.type === 'missing'}
+              disabled={pending || !writable || blocked || submit?.type === 'missing'}
               aria-busy={pending || undefined}
             >
               {sendLabel}
@@ -549,21 +576,37 @@ function NoticeFormBody({
   );
 }
 
-/** 送った後の知らせ（conflict・消えていた・保存できたか分からない・確かめられない・そのほかの失敗） */
-function SubmitNotice({ submit, onReload }: { submit: SubmitState | null; onReload: () => void }) {
+/**
+ * 送った後の知らせ（conflict・消えていた・保存できたか分からない・確かめられない・そのほかの失敗）。blocked は、入力の元の行を今の段で
+ * 直せない（conflict で読み直したお知らせの宛先が総務内でなくなった総務部門員など）：conflict の知らせの代わりに、保存できない理由と
+ * 今の宛先を出す（レビューの T17-R1）
+ */
+function SubmitNotice({ submit, blocked, onReload }: { submit: SubmitState | null; blocked: boolean; onReload: () => void }) {
   if (!submit) return null;
   const box = 'space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm';
   switch (submit.type) {
-    case 'conflict':
-      return (
+    case 'conflict': {
+      const { row } = submit;
+      const updated = (
+        <p>
+          更新：<time dateTime={row.updated_at}>{formatDateTime(row.updated_at)}</time>
+        </p>
+      );
+      return blocked ? (
+        <div role="alert" data-testid="notice-not-editable" data-submit-error className={box}>
+          <p className="font-medium text-destructive">{NOT_EDITABLE_NOTICE}</p>
+          <p className="[overflow-wrap:anywhere]">今の題名：{row.title}</p>
+          <p>今の宛先：{NOTICE_AUDIENCE_LABELS[row.audience]}</p>
+          {updated}
+        </div>
+      ) : (
         <div role="alert" data-testid="notice-conflict" data-submit-error className={box}>
           <p className="font-medium text-destructive">{CONFLICT_NOTICE}</p>
-          <p className="[overflow-wrap:anywhere]">今の題名：{submit.row.title}</p>
-          <p>
-            更新：<time dateTime={submit.row.updated_at}>{formatDateTime(submit.row.updated_at)}</time>
-          </p>
+          <p className="[overflow-wrap:anywhere]">今の題名：{row.title}</p>
+          {updated}
         </div>
       );
+    }
     case 'missing':
       return (
         <div role="alert" data-testid="notice-missing" data-submit-error className={box}>

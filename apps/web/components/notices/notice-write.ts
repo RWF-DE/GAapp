@@ -2,7 +2,8 @@
 // エラー、notes/T17.md「後半（画面）の約束」5。T17）。画面（ダイアログ・削除の確かめ）は結果の種類で出し方を決める。
 // - 直す（save_notice の notice_id あり）と消す（delete_notice）は楽観ロック（updated_at）なので (B1)：応答が届かなかったその場と、
 //   conflict・not_found（消すは forbidden も。delete_notice は、ないお知らせにも forbidden を返す）で止められたときに、そのお知らせを
-//   1回読み直して決める。確かめるためだけの状態は持たない。
+//   1回読み直して決める。確かめるためだけの状態は持たない。直すの forbidden も読み直す（save_notice はピン留めを変える確かめを
+//   楽観ロックより先に行うので、ほかの人がピン留めを付け外しした後の総務部門員の保存は forbidden になる。レビューの T17-R1）。
 // - 出す（save_notice の notice_id なし）は冪等の鍵がないので (B2)：応答が届かなかったら、自分が出した最近のお知らせを読み直して
 //   確かめる。読み直せなければ「確かめる」まで送り直させない（(B2) だけが持つ状態。ダイアログが持つ）。
 // 401 は1回だけセッションを更新して送り直す（ほかの画面と同じ）。
@@ -73,9 +74,30 @@ export async function confirmCreated(findCreated: () => Promise<NoticeRow | null
 }
 
 /**
+ * 直すときの forbidden（レビューの T17-R1）。save_notice の確かめの順は「書いた人 → ピン留めを変える → 楽観ロック」なので、部門長以上が
+ * 間にピン留めを付け外ししたお知らせを、総務部門員が開いたときのピン留めのまま保存すると、版が古くても conflict でなく forbidden になる。
+ * そのお知らせを1回読み直し、行があって版が読んだときと違えば（ほかの人が先に変えた）、中身が入力と同じなら saved（before）、違えば
+ * conflict（読み直した行を入力の元にする）。版が同じ・行がない・読み直せないときは、立場が変わった forbidden（failed。今までの扱い）。
+ * 行がないのを missing にしないのは、総務のまま消えたお知らせなら save_notice は not_found を返す（forbidden で行がないのは、
+ * 総務でなくなって読めないとき）ため。
+ */
+async function settleForbiddenEdit(req: NoticeSaveRequest, base: { id: string; updatedAt: string }, error: unknown): Promise<NoticeSaveResult> {
+  let row: NoticeRow | null;
+  try {
+    row = await req.reread();
+  } catch {
+    return { type: 'failed', error };
+  }
+  if (!row || row.updated_at === base.updatedAt) return { type: 'failed', error };
+  if (sameNoticeWrite(row, req.write)) return { type: 'saved', row, before: true };
+  return { type: 'conflict', row, error: appError('conflict', 'lock_conflict', { id: base.id }) };
+}
+
+/**
  * お知らせを出す・直す（2.6 の (B1)・(B2)）。
  * - 出す：応答が届かなければ confirmCreated。ほかの失敗は failed。
- * - 直す：応答が届かなかった・conflict・not_found なら読み直して settleLockedWrite で決める：saved → saved（before）、
+ * - 直す：forbidden なら settleForbiddenEdit（読み直して、版が進んでいれば conflict と同じ。レビューの T17-R1）。
+ *   応答が届かなかった・conflict・not_found なら読み直して settleLockedWrite で決める：saved → saved（before）、
  *   応答が届かなかった後の not-saved・unread → unknown、止められた後の unread → unread、changed（と止められた後の not-saved）→
  *   行があれば conflict（読み直した行）、なければ missing。応答が届かなかった後の conflict・missing の error は、画面が文言を出せるよう
  *   conflict・not_found の AppError にする（rpc の文言は save_notice）。ほかの失敗は failed。
@@ -87,6 +109,7 @@ export async function runNoticeSave(req: NoticeSaveRequest, onAuthError: AuthErr
   const unknown = isUnknownOutcome(error);
   const base = req.base;
   if (!base) return unknown ? confirmCreated(req.findCreated, error) : { type: 'failed', error };
+  if (classifyError(error).kind === 'forbidden') return settleForbiddenEdit(req, base, error);
   if (!unknown && !isLockRejection(error)) return { type: 'failed', error };
 
   const read: { row: NoticeRow | null } = { row: null };
