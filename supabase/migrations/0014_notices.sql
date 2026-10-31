@@ -17,8 +17,11 @@
 ------------------------------------------------------------------------
 create type public.notice_audience as enum ('soumu', 'all_groups', 'groups');
 
--- 題名は前後の空白（全角の空白を含む）を除いて 1〜100 字。RPC が除いてから入れ、CHECK は除いた形であることを確かめる
--- （画面の zod の trim は全角の空白も除くので、DB も同じ文字をそろえて除く）。本文は任意（空白だけなら null）で 4000 字まで。
+-- 題名は前後の空白を除いて 1〜100 字。RPC が除いてから入れ、CHECK は除いた形であることを確かめる。除く空白は、画面の zod の trim
+-- （JavaScript の String.prototype.trim）が除く 25 文字と同じにする：タブ・LF・垂直タブ・改ページ・CR・半角の空白・U+00A0・U+1680・
+-- U+2000〜U+200A・U+2028・U+2029・U+202F・U+205F・全角の空白（U+3000）・U+FEFF。画面を通さずに RPC を呼んでも、画面が空とみなす
+-- 題名（空白に見える文字だけの題名）は入らない。save_notice の c_space も同じ文字（直すときは両方を直す）。
+-- 本文は任意（空白だけなら null）で 4000 字まで。
 -- 書いた人・直した人（created_by・updated_by）と日時（created_at・updated_at）は DB が入れる（下の set_actor・set_timestamps）。
 -- unique (id, year_id) は notice_groups の複合外部キーの参照先（お知らせと団体が同じ年度であることを保証する。groups と同じ）
 create table public.notices (
@@ -32,8 +35,9 @@ create table public.notices (
   updated_by uuid references auth.users on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint notices_title_check
-    check (title <> '' and title = btrim(title, E' \t\n\r\u3000') and length(title) <= 100),
+  constraint notices_title_check check (title <> ''
+    and title = btrim(title, E'\t\n\u000b\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff')
+    and length(title) <= 100),
   constraint notices_body_check check (length(body) <= 4000),
   constraint notices_id_year_id_key unique (id, year_id)
 );
@@ -197,7 +201,8 @@ create function public.save_notice(
   p_base_updated_at timestamptz default null)
 returns public.notices language plpgsql security definer set search_path = '' as $$
 declare
-  c_space constant text := E' \t\n\r\u3000';         -- 題名の前後から除く空白（notices_title_check と同じ文字）
+  -- 題名の前後から除く空白（notices_title_check と同じ 25 文字。JavaScript の trim と同じ）。空白だけの本文を null にするときも使う
+  c_space constant text := E'\t\n\u000b\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff';
   v_title text := btrim(p_title, c_space);
   v_body text := case when btrim(coalesce(p_body, ''), c_space) = '' then null else p_body end;
   v_group_ids uuid[] := coalesce(p_group_ids, '{}');

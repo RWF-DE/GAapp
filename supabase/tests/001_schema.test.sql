@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(206);
+select plan(210);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -230,8 +230,9 @@ select throws_ok(format($$ insert into public.slots (year_id, day, starts_at, en
 select throws_ok(format($$ update public.deliveries set team = 0 where id = %L $$, tests.id('D_G1')), '23514', null, 'team は 1 以上');
 select throws_ok(format($$ update public.deliveries set team = 101 where id = %L $$, tests.id('D_G1')), '23514', null, 'team は 100 まで');
 select throws_ok($$ insert into public.audit_logs (table_name, row_pk, action) values ('x', '{}', 'merge') $$, '23514', null, 'audit_logs.action は insert・update・delete');
--- お知らせ（T17）：題名は前後の空白（半角の空白・タブ・改行・全角の空白）を除いた形で 1〜100 字（RPC が除いてから入れ、CHECK は
--- 除いた形であることを確かめる。SQL Editor から前後に空白のある題名を入れさせない）。本文は 4000 字まで（null 可）
+-- お知らせ（T17）：題名は前後の空白（JavaScript の String.prototype.trim が除く 25 文字。半角の空白・タブ・改行・全角の空白・U+00A0 など）を
+-- 除いた形で 1〜100 字（RPC が除いてから入れ、CHECK は除いた形であることを確かめる。SQL Editor から前後に空白のある題名を入れさせない）。
+-- 本文は 4000 字まで（null 可）
 select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', '') $$, tests.id('Y1')),
   '23514', null, 'notices.title が空');
 select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E' \t\u3000') $$, tests.id('Y1')),
@@ -246,6 +247,30 @@ select throws_ok(format($$ insert into public.notices (year_id, audience, title)
   '23514', null, '題名の後ろに改行（LF）');
 select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'題名\r') $$, tests.id('Y1')),
   '23514', null, '題名の後ろに改行（CR）');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'\u00a0') $$, tests.id('Y1')),
+  '23514', null, '題名がノーブレークスペース（U+00A0）だけ（T17A-1）');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'\u000b題名\ufeff') $$, tests.id('Y1')),
+  '23514', null, '題名の前に垂直タブ（U+000B）、後ろに U+FEFF（T17A-1）');
+select lives_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'\u200b\u0085v題名v\u180e\u3164') $$,
+  tests.id('Y1')), 'JavaScript の trim が除かない文字（U+200B・U+0085・U+180E・U+3164・v）は、前後にあっても入る（T17A-1）');
+-- 題名の CHECK の式をそのまま、BMP のすべての文字（U+0000 とサロゲートを除く）と補助面のいくつかの文字に当て、題名の前か後ろに
+-- 置くと拒まれる文字を並べる（T17A-1）。JavaScript の String.prototype.trim が除く 25 文字（Node で全部の文字を数えた）とちょうど同じこと
+create function tests.title_check_trimmed_chars() returns text language plpgsql as $f$
+declare
+  v_expr text := (select pg_get_expr(c.conbin, c.conrelid) from pg_constraint c
+                  where c.conrelid = 'public.notices'::regclass and c.conname = 'notices_title_check');
+  v text;
+begin
+  execute format($q$
+    select coalesce(string_agg(to_hex(g.c), ' ' order by g.c), '')
+    from (select c from generate_series(1, 65535) c where c not between 55296 and 57343
+          union all select unnest(array[65536, 128512, 131072, 917536, 1114111])) g(c)
+    where not (select bool_and(%s) from (values (chr(g.c) || '題名'), ('題名' || chr(g.c))) t(title)) $q$, v_expr) into v;
+  return v;
+end $f$;
+select is(tests.title_check_trimmed_chars(),
+  '9 a b c d 20 a0 1680 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 200a 2028 2029 202f 205f 3000 feff',
+  '題名の前後に置けない文字は、JavaScript の trim が除く 25 文字とちょうど同じ（T17A-1）');
 select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', repeat('あ', 101)) $$, tests.id('Y1')),
   '23514', null, '題名は 100 字まで');
 select lives_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', repeat('あ', 100)) $$, tests.id('Y1')),

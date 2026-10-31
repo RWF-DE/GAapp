@@ -296,12 +296,15 @@ create table notices (
   id uuid primary key default gen_random_uuid(),
   year_id uuid not null references years on delete cascade,
   audience notice_audience not null,          -- 総務内・全団体・指定の団体
-  title text not null,                        -- 前後の空白（全角の空白・タブ・改行を含む）を除いて 1〜100 字（CHECK は除いた形であることも確かめる）
+  title text not null,                        -- 前後の空白（JavaScript の trim と同じ 25 文字。全角の空白・タブ・改行・U+00A0 などを含む）を除いて 1〜100 字（CHECK は除いた形であることも確かめる）
   body text check (length(body) <= 4000),     -- 任意。空白だけなら null（D-33 の任意の文字列と同じ）
   pinned boolean not null default false,      -- 一覧の先頭に出す。付ける・外すのは部門長以上
   created_by uuid references auth.users on delete set null, -- 書いた人。DB が auth.uid() を入れる（変えない）
   updated_by uuid references auth.users on delete set null, -- 最後に直した人。DB が auth.uid() を入れる
-  check (title <> '' and title = btrim(title, E' \t\n\r\u3000') and length(title) <= 100),
+  check (title <> ''                          -- 除く空白：タブ・LF・垂直タブ・改ページ・CR・半角の空白・U+00A0・U+1680・
+                                              -- U+2000〜U+200A・U+2028・U+2029・U+202F・U+205F・全角の空白・U+FEFF（save_notice も同じ文字で除く）
+    and title = btrim(title, E'\t\n\u000b\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff')
+    and length(title) <= 100),
   unique (id, year_id)                        -- notice_groups の複合外部キーの参照先
 );
 create index on notices (year_id, created_at desc);

@@ -35,6 +35,17 @@ create function tests.notice_ts(p_name text) returns timestamptz language sql st
 $$;
 grant execute on function tests.notice_ts(text) to authenticated;
 
+-- JavaScript の String.prototype.trim が除く 25 文字（Node で U+0000〜U+10FFFF を全部数えた。T17A-1）。0014 の notices_title_check と
+-- save_notice の c_space はこの文字を除く（CHECK がちょうどこの文字を拒むことは、001 が CHECK の式を BMP の全部の文字に当てて確かめる）
+create function tests.js_space_codes() returns int[] language sql immutable as $$
+  select array[0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x20, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007,
+               0x2008, 0x2009, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff]
+$$;
+create function tests.js_space() returns text language sql immutable as $$
+  select string_agg(chr(c), '' order by c) from unnest(tests.js_space_codes()) c
+$$;
+grant execute on function tests.js_space_codes(), tests.js_space() to authenticated;
+
 -- ペルソナに切り替えて、見えるお知らせと宛先の団体を名前で並べる（名前のないお知らせは数えない）
 create function tests.visible_notices(p_persona text) returns text language plpgsql as $$
 declare v text;
@@ -165,7 +176,7 @@ select c.n, c.label, c.scenario, p.persona, p.ord,
        tests.sql(c.template) as sql
 from tests.rpc_case c cross join tests.rpc_persona p;
 
-select plan((select count(*)::int from tests.rpc_cells) + 3 + 130);
+select plan((select count(*)::int from tests.rpc_cells) + 3 + 141);
 
 select is_empty($$ select n, yn from tests.rpc_case
                    where array_length(string_to_array(yn, ' '), 1) <> 7
@@ -247,6 +258,15 @@ select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu',
   '{"code": "invalid_input", "detail": {"field": "title"}}'::jsonb, '題名が空 → title');
 select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', E' \t\n\r\u3000') $q$)),
   '{"code": "invalid_input", "detail": {"field": "title"}}'::jsonb, '題名が空白だけ（タブ・改行・全角の空白） → title');
+-- 除く空白は JavaScript の trim と同じ 25 文字（T17A-1）：U+00A0 だけ・垂直タブだけの題名も、25 文字のどれか1字だけの題名も title
+select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', E'\u00a0') $q$)),
+  '{"code": "invalid_input", "detail": {"field": "title"}}'::jsonb, '題名がノーブレークスペース（U+00A0）だけ → title（T17A-1）');
+select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', E'\u000b') $q$)),
+  '{"code": "invalid_input", "detail": {"field": "title"}}'::jsonb, '題名が垂直タブ（U+000B）だけ → title（T17A-1）');
+select is((select coalesce(string_agg(to_hex(c), ' ' order by c), '') from unnest(tests.js_space_codes()) c
+           where tests.error_json(tests.sql(format($q$ select public.save_notice(:Y1, 'soumu', %L) $q$, chr(c))))
+                 <> '{"code": "invalid_input", "detail": {"field": "title"}}'::jsonb),
+  '', 'JavaScript の trim が除く 25 文字のどれか1字だけの題名は、どれも title（T17A-1）');
 select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', repeat('あ', 101)) $q$)),
   '{"code": "invalid_input", "detail": {"field": "title"}}'::jsonb, '題名が 101 字 → title');
 select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', '', repeat('あ', 4001)) $q$)),
@@ -290,19 +310,35 @@ select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'all_gro
 -- 3. 段：入力が正しければ、全団体・指定の団体あては部門長以上でなければ forbidden（detail なし）
 select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'groups', 'T-宛先', null, false, array[:G1]) $q$)),
   '{"code": "forbidden", "detail": null}'::jsonb, 'staff：正しい指定の団体あて → forbidden');
--- 通る入力：題名は前後の空白（全角の空白・タブを含む）を除いて 100 字まで。本文は 4000 字まで、空白だけなら null、前後の空白はそのまま
+-- 通る入力：題名は前後の空白（JavaScript の trim と同じ 25 文字）を除いて 100 字まで。本文は 4000 字まで、空白だけなら null、前後の空白はそのまま
 select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', E'\u3000 ' || repeat('い', 100) || E' \t') $q$)),
   '{"code": "ok"}'::jsonb, '前後の空白を除いて 100 字の題名は通る');
 select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', 'T-本文4000', repeat('あ', 4000)) $q$)),
   '{"code": "ok"}'::jsonb, '4000 字の本文は通る');
 select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', 'T-本文空白', E' \n\u3000\t') $q$)),
   '{"code": "ok"}'::jsonb, '空白だけの本文は通る');
+select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', 'T-本文NBSP', E'\u00a0') $q$)),
+  '{"code": "ok"}'::jsonb, 'ノーブレークスペース（U+00A0）だけの本文は通る（T17A-1）');
+select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', 'T-本文VT', E'\u000b') $q$)),
+  '{"code": "ok"}'::jsonb, '垂直タブ（U+000B）だけの本文は通る（T17A-1）');
+select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', 'T-本文25', tests.js_space()) $q$)),
+  '{"code": "ok"}'::jsonb, 'JavaScript の trim が除く 25 文字だけの本文は通る（T17A-1）');
+select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', tests.js_space() || 'T-端' || tests.js_space()) $q$)),
+  '{"code": "ok"}'::jsonb, '前後に 25 文字を全部並べた題名は通る（T17A-1）');
+select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', E'\u200b\u0085vT-残すv\u180e\u3164') $q$)),
+  '{"code": "ok"}'::jsonb, 'JavaScript の trim が除かない文字が前後にある題名は通る（T17A-1）');
 select is(tests.error_json(tests.sql($q$ select public.save_notice(:Y1, 'soumu', 'T-字下げ', E'  一行目\n\n\u3000二行目\n') $q$)),
   '{"code": "ok"}'::jsonb, '字下げ・空行のある本文は通る');
 select tests.logout();
 select is((select format('%s %s %s', length(title), audience, (created_by = tests.id('staff'))::text) from public.notices where title = repeat('い', 100)),
   '100 soumu true', '題名は前後の空白を除いて入る（書いた人は staff）');
 select is((select body is null from public.notices where title = 'T-本文空白'), true, '空白だけの本文は null で入る');
+select is((select string_agg(format('%s=%s', title, coalesce(body, 'null')), ' ' order by title collate "C") from public.notices
+           where title in ('T-本文NBSP', 'T-本文VT', 'T-本文25')),
+  'T-本文25=null T-本文NBSP=null T-本文VT=null', 'U+00A0 だけ・垂直タブだけ・25 文字だけの本文は null で入る（T17A-1）');
+select is((select count(*)::int from public.notices where title = 'T-端'), 1, '題名の前後の 25 文字は除いて入る（T17A-1）');
+select is((select count(*)::int from public.notices where title = E'\u200b\u0085vT-残すv\u180e\u3164'), 1,
+  'JavaScript の trim が除かない文字（U+200B・U+0085・U+180E・U+3164・v）は除かずに入る（T17A-1）');
 select is((select body from public.notices where title = 'T-字下げ'), E'  一行目\n\n\u3000二行目\n', '本文の前後の空白・改行・字下げはそのまま入る');
 select is((select length(body) from public.notices where title = 'T-本文4000'), 4000, '4000 字の本文がそのまま入る');
 
