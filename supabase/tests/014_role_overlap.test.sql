@@ -1,4 +1,4 @@
--- 014_role_overlap：兼任の禁止（T15。D-49。0012 のトリガー check_role_overlap と補助の関数）
+-- 014_role_overlap：兼任の禁止（T15。D-49。0013 のトリガー check_role_overlap と補助の関数）と、ロックの順（T15 のレビュー）
 -- 同じ年度で、部門のロール（head・deputy_head・staff）を year_roles に持つ人は、その年度の団体の group_members に入れない。
 -- admin と viewer は入れる。違う年度ならよい。ここでは postgres のまま直接書いて、トリガーそのものを確かめる
 -- （RPC の早めのエラーと招待の受け入れは 021・024・030、同時に書いたときは notes/T15.md の「同時に書いたときの確かめ」）。
@@ -7,7 +7,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(41);
+select plan(50);
 
 -- このトランザクションが、年度と人の組の勧告的ロック（private.lock_year_member）を持っているか。
 -- pg_advisory_xact_lock(int4, int4) は pg_locks に locktype = 'advisory'、classid と objid に符号なしの数、objsubid = 2 で出る
@@ -98,7 +98,7 @@ select is((select string_agg(a.attname, ',' order by a.attnum) from pg_trigger t
            join pg_attribute a on a.attrelid = t.tgrelid and a.attnum = any (t.tgattr::int2[])
            where t.tgname = 'check_role_overlap' and t.tgrelid = 'public.year_roles'::regclass),
   'user_id,role', 'year_roles のトリガーの列は user_id・role');
--- トリガーを一時的に止めて兼任の行を作り（0012 より前のデータの代わり）、role だけの更新では動かず、user_id を書く更新では動くことを見る
+-- トリガーを一時的に止めて兼任の行を作り（0013 より前のデータの代わり）、role だけの更新では動かず、user_id を書く更新では動くことを見る
 alter table public.group_members disable trigger check_role_overlap;
 insert into public.group_members (group_id, user_id) values (tests.id('G2'), tests.id('staff'));
 alter table public.group_members enable trigger check_role_overlap;
@@ -154,6 +154,62 @@ select tests.login_as('staff');
 select throws_ok(format($$ select private.year_member_in_group(%L, %L) $$, tests.id('Y1'), tests.id('rep')), '42501', null,
   'ログインした人は補助を呼べない（42501）');
 select tests.logout();
+
+-- ---------------------------------------------------------------- ロックの順（T15 のレビュー）
+-- 招待・ロール・団体代表を書く関数は、どれも「年度の行（lock_year）→ そのメールの未使用の招待の行（apply_invitations の並び）→
+-- 年度と人の勧告的ロック（lock_year_member）→ year_roles・group_members の行」の順にロックを取る（0013 の「ロックの順」）。
+-- 逆の順の組があるとデッドロックする（invite が勧告的ロックの後で招待の行を待ち、受け入れが招待の行の後で勧告的ロックを待つ。
+-- remove_role が year_roles の後で招待の行を待ち、受け入れが招待の行の後で year_roles を待つ）。2つのセッションの同時の実行は
+-- pgTAP では流せないので、関数の本体の並びと、ロックを取っていることで確かめる（2つのセッションでの確かめは notes/T15.md の
+-- 「レビューで直したこと」）
+create function tests.fn_at(p_fn regprocedure, p_needle text) returns integer language sql stable as $$
+  select strpos(lower(p.prosrc), lower(p_needle)) from pg_proc p where p.oid = p_fn
+$$;
+select ok(tests.fn_at('public.invite(uuid, text, public.app_role, uuid, public.group_role)', 'for update of i') > 0
+          and tests.fn_at('public.invite(uuid, text, public.app_role, uuid, public.group_role)', 'for update of i')
+              < tests.fn_at('public.invite(uuid, text, public.app_role, uuid, public.group_role)', 'private.lock_year_member(')
+          and tests.fn_at('public.invite(uuid, text, public.app_role, uuid, public.group_role)', 'private.lock_year_member(')
+              < tests.fn_at('public.invite(uuid, text, public.app_role, uuid, public.group_role)', 'insert into public.invitations'),
+  'invite：そのメールの招待の行をロックしてから勧告的ロックを取り、その後で招待を書く');
+select ok(tests.fn_at('private.apply_invitations(uuid, text)', 'for update of i') > 0
+          and tests.fn_at('private.apply_invitations(uuid, text)', 'for update of i')
+              < tests.fn_at('private.apply_invitations(uuid, text)', 'private.lock_year_member('),
+  '受け入れ（apply_invitations）：招待の行をロックしてから勧告的ロックを取る');
+select is((select count(*)::int from pg_proc p
+           where p.oid in ('public.invite(uuid, text, public.app_role, uuid, public.group_role)'::regprocedure,
+                           'private.apply_invitations(uuid, text)'::regprocedure)
+             and p.prosrc ~* 'join public\.years y on y\.id = i\.year_id\s+where i\.email = [^;]* and i\.used_at is null and y\.status <> ''closed''\s+order by i\.created_at, \(i\.role is null\), i\.id\s+for update of i'),
+  2, 'invite と受け入れは、同じ条件（closed でない年度の未使用の招待）・同じ並びで招待の行をロックする');
+select ok(tests.fn_at('public.remove_role(uuid, uuid, text)', 'delete from public.invitations') > 0
+          and tests.fn_at('public.remove_role(uuid, uuid, text)', 'delete from public.invitations')
+              < tests.fn_at('public.remove_role(uuid, uuid, text)', 'delete from public.year_roles'),
+  'remove_role：招待を消してから year_roles を消す（受け入れと同じ「招待の行 → year_roles」）');
+select is_empty($$ select p.oid::regprocedure::text from pg_proc p
+                   where p.oid in ('public.set_role(uuid, uuid, public.app_role, text)'::regprocedure,
+                                   'public.remove_group_member(uuid, uuid, text)'::regprocedure,
+                                   'public.set_group_member_role(uuid, uuid, public.group_role, text)'::regprocedure,
+                                   'private.tg_year_roles_check_overlap()'::regprocedure,
+                                   'private.tg_group_members_check_overlap()'::regprocedure,
+                                   'private.lock_year_member(uuid, uuid)'::regprocedure)
+                     and p.prosrc ~* 'public\.invitations' $$,
+  '勧告的ロックを取る関数（set_role・トリガー）と、団体代表だけを書く RPC は、招待の行に触れない（勧告的ロックの後で招待の行を待たない）');
+select is_empty($$ select p.oid::regprocedure::text from pg_proc p
+                   where p.oid in ('public.remove_role(uuid, uuid, text)'::regprocedure, 'public.revoke_invitation(uuid)'::regprocedure)
+                     and p.prosrc ~* 'lock_year_member' $$,
+  '招待の行を消す RPC（remove_role・revoke_invitation）は勧告的ロックを取らない');
+-- 実際にロックを取っていること：確かめられるアカウントのないメールを招待しても（中の受け入れは動かない）、そのメールの
+-- ほかの年度（closed でない）の未使用の招待の行を、このトランザクションがロックする（xmax がこのトランザクション）
+with i as (insert into public.invitations (year_id, email, role) values (tests.id('Y2'), 'lo_pending@pgtap.test', 'staff') returning id)
+insert into tests.ids select 'INV_LO_Y2', id from i;
+select is((select xmax::text from public.invitations where id = tests.id('INV_LO_Y2')), '0',
+  '前提：ほかの年度の未使用の招待の行は、まだロックされていない');
+select tests.login_as('admin');
+select is(public.invite(tests.id('Y1'), 'lo_pending@pgtap.test', 'viewer') ->> 'applied', 'false',
+  '準備：管理者が同じメールを Y1 に招待する（アカウントがないので、その場では付かない）');
+select tests.logout();
+select is((select xmax::text from public.invitations where id = tests.id('INV_LO_Y2')),
+          (pg_current_xact_id()::text::bigint % 4294967296)::text,
+  'invite は、そのメールのほかの年度の未使用の招待の行もロックする（中の受け入れが触る行を、勧告的ロックより先に取る）');
 
 select * from finish();
 rollback;

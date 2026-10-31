@@ -1,12 +1,135 @@
--- 0013_lead_tier.sql（T15。2026-10-31。D-48）：3つの段（管理者だけ・部門長以上・総務）の判定関数・ポリシー・RPC
+-- 0013_role_overlap_lead_tier.sql（T15。2026-10-31。D-48・D-49）：兼任の禁止と3つの段（管理者だけ・部門長以上・総務）を、
+-- 1つのトランザクションで入れる
+-- 1. 最初にロックを取り、適用する時点で兼任している人がいれば止める（README の「5. 本番 DB への適用」の問い合わせで探して直してから
+--    流し直す）
+-- 2. 今の団体の招待を店長にして、invitations_group_role_check を足す（group_role の型と列は 0012）
+-- 3. 兼任の禁止（年度ごと）：部門のロール（head・deputy_head・staff）を year_roles に持つ人は、その年度の団体の group_members に
+--    入れない（admin と viewer は入れる。違う年度ならよい）。他の表を参照する CHECK は使えないので、BEFORE ROW のトリガーで止める
+-- 4. 3つの段の判定関数・ポリシー・RPC と、兼任を前提にする invite（早めのエラー）と招待の受け入れ（重なる招待を飛ばす）
+-- 2〜4 を1つのファイルにしているのは、トリガーと CHECK だけが先に確定すると、古い invite（0005。団体の招待に group_role を
+-- 入れない）が 23514 で、古い受け入れ（0009。兼任を飛ばさない）が role_overlap で失敗し、招待とログインが止まるため。
+-- このファイルがどこで止まっても、何も残らない（残るのは 0011・0012 の、足すだけの変更で、今の関数のまま動く）。
 -- 段はロールの配列で渡す：部門長以上（LEAD）＝'{admin,head,deputy_head}'、総務（SOUMU）＝'{admin,head,deputy_head,staff}'。
 -- deputy_head の権限は head と同じ。どの判定がどの段かは notes/T15.md の「権限の段」の表（02「権限とRLS」・04 の RPC の表）。
--- admin は全部の段に入るので、admin の見えるもの・できることは変わらない。staff も変わらない（どちらも兼任の禁止〔0012〕を除く）。
+-- admin は全部の段に入るので、admin の見えるもの・できることは変わらない。staff も変わらない（どちらも兼任の禁止を除く）。
 -- 管理者だけのもの（マスタ・groups の書き込み〔can_admin・is_admin_of_open_year〕、create_year_from、年度のない履歴）は変えない。
 -- 今の画面（T14 までの版）がそのまま動くように、RPC の名前・引数名・返り値は変えない。足したのは invite の p_group_role
 -- （既定 null）と、新しい RPC の set_group_member_role だけ。
 -- 適用済みのファイル（0003〜0010）は書き換えず、ここで関数を create or replace し、ポリシーは drop して create する
 -- （create or replace は関数の権限を保つ。最後に 0005 と同じ繰り返しでもう一度与える）。
+--
+-- ロックの順（デッドロックを作らないための約束。notes/T15.md の「ロックの順」）：招待・ロール・団体代表を書く関数は、どれも
+--   年度の行（lock_year）→ そのメールの未使用の招待の行（apply_invitations の並び）→ 年度と人の勧告的ロック（lock_year_member）
+--   → year_roles・group_members の行
+-- の順に取る（どれかを飛ばすのはよいが、逆には取らない）。invite は勧告的ロックの前に招待の行をロックし、remove_role は
+-- year_roles の前に招待を消す。
+
+------------------------------------------------------------------------
+-- 最初のロックと、既に兼任している行の確かめ
+------------------------------------------------------------------------
+-- 先に、招待の受け入れ（招待の行 → group_members・year_roles）と同じ順に表をロックする：invitations・group_members は、このファイルが
+-- 後で CHECK・ポリシーのために取る強さ（access exclusive）、year_roles は書き込みだけを止める強さ（読み取り〔RLS の判定〕は通す。
+-- ポリシーを作り直すところで強くなる）。確かめてからトリガーを作るまでの間に、受け入れ（ログイン）などが重なる行を入れないため
+-- （トリガーができるまでは止めるものがない）。同時のログインは、このファイルが終わるまで待つだけになる（1秒もかからない）。
+-- 待つのは 5 秒まで（lock_timeout。このファイルのトランザクションの間だけ）：超えたら（と、デッドロックで止められたら）何も残さずに
+-- 止まるので、流し直す（長く待つと、その間のアプリの読み書きがこのファイルの後ろに並んで止まる）。
+-- LOCK TABLE は DO の中で取る：CLI は明示の BEGIN なしにファイルを1つのトランザクション（拡張問い合わせのパイプライン）で流すので、
+-- トップレベルの LOCK TABLE は「LOCK TABLE can only be used in transaction blocks」（25P01）で失敗する（CLI 2.122.0 で確かめた）。
+-- 関数の中なら取れ、取ったロック（と set_config の第3引数 true の設定）は次の文からも残る。
+do $$
+begin
+  perform set_config('lock_timeout', '5s', true);
+  lock table public.invitations, public.group_members in access exclusive mode;
+  lock table public.year_roles in share row exclusive mode;
+  if exists (select 1 from public.year_roles yr
+             join public.group_members gm on gm.user_id = yr.user_id
+             join public.groups g on g.id = gm.group_id and g.year_id = yr.year_id
+             where yr.role in ('head', 'deputy_head', 'staff')) then
+    raise exception 'role_overlap: 同じ年度で部員（staff）のロールと団体代表を兼ねている人がいます。README の「5. 本番 DB への適用」の問い合わせで探して直してから、もう一度 migrate.yml を流してください';
+  end if;
+end $$;
+
+------------------------------------------------------------------------
+-- 団体の招待の立場（型と列は 0012）
+------------------------------------------------------------------------
+-- 今の団体の招待（0012 の後に古い invite が作ったものを含む）は店長にしてから、団体の招待のときだけ持つ CHECK を足す
+update public.invitations set group_role = 'manager' where group_id is not null and group_role is null;
+alter table public.invitations add constraint invitations_group_role_check
+  check ((group_id is null) = (group_role is null));
+
+------------------------------------------------------------------------
+-- 兼任の禁止
+------------------------------------------------------------------------
+-- 補助の関数は任意の人について答えるので、誰にも execute を与えない（トリガーと、SECURITY DEFINER の RPC・招待の受け入れの中から
+-- だけ呼ぶ）。3つとも VOLATILE（既定のまま。STABLE にしない）：ロックを待った後で、待っている間に確定した行を読むため（READ
+-- COMMITTED では、VOLATILE の関数の中の問い合わせごとに新しいスナップショットになる）。呼ぶ側も、ロックを取る文と確かめる文を
+-- 分ける（同じ文の中で取って読まない）。
+
+-- 同じ年度・同じ人の「ロール」と「団体代表」の書き込みを順にする勧告的ロック（int4 の鍵2つ。トランザクションの終わりまで持つ）。
+-- 年度・人の組が違えば待たない（ハッシュが偶然ぶつかっても、余分に待つだけ）。表を読まないので SECURITY DEFINER にしない。
+-- 年度の行はロックしない（lock_year_guard・lock_year も、for share・for update・for no key update も使わない）：在庫の保存・申請の
+-- 提出の lock_year_guard（for share）とぶつかり、GoTrue のログインのトランザクション（on_auth_user_confirmed → 招待の受け入れ）を
+-- 長い振り分けの保存の後ろで待たせ、年度をまたいでデッドロックし得るため。year_roles・group_members の insert の外部キーの確認
+-- （years・groups の for key share）は、lock_year の for no key update とぶつからない。
+-- 招待の行は、このロックより先に取る（上の「ロックの順」。このロックを持ったまま招待の行を待たない）
+create function private.lock_year_member(p_year_id uuid, p_user_id uuid)
+returns void language sql set search_path = '' as $$
+  select pg_advisory_xact_lock(hashtext('gaapp.year_member'), hashtext(p_year_id::text || '/' || p_user_id::text))
+$$;
+
+-- その年度で部門のロール（head・deputy_head・staff）を持つか
+create function private.year_member_has_department_role(p_year_id uuid, p_user_id uuid)
+returns boolean language sql security definer set search_path = '' as $$
+  select exists (select 1 from public.year_roles yr
+                 where yr.year_id = p_year_id and yr.user_id = p_user_id and yr.role in ('head', 'deputy_head', 'staff'))
+$$;
+
+-- その年度の団体の代表（店長・副店長）か
+create function private.year_member_in_group(p_year_id uuid, p_user_id uuid)
+returns boolean language sql security definer set search_path = '' as $$
+  select exists (select 1 from public.group_members gm join public.groups g on g.id = gm.group_id
+                 where g.year_id = p_year_id and gm.user_id = p_user_id)
+$$;
+
+-- トリガーは両方の表で check_role_overlap。BEFORE ROW のトリガーは名前の順に動くので、check_immutable（年度・団体の付け替えを
+-- invalid_input で止める）の後、set_timestamps の前に動く。最初にロックを取り、その後の文で反対側を確かめる。
+-- 違反は role_overlap（P0001。detail は year_id と user_id。メールは入れない）。
+-- year_roles：insert と、role・user_id の update（staff → viewer のような向きでも、向きで分けずにロックを取って確かめる）。
+-- set_role の insert … on conflict do update では BEFORE INSERT と BEFORE UPDATE の両方で動く（ロックは同じトランザクションで
+-- 重ねて取れ、結果は同じ）。year_roles.year_id は変えられない（check_immutable）
+create function private.tg_year_roles_check_overlap()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  perform private.lock_year_member(new.year_id, new.user_id);
+  if new.role in ('head', 'deputy_head', 'staff') and private.year_member_in_group(new.year_id, new.user_id) then
+    perform private.fail('role_overlap', jsonb_build_object('year_id', new.year_id, 'user_id', new.user_id));
+  end if;
+  return new;
+end $$;
+create trigger check_role_overlap before insert or update of role, user_id on public.year_roles
+  for each row execute function private.tg_year_roles_check_overlap();
+
+-- group_members：insert と、user_id・group_id の update（店長⇄副店長の role だけの update では動かない）。
+-- 団体がなければ外部キーのエラー（23503）に任せる（role_overlap にしない）。groups.year_id と group_members.group_id は
+-- 変えられない（check_immutable）ので、行の付け替えで重なりを作る道はない
+create function private.tg_group_members_check_overlap()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare v_year_id uuid := (select g.year_id from public.groups g where g.id = new.group_id);
+begin
+  if v_year_id is null then return new; end if;
+  perform private.lock_year_member(v_year_id, new.user_id);
+  if private.year_member_has_department_role(v_year_id, new.user_id) then
+    perform private.fail('role_overlap', jsonb_build_object('year_id', v_year_id, 'user_id', new.user_id));
+  end if;
+  return new;
+end $$;
+create trigger check_role_overlap before insert or update of user_id, group_id on public.group_members
+  for each row execute function private.tg_group_members_check_overlap();
+
+-- 補助とトリガー関数は誰にも execute を与えない（ポリシーの判定関数ではない。010 の一覧に入れない）
+revoke all on function private.lock_year_member(uuid, uuid), private.year_member_has_department_role(uuid, uuid),
+  private.year_member_in_group(uuid, uuid), private.tg_year_roles_check_overlap(), private.tg_group_members_check_overlap()
+  from public, anon, authenticated;
 
 ------------------------------------------------------------------------
 -- 判定関数（0003 と同じく SECURITY DEFINER・search_path = ''・STABLE。呼んだ人〔auth.uid()〕についてだけ答える）
@@ -191,12 +314,15 @@ create policy audit_logs_select on public.audit_logs for select to authenticated
 -- もう別の立場でいるときの団体の招待は、使用済みにせず残し、件数に数えない（0009 の「別のロールを持つ」と同じ扱い。管理者の画面
 -- では未使用のまま見える）。団体の招待は招待の立場（group_role）で group_members を作る。
 -- 例外を出さない：on_auth_user_confirmed・on_auth_identity_created（0007）は GoTrue のトランザクションの中で動き、例外はログインの
--- 失敗（「Database error …」）になる。そこで招待ごとに、トリガー（0012）と同じ勧告的ロックを取ってから、トリガーと同じ関数で先に
--- 確かめる（insert … on conflict do nothing でも BEFORE INSERT のトリガーは動くので、確かめは insert の前に置く。同じロックの下で
--- 確かめてあるので、トリガーは role_overlap を出さない）。1回の呼び出しの中でも順に効く（同じ年度の staff の招待を先に付けたら、
+-- 失敗（「Database error …」）になる。そこで招待ごとに、トリガー（上の check_role_overlap）と同じ勧告的ロックを取ってから、
+-- トリガーと同じ関数で先に確かめる（insert … on conflict do nothing でも BEFORE INSERT のトリガーは動くので、確かめは insert の前に
+-- 置く。同じロックの下で確かめてあるので、トリガーは role_overlap を出さない）。1回の呼び出しの中でも順に効く（同じ年度の staff の招待を先に付けたら、
 -- その後の団体の招待は飛ばす。同じトランザクションの行は見える）。
--- 順番は created_at、同じならロールの招待を先（0012 より前の 4 引数の invite は、同じ年度・同じメールの staff の招待と団体の招待を
+-- 順番は created_at、同じならロールの招待を先（T15 より前の 4 引数の invite は、同じ年度・同じメールの staff の招待と団体の招待を
 -- 一度に〔同じ時刻で〕作れたので、どちらが付くかを決めておく）。
+-- この並び（order by i.created_at, (i.role is null), i.id）は、招待の行をロックする順の約束でもある（上の「ロックの順」）：
+-- 招待の行をこの順にロックしてから、行ごとに年度と人の勧告的ロックを取る。invite も勧告的ロックの前に、同じ条件・同じ並びで
+-- そのメールの招待の行をロックする（逆の順だと、受け入れと invite がデッドロックする。T15 のレビュー）。
 -- 引数・返り値・SECURITY DEFINER・search_path・権限（private の関数は PUBLIC から外したまま）は変えない。
 -- 呼ぶのは accept_invitations_of（0007）、accept_my_invitations、invite
 create or replace function private.apply_invitations(p_user_id uuid, p_email text)
@@ -356,10 +482,12 @@ end $$;
 --      その年度にない団体 → group_id）
 --   3. 段：admin でなく、role が staff 以外 → forbidden
 --   4. 部門のロールと団体を一度に頼んだ → role_overlap（reason: requested_together）
---   5. admin でなく role を渡し、同じ年度・同じメールの未使用のロールの招待が staff 以外 → forbidden（管理者・部門長・副部門長・
+--   5. このメールの未使用の招待の行を、受け入れ（apply_invitations）と同じ条件・同じ並びでロックしてから（ロックの順を「年度の行
+--      → 招待の行 → 年度と人」にそろえる。勧告的ロックを持ったまま招待の行を待つと、受け入れとデッドロックする）、
+--      admin でなく role を渡し、同じ年度・同じメールの未使用のロールの招待が staff 以外 → forbidden（管理者・部門長・副部門長・
 --      閲覧のみの招待を、下の on conflict … do update set role で上書きさせない）
 --   6〜9. 今のメールが本人のものと確かめられるアカウント（private.verified_email。D-17a）があれば、その人のロック
---      （lock_year_member。年度の行の後に取るので、ロックの順は「年度の行 → 年度と人」でそろう）を取ってから：
+--      （lock_year_member。年度の行と招待の行の後に取る）を取ってから：
 --      別のロール → conflict（field: role）、その団体に別の立場 → conflict（field: group_role）、
 --      兼任になる → role_overlap（reason: current_membership）
 --  10. 反対側の未使用の招待（同じ年度・同じメール）を、この呼び出しの後の状態で見る → role_overlap（reason: pending_invitation）。
@@ -408,7 +536,13 @@ begin
   if p_role in ('head', 'deputy_head', 'staff') and p_group_id is not null then                                -- 4
     perform private.fail('role_overlap', jsonb_build_object('year_id', p_year_id, 'reason', 'requested_together'));
   end if;
-  select i.role into v_pending_role from public.invitations i                                                  -- 5
+  -- 5. 下の upsert と中の apply_invitations が触る行（このメールの、closed でない年度の未使用の招待）を、apply_invitations と同じ並びで
+  --    先にロックする（ロックの後の文は、待っている間に確定した行を新しいスナップショットで読む）
+  perform 1 from public.invitations i join public.years y on y.id = i.year_id
+  where i.email = v_email and i.used_at is null and y.status <> 'closed'
+  order by i.created_at, (i.role is null), i.id
+  for update of i;
+  select i.role into v_pending_role from public.invitations i
   where i.year_id = p_year_id and i.email = v_email and i.role is not null and i.used_at is null;
   if not v_is_admin and p_role is not null and v_pending_role <> 'staff' then
     perform private.fail('forbidden');
@@ -468,8 +602,9 @@ end $$;
 -- set_role：head・deputy_head は、その年度のロールがないか staff の人に staff を付けるだけ。
 -- 相手の今のロールを読む前に、その人のロック（lock_year_member）を取る：招待の受け入れ（年度の行を取らない）がその間にロールを
 -- 付けても（同じロックを取ってから insert する）、読んだロールと書くときのロールがずれない（head・deputy_head に、受け入れと
--- 同時に付いた admin・viewer のロールを staff で上書きさせない）。ロックの順は「年度の行 → 年度と人」で、invite と同じ。
--- 兼任になれば、year_roles のトリガー（0012）が role_overlap を返す（閲覧のみの店長を staff にするなど）。
+-- 同時に付いた admin・viewer のロールを staff で上書きさせない）。ロックの順は「年度の行 → 年度と人 → year_roles」（招待の行は
+-- 取らない。上の「ロックの順」）。
+-- 兼任になれば、year_roles のトリガー（上の check_role_overlap）が role_overlap を返す（閲覧のみの店長を staff にするなど）。
 -- 未使用の招待は見ない（反対側の招待が残っていても止めない。受け入れのときに飛ばされる。早めのエラーは invite だけ）
 create or replace function public.set_role(p_year_id uuid, p_user_id uuid, p_role public.app_role, p_reason text default null)
 returns void language plpgsql security definer set search_path = '' as $$
@@ -505,23 +640,31 @@ end $$;
 
 -- remove_role：closed の年度でもできる（卒業した人を外して、権限を残さないため）。最後の admin は外せない。
 -- 相手のロールを先に読み、なければ not_found（段の確かめより先）。head・deputy_head が外せるのは staff だけ（ほかは forbidden）。
--- 外した人の、本人のものと確定しているメールあての、その年度の未使用のロールの招待も消す（0009 のまま。head・deputy_head が staff を
--- 外したときも、管理者が作った staff 以外の招待を含めて消す。権限を減らす向きなので段の外でも許す）。消す相手のメールは 0009 と同じ
+-- 外した人の、本人のものと確定しているメールあての、その年度の未使用のロールの招待も消す（0009 のまま）。ただし head・deputy_head が
+-- 外したときに消すのは staff のロールの招待だけ（admin・head・deputy_head・viewer の招待の取り消しは管理者だけ。D-48。T15 のレビューで
+-- 直した。残った招待は管理者の画面に未使用のまま見え、管理者が取り消せる。取り消さなければ、ロールがなくなった本人の次の受け入れで
+-- 管理者の招待どおりのロールが付く）。消す相手のメールは 0009 と同じ
 --   ・private.verified_email(p_user_id)（取れれば）
 --   ・lower(auth.users.email)（今の確定したメール。Secure email change では、変更が確定するまで変わらない）
 --   ・provider = 'google' で identity_data の email_verified が真の identity の lower(identity_data ->> 'email')
 -- email_change（確定していない変更先）は使わない（他人のアドレスを入れて、他人の招待を消せてしまうため）。
--- 団体代表の招待（role が null）は消さない（団体代表を外すのは remove_group_member）
+-- 団体代表の招待（role が null）は消さない（団体代表を外すのは remove_group_member）。
+-- 招待を消してから year_roles を消す（受け入れ〔招待の行 → year_roles〕と同じ順。0009 の逆の順では、受け入れが招待の行を持ったまま
+-- 消している途中の year_roles の行を待ち、こちらがその招待の行を待ってデッドロックした。T15 のレビュー）。year_roles が先に
+-- 消えていて not_found になれば、招待を消したことも取り消される（1つのトランザクション）
 create or replace function public.remove_role(p_year_id uuid, p_user_id uuid, p_reason text default null)
 returns void language plpgsql security definer set search_path = '' as $$
-declare v_current public.app_role;
+declare
+  v_is_admin boolean;
+  v_current public.app_role;
 begin
   perform private.lock_year(p_year_id, '{preparing,requesting,allocating,confirmed,closed}', '{admin,head,deputy_head}');
+  v_is_admin := private.has_role(p_year_id, 'admin');
   select yr.role into v_current from public.year_roles yr where yr.year_id = p_year_id and yr.user_id = p_user_id;
   if v_current is null then
     perform private.fail('not_found');
   end if;
-  if v_current <> 'staff' and not private.has_role(p_year_id, 'admin') then
+  if v_current <> 'staff' and not v_is_admin then
     perform private.fail('forbidden');
   end if;
   if v_current = 'admin'
@@ -529,10 +672,9 @@ begin
     perform private.fail('invalid_state', jsonb_build_object('reason', 'last_admin'));
   end if;
   perform private.set_reason(p_reason);
-  delete from public.year_roles where year_id = p_year_id and user_id = p_user_id;
-  if not found then perform private.fail('not_found'); end if;
   delete from public.invitations
   where year_id = p_year_id and role is not null and used_at is null
+    and (v_is_admin or role = 'staff')
     and email in (
       select private.verified_email(p_user_id)
       union
@@ -540,6 +682,8 @@ begin
       union
       select lower(i.identity_data ->> 'email') from auth.identities i
       where i.user_id = p_user_id and i.provider = 'google' and i.identity_data ->> 'email_verified' = 'true');
+  delete from public.year_roles where year_id = p_year_id and user_id = p_user_id;
+  if not found then perform private.fail('not_found'); end if;
 end $$;
 
 -- revoke_invitation：ロールを確かめてからロックする（ロールのない人に行ロックを取らせない）。見つからなければ year_id が null で
@@ -575,7 +719,7 @@ end $$;
 -- set_group_member_role（T15 で足した）：団体代表の立場を店長⇄副店長で切り替える（権限は変わらない）。相手のロールによらず
 -- （管理者が店長のときも）部門長以上ができる（remove_group_member・団体の招待と同じ）。closed の年度ではできない。
 -- 団体がなければ年度が null で forbidden（有無を漏らさない）、団体代表でなければ not_found。同じ立場への変更も1行の更新で
--- 成功する（監査は updated_at だけの変更を記録しない）。role だけの update なので、兼任のトリガー（0012）は動かない
+-- 成功する（監査は updated_at だけの変更を記録しない）。role だけの update なので、兼任のトリガー（check_role_overlap）は動かない
 create function public.set_group_member_role(p_group_id uuid, p_user_id uuid, p_group_role public.group_role,
                                              p_reason text default null)
 returns void language plpgsql security definer set search_path = '' as $$

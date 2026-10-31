@@ -125,7 +125,7 @@ select c.n, c.label, c.scenario, p.persona, p.ord,
        tests.sql(c.template) as sql
 from tests.rpc_case c cross join tests.rpc_persona p;
 
-select plan((select count(*)::int from tests.rpc_cells) + 3 + 21);
+select plan((select count(*)::int from tests.rpc_cells) + 3 + 25);
 
 select is_empty($$ select n, yn from tests.rpc_case
                    where array_length(string_to_array(yn, ' '), 1) <> 7
@@ -173,17 +173,34 @@ select is((public.invite(tests.id('Y1'), 'none2@pgtap.test', 'staff') ->> 'appli
 select tests.logout();
 select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('none2')), 'staff'::public.app_role,
   'none2 は Y1 の staff');
--- 管理者が別に作った、st_target あての未使用の admin の招待（受け入れでは別のロールなので残る）
-insert into public.invitations (year_id, email, role) values (tests.id('Y1'), 'st_target@pgtap.test', 'admin');
+-- 外すと、その人あての未使用のロールの招待も消える（0009）。部門長・副部門長が外したときに消えるのは staff の招待だけで、
+-- 管理者が作った staff 以外の招待は残る（admin・head・deputy_head・viewer の招待の取り消しは管理者だけ。D-48。T15 のレビューで直した）。
+-- 1つの年度・1つのメールに未使用のロールの招待は1つなので、staff の招待は別の staff（st_target2）で確かめる
+select tests.create_user('st_target2');
+insert into public.year_roles (year_id, user_id, role) values (tests.id('Y1'), tests.id('st_target2'), 'staff');
+insert into public.invitations (year_id, email, role) values
+  (tests.id('Y1'), 'st_target@pgtap.test', 'admin'),       -- 管理者が別に作った招待（受け入れでは別のロールなので残っている）
+  (tests.id('Y1'), 'st_target2@pgtap.test', 'staff');
 select tests.login_as('deputy');
 select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('st_target'), '交代') $$, '副部門長は staff を外せる');
 select tests.logout();
 select is((select count(*)::int from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('st_target')), 0, 'st_target の staff が外れる');
-select is((select count(*)::int from public.invitations where email = 'st_target@pgtap.test' and used_at is null), 0,
-  '外すと、その人あての未使用のロールの招待も消える（管理者が作った admin の招待も。権限を減らす向きなので段の外でも消す）');
+select is((select string_agg(role::text, ' ') from public.invitations where email = 'st_target@pgtap.test' and used_at is null), 'admin',
+  '副部門長が外しても、管理者が作った admin の招待は消えない（取り消しは管理者だけ）');
 select is((select reason || ' ' || (user_id = tests.id('deputy'))::text from public.audit_logs
            where table_name = 'year_roles' and action = 'delete' and row_pk ->> 'user_id' = tests.id('st_target')::text),
   '交代 true', '外したことは理由と人つきで監査に残る');
+select tests.login_as('head');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('st_target2')) $$, '部門長も staff を外せる');
+select tests.logout();
+select is((select count(*)::int from public.invitations where email = 'st_target2@pgtap.test'), 0,
+  '部門長が外すと、その人あての未使用の staff の招待は消える（残すと次のログインで staff が戻る）');
+-- 残った管理者の招待は、ロールがなくなった本人の次の受け入れで、管理者の招待どおりに付く（管理者が取り消さなければ）
+select tests.login_as('st_target');
+select is(public.accept_my_invitations(), 1, '外された後の受け入れで、残っていた管理者の招待を受け入れる');
+select tests.logout();
+select is((select role from public.year_roles where year_id = tests.id('Y1') and user_id = tests.id('st_target')), 'admin'::public.app_role,
+  'st_target は管理者の招待どおり admin になる');
 
 -- ---------------------------------------------------------------- 店長⇄副店長（相手のロールによらず、部門長以上が切り替える）
 insert into public.group_members (group_id, user_id, role) values (tests.id('G2'), tests.id('admin'), 'manager');   -- admin は店長を兼ねられる

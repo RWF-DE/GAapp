@@ -456,7 +456,7 @@ select is((select role from public.year_roles where year_id = tests.id('Y1') and
 -- ================================================================ 兼任の禁止（T15。D-49）：管理者の経路
 -- 部門のロール（head・deputy_head・staff）と同じ年度の団体代表（店長・副店長）は兼ねられない。admin・viewer は兼ねられる。
 -- 違う年度ならよい。invite は早めに role_overlap（detail の reason：requested_together・current_membership・pending_invitation）を返し、
--- set_role はトリガー（0012）が止め、招待の受け入れは重なる招待を飛ばす（未使用のまま。例外を出さない）。
+-- set_role はトリガー（0013）が止め、招待の受け入れは重なる招待を飛ばす（未使用のまま。例外を出さない）。
 -- 部門長・副部門長の段は 024、トリガーそのものは 014、ログイン（auth のトリガー）の経路は 030
 select tests.create_user(n) from unnest(array['ov_rep', 'ov_rep2', 'ov_staff', 'ov_view']) n;
 insert into public.group_members (group_id, user_id, role) values

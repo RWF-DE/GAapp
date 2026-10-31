@@ -103,7 +103,7 @@ select is((select display_name from public.profiles where user_id = tests.id('p_
 
 -- ================================================================ 招待の受け入れ
 -- 招待を用意する（Y1 の staff、G1・G2 の代表。メールは大文字が混じっても小文字で比べる）。
--- g_new は同じ年度（Y1）の staff の招待と団体（G2）の招待を持つ（0012 より前の 4 引数の invite は一度に作れた）。兼任の禁止（D-49）で
+-- g_new は同じ年度（Y1）の staff の招待と団体（G2）の招待を持つ（T15 より前の 4 引数の invite は一度に作れた）。兼任の禁止（D-49）で
 -- 片方しか付かない。同じ時刻の招待はロールの招待を先に受け入れるので、staff が付いて団体の招待は残る
 insert into public.invitations (year_id, email, role) values
   (tests.id('Y1'), 'g_new@pgtap.test', 'staff'),

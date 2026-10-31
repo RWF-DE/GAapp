@@ -39,7 +39,7 @@ insert into public.invitations (year_id, email, role) values
   ('00000000-0000-4000-8000-0000000000a1', 'admin@example.test', 'admin'),
   ('00000000-0000-4000-8000-0000000000a1', 'staff@example.test', 'staff'),
   ('00000000-0000-4000-8000-0000000000a1', 'viewer@example.test', 'viewer');
--- 団体の招待には立場（group_role）が要る（T15 の 0012 の invitations_group_role_check）。テスト用の団体代表は店長
+-- 団体の招待には立場（group_role）が要る（T15 の 0013 の invitations_group_role_check）。テスト用の団体代表は店長
 insert into public.invitations (year_id, email, group_id, group_role) values
   ('00000000-0000-4000-8000-0000000000a1', 'rep@example.test', '00000000-0000-4000-8000-0000000000b1', 'manager');
 

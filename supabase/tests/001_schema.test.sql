@@ -255,7 +255,7 @@ select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger 
   'allocations deliveries group_members groups invitations request_submissions requests room_years slots stocks substitution_consents year_roles',
   'check_immutable が 12 表にある');
 
--- 兼任の禁止（T15。0012）：check_role_overlap が year_roles・group_members にだけあり、BEFORE・ROW・列が約束どおり。
+-- 兼任の禁止（T15。0013）：check_role_overlap が year_roles・group_members にだけあり、BEFORE・ROW・列が約束どおり。
 -- 店長⇄副店長（group_members の role だけの更新）では動かない（列に role がない）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'check_role_overlap' and not t.tgisinternal),

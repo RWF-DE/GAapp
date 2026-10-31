@@ -44,7 +44,7 @@ insert into tests.expected_fn values
   ('predicate', 'private.my_role_year_ids(public.app_role[])'),
   ('predicate', 'private.my_group_ids()'),
   ('predicate', 'private.my_role_group_ids(public.app_role[])'),
-  -- 兼任の禁止の補助とトリガー関数（0012。任意の人について答えるので、誰も実行できない）
+  -- 兼任の禁止の補助とトリガー関数（0013。任意の人について答えるので、誰も実行できない）
   ('overlap', 'private.lock_year_member(uuid, uuid)'),
   ('overlap', 'private.year_member_has_department_role(uuid, uuid)'),
   ('overlap', 'private.year_member_in_group(uuid, uuid)'),
