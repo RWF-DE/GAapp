@@ -9,7 +9,7 @@ import { authStorageKey } from '@/lib/supabase/client';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '電波祭 総務 机椅子管理',
+  title: '電波祭 総務',
 };
 
 export const viewport: Viewport = {

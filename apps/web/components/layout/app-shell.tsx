@@ -122,8 +122,9 @@ function Frame({ membership, onSignOut, children }: { membership: Membership; on
         >
           {menuOpen ? <X /> : <Menu />}
         </Button>
-        <span className="truncate font-bold">
-          <span className="hidden sm:inline">電波祭 総務 </span>机椅子管理
+        {/* アプリの名前（D-51）：sm 以上は「電波祭 総務」、スマホは「総務」 */}
+        <span className="truncate font-bold" data-testid="app-name">
+          <span className="hidden sm:inline">電波祭 </span>総務
         </span>
         {year ? (
           <span

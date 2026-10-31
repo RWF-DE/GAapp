@@ -384,3 +384,18 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
+
+describe('T16 AppShell：アプリの名前（D-51）', () => {
+  it('ヘッダーの名前は「電波祭 総務」（スマホの幅では「電波祭 」を隠して「総務」）。「机椅子管理」は出さない', async () => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = sourceOf({});
+    renderShell();
+    await screen.findByLabelText('メモ');
+    const name = screen.getByTestId('app-name');
+    expect(name.textContent).toBe('電波祭 総務');
+    const prefix = [...name.querySelectorAll('span')].find((x) => x.textContent === '電波祭 ');
+    expect(prefix?.className).toContain('hidden');
+    expect(prefix?.className).toContain('sm:inline');
+    expect(document.body.textContent).not.toContain('机椅子管理');
+  });
+});
