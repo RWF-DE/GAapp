@@ -9,13 +9,15 @@ export const MODULES = [
   { id: 'furniture', label: '机椅子', homeHref: '/furniture' },
   // お知らせ（T17。D-53）。入口は「お知らせ一覧」（/notices。招待されている全員）
   { id: 'notices', label: 'お知らせ', homeHref: '/notices' },
+  // 締切と予定（T18。D-54）。入口は「締切と予定」（/calendar。招待されている全員。見出しと項目が同じ名前）
+  { id: 'calendar', label: '締切と予定', homeHref: '/calendar' },
 ] as const satisfies readonly {
   id: string;
   label: string;
   homeHref: string;
 }[];
 
-/** 機能の id（'furniture' | 'notices'） */
+/** 機能の id（'furniture' | 'notices' | 'calendar'） */
 export type ModuleId = (typeof MODULES)[number]['id'];
 
 export interface ModuleDef {

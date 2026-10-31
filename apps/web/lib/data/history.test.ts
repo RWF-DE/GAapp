@@ -159,7 +159,7 @@ describe('差の表示', () => {
   });
 
   it('T17 お知らせ：表の絞り込みの最後に notices・notice_groups（足すだけ）。表の名前、対象（題名・宛先の団体の名前）、宛先と書いた人の値', () => {
-    expect(AUDIT_TABLES.slice(-2)).toEqual(['notices', 'notice_groups']);
+    expect(AUDIT_TABLES.slice(-3, -1)).toEqual(['notices', 'notice_groups']);
     expect(AUDIT_TABLES.slice(0, 2)).toEqual(['requests', 'request_submissions']);
     expect(tableLabel('notices')).toBe('お知らせ');
     expect(tableLabel('notice_groups')).toBe('宛先の団体');
@@ -172,6 +172,36 @@ describe('差の表示', () => {
     expect(formatAuditValue('notices', 'audience', 'soumu')).toBe('総務内');
     expect(formatAuditValue('notices', 'created_by', U, lookups)).toBe('総務 太郎');
     expect(formatAuditValue('notices', 'created_by', 'x', lookups)).toBe(NAME_UNKNOWN);
+  });
+
+  it('T18 締切と予定：表の絞り込みの最後に events（足すだけ）。表の名前は「締切と予定」、対象は題名、種類・対象は表示名（お知らせの宛先と取り違えない）', () => {
+    expect(AUDIT_TABLES.at(-1)).toBe('events');
+    expect(new Set(AUDIT_TABLES).size).toBe(AUDIT_TABLES.length);
+    expect(tableLabel('events')).toBe('締切と予定');
+    const lookups = { users: new Map([[U, '総務 太郎']]) };
+    const row = (data: Record<string, unknown> | null, before: Record<string, unknown> | null = null) => ({
+      table_name: 'events',
+      row_pk: { id: 'e1' },
+      group_id: null,
+      before,
+      after: data,
+    });
+    expect(auditTarget(row({ id: 'e1', title: '申請書の提出' }), lookups)).toBe('申請書の提出');
+    // 削除（after が null）は前の行の題名
+    expect(auditTarget(row(null, { id: 'e1', title: '消した予定' }), lookups)).toBe('消した予定');
+    expect(formatAuditValue('events', 'kind', 'deadline')).toBe('締切');
+    expect(formatAuditValue('events', 'kind', 'event')).toBe('予定');
+    expect(formatAuditValue('events', 'audience', 'soumu')).toBe('総務');
+    expect(formatAuditValue('events', 'audience', 'groups')).toBe('団体');
+    expect(formatAuditValue('events', 'audience', 'all')).toBe('全員');
+    // お知らせの宛先はそのまま（groups は「指定の団体」）。ほかの表の kind もそのまま
+    expect(formatAuditValue('notices', 'audience', 'groups')).toBe('指定の団体');
+    expect(formatAuditValue('rules', 'kind', 'keep')).toBe('残す');
+    // 知らない値はそのまま。開始・終わりは Asia/Tokyo の日時、終日は「はい」、書いた人は表示名
+    expect(formatAuditValue('events', 'audience', 'teachers')).toBe('teachers');
+    expect(formatAuditValue('events', 'starts_at', '2027-10-15T15:00:00+00:00')).toBe('2027/10/16 00:00');
+    expect(formatAuditValue('events', 'all_day', true)).toBe('はい');
+    expect(formatAuditValue('events', 'updated_by', U, lookups)).toBe('総務 太郎');
   });
 });
 

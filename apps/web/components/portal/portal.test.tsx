@@ -2,7 +2,9 @@
 // ダッシュボード（/）の欄（04「ダッシュボード」、notes/T16.md「固めた約束」2・5。T16）：立場ごとの欄と h1、欄ごとの読み込み中・
 // 失敗ともう一度・エラーの境界（1つの機能・1つの欄の失敗でほかを止めない）、読むもの（版・振り分けの行・ルールを読まない）、
 // / の部品がスナップショット・検証・机椅子の状況の部品を import しないこと。T17：お知らせの欄（総務内のお知らせ・お知らせ）の
-// 立場ごとの出し分け・並び・読むもの・失敗の切り分けと、/ がお知らせ一覧の画面とダイアログを import しないこと。
+// 立場ごとの出し分け・並び・読むもの・失敗の切り分けと、/ がお知らせ一覧の画面とダイアログを import しないこと。T18：締切と予定の
+// 欄の選び方（これからの 30 日と過ぎた締切）・曜日と相対の言い方・リンク、予定と締切の読み取り（1人1回）と失敗の切り分け、
+// / が締切と予定の一覧の画面とダイアログを import しないこと。
 // Supabase は偽のクライアント（lib/testing/fake-supabase.ts）、立場は useAuth の差し替え、年度の行は立場と一緒に読んだキャッシュ
 // （QueryClient に入れておく）。時計は Date だけを止める（ダッシュボードを開いた時刻）。
 import { QueryClient, QueryClientProvider, queryOptions } from '@tanstack/react-query';
@@ -22,7 +24,7 @@ import { PortalScreen } from './portal-screen';
 const h = vi.hoisted(() => ({
   membership: { status: 'idle' } as MembershipState,
   client: null as unknown,
-  /** PORTAL_PROVIDERS の差し替え（机椅子・お知らせの本物のプロバイダの後ろに、テストのプロバイダを足せる） */
+  /** PORTAL_PROVIDERS の差し替え（机椅子・お知らせ・締切と予定の本物のプロバイダの後ろに、テストのプロバイダを足せる） */
   providers: [] as PortalProvider[],
   /** 真なら要対応の並べ替え（sortTodos）で例外を投げる（欄の描画の例外） */
   throwInTodos: false,
@@ -38,7 +40,8 @@ vi.mock('@/lib/supabase/client', async (orig) => ({
 vi.mock('@/lib/modules/providers', async () => {
   const { furniturePortalProvider } = await import('@/lib/modules/furniture/portal');
   const { noticesPortalProvider } = await import('@/lib/modules/notices/portal');
-  h.providers.push(furniturePortalProvider, noticesPortalProvider);
+  const { calendarPortalProvider } = await import('@/lib/modules/calendar/portal');
+  h.providers.push(furniturePortalProvider, noticesPortalProvider, calendarPortalProvider);
   return { PORTAL_PROVIDERS: h.providers };
 });
 vi.mock('@/lib/modules/portal', async (orig) => {
@@ -127,6 +130,8 @@ const REP_ROWS: Record<string, unknown[]> = {
 
 /** お知らせの新着の応答（T17。既定は 0 件。テストが入れる） */
 let noticeRows: Record<string, unknown>[] = [];
+/** 予定と締切の応答（T18。RLS が返した行の代わり。既定は 0 件。テストが入れる） */
+let eventRows: Record<string, unknown>[] = [];
 
 /** 偽の Supabase の応答。override が FakeResult か Promise を返せばそれを使う */
 let override: ((call: FakeCall) => FakeResult | Promise<FakeResult> | undefined) | null = null;
@@ -140,6 +145,8 @@ function handler(call: FakeCall): FakeResult | Promise<FakeResult> {
     const soumu = opArgs(call, 'eq').some(([col, v]) => col === 'audience' && v === 'soumu');
     return { data: noticeRows.filter((r) => (soumu ? r.audience === 'soumu' : r.audience !== 'soumu')) };
   }
+  // 予定と締切（T18）：読める範囲は RLS が決めるので、テストが入れた行をそのまま返す
+  if (call.table === 'events') return { data: eventRows };
   const byRep = opArgs(call, 'in').length > 0;
   const rows = (byRep ? REP_ROWS : SOUMU_ROWS)[call.table];
   if (!rows) return { error: { code: '42501', message: `読まない表：${call.table}` }, status: 403 };
@@ -171,11 +178,12 @@ beforeEach(() => {
   vi.setSystemTime(new Date(AFTER_CLOSE));
   override = null;
   noticeRows = [];
+  eventRows = [];
   const fake = createFakeSupabase(handler);
   h.client = fake.client;
   issued = fake.issued;
   h.throwInTodos = false;
-  h.providers.splice(2);
+  h.providers.splice(3);
 });
 afterEach(() => {
   cleanup();
@@ -193,7 +201,8 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(screen.getByTestId('home-roles').textContent).toBe('管理者');
     await screen.findByTestId('module-card');
     expect(todoIds()).toEqual(['furniture:lead:close-requests', 'furniture:soumu:unsubmitted', 'furniture:soumu:uncounted']);
-    expect(datedIds()).toEqual(['furniture:day-minus2', 'furniture:day-minus1', 'furniture:day1', 'furniture:day2']);
+    // T18：これからの4つ（前々日〜2日目）と、過ぎた締切（申請の締切 10/5 17:00）。早い順
+    expect(datedIds()).toEqual(['furniture:request-close', 'furniture:day-minus2', 'furniture:day-minus1', 'furniture:day1', 'furniture:day2']);
     const card = screen.getByTestId('module-card');
     expect(card.getAttribute('data-module')).toBe('furniture');
     // 開いた時刻（10/6）は締切（10/5 17:00）の後なので、締切を過ぎたことも出す（レビューの T16-UX-04）
@@ -226,19 +235,19 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(todoIds()).toEqual(['furniture:soumu:unsubmitted', 'furniture:soumu:uncounted']);
   });
 
-  it('閲覧のみ：h1「ホーム」、要対応の欄がない。机椅子のカード（確定前はリンクなし）と締切と予定。読むのはお知らせの新着だけ（T17）', async () => {
+  it('閲覧のみ：h1「ホーム」、要対応の欄がない。机椅子のカード（確定前はリンクなし）と締切と予定。読むのはお知らせの新着（T17）と締切と予定（T18）だけ', async () => {
     renderPortal(member('viewer', [], 'allocating'));
     expect(h1()).toBe('ホーム');
     expect(screen.queryByTestId('portal-todos')).toBeNull();
     const card = within(screen.getByTestId('portal-cards')).getByTestId('module-card');
     expect(card.textContent).toBe('机椅子振り分けが確定すると、ここから見られます');
     expect(within(card).queryByRole('link')).toBeNull();
-    expect(datedIds()).toHaveLength(4);
-    // 締切と予定は閲覧のみにはリンクにしない（申請一覧・申請を開けない）
-    expect(within(screen.getByTestId('portal-dated')).queryAllByRole('link')).toEqual([]);
+    expect(datedIds()).toHaveLength(5);
+    // 机椅子の締切と予定は閲覧のみにはリンクにしない（申請一覧・申請を開けない）。欄の下の「締切と予定の一覧へ」だけ
+    expect(within(screen.getByTestId('portal-dated')).queryAllByRole('link').map((a) => a.getAttribute('data-testid'))).toEqual(['portal-dated-link']);
     await screen.findByTestId('portal-notices-empty');
-    expect(screen.queryByTestId('portal-loading')).toBeNull();
-    expect(tablesRead()).toEqual(['notices']);
+    await waitFor(() => expect(screen.queryByTestId('portal-loading')).toBeNull());
+    expect(tablesRead()).toEqual(['events', 'notices']);
   });
 
   it('閲覧のみ（確定）：カードに「振り分けが決まりました」と「振り分け表を見る」（/allocation）', () => {
@@ -264,11 +273,13 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     const close = screen.getAllByTestId('portal-dated-item').find((x) => x.getAttribute('data-id') === 'furniture:request-close')!;
     expect(close.getAttribute('data-kind')).toBe('deadline');
     expect(within(close).getByRole('link').getAttribute('href')).toBe('/request');
-    expect(close.textContent).toContain('10/5 17:00');
+    // T18：曜日つきの日付と相対の言い方（10/1 から 10/5 は「あと 4 日」）
+    expect(within(close).getByTestId('portal-dated-when').textContent).toBe('10/5（月）17:00');
+    expect(within(close).getByTestId('portal-dated-relative').textContent).toBe('あと 4 日');
     expect(close.textContent).toContain('締切');
     // 代表する団体の欄と要対応は同じキャッシュ（リクエストは1回ずつ）。版・在庫・振り分けの行・ルールは読まない
     await screen.findByTestId('portal-notices-empty');
-    expect(tablesRead()).toEqual(['notices', 'request_submissions', 'substitution_consents']);
+    await waitFor(() => expect(tablesRead()).toEqual(['events', 'notices', 'request_submissions', 'substitution_consents']));
     expect(screen.getAllByRole('heading', { level: 2 }).map((x) => x.textContent)).toEqual([
       'あなたの立場',
       '要対応',
@@ -301,6 +312,8 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(before(screen.getByTestId('rep-card'), screen.getByTestId('portal-cards'))).toBe(true);
     // 締切と予定は兼ねた人でも1回ずつ（申請一覧へのリンク。立場全体で決める）
     expect(datedIds().filter((id) => id === 'furniture:request-close')).toHaveLength(1);
+    // T18：予定と締切は総務として1回だけ読む（店長・副店長の分は読まない。RLS は人ごとに同じ行を返す）
+    await waitFor(() => expect(issued.filter((c) => c.table === 'events')).toHaveLength(1));
   });
 
   it('閲覧のみで店長も務める人：h1「ホーム」、要対応（自団体の分）・締切と予定・代表する団体・機能ごとの状況', async () => {
@@ -316,11 +329,13 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
 // ---------------------------------------------------------------- 読むもの
 
 describe('T16 ダッシュボード：読むもの（版・振り分けの行・ルールを読まない。D-51）', () => {
-  it('総務：机椅子の軽い読み取りの6つの表と、T17 総務内のお知らせの新着を1回ずつ（欄が3つでも同じキーは1回）。years・allocations・rules・requests は読まない', async () => {
+  it('総務：机椅子の軽い読み取りの6つの表と、T17 総務内のお知らせの新着と、T18 予定と締切を1回ずつ（欄が3つでも同じキーは1回）。years・allocations・rules・requests は読まない', async () => {
     renderPortal(member('admin', [], 'requesting'));
     await screen.findByTestId('module-card');
     await screen.findByTestId('portal-notices-empty');
-    expect(tablesRead()).toEqual(['groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']);
+    await waitFor(() =>
+      expect(tablesRead()).toEqual(['events', 'groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']),
+    );
     const stocks = issued.find((c) => c.table === 'stocks')!;
     expect(opArgs(stocks, 'select')).toEqual([['room_id']]);
   });
@@ -345,9 +360,14 @@ describe('T16 ダッシュボード：最後に読み込んだ日時と「読み
       who: '総務（管理者）',
       m: () => member('admin', [], 'requesting'),
       ready: 'module-card',
-      tables: ['groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents'],
+      tables: ['events', 'groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents'],
     },
-    { who: '店長', m: () => member(null, [G1], 'requesting'), ready: 'rep-card', tables: ['notices', 'request_submissions', 'substitution_consents'] },
+    {
+      who: '店長',
+      m: () => member(null, [G1], 'requesting'),
+      ready: 'rep-card',
+      tables: ['events', 'notices', 'request_submissions', 'substitution_consents'],
+    },
   ])('$who：アプリの QueryClient の既定のまま、30 秒以内に戻れば読み直さず、30 秒を過ぎて戻れば読み直す', async ({ m, ready, tables }) => {
     const t0 = Date.parse(IN_WINDOW);
     vi.setSystemTime(new Date(t0));
@@ -397,15 +417,16 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     expect(within(todos).getByTestId('portal-loading').getAttribute('data-module')).toBe('furniture');
     expect(within(screen.getByTestId('portal-cards')).getByTestId('portal-loading')).toBeTruthy();
     expect(within(screen.getByTestId('portal-cards')).queryByTestId('module-card')).toBeNull();
-    expect(datedIds()).toHaveLength(4);
+    expect(datedIds()).toHaveLength(5);
     expect(screen.queryByTestId('portal-todos-empty')).toBeNull();
-    // 締切と予定は年度の行だけで決まるので、机椅子の読み込み中を出さない（決定 7）
-    expect(within(screen.getByTestId('portal-dated')).queryByTestId('portal-loading')).toBeNull();
+    // 締切と予定は（机椅子の分は）年度の行だけで決まるので、机椅子の読み込み中を出さない（決定 7。締切と予定の機能の読み込み中だけ）
+    const datedLoading = () => within(screen.getByTestId('portal-dated')).queryAllByTestId('portal-loading').map((x) => x.getAttribute('data-module'));
+    expect(datedLoading()).not.toContain('furniture');
 
     release();
     await screen.findByTestId('module-card');
     expect(todoIds()).toEqual(['furniture:lead:close-requests', 'furniture:soumu:unsubmitted', 'furniture:soumu:uncounted']);
-    expect(screen.queryByTestId('portal-loading')).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId('portal-loading')).toBeNull());
   });
 
   it('机椅子の読み込みの失敗：要対応とカードの欄に失敗と「もう一度」。年度だけの要対応・締切と予定・立場の一覧は出る。もう一度で直る', async () => {
@@ -430,7 +451,7 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     expect(within(err).getByTestId('portal-module-error-label').className).not.toContain('sr-only');
     expect(within(cards).queryByTestId('module-card')).toBeNull();
     // ほかの欄は出したまま。締切と予定は年度の行だけで決まるので、机椅子の失敗を出さない（決定 7。失敗は要対応とカードの2か所）
-    expect(datedIds()).toHaveLength(4);
+    expect(datedIds()).toHaveLength(5);
     expect(within(screen.getByTestId('portal-dated')).queryByTestId('portal-module-error')).toBeNull();
     expect(screen.getAllByTestId('portal-module-error')).toHaveLength(2);
     expect(screen.getByTestId('home-roles').textContent).toBe('管理者');
@@ -466,7 +487,7 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     expect(err.textContent).toContain('この欄を表示できませんでした。');
     expect(within(todos).getByRole('heading', { level: 2 }).textContent).toBe('要対応');
     await screen.findByTestId('module-card');
-    expect(datedIds()).toHaveLength(4);
+    expect(datedIds()).toHaveLength(5);
     expect(within(screen.getByTestId('portal-dated')).queryByTestId('portal-widget-error')).toBeNull();
 
     h.throwInTodos = false;
@@ -485,10 +506,11 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     expect(within(screen.getByTestId('portal-notices')).getByTestId('portal-loading')).toBeTruthy();
     release();
     await screen.findByTestId('module-card');
-    expect(datedIds()).toHaveLength(4);
-    // 年度の行は1回だけ。お知らせの新着（T17）は年度の行が届いてから読む
+    expect(datedIds()).toHaveLength(5);
+    // 年度の行は1回だけ。お知らせの新着（T17）と予定と締切（T18）は年度の行が届いてから読む
     await screen.findByTestId('portal-notices-empty');
-    expect(issued.map((c) => c.table)).toEqual(['years', 'notices']);
+    await waitFor(() => expect(issued.map((c) => c.table).sort()).toEqual(['events', 'notices', 'years']));
+    expect(issued[0]!.table).toBe('years');
   });
 
   it('年度の行の読み込みの失敗：欄ごとに失敗ともう一度（年度の行を読み直す）', async () => {
@@ -582,13 +604,15 @@ describe('T16 ダッシュボード：急ぎの度合いの印（急ぎ・参考
 
 describe('T16 ダッシュボード：0 件の文言と「ほか N 件」', () => {
   it('要対応が 0 件なら「今やることはありません」、締切と予定が 0 件なら「これからの締切と予定はありません」', async () => {
-    // 祭の後（2日目の翌日より後）の振り分け中：総務部門員の要対応はなく、日付もすべて過去
+    // 祭の後（2日目の翌日より後）の振り分け中：総務部門員の要対応はなく、日付もすべて過去。受付期間のない年度（過ぎた締切もない。T18）
     vi.setSystemTime(new Date('2026-10-20T00:00:00Z'));
-    renderPortal(member('staff', [], 'allocating'));
+    renderPortal(member('staff', [], 'allocating'), { year: yearRow('allocating', { request_open_at: null, request_close_at: null }) });
     await screen.findByTestId('module-card');
     expect(screen.getByTestId('portal-todos-empty').textContent).toBe('今やることはありません');
-    expect(screen.getByTestId('portal-dated-empty').textContent).toBe('これからの締切と予定はありません');
+    expect((await screen.findByTestId('portal-dated-empty')).textContent).toBe('これからの締切と予定はありません');
     expect(screen.queryByTestId('portal-dated-more')).toBeNull();
+    // 空のときも一覧へのリンクを出す
+    expect(screen.getByTestId('portal-dated-link').getAttribute('href')).toBe('/calendar');
   });
 
   it('締切と予定は 8 件まで。続きは「ほか N 件」（早い順）', async () => {
@@ -604,9 +628,10 @@ describe('T16 ダッシュボード：0 件の文言と「ほか N 件」', () =
     });
     renderPortal(member('viewer', [], 'requesting'));
     expect(datedIds()).toEqual(['test:1', 'test:2', 'test:3', 'test:4', 'test:5', 'furniture:day-minus2', 'furniture:day-minus1', 'furniture:day1']);
-    expect(screen.getByTestId('portal-dated-more').textContent).toBe('ほか 1 件');
-    // 日付だけの項目は「10/7」の形
-    expect(screen.getAllByTestId('portal-dated-item')[0]!.querySelector('time')?.textContent).toBe('10/7');
+    // 残りは、これからの 2日目と、枠に入らなかった過ぎた締切（申請の締切。T18）
+    expect(screen.getByTestId('portal-dated-more').textContent).toBe('ほか 2 件');
+    // 日付だけの項目は「10/7（水）」の形（T18 で曜日を付けた）
+    expect(screen.getAllByTestId('portal-dated-item')[0]!.querySelector('time')?.textContent).toBe('10/7（水）');
   });
 });
 
@@ -732,6 +757,8 @@ describe('T17 ダッシュボード：お知らせの欄（04「ダッシュボ�
     override = (call) => (call.table === 'notices' ? gate.then(() => ({ data: [notice('s1', 'soumu', '2026-10-02T00:00:00Z')] })) : undefined);
     renderPortal(member('admin', [], 'requesting'));
     await screen.findByTestId('module-card');
+    // 締切と予定の機能（T18）の読み取りが届くのを待つ（その読み込み中は締切と予定の欄にだけ出る）
+    await waitFor(() => expect(within(screen.getByTestId('portal-dated')).queryByTestId('portal-loading')).toBeNull());
     const w = screen.getByTestId('portal-soumu-notices');
     expect(within(w).getByTestId('portal-loading').getAttribute('data-module')).toBe('notices');
     expect(within(w).queryByTestId('portal-notices-empty')).toBeNull();
@@ -789,6 +816,164 @@ describe('T17 ダッシュボード：お知らせの欄（04「ダッシュボ�
   });
 });
 
+// ---------------------------------------------------------------- 締切と予定の欄（T18）
+
+/** 予定と締切の欄の1行（RLS の結果の代わり。読む列は id・種類・題名・開始・終わり・終日だけ） */
+const eventRow = (id: string, over: Record<string, unknown> = {}) => ({
+  id,
+  kind: 'event',
+  title: `予定${id}`,
+  starts_at: '2026-10-08T04:00:00Z',
+  ends_at: null,
+  all_day: false,
+  ...over,
+});
+const datedItem = (id: string) => screen.getAllByTestId('portal-dated-item').find((x) => x.getAttribute('data-id') === id)!;
+
+describe('T18 ダッシュボード：締切と予定の欄（04「ダッシュボード」・「締切と予定」の「ダッシュボードに出すもの」）', () => {
+  // 開いた時刻は AFTER_CLOSE（10/6〔火〕09:00 Asia/Tokyo）
+  const ROWS = [
+    eventRow('e1', { kind: 'deadline', title: '書類の提出', starts_at: '2026-10-07T08:00:00Z' }), // 10/7（水）17:00 → 明日
+    eventRow('e2', { title: '搬入の説明会', starts_at: '2026-10-09T04:00:00Z', ends_at: '2026-10-09T06:00:00Z' }), // 10/9（金）13:00〜15:00
+    eventRow('e3', { kind: 'deadline', title: '古い締切', starts_at: '2026-09-30T08:00:00Z' }), // 過ぎた締切（申請の締切より古い）
+    eventRow('e4', { title: '片付け', all_day: true, starts_at: '2026-10-18T15:00:00Z', ends_at: '2026-10-19T15:00:00Z' }), // 終日 10/19〜10/20
+    eventRow('e5', { title: '遠い予定', all_day: true, starts_at: '2026-11-30T15:00:00Z' }), // 12/1：今日＋30 日（11/5）より後なので出さない
+  ];
+
+  it('項目と机椅子の日付を選んで早い順に（これからの 30 日を先に 8 件の枠へ、余りに過ぎた締切の新しいもの）。続きは「ほか N 件」', async () => {
+    eventRows = ROWS;
+    renderPortal(member('head', [], 'requesting'));
+    await waitFor(() => expect(datedIds()).toContain('calendar:e1'));
+    // これから 7 件（e1・e2・祭の4日・e4）と、過ぎた締切 2 件（申請の締切 10/5・e3 9/30）のうち新しい申請の締切
+    expect(datedIds()).toEqual([
+      'furniture:request-close',
+      'calendar:e1',
+      'calendar:e2',
+      'furniture:day-minus2',
+      'furniture:day-minus1',
+      'furniture:day1',
+      'furniture:day2',
+      'calendar:e4',
+    ]);
+    expect(screen.getByTestId('portal-dated-more').textContent).toBe('ほか 1 件');
+  });
+
+  it('1件は曜日つきの日付・相対の言い方・種類・題名。項目は /calendar?event=<id> へのリンク。過ぎた締切は「締切を過ぎました」を注意の色で。欄の下に「締切と予定の一覧へ」', async () => {
+    eventRows = ROWS;
+    renderPortal(member('staff', [], 'requesting'));
+    await waitFor(() => expect(datedIds()).toContain('calendar:e1'));
+    const when = (id: string) => within(datedItem(id)).getByTestId('portal-dated-when').textContent;
+    const rel = (id: string) => within(datedItem(id)).getByTestId('portal-dated-relative').textContent;
+    expect([when('calendar:e1'), rel('calendar:e1')]).toEqual(['10/7（水）17:00', '明日']);
+    expect([when('calendar:e2'), rel('calendar:e2')]).toEqual(['10/9（金）13:00〜15:00', 'あと 3 日']);
+    expect([when('calendar:e4'), rel('calendar:e4')]).toEqual(['10/19（月）〜10/20（火）', 'あと 13 日']);
+    expect([when('furniture:day1'), rel('furniture:day1')]).toEqual(['10/17（土）', 'あと 11 日']);
+    expect([when('furniture:request-close'), rel('furniture:request-close')]).toEqual(['10/5（月）17:00', '締切を過ぎました']);
+    expect(within(datedItem('furniture:request-close')).getByTestId('portal-dated-relative').className).toContain('text-amber-700');
+    expect(within(datedItem('calendar:e1')).getByTestId('portal-dated-relative').className).not.toContain('text-amber-700');
+    const e1 = datedItem('calendar:e1');
+    expect(e1.getAttribute('data-kind')).toBe('deadline');
+    expect(e1.getAttribute('data-module')).toBe('calendar');
+    expect(e1.textContent).toContain('締切');
+    expect(e1.textContent).toContain('書類の提出');
+    expect(within(e1).getByRole('link').getAttribute('href')).toBe('/calendar?event=e1');
+    expect(within(e1).getByTestId('portal-dated-when').getAttribute('dateTime')).toBe('2026-10-07T08:00:00Z');
+    // 終日の項目は日付だけ（dateTime は開始の日）
+    expect(within(datedItem('calendar:e4')).getByTestId('portal-dated-when').getAttribute('dateTime')).toBe('2026-10-19');
+    const link = screen.getByTestId('portal-dated-link');
+    expect([link.textContent, link.getAttribute('href')]).toEqual(['締切と予定の一覧へ', '/calendar']);
+  });
+
+  it('読むのは events の id・種類・題名・開始・終わり・終日だけ（対象・メモ・書いた人は読まない）。年度で絞り、開始・id の順に全部。どの立場も1人1回', async () => {
+    const cases = [member('staff', [], 'requesting'), member('viewer', [], 'requesting'), member(null, [G1], 'requesting'), member('admin', [G1], 'requesting'), member('viewer', [G1], 'requesting')];
+    for (const m of cases) {
+      cleanup();
+      issued.splice(0);
+      renderPortal(m);
+      await waitFor(() => expect(issued.filter((c) => c.table === 'events'), `${m.role}・${m.groups.length}`).toHaveLength(1));
+      await act(() => new Promise((r) => setTimeout(r, 20)));
+      const calls = issued.filter((c) => c.table === 'events');
+      expect(calls, `${m.role}・${m.groups.length}`).toHaveLength(1);
+      const c = calls[0]!;
+      expect(opArgs(c, 'select')).toEqual([['id, kind, title, starts_at, ends_at, all_day']]);
+      expect(opArgs(c, 'eq')).toEqual([['year_id', Y]]);
+      expect(opArgs(c, 'order')).toEqual([['starts_at'], ['id']]);
+      expect(opArgs(c, 'range')).toEqual([[0, 999]]);
+      expect(opArgs(c, 'in')).toEqual([]);
+      expect(opArgs(c, 'neq')).toEqual([]);
+    }
+  });
+
+  it('予定と締切の読み込み中は、締切と予定の欄にだけ Skeleton（data-module=calendar）。机椅子の日付は先に出し、ほかの欄に出さない', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    override = (call) => (call.table === 'events' ? gate.then(() => ({ data: [eventRow('e1', { kind: 'deadline', starts_at: '2026-10-07T08:00:00Z' })] })) : undefined);
+    renderPortal(member('viewer', [], 'requesting'));
+    const dated = screen.getByTestId('portal-dated');
+    expect(within(dated).getByTestId('portal-loading').getAttribute('data-module')).toBe('calendar');
+    expect(datedIds()).toHaveLength(5);
+    expect(within(dated).queryByTestId('portal-dated-empty')).toBeNull();
+    expect(within(dated).getByTestId('portal-dated-link')).toBeTruthy();
+    await screen.findByTestId('portal-notices-empty');
+    for (const id of ['portal-notices', 'portal-cards']) {
+      expect(within(screen.getByTestId(id)).queryAllByTestId('portal-loading').map((x) => x.getAttribute('data-module')), id).not.toContain('calendar');
+    }
+    release();
+    await waitFor(() => expect(datedIds()).toContain('calendar:e1'));
+    expect(within(dated).queryByTestId('portal-loading')).toBeNull();
+  });
+
+  it('予定と締切の読み込みの失敗：締切と予定の欄にだけ「締切と予定：…」ともう一度。机椅子の日付と一覧へのリンクは出たまま、要対応・お知らせ・カードの欄は失敗を出さない。もう一度で直る', async () => {
+    let fail = true;
+    eventRows = [eventRow('e1', { kind: 'deadline', title: '書類の提出', starts_at: '2026-10-07T08:00:00Z' })];
+    override = (call) => (call.table === 'events' && fail ? NETWORK : undefined);
+    const user = userEvent.setup({ advanceTimers: () => {} });
+    renderPortal(member('admin', [], 'requesting'));
+    const dated = screen.getByTestId('portal-dated');
+    const err = await within(dated).findByTestId('portal-module-error');
+    expect(err.getAttribute('data-module')).toBe('calendar');
+    expect(err.textContent).toContain('締切と予定：通信できませんでした。電波の良い所でもう一度');
+    expect(datedIds()).toEqual(['furniture:request-close', 'furniture:day-minus2', 'furniture:day-minus1', 'furniture:day1', 'furniture:day2']);
+    expect(within(dated).getByTestId('portal-dated-link').getAttribute('href')).toBe('/calendar');
+    expect(within(dated).queryByTestId('portal-dated-empty')).toBeNull();
+    await screen.findByTestId('module-card');
+    await screen.findByTestId('portal-notices-empty');
+    for (const id of ['portal-todos', 'portal-soumu-notices', 'portal-cards']) {
+      expect(within(screen.getByTestId(id)).queryByTestId('portal-module-error'), id).toBeNull();
+    }
+    expect(screen.getAllByTestId('portal-module-error')).toHaveLength(1);
+    expect(screen.queryByTestId('portal-widget-error')).toBeNull();
+
+    fail = false;
+    await user.click(within(err).getByRole('button', { name: 'もう一度' }));
+    await waitFor(() => expect(datedIds()).toContain('calendar:e1'));
+    expect(screen.queryByTestId('portal-module-error')).toBeNull();
+  });
+
+  it('机椅子の読み込みの失敗は、締切と予定の欄に出ない（項目は出る）', async () => {
+    eventRows = [eventRow('e1', { starts_at: '2026-10-08T04:00:00Z' })];
+    override = (call) => (call.table === 'request_submissions' ? NETWORK : undefined);
+    renderPortal(member('admin', [], 'requesting'));
+    await within(screen.getByTestId('portal-todos')).findByTestId('portal-module-error');
+    await waitFor(() => expect(datedIds()).toContain('calendar:e1'));
+    expect(within(screen.getByTestId('portal-dated')).queryByTestId('portal-module-error')).toBeNull();
+  });
+
+  it('日の境目は Asia/Tokyo：10/7 0:00（Asia/Tokyo）の直前は 10/7 の締切が「明日」、ちょうどから「今日」', async () => {
+    eventRows = [eventRow('e1', { kind: 'deadline', title: '日付だけの締切', all_day: true, starts_at: '2026-10-06T15:00:00Z' })];
+    vi.setSystemTime(new Date('2026-10-06T14:59:59.999Z'));
+    renderPortal(member('staff', [], 'requesting'));
+    await waitFor(() => expect(datedIds()).toContain('calendar:e1'));
+    expect(within(datedItem('calendar:e1')).getByTestId('portal-dated-relative').textContent).toBe('明日');
+    expect(within(datedItem('calendar:e1')).getByTestId('portal-dated-when').textContent).toBe('10/7（水）');
+    cleanup();
+    vi.setSystemTime(new Date('2026-10-06T15:00:00Z'));
+    renderPortal(member('staff', [], 'requesting'));
+    await waitFor(() => expect(datedIds()).toContain('calendar:e1'));
+    expect(within(datedItem('calendar:e1')).getByTestId('portal-dated-relative').textContent).toBe('今日');
+  });
+});
+
 // ---------------------------------------------------------------- / の JS
 
 describe('T16 / の部品の import（スナップショット・検証・机椅子の状況の部品を / の JS に入れない。D-51）', () => {
@@ -820,6 +1005,25 @@ describe('T16 / の部品の import（スナップショット・検証・机椅
     expect(g.files).not.toContain('lib/data/notices.ts');
     expect(g.files).not.toContain('lib/schemas/notices.ts');
     expect(g.files).not.toContain('lib/modules/notices/permissions.ts');
+  });
+
+  it('T18 / は締切と予定の欄の部品と読み取り（calendar/portal.ts・dated.ts・labels.ts）だけを読み、締切と予定の一覧の画面・ダイアログ・一覧の読み書き・入力の zod・一覧の組み立てを読まない', () => {
+    const g = staticImportGraph('app/(app)/page.tsx');
+    for (const f of ['components/portal/dated-list.tsx', 'lib/modules/calendar/portal.ts', 'lib/modules/calendar/dated.ts', 'lib/modules/calendar/labels.ts']) {
+      expect(g.files).toContain(f);
+    }
+    expect(g.files.filter((f) => f.startsWith('components/calendar/'))).toEqual([]);
+    for (const f of ['lib/data/calendar.ts', 'lib/schemas/calendar.ts', 'lib/modules/calendar/list.ts', 'lib/modules/calendar/permissions.ts']) {
+      expect(g.files).not.toContain(f);
+    }
+  });
+
+  it('T18 /calendar（締切と予定）はスナップショット・検証・机椅子の状況・お知らせ一覧の画面を読まない', () => {
+    const g = staticImportGraph('app/(app)/calendar/page.tsx');
+    expect(g.files).toContain('components/calendar/calendar-screen.tsx');
+    expect(g.files.filter((f) => HEAVY_FILES.includes(f))).toEqual([]);
+    expect(g.files.filter((f) => f.startsWith('components/notices/'))).toEqual([]);
+    expect(g.packages.filter((p) => HEAVY_PACKAGES.test(p))).toEqual([]);
   });
 
   it('T17 /notices（お知らせ一覧）はスナップショット・検証・机椅子の状況を読まない', () => {

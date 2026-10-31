@@ -106,12 +106,16 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     return { displayName: null, year, role, groups, years: [year], latestYear: year, adminOfOpenYear: role === 'admin' };
   };
   const yearRow = { id: Y, label: 'R8', status: 'requesting', allocation_version: 3, festival_start: '2026-10-17' } as unknown as YearRow;
-  /** その立場のダッシュボードの欄（要対応・締切と予定・カード）が並べるクエリのキー（重なりを除く） */
+  /**
+   * その立場のダッシュボードの欄（要対応・締切と予定・カード）が並べるクエリのキー（重なりを除く）。T18 の締切と予定の読み取りは、
+   * 団体代表の / が 4G で 2 秒以内のままであることを `pnpm e2e:perf` で確かめるまで先読みに入れない（04「締切と予定」の
+   * 「ダッシュボードに出すもの」の先読み、notes/T18.md「後半（画面）の約束」9）ので、ここでは比べない
+   */
   const widgetKeys = (m: Membership) => {
     const out = new Map<string, readonly unknown[]>();
     for (const c of portalContextsOf(m, yearRow, 0)) {
       for (const p of PORTAL_PROVIDERS) {
-        if (!p.kinds.includes(c.kind)) continue;
+        if (!p.kinds.includes(c.kind) || p.moduleId === 'calendar') continue;
         for (const w of PORTAL_WIDGETS) {
           const q = portalWidgetQuery(p, c, w);
           if (q) out.set(JSON.stringify(q.queryKey), q.queryKey);
@@ -150,6 +154,18 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     const cases = [member('admin'), member('staff'), member('viewer'), member(null, [G1g]), member('admin', [G1g, G2g]), member('viewer', [G2g])];
     for (const m of cases) {
       expect(keys(home(m)), `${m.role}・${m.groups.length}`).toEqual(widgetKeys(m));
+    }
+  });
+
+  it('T18 締切と予定の読み取りは（4G の計測で決めるまで）先読みしない。ダッシュボードの欄はどの立場でも締切と予定の機能を読む', () => {
+    for (const m of [member('admin', [G1g]), member('staff'), member('viewer', [G2g]), member(null, [G1g, G2g])]) {
+      expect(keys(home(m)).filter((key) => key[3] === 'calendar')).toEqual([]);
+      const calendarKeys = portalContextsOf(m, yearRow, 0).flatMap((c) => {
+        const p = PORTAL_PROVIDERS.find((x) => x.moduleId === 'calendar')!;
+        const q = portalWidgetQuery(p, c, 'dated');
+        return q ? [q.queryKey] : [];
+      });
+      expect(calendarKeys).toHaveLength(1);
     }
   });
 
@@ -220,6 +236,10 @@ describe('T16 ルートのレイアウトの JS（Providers が先読みの表�
     ];
     expect(g.files.filter((f) => heavy.includes(f))).toEqual([]);
     expect(g.packages.filter((p) => /^(@gaapp\/|highs|exceljs)/.test(p))).toEqual([]);
+    // T18：締切と予定は（4G の計測で先読みに足すと決めるまで）ルートのレイアウトに何も入れない（/stock・/request・/my の最初に読む JS を
+    // 変えない）。曜日つきの日付（lib/datetime-weekday.ts）と表示名（lib/modules/calendar/labels.ts）も入れない
+    expect(g.files.filter((f) => f.startsWith('lib/modules/calendar/') || f.includes('calendar'))).toEqual([]);
+    expect(g.files).not.toContain('lib/datetime-weekday.ts');
   });
 });
 
