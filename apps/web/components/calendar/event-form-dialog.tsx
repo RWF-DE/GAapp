@@ -8,6 +8,8 @@
 //   保存は全部の欄を、読んだときの updated_at の文字列のまま条件に入れて update する。何も変えていなければ送らずに「変更はありません」。
 // - 応答が届かなかったとき・止められたときは event-write.ts（2.6 の (B1)）。conflict は読み直した行を入力の元にして入力を残し（次の
 //   保存はその版で送り、入力で上書きする。登録の 23505 で中身が違えば、その項目の編集に切り替える）、消えていたら「保存」を押せなくする。
+//   保存が止められた後に読み直せなかったときの「読み直す」は、その項目を読み直して止められた後と同じに決める（rereadRejectedSave。
+//   一覧の読み直しでは入力の元の版を進めない。レビューの T18-2）。
 //   権限か年度の状態が変わった（42501・lock_unchanged）は年度の行と立場を読み直し、送るボタンを押せなくする（入力は残す）。
 // - 入力はブラウザに下書きとして置き（lib/drafts.ts。登録はダイアログの id、編集は項目ごとに読んだときの updated_at も）、開き直したときに
 //   戻せる（DraftNotice）。閉じる前・アプリの中で移る前・年度を切り替える前に確かめる（UnsavedChangesGuard）。
@@ -59,7 +61,7 @@ import {
   type EventFormValues,
 } from '@/lib/schemas/calendar';
 import { cn } from '@/lib/utils';
-import { runEventSave, type EventSaveResult } from './event-write';
+import { rereadRejectedSave, runEventSave, type EventSaveResult } from './event-write';
 
 /** 開いているダイアログ：登録（new）か、一覧の項目の編集（edit。event は開いたときの行） */
 export type EventFormTarget = { type: 'new' } | { type: 'edit'; event: CalendarEventRow };
@@ -93,8 +95,13 @@ export const CONFLICT_NOTICE = `${EVENT_CONFLICT_MESSAGE}。入力は残して�
 export const EVENT_MISSING_MESSAGE = 'この項目は見つかりません（ほかの人が削除した可能性があります）';
 /** 送るボタンを押せないとき（書けない・権限か年度の状態が変わった）の足もとの文 */
 export const CANNOT_SAVE_TEXT = '今の立場・年度の状態では保存できません';
-/** 止められた後に読み直せなかった（「読み直しました」とは言わない） */
+/**
+ * 保存が止められた後に読み直せなかった（「読み直しました」とは言わない）。「読み直す」はその項目を読み直し、変わっていれば conflict の
+ * 知らせにして入力の元を進めるので、その後の1回の保存で上書きできる（レビューの T18-2）
+ */
 export const REREAD_FAILED_NOTICE = 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度保存してください';
+/** 「読み直す」でもまた読み直せなかった（知らせと「読み直す」は残す） */
+export const REREAD_AGAIN_FAILED_MESSAGE = 'まだ読み直せませんでした。通信を確かめてから、もう一度「読み直す」を押してください（入力は残してあります）';
 /** 日時の読み方の説明 */
 export const TIME_ZONE_HELP = '日時は日本時間（Asia/Tokyo）として読みます';
 
@@ -102,7 +109,9 @@ export const TIME_ZONE_HELP = '日時は日本時間（Asia/Tokyo）として読
 type SubmitState =
   | { type: 'conflict'; row: CalendarEventRow }
   | { type: 'missing' }
-  | { type: 'unknown'; message: string; showReload?: boolean }
+  | { type: 'unknown'; message: string }
+  /** 保存が止められた後に読み直せなかった（「読み直す」つき） */
+  | { type: 'unread' }
   | { type: 'error'; error: unknown };
 
 /** 下書きの値（入力と、登録ならダイアログで作った id、編集なら読んだときの updated_at） */
@@ -169,6 +178,8 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
   const [errors, setErrors] = useState<EventFormErrors>({});
   const [submit, setSubmit] = useState<SubmitState | null>(null);
   const [pending, setPending] = useState(false);
+  // 止められた後に読み直せなかったときの「読み直す」の最中（その間は送る・閉じる・入力を止める。届いた行を、押したときの入力と比べる）
+  const [rereading, setRereading] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   // 権限か年度の状態が変わった（42501・lock_unchanged）：このダイアログでは送らない（入力は残す）
   const [forbidden, setForbidden] = useState(false);
@@ -205,10 +216,11 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
   const isNew = mode.type === 'new';
   const dirty = useMemo(() => JSON.stringify(values) !== JSON.stringify(initial), [values, initial]);
   // 応答が届かなかった後・止められた後に読み直せなかったときは、DB の行が入力の元と同じか分からないので、「変更はありません」で閉じずに送る
-  const mustSend = submit?.type === 'unknown';
+  const mustSend = submit?.type === 'unknown' || submit?.type === 'unread';
   const titleCount = charCount(values.title.trim());
   const noteCount = charCount(values.note.trim());
   const blocked = !writable || forbidden;
+  const busy = pending || rereading;
 
   // 誤りが出たら最初の誤りの欄を見える所に出す
   useEffect(() => {
@@ -240,7 +252,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
   };
 
   const requestClose = () => {
-    if (pending) return;
+    if (busy) return;
     if (dirty) setDiscardOpen(true);
     else {
       writer.cancel();
@@ -283,7 +295,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
         setSubmit({ type: 'unknown', message: unknownOutcomeMessage(isNew ? '登録' : '保存') });
         return;
       case 'unread':
-        setSubmit({ type: 'unknown', message: REREAD_FAILED_NOTICE, showReload: true });
+        setSubmit({ type: 'unread' });
         return;
       case 'failed': {
         const c = classifyError(result.error);
@@ -300,7 +312,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
   };
 
   const save = async () => {
-    if (pending || blocked || submit?.type === 'missing') return;
+    if (busy || blocked || submit?.type === 'missing') return;
     const r = checkEventForm(values);
     setErrors(r.ok ? {} : r.errors);
     if (!r.ok) return;
@@ -333,8 +345,28 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
     }
   };
 
+  /**
+   * 保存が止められた後に読み直せなかった（unread）ときの「読み直す」（レビューの T18-2）：その項目を読み直し、止められた後の読み直しと
+   * 同じに決める（入力と同じなら「保存されていました」、変わっていれば conflict の知らせにして入力の元を進める、なければ「見つかりません」）。
+   * また読み直せなければ知らせと「読み直す」を残す（版は進めない）。読み直す間は送る・閉じる・入力を止める（届いた行を押したときの入力と比べる）。
+   */
+  const rereadUnread = async () => {
+    if (busy || mode.type !== 'edit' || !lockUpdatedAt) return;
+    const r = checkEventForm(values);
+    const id = mode.id;
+    setRereading(true);
+    try {
+      const result = await rereadRejectedSave({ baseVersion: lockUpdatedAt, write: r.ok ? r.write : null, reread: () => readEvent(id) });
+      if (result.type === 'unread') toast.error(REREAD_AGAIN_FAILED_MESSAGE);
+      else settle(result);
+    } finally {
+      setRereading(false);
+    }
+  };
+
   const restoreDraft = () => {
-    if (!draft) return;
+    // 送っている間・読み直している間は入力と版を変えない（届いた結果は、送った・押したときの入力と版で決めるため）
+    if (!draft || busy) return;
     const d = draft.value;
     setValues(d.values);
     // 登録は下書きの id で送る（前の送信が通っていれば 23505 で止まり、読み直して決める）。編集は下書きを書いたときの版で送る
@@ -381,7 +413,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
           </DialogDescription>
         </DialogHeader>
         <div ref={bodyRef} data-testid="event-form" className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
-          <SubmitNotice submit={submit} onReload={onReload} />
+          <SubmitNotice submit={submit} onReload={onReload} onReread={() => void rereadUnread()} rereading={rereading} />
           {draft ? <DraftNotice savedAt={draft.savedAt} onRestore={restoreDraft} onDiscard={discardDraft} /> : null}
 
           <div data-field="kind" className="space-y-2">
@@ -393,7 +425,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
               aria-labelledby={ids.kind}
               value={values.kind}
               onValueChange={(v) => update({ kind: v as EventKind })}
-              disabled={pending}
+              disabled={busy}
               className="flex flex-wrap gap-x-6 gap-y-2"
             >
               {EVENT_KINDS.map((k) => (
@@ -416,7 +448,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
               aria-labelledby={ids.audience}
               value={values.audience}
               onValueChange={(v) => update({ audience: v as EventAudience })}
-              disabled={pending}
+              disabled={busy}
               className="gap-2"
             >
               {EVENT_AUDIENCES.map((a) => (
@@ -450,7 +482,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
               data-testid="event-title"
               value={values.title}
               onChange={(e) => update({ title: e.target.value })}
-              disabled={pending}
+              disabled={busy}
               aria-invalid={errors.title ? true : undefined}
               autoComplete="off"
             />
@@ -464,7 +496,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
                 data-testid="event-all-day"
                 checked={values.allDay}
                 onCheckedChange={(v) => setAllDay(v === true)}
-                disabled={pending}
+                disabled={busy}
               />
               <Label htmlFor={ids.allDay} className="font-normal">
                 終日
@@ -482,7 +514,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
                     max={EVENT_DATE_MAX}
                     value={values.startDate}
                     onChange={(e) => update({ startDate: e.target.value })}
-                    disabled={pending}
+                    disabled={busy}
                     aria-invalid={errors.startDate ? true : undefined}
                     aria-describedby={ids.tzHelp}
                   />
@@ -498,7 +530,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
                     max={EVENT_DATE_MAX}
                     value={values.endDate}
                     onChange={(e) => update({ endDate: e.target.value })}
-                    disabled={pending}
+                    disabled={busy}
                     aria-invalid={errors.endDate ? true : undefined}
                     aria-describedby={ids.tzHelp}
                   />
@@ -517,7 +549,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
                     max={`${EVENT_DATE_MAX}T23:59`}
                     value={values.start}
                     onChange={(e) => update({ start: e.target.value })}
-                    disabled={pending}
+                    disabled={busy}
                     aria-invalid={errors.start ? true : undefined}
                     aria-describedby={ids.tzHelp}
                   />
@@ -533,7 +565,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
                     max={`${EVENT_DATE_MAX}T23:59`}
                     value={values.end}
                     onChange={(e) => update({ end: e.target.value })}
-                    disabled={pending}
+                    disabled={busy}
                     aria-invalid={errors.end ? true : undefined}
                     aria-describedby={ids.tzHelp}
                   />
@@ -563,7 +595,7 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
               value={values.note}
               rows={4}
               onChange={(e) => update({ note: e.target.value })}
-              disabled={pending}
+              disabled={busy}
               aria-invalid={errors.note ? true : undefined}
             />
             {fieldError('note')}
@@ -571,13 +603,13 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
         </div>
         <DialogFooter className="flex-row flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
           {blocked ? <p className="mr-auto text-sm text-muted-foreground">{CANNOT_SAVE_TEXT}</p> : null}
-          <Button variant="outline" onClick={requestClose} disabled={pending}>
+          <Button variant="outline" onClick={requestClose} disabled={busy}>
             やめる
           </Button>
           <Button
             data-testid="event-submit"
             onClick={() => void save()}
-            disabled={pending || blocked || submit?.type === 'missing'}
+            disabled={busy || blocked || submit?.type === 'missing'}
             aria-busy={pending || undefined}
           >
             {sendLabel}
@@ -601,8 +633,20 @@ function EventFormBody({ target, onClose, yearId, userId, writable, onReload, on
   );
 }
 
-/** 送った後の知らせ（conflict・消えていた・保存できたか分からない・そのほかの失敗） */
-function SubmitNotice({ submit, onReload }: { submit: SubmitState | null; onReload: () => void }) {
+/** 送った後の知らせ（conflict・消えていた・保存できたか分からない・止められた後に読み直せなかった・そのほかの失敗） */
+function SubmitNotice({
+  submit,
+  onReload,
+  onReread,
+  rereading,
+}: {
+  submit: SubmitState | null;
+  /** 一覧を読み直す（そのほかの失敗の帯） */
+  onReload: () => void;
+  /** 止められた後に読み直せなかったときの「読み直す」（その項目を読み直して決める） */
+  onReread: () => void;
+  rereading: boolean;
+}) {
   if (!submit) return null;
   const box = 'space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm';
   switch (submit.type) {
@@ -629,11 +673,15 @@ function SubmitNotice({ submit, onReload }: { submit: SubmitState | null; onRelo
       return (
         <div role="alert" data-testid="event-error" data-kind="unknown" data-submit-error className={box}>
           <p className="font-medium text-destructive">{submit.message}</p>
-          {submit.showReload ? (
-            <Button size="sm" variant="outline" onClick={onReload}>
-              読み直す
-            </Button>
-          ) : null}
+        </div>
+      );
+    case 'unread':
+      return (
+        <div role="alert" data-testid="event-error" data-kind="unread" data-submit-error className={box}>
+          <p className="font-medium text-destructive">{REREAD_FAILED_NOTICE}</p>
+          <Button size="sm" variant="outline" onClick={onReread} disabled={rereading} aria-busy={rereading || undefined}>
+            {rereading ? '読み直しています…' : '読み直す'}
+          </Button>
         </div>
       );
     case 'error':

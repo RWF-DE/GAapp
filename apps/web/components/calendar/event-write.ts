@@ -25,7 +25,7 @@ export type EventSaveResult =
   | { type: 'missing' }
   /** 応答が届かず保存できたか分からない（登録は、止められた後に行がない・読み直せないときも）。入力を残し、もう一度押せる */
   | { type: 'unknown' }
-  /** 保存：止められた後に読み直せなかった（「読み直しました」とは言わない） */
+  /** 保存：止められた後に読み直せなかった（「読み直しました」とは言わない。ダイアログの「読み直す」は rereadRejectedSave） */
   | { type: 'unread' }
   /** そのほかの失敗（forbidden・CHECK・deadlock・認証など。effectOf のとおり） */
   | { type: 'failed'; error: unknown };
@@ -86,6 +86,37 @@ export async function runEventSave(req: EventSaveRequest, onAuthError: AuthError
   }
   if (unknown && (outcome === 'not-saved' || outcome === 'unread')) return { type: 'unknown' };
   if (outcome === 'unread') return { type: 'unread' };
+  return read.row ? { type: 'conflict', row: read.row } : { type: 'missing' };
+}
+
+export interface EventRereadRequest {
+  /** 止められた保存の入力の元の版（読んだときの updated_at の文字列） */
+  baseVersion: string;
+  /** 今の入力（読み直した行と sameEventWrite で比べる）。確かめを通らなければ null（入力と同じとは見ない） */
+  write: EventWrite | null;
+  /** その項目を1行読む（なければ null。失敗したら投げる） */
+  reread: () => Promise<CalendarEventRow | null>;
+}
+
+/**
+ * 保存が止められた後に読み直せなかった（unread）ときの「読み直す」（2.6 の (B1) の 3。レビューの T18-2）：その項目を1回読み直し、
+ * runEventSave の止められたときの道と同じに決める（settleLockedWrite）。入力（write）と同じなら saved（before）、行があれば conflict
+ * （読み直した行を入力の元にする。次の保存はその版で送る）、なければ missing、また読み直せなければ unread。
+ * 一覧の読み直しでは入力の元の版を進めない（利用者が見ていない版で上書きしない）ので、ダイアログの「読み直す」はここを通す。
+ */
+export async function rereadRejectedSave(req: EventRereadRequest): Promise<EventSaveResult> {
+  const read: { row: CalendarEventRow | null } = { row: null };
+  const outcome = await settleLockedWrite<CalendarEventRow>({
+    reread: async () => {
+      read.row = await req.reread();
+      return read.row;
+    },
+    matches: (row) => req.write !== null && sameEventWrite(row, req.write),
+    baseVersion: req.baseVersion,
+    versionOf: (row) => row.updated_at,
+  });
+  if (outcome === 'unread') return { type: 'unread' };
+  if (outcome === 'saved' && read.row) return { type: 'saved', row: read.row, before: true };
   return read.row ? { type: 'conflict', row: read.row } : { type: 'missing' };
 }
 

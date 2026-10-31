@@ -2,15 +2,19 @@
 // 締切と予定（/calendar）の画面とダイアログ（04「締切と予定」、notes/T18.md「後半（画面）の約束」4〜7。T18）：
 // 立場ごとの一覧（対象の印・絞り込み・登録・編集・削除）、日ごとの並びと日の見出し・相対の言い方、機能の日付（机椅子の印とリンク）、
 // メモの改行、過去も表示・`?kind=`・`?audience=`・`?event=`、空の3つの文、終了した年度の帯、機能の日付の読み取りの失敗。
-// ダイアログの既定・終日の切り替え・欄の誤り・送る値（登録は作った id、保存は全部の欄と updated_at）・変更なし・捨てて閉じる・下書き。
-// 読み直し（(B1)：23505・conflict・消えていた・応答なし・forbidden・CHECK）と削除。
+// ダイアログの既定・終日の切り替え・欄の誤り・送る値（登録は作った id、保存は全部の欄と updated_at）・変更なし・捨てて閉じる・下書き
+// （編集の下書きは下書きの updated_at で送る）・アプリの中の移動と年度の切り替えの前の確かめ。
+// 読み直し（(B1)：23505・conflict・消えていた・応答なし・読み直せなかった後の「読み直す」・forbidden・CHECK）と削除、画面の「読み直す」。
 // Supabase は偽のクライアント（lib/testing/fake-supabase.ts）で、events の直接の insert・update・delete は DB の動き（RLS の段・
 // 楽観ロック・主キーの重複）を小さくまねる。立場は useAuth の差し替え。時計は Date だけを止める（画面を開いた時刻）。
 import { QueryClient, QueryClientProvider, queryOptions } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppLink } from '@/components/common/app-link';
+import { UnsavedChangesProvider } from '@/components/common/unsaved-changes-guard';
 import type { MembershipState } from '@/lib/auth/auth-provider';
+import { useGuardedSetYear } from '@/lib/auth/guarded';
 import type { AppRole, GroupSummary, Membership, YearStatus } from '@/lib/auth/membership';
 import { CALENDAR_EVENTS_SELECT, type CalendarEventRow } from '@/lib/data/calendar';
 import type { YearRow } from '@/lib/db/types';
@@ -21,8 +25,16 @@ import { queryKeys } from '@/lib/query';
 import { EVENT_FORM_MESSAGES } from '@/lib/schemas/calendar';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
+import { LEAVE_MESSAGES } from '@/lib/unsaved-changes';
 import { ALREADY_DELETED_MESSAGE, CLOSED_CALENDAR, CalendarScreen, DELETE_CHANGED_MESSAGE, EMPTY_TEXTS } from './calendar-screen';
-import { AUDIENCE_HELP, CANNOT_SAVE_TEXT, CONFLICT_NOTICE, EVENT_MISSING_MESSAGE, REREAD_FAILED_NOTICE } from './event-form-dialog';
+import {
+  AUDIENCE_HELP,
+  CANNOT_SAVE_TEXT,
+  CONFLICT_NOTICE,
+  EVENT_MISSING_MESSAGE,
+  REREAD_AGAIN_FAILED_MESSAGE,
+  REREAD_FAILED_NOTICE,
+} from './event-form-dialog';
 
 const toast = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn(), success: vi.fn() }));
 vi.mock('sonner', () => ({ toast }));
@@ -35,8 +47,10 @@ const h = vi.hoisted(() => ({
   userId: 'u-head',
   client: null as unknown,
   params: new URLSearchParams(),
+  push: vi.fn(),
   replace: vi.fn(),
   reloadMembership: vi.fn(),
+  setYear: vi.fn(),
   /** PORTAL_PROVIDERS の差し替え（本物のプロバイダの後ろに、テストのプロバイダを足せる） */
   providers: [] as PortalProvider[],
 }));
@@ -46,6 +60,7 @@ vi.mock('@/lib/auth/auth-provider', () => ({
     membership: h.membership,
     session: { status: 'signedIn', session: { user: { id: h.userId } } },
     reloadMembership: h.reloadMembership,
+    setYear: h.setYear,
     reauthenticate: async () => false,
     isRefreshing: false,
   }),
@@ -62,17 +77,27 @@ vi.mock('@/lib/modules/providers', async () => {
   return { PORTAL_PROVIDERS: h.providers };
 });
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn(), replace: h.replace, refresh: vi.fn() }),
+  useRouter: () => ({ push: h.push, replace: h.replace, refresh: vi.fn() }),
   usePathname: () => '/calendar',
   useSearchParams: () => h.params,
 }));
 vi.mock('next/link', () => ({
+  // Next の Link と同じく、移る前に onNavigate を呼び、preventDefault されたら移らない（AppLink の未保存の入力の確かめ）。移るときは h.push
   default: (props: Record<string, unknown> & { href: string; children: React.ReactNode }) => {
     const { href, children, onNavigate, prefetch, ...rest } = props;
-    void onNavigate;
     void prefetch;
+    const onClick = (e: React.MouseEvent) => {
+      e.preventDefault();
+      let prevented = false;
+      (onNavigate as ((ev: { preventDefault: () => void }) => void) | undefined)?.({
+        preventDefault: () => {
+          prevented = true;
+        },
+      });
+      if (!prevented) h.push(href);
+    };
     return (
-      <a href={href} {...rest}>
+      <a href={href} {...rest} onClick={onClick}>
         {children}
       </a>
     );
@@ -239,9 +264,30 @@ function handler(call: FakeCall): FakeResult | Promise<FakeResult> {
   return { data: list };
 }
 
+/** 切り替え先の年度（年度の切り替えの確かめのテスト） */
+const Y_PREV = uuid(2);
+
+/**
+ * ダイアログの外の、アプリの中の移動（ナビと同じ AppLink）と年度の切り替え（年度の選択と同じ useGuardedSetYear）。
+ * AppShell の代わりに、同じ部品と関数で未保存の入力の確かめを通す
+ */
+function OutsideProbe() {
+  const setYear = useGuardedSetYear();
+  return (
+    <div>
+      <AppLink href="/notices" data-testid="probe-nav">
+        お知らせ一覧
+      </AppLink>
+      <button type="button" data-testid="probe-year" onClick={() => void setYear(Y_PREV)}>
+        年度を切り替える
+      </button>
+    </div>
+  );
+}
+
 function renderScreen(
   role: AppRole | null,
-  opts: { groups?: GroupSummary[]; status?: YearStatus; userId?: string; search?: string; year?: Partial<YearRow> } = {},
+  opts: { groups?: GroupSummary[]; status?: YearStatus; userId?: string; search?: string; year?: Partial<YearRow>; guard?: boolean } = {},
 ) {
   const status = opts.status ?? 'requesting';
   h.role = role;
@@ -253,7 +299,15 @@ function renderScreen(
   qc.setQueryData(queryKeys.yearRow(Y), yearRow(status, opts.year));
   render(
     <QueryClientProvider client={qc}>
-      <CalendarScreen />
+      {opts.guard ? (
+        // アプリと同じく、未保存の入力の守り（app/layout.tsx の Providers）の中に画面とナビ・年度の選択を置く
+        <UnsavedChangesProvider>
+          <OutsideProbe />
+          <CalendarScreen />
+        </UnsavedChangesProvider>
+      ) : (
+        <CalendarScreen />
+      )}
     </QueryClientProvider>,
   );
   return qc;
@@ -279,8 +333,10 @@ beforeEach(() => {
   const fake = createFakeSupabase(handler);
   h.client = fake.client;
   issued = fake.issued;
+  h.push.mockClear();
   h.replace.mockClear();
   h.reloadMembership.mockClear();
+  h.setYear.mockClear();
   h.providers.splice(3);
   window.localStorage.clear();
 });
@@ -388,6 +444,11 @@ describe('T18 締切と予定：総務部門長', () => {
     expect(within(kind).getAllByRole('radio').map((x) => x.textContent)).toEqual(['すべて', '締切', '予定']);
     const audience = screen.getByTestId('calendar-audience-filter');
     expect(within(audience).getAllByRole('radio').map((x) => x.textContent)).toEqual(['すべて', '総務', '団体', '全員']);
+    // 見える見出し「種類」「対象」を前に置き、読み上げの名前にもする（「すべて」が2つ並んでも、どちらの絞り込みか分かる。レビューの T18-3）
+    expect(screen.getByTestId('calendar-kind-filter-label').textContent).toBe('種類');
+    expect(screen.getByTestId('calendar-audience-filter-label').textContent).toBe('対象');
+    expect(screen.getByRole('radiogroup', { name: '種類' })).toBe(kind);
+    expect(screen.getByRole('radiogroup', { name: '対象' })).toBe(audience);
     await user.click(within(kind).getByRole('radio', { name: '締切' }));
     expect(h.replace).toHaveBeenLastCalledWith('/calendar?kind=deadline');
     await user.click(within(audience).getByRole('radio', { name: '団体' }));
@@ -541,6 +602,27 @@ describe('T18 締切と予定：総務部門長', () => {
     expect(opArgs(list, 'select')).toEqual([[CALENDAR_EVENTS_SELECT]]);
     expect(opArgs(list, 'eq')).toEqual([['year_id', Y]]);
     expect(opArgs(list, 'order')).toEqual([['starts_at'], ['id']]);
+  });
+
+  it('「読み直す」は項目と年度の行（机椅子の日付）を読み直し、今日と相対の言い方を押した時刻で決め直す（レビューの T18-4）', async () => {
+    const user = setUser();
+    renderScreen('head');
+    await loaded();
+    expect(days()[0]!.getAttribute('data-date')).toBe('2027-10-14');
+    // 開いたまま2日たち（10/16 12:00）、その間に申請の締切が 10/20 17:00 に延びた
+    vi.setSystemTime(new Date('2027-10-16T03:00:00Z'));
+    override = (call) => (call.table === 'years' ? { data: yearRow(h.status, { request_close_at: '2027-10-20T08:00:00Z' }) } : undefined);
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(days()[0]!.getAttribute('data-date')).toBe('2027-10-18'));
+    expect(within(dayOf('2027-10-18')).getByTestId('calendar-day-relative').textContent).toBe('あと 2 日');
+    expect(
+      within(dayOf('2027-10-20'))
+        .getAllByTestId('calendar-item')
+        .map((x) => x.getAttribute('data-id')),
+    ).toEqual(['furniture:request-close']);
+    expect(itemIds()).not.toContain(c(E_SOUMU));
+    expect(issued.filter((x) => x.table === 'years')).toHaveLength(1);
+    expect(issued.filter((x) => x.table === 'events')).toHaveLength(2);
   });
 });
 
@@ -777,6 +859,112 @@ describe('T18 ダイアログ：編集', () => {
     expect(calls('update')).toEqual([]);
     expect(toast.info).toHaveBeenCalledWith('変更はありません');
   });
+
+  it('戻した編集の下書きは下書きの updated_at で送る：間にほかの人が変えていれば衝突の知らせ（今の題名）で入力を残し、次の保存は読み直した版で上書きする（04 の保存していない入力。レビューの T18-1）', async () => {
+    const V1 = '2027-10-05T01:00:00.000001+00:00';
+    // 下書き（読んだときの版 V0）を書いた後に、ほかの人が題名を直した（一覧とダイアログは新しい版 V1 で開く）
+    rows = rows.map((r) => (r.id === E_SOUMU ? { ...r, title: 'ほかの人の題名', updated_at: V1 } : r));
+    saveDraft(
+      { userId: 'u-head', yearId: Y, screen: 'calendar', target: E_SOUMU },
+      {
+        values: {
+          kind: 'event',
+          audience: 'soumu',
+          title: '下書きの題名',
+          allDay: false,
+          startDate: '',
+          endDate: '',
+          start: '2027-10-14T13:00',
+          end: '2027-10-14T15:00',
+          note: '下書きのメモ',
+        },
+        id: E_SOUMU,
+        baseUpdatedAt: V0,
+      },
+    );
+    const user = setUser();
+    renderScreen('head');
+    await openEdit(user, 'ほかの人の題名');
+    const title = screen.getByLabelText('題名') as HTMLInputElement;
+    // 開いたときは今の行の値。「戻す」で下書きの値
+    expect(title.value).toBe('ほかの人の題名');
+    await user.click(within(screen.getByTestId('draft-notice')).getByRole('button', { name: '戻す' }));
+    expect(title.value).toBe('下書きの題名');
+    await user.click(submit());
+    const box = await screen.findByTestId('event-conflict');
+    // 開いたときの版（V1）でなく、下書きの版（V0）を条件に入れて送った（黙ってほかの人の変更を上書きしない）
+    expect(opArgs(calls('update')[0]!, 'eq')).toEqual([['updated_at', V0]]);
+    expect(rows.find((r) => r.id === E_SOUMU)!.title).toBe('ほかの人の題名');
+    expect(box.textContent).toContain(CONFLICT_NOTICE);
+    expect(box.textContent).toContain('今の題名：ほかの人の題名');
+    expect(title.value).toBe('下書きの題名');
+    // 確かめた後の保存は、読み直した版で送って上書きする
+    await user.click(submit());
+    await waitFor(() => expect(screen.queryByTestId('event-form')).toBeNull());
+    expect(opArgs(calls('update')[1]!, 'eq')).toEqual([['updated_at', V1]]);
+    expect(rows.find((r) => r.id === E_SOUMU)).toMatchObject({ title: '下書きの題名', note: '下書きのメモ' });
+    expect(toast.success).toHaveBeenCalledWith('「下書きの題名」を保存しました');
+  });
+});
+
+describe('T18 ダイアログ：アプリの中の移動・年度の切り替えの前の確かめ（04 の保存していない入力。レビューの T18-1）', () => {
+  // モーダルのダイアログの外（ナビ・年度の選択）はポインタで押せないので、要素に直接 click を送り、ダイアログの入力が
+  // アプリ全体の守り（UnsavedChangesProvider）に入って、AppLink・useGuardedSetYear が確かめることを見る
+  it('入力がなければ確かめずに移る。入力があれば、移る前に確かめ、やめれば移らず入力が残り、「移る」で移る', async () => {
+    const user = setUser();
+    renderScreen('head', { guard: true });
+    await openNew(user);
+    fireEvent.click(screen.getByTestId('probe-nav'));
+    expect(h.push).toHaveBeenLastCalledWith('/notices');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    h.push.mockClear();
+
+    await user.type(screen.getByLabelText('題名'), '途中の題名');
+    fireEvent.click(screen.getByTestId('probe-nav'));
+    const leave = await screen.findByRole('alertdialog');
+    expect(leave.textContent).toContain(LEAVE_MESSAGES.navigate.title);
+    expect(leave.textContent).toContain(LEAVE_MESSAGES.navigate.description);
+    await user.click(within(leave).getByRole('button', { name: 'やめる（入力を続ける）' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(h.push).not.toHaveBeenCalled();
+    expect(screen.getByTestId('event-form')).toBeTruthy();
+    expect((screen.getByLabelText('題名') as HTMLInputElement).value).toBe('途中の題名');
+
+    fireEvent.click(screen.getByTestId('probe-nav'));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: LEAVE_MESSAGES.navigate.confirm }));
+    await waitFor(() => expect(h.push).toHaveBeenCalledWith('/notices'));
+  });
+
+  it('入力があれば、年度を切り替える前に確かめる。やめれば切り替えず入力が残り、「切り替える」で切り替える', async () => {
+    const user = setUser();
+    renderScreen('head', { guard: true });
+    await openEdit(user, '総務の打ち合わせ');
+    await user.type(screen.getByLabelText('題名'), '！');
+    fireEvent.click(screen.getByTestId('probe-year'));
+    const leave = await screen.findByRole('alertdialog');
+    expect(leave.textContent).toContain(LEAVE_MESSAGES.year.description);
+    await user.click(within(leave).getByRole('button', { name: 'やめる（入力を続ける）' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(h.setYear).not.toHaveBeenCalled();
+    expect((screen.getByLabelText('題名') as HTMLInputElement).value).toBe('総務の打ち合わせ！');
+
+    fireEvent.click(screen.getByTestId('probe-year'));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: LEAVE_MESSAGES.year.confirm }));
+    await waitFor(() => expect(h.setYear).toHaveBeenCalledWith(Y_PREV));
+  });
+
+  it('捨てて閉じた後は確かめずに移る（守りはダイアログの入力の間だけ）', async () => {
+    const user = setUser();
+    renderScreen('head', { guard: true });
+    await openNew(user);
+    await user.type(screen.getByLabelText('題名'), '途中');
+    await user.click(within(screen.getByTestId('event-dialog')).getByRole('button', { name: 'やめる' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: '捨てて閉じる' }));
+    await waitFor(() => expect(screen.queryByTestId('event-form')).toBeNull());
+    fireEvent.click(screen.getByTestId('probe-nav'));
+    expect(h.push).toHaveBeenLastCalledWith('/notices');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
 });
 
 describe('T18 読み直し（(B1)）', () => {
@@ -859,20 +1047,91 @@ describe('T18 読み直し（(B1)）', () => {
     expect(box.textContent).not.toContain('読み直しました');
   });
 
-  it('止められた（conflict）後に読み直せない：読み直せなかったと出し、「読み直す」で一覧を読み直す', async () => {
+  /** 止められた保存（版が V1 に進んでいる）の後の (B1) の読み直し（readEvent）だけを落とす。0 行の理由の読み直し（explainZeroRows）は通す */
+  function failRereads(): { fail: boolean } {
+    const state = { fail: true };
+    override = (call) =>
+      state.fail && call.table === 'events' && has(call, 'maybeSingle') && opArgs(call, 'select')[0]?.[0] === CALENDAR_EVENTS_SELECT ? NETWORK : undefined;
+    return state;
+  }
+  const unreadBox = async () => {
+    const box = await screen.findByTestId('event-error');
+    expect(box.getAttribute('data-kind')).toBe('unread');
+    expect(box.textContent).toContain(REREAD_FAILED_NOTICE);
+    return box;
+  };
+
+  it('止められた（conflict）後に読み直せない：読み直せなかったと出す。「読み直す」はその項目を読み直し、まだ読めなければ知らせて版を進めず、読めれば衝突の知らせにして、次の1回の保存で上書きできる（レビューの T18-2）', async () => {
+    const V1 = '2027-10-05T01:00:00.000001+00:00';
+    const user = setUser();
+    renderScreen('head');
+    await openEdit(user, '総務の打ち合わせ');
+    rows = rows.map((r) => (r.id === E_SOUMU ? { ...r, title: 'ほかの人の題名', updated_at: V1 } : r));
+    const reads = failRereads();
+    const title = screen.getByLabelText('題名') as HTMLInputElement;
+    await user.type(title, '！');
+    await user.click(submit());
+    await unreadBox();
+    // まだ読めない：知らせて、知らせと「読み直す」を残す。版は進めない（次の保存も読んだときの版 V0 で送り、また止められる）
+    await user.click(within(screen.getByTestId('event-error')).getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(REREAD_AGAIN_FAILED_MESSAGE));
+    await unreadBox();
+    await user.click(submit());
+    await waitFor(() => expect(calls('update')).toHaveLength(2));
+    expect(opArgs(calls('update')[1]!, 'eq')).toEqual([['updated_at', V0]]);
+    await unreadBox();
+    // 読めた：今の行で衝突の知らせにし（入力は残す）、一覧も読み直す
+    reads.fail = false;
+    const lists = () => issued.filter((x) => x.table === 'events' && !has(x, 'maybeSingle') && !has(x, 'update')).length;
+    const before = lists();
+    await user.click(within(screen.getByTestId('event-error')).getByRole('button', { name: '読み直す' }));
+    const conflict = await screen.findByTestId('event-conflict');
+    expect(conflict.textContent).toContain('今の題名：ほかの人の題名');
+    expect(screen.queryByTestId('event-error')).toBeNull();
+    expect(title.value).toBe('総務の打ち合わせ！');
+    await waitFor(() => expect(lists()).toBe(before + 1));
+    expect(calls('update')).toHaveLength(2);
+    // 次の1回の保存は、読み直した版で送って上書きする
+    await user.click(submit());
+    await waitFor(() => expect(screen.queryByTestId('event-form')).toBeNull());
+    expect(opArgs(calls('update')[2]!, 'eq')).toEqual([['updated_at', V1]]);
+    expect(rows.find((r) => r.id === E_SOUMU)!.title).toBe('総務の打ち合わせ！');
+    expect(toast.success).toHaveBeenCalledWith('「総務の打ち合わせ！」を保存しました');
+  });
+
+  it('読み直せなかった後の「読み直す」：項目が消えていたら「この項目は見つかりません」で「保存」を押せなくし、今の行が入力と同じなら「保存されていました」で閉じる', async () => {
     const user = setUser();
     renderScreen('head');
     await openEdit(user, '総務の打ち合わせ');
     rows = rows.map((r) => (r.id === E_SOUMU ? { ...r, updated_at: '2027-10-05T01:00:00.000001+00:00' } : r));
-    // 0 行の理由の読み直し（explainZeroRows）は通り、(B1) の読み直し（readEvent）が届かない
-    override = (call) => (call.table === 'events' && has(call, 'maybeSingle') && opArgs(call, 'select')[0]?.[0] === CALENDAR_EVENTS_SELECT ? NETWORK : undefined);
+    const reads = failRereads();
     await user.type(screen.getByLabelText('題名'), '！');
     await user.click(submit());
-    const box = await screen.findByTestId('event-error');
-    expect(box.textContent).toContain(REREAD_FAILED_NOTICE);
-    const before = issued.filter((x) => x.table === 'events' && !has(x, 'maybeSingle') && !has(x, 'update')).length;
-    await user.click(within(box).getByRole('button', { name: '読み直す' }));
-    await waitFor(() => expect(issued.filter((x) => x.table === 'events' && !has(x, 'maybeSingle') && !has(x, 'update')).length).toBe(before + 1));
+    await unreadBox();
+    rows = rows.filter((r) => r.id !== E_SOUMU);
+    reads.fail = false;
+    await user.click(within(screen.getByTestId('event-error')).getByRole('button', { name: '読み直す' }));
+    expect((await screen.findByTestId('event-missing')).textContent).toContain(EVENT_MISSING_MESSAGE);
+    expect(submit().hasAttribute('disabled')).toBe(true);
+    expect((screen.getByLabelText('題名') as HTMLInputElement).value).toBe('総務の打ち合わせ！');
+    cleanup();
+
+    // ほかの人が（または前の送信が）同じ中身にしていた
+    rows = seedRows();
+    renderScreen('head');
+    await openEdit(user, '総務の打ち合わせ');
+    rows = rows.map((r) => (r.id === E_SOUMU ? { ...r, title: '総務の打ち合わせ！', updated_at: '2027-10-05T01:00:00.000001+00:00' } : r));
+    const again = failRereads();
+    await user.type(screen.getByLabelText('題名'), '！');
+    await user.click(submit());
+    await unreadBox();
+    const sent = calls('update').length;
+    again.fail = false;
+    await user.click(within(screen.getByTestId('event-error')).getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(screen.queryByTestId('event-form')).toBeNull());
+    expect(toast.success).toHaveBeenCalledWith('保存されていました');
+    // 「読み直す」は読むだけ（送り直さない）
+    expect(calls('update')).toHaveLength(sent);
   });
 
   it('登録の応答が届かず、読み直すと登録されていた：「「…」は登録されていました」で閉じる', async () => {

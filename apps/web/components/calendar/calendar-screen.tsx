@@ -4,7 +4,8 @@
 // - 読む：開いている年度の項目（RLS が返したものをそのまま。総務はその年度の全部、閲覧のみ・店長・副店長は対象が団体・全員のもの）と、
 //   ほかの機能が締切と予定に出す日付（機能の日付。ダッシュボードの「締切と予定」と同じプロバイダの流れ〔usePortalWidget の 'dated'〕で
 //   集め、calendar のプロバイダだけを除く〔項目は全部の列でここが読むので、欄用の軽い読み取りを二重に送らない〕。机椅子は年度の行から
-//   作るので読み取りは増えない）。最終読み込みと「読み直す」。
+//   作るので読み取りは増えない）。最終読み込みと「読み直す」（項目・年度の行〔机椅子の日付と書けるか〕・読み取りのある機能の日付を
+//   読み直し、今日と相対の言い方を押した時刻で決め直す。レビューの T18-4）。
 // - Asia/Tokyo の日ごとの1つの一覧（lib/modules/calendar/list.ts）。既定は今日から、「過去も表示」（`?past=1`）で過去も。総務は種類・
 //   対象で絞り込める（`?kind=`・`?audience=`。知らない値は「すべて」）。`?event=<id>`（ダッシュボードの欄から来る）はその項目を
 //   目立たせて見える所に送り、絞り込みは「すべて」に、今日より前に終わった項目なら「過去も表示」にする（読めない・ない id なら何もしない）。
@@ -16,12 +17,12 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { ErrorBanner } from '@/components/common/error-banner';
 import { PageHeader } from '@/components/common/page-header';
-import { usePortalWidget } from '@/components/portal/use-portal';
+import { usePortalWidget, useRefetchWidget } from '@/components/portal/use-portal';
 import { ModuleError, PortalLoading } from '@/components/portal/widget';
 import { EmptyState, QueryState, ReadOnlyNotice } from '@/components/states';
 import { Button } from '@/components/ui/button';
@@ -105,8 +106,9 @@ function CalendarBoard({ membership: m, yearId, userId }: { membership: Membersh
   const params = useSearchParams();
   const yearQ = useYearRow(yearId);
   const q = useCalendarEvents(yearId);
-  // 画面を開いた時刻（描画のたびに時計を読まない。日の見出しと相対の言い方・既定の今日から・機能の日付が同じ時刻で決める）
-  const [now] = useState(() => Date.now());
+  // 画面を開いた時刻（描画のたびに時計を読まない。日の見出しと相対の言い方・既定の今日から・機能の日付が同じ時刻で決める）。
+  // 「読み直す」で押した時刻にする（開いたまま日をまたいでも、読み直せば今日が変わる）
+  const [now, setNow] = useState(() => Date.now());
   const role = m.role;
   // 書けるかは年度の行の状態で決める（立場と一緒に読んだキャッシュ。forbidden の後は読み直す）
   const status = yearQ.data?.status ?? m.year?.status ?? null;
@@ -116,12 +118,20 @@ function CalendarBoard({ membership: m, yearId, userId }: { membership: Membersh
   const ctxs = useMemo(() => (yearQ.data ? portalContextsOf(m, yearQ.data, now) : []), [m, yearQ.data, now]);
   const providers = useMemo(() => moduleDateProviders(), []);
   const modules = usePortalWidget(ctxs, 'dated', providers);
+  const refetchModuleDates = useRefetchWidget(ctxs, 'dated', providers);
 
   const [form, setForm] = useState<EventFormTarget | null>(null);
   const [deleting, setDeleting] = useState<CalendarEventRow | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const reload = () => void q.refetch();
+  // 「読み直す」と、書いた後・止められた後の読み直し：項目と、年度の行（机椅子の日付・受付期間と、書けるかを決める状態）と、読み取りの
+  // ある機能の日付を読み直し、今日を今の時刻で決め直す（レビューの T18-4。前は項目だけで、時計も開いたときのままだった）
+  const reload = () => {
+    setNow(Date.now());
+    void q.refetch();
+    void yearQ.refetch();
+    refetchModuleDates();
+  };
   const reloadYear = () => {
     reloadMembership();
     void yearQ.refetch();
@@ -179,7 +189,7 @@ function CalendarBoard({ membership: m, yearId, userId }: { membership: Membersh
         title="締切と予定"
         loadedAt={q.dataUpdatedAt ? new Date(q.dataUpdatedAt) : null}
         onReload={reload}
-        reloading={q.isFetching}
+        reloading={q.isFetching || yearQ.isFetching}
         actions={
           writable ? (
             <Button data-testid="calendar-add" onClick={() => setForm({ type: 'new' })} disabled={!data}>
@@ -279,56 +289,71 @@ function CalendarBoard({ membership: m, yearId, userId }: { membership: Membersh
   );
 }
 
-/** 絞り込み：総務には種類・対象（ToggleGroup。URL に入れる）、全員に「過去も表示」 */
+/**
+ * 絞り込み：総務には種類・対象（ToggleGroup。URL に入れる）、全員に「過去も表示」。種類・対象には見える見出し（「種類」「対象」）を
+ * 前に置き、読み上げの名前にもする（「すべて」が2つ並んでも、どちらの絞り込みか分かる。レビューの T18-3）
+ */
 function CalendarFilters({ soumu, filter, onChange }: { soumu: boolean; filter: CalendarFilter; onChange: (next: CalendarFilter) => void }) {
+  const kindLabelId = useId();
+  const audienceLabelId = useId();
   return (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
       {soumu ? (
         <>
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            size="sm"
-            spacing={2}
-            value={filter.kind ?? FILTER_ANY}
-            onValueChange={(v) => {
-              if (v) onChange({ ...filter, kind: v === FILTER_ANY ? null : (v as EventKind) });
-            }}
-            aria-label="種類で絞り込む"
-            data-testid="calendar-kind-filter"
-            className="flex-wrap"
-          >
-            <ToggleGroupItem value={FILTER_ANY} className={TOGGLE_ON}>
-              すべて
-            </ToggleGroupItem>
-            {EVENT_KINDS.map((k) => (
-              <ToggleGroupItem key={k} value={k} className={TOGGLE_ON}>
-                {EVENT_KIND_LABELS[k]}
+          <div className="flex flex-wrap items-center gap-2">
+            <span id={kindLabelId} data-testid="calendar-kind-filter-label" className="text-sm text-muted-foreground">
+              種類
+            </span>
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              spacing={2}
+              value={filter.kind ?? FILTER_ANY}
+              onValueChange={(v) => {
+                if (v) onChange({ ...filter, kind: v === FILTER_ANY ? null : (v as EventKind) });
+              }}
+              aria-labelledby={kindLabelId}
+              data-testid="calendar-kind-filter"
+              className="flex-wrap"
+            >
+              <ToggleGroupItem value={FILTER_ANY} className={TOGGLE_ON}>
+                すべて
               </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            size="sm"
-            spacing={2}
-            value={filter.audience ?? FILTER_ANY}
-            onValueChange={(v) => {
-              if (v) onChange({ ...filter, audience: v === FILTER_ANY ? null : (v as EventAudience) });
-            }}
-            aria-label="対象で絞り込む"
-            data-testid="calendar-audience-filter"
-            className="flex-wrap"
-          >
-            <ToggleGroupItem value={FILTER_ANY} className={TOGGLE_ON}>
-              すべて
-            </ToggleGroupItem>
-            {EVENT_AUDIENCES.map((a) => (
-              <ToggleGroupItem key={a} value={a} className={TOGGLE_ON}>
-                {EVENT_AUDIENCE_LABELS[a]}
+              {EVENT_KINDS.map((k) => (
+                <ToggleGroupItem key={k} value={k} className={TOGGLE_ON}>
+                  {EVENT_KIND_LABELS[k]}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span id={audienceLabelId} data-testid="calendar-audience-filter-label" className="text-sm text-muted-foreground">
+              対象
+            </span>
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              spacing={2}
+              value={filter.audience ?? FILTER_ANY}
+              onValueChange={(v) => {
+                if (v) onChange({ ...filter, audience: v === FILTER_ANY ? null : (v as EventAudience) });
+              }}
+              aria-labelledby={audienceLabelId}
+              data-testid="calendar-audience-filter"
+              className="flex-wrap"
+            >
+              <ToggleGroupItem value={FILTER_ANY} className={TOGGLE_ON}>
+                すべて
               </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+              {EVENT_AUDIENCES.map((a) => (
+                <ToggleGroupItem key={a} value={a} className={TOGGLE_ON}>
+                  {EVENT_AUDIENCE_LABELS[a]}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
         </>
       ) : null}
       <div className="flex items-center gap-2">
