@@ -52,6 +52,19 @@ export function formatShortDateTime(v: string | Date | null | undefined): string
   return `${p.mo}/${p.d} ${pad(p.h)}:${pad(p.mi)}`;
 }
 
+/**
+ * 日付だけ（`YYYY-MM-DD`。1日目などの date）の短い形 `10/16`（ダッシュボードの締切と予定。T16）。タイムゾーンを通さない。
+ * 形が違えば空文字。時刻のある値は formatShortDateTime（`10/5 17:00`）。
+ *
+ * @example
+ * formatShortDate('2026-10-16') // '10/16'
+ */
+export function formatShortDate(date: string | null | undefined): string {
+  if (!date) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  return m ? `${Number(m[2])}/${Number(m[3])}` : '';
+}
+
 /** `18:01`（下書きの「保存していない入力があります（hh:mm）」など） */
 export function formatTime(v: string | Date | number | null | undefined): string {
   if (v === null || v === undefined) return '';
@@ -114,4 +127,19 @@ export function tokyoStartOfNextDay(date: string): string {
 /** 今日の日付（Asia/Tokyo の `YYYY-MM-DD`） */
 export function tokyoToday(now: Date = new Date()): string {
   return tokyoDate(now);
+}
+
+/**
+ * 日付（`YYYY-MM-DD`）に日数を足す（負なら引く）。日付のまま UTC の暦で数え、タイムゾーンを通さない（月・年の境目と閏年も
+ * そのまま。1日目から前々日・2日目を出すのに使う）。読めない日付（形が違う・ない日）と整数でない日数は空文字。
+ *
+ * @example
+ * addDays('2027-03-01', -2) // '2027-02-27'
+ */
+export function addDays(date: string, days: number): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isInteger(days)) return '';
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== date) return '';
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }

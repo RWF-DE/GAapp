@@ -1,4 +1,4 @@
-// 振り分け表（Excel）の書き出し（画面の設計 3.9・6、D-39 の Q3。T09a）。ダッシュボード（T09）と振り分け画面（T13）が使う。
+// 振り分け表（Excel）の書き出し（画面の設計 3.9・6、D-39 の Q3。T09a）。机椅子の状況（/furniture。T09・T16）と振り分け画面（T13）が使う。
 // @gaapp/exporter（ExcelJS 約 0.9 MB）は出力するときに動的 import する（最初の読み込みを重くしない。静的 import は ESLint で止める）。
 import { checkGroupNames } from '@gaapp/shared';
 import type { ReportInput } from '@gaapp/exporter';

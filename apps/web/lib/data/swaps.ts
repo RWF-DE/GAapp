@@ -1,5 +1,5 @@
 // キャスター机交換の一覧（画面の設計 3.10・6。T09a）。了承が要る代替（needsConsent）の置き換えと了承の状況を、
-// /swaps（T13）とダッシュボードの了承状況（T09）が同じ数え方で使う。純粋関数。
+// /swaps（T13）と机椅子の状況（/furniture）の了承状況（T09）が同じ数え方で使う。純粋関数。
 import { compareBySortOrder, ruleSchema, type ConsentStatus } from '@gaapp/shared';
 import type { YearTables } from '@/lib/db/types';
 

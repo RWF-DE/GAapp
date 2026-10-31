@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  addDays,
   formatDate,
   formatDateTime,
   formatDateTimeSeconds,
+  formatShortDate,
   formatShortDateTime,
   formatTime,
   fromDateTimeLocal,
@@ -77,5 +79,50 @@ describe('期間の絞り込み', () => {
     expect(tokyoStartOfNextDay('2026-10-31')).toBe('2026-11-01T00:00:00+09:00');
     expect(tokyoStartOfNextDay('2026-12-31')).toBe('2027-01-01T00:00:00+09:00');
     expect(() => tokyoStartOfDay('2026/10/05')).toThrow();
+  });
+});
+
+describe('T16 addDays（日付の足し引き）', () => {
+  it('月・年の境目と閏年', () => {
+    expect(addDays('2026-10-17', -2)).toBe('2026-10-15');
+    expect(addDays('2026-10-17', 1)).toBe('2026-10-18');
+    expect(addDays('2027-03-01', -2)).toBe('2027-02-27');
+    expect(addDays('2028-03-01', -1)).toBe('2028-02-29');
+    expect(addDays('2027-01-01', -2)).toBe('2026-12-30');
+    expect(addDays('2026-12-31', 1)).toBe('2027-01-01');
+    expect(addDays('2026-10-17', 0)).toBe('2026-10-17');
+  });
+
+  it('端末のタイムゾーンによらない', () => {
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Tokyo', 'Pacific/Kiritimati']) {
+      process.env.TZ = tz;
+      expect(addDays('2027-01-01', -1)).toBe('2026-12-31');
+    }
+  });
+
+  it('読めない日付・整数でない日数は空文字', () => {
+    expect(addDays('', 1)).toBe('');
+    expect(addDays('2026/10/17', 1)).toBe('');
+    expect(addDays('2026-02-30', 1)).toBe('');
+    expect(addDays('2026-10-17T00:00:00Z', 1)).toBe('');
+    expect(addDays('2026-10-17', 0.5)).toBe('');
+  });
+});
+
+describe('T16 formatShortDate（日付だけの短い形。ダッシュボードの締切と予定）', () => {
+  it('YYYY-MM-DD を M/D に（先頭の 0 を落とす。タイムゾーンを通さない）', () => {
+    expect(formatShortDate('2026-10-16')).toBe('10/16');
+    expect(formatShortDate('2027-01-05')).toBe('1/5');
+    for (const tz of ['UTC', 'America/Los_Angeles', 'Pacific/Kiritimati']) {
+      process.env.TZ = tz;
+      expect(formatShortDate('2027-01-01')).toBe('1/1');
+    }
+  });
+
+  it('日付だけの形でなければ空文字（時刻のある値は formatShortDateTime）', () => {
+    expect(formatShortDate(null)).toBe('');
+    expect(formatShortDate('')).toBe('');
+    expect(formatShortDate('2026-10-16T00:00:00+09:00')).toBe('');
+    expect(formatShortDate('2026/10/16')).toBe('');
   });
 });

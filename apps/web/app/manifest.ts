@@ -7,13 +7,14 @@ import { BASE_PATH } from '@/lib/env';
 // 静的書き出しで manifest.webmanifest のファイルになる。<link rel="manifest"> の href には Next が basePath を付けるが、
 // JSON の中の start_url・scope・icons の src は書いた文字列のままなので、BASE_PATH を自分で付ける。
 // アイコンは Next のファイルの規約（app/icon.png・app/apple-icon.png。scripts/gen-icons.mjs で作る）。
+// 名前は総務アプリ（D-51。T16）：name「電波祭 総務」、short_name「総務」（ホーム画面のアイコンの下に出る短い名前）。
 export const dynamic = 'force-static';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: '電波祭 総務 机椅子管理',
-    short_name: '机椅子管理',
-    description: '電波祭の机・椅子などの在庫入力・申請・振り分け',
+    name: '電波祭 総務',
+    short_name: '総務',
+    description: '電波祭の総務部門の仕事をまとめるアプリ（机椅子の在庫・申請・振り分けなど）',
     lang: 'ja',
     start_url: `${BASE_PATH}/`,
     scope: `${BASE_PATH}/`,

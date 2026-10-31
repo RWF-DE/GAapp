@@ -364,6 +364,9 @@ test.describe('T09 マスタ設定（権限なし）', () => {
 });
 
 // ---- 段 2：ダッシュボード・ホーム（dashboard-*・home-*）
+// T16 で、ダッシュボード（dashboard-*）は机椅子の状況（/furniture。h1「机椅子の状況」）に移り、閲覧のみのホームの案内は
+// ダッシュボード（/）の机椅子のカード（module-card）になった（D-51）。T09 の画像は T16 より前に撮ったまま（撮り直していない）。
+// 団体代表のホーム（rep-card）は / のまま
 
 /** 了承が要る置き換え（机(木) → キャスター机）を1行と、その了承の行を入れる */
 async function addSwap(yearId: string, roomId: string, groupId: string, status: 'asked' | 'declined' | null): Promise<void> {
@@ -394,7 +397,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await addSwap(s.yearId, s.ids.rooms['1-1']!, s.ids.groups['模擬店02']!, 'asked');
       await addSwap(s.yearId, s.ids.rooms['1-1']!, s.ids.groups['模擬店03']!, null);
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/');
+      await page.goto('/furniture/');
       await expect(page.getByTestId('dashboard-validation-counts')).toBeVisible();
       await expect(page.getByTestId('dashboard-consent-statuses')).toBeVisible();
       await shoot(page, 'T09', 'dashboard-allocating-pc', { fullPage: true });
@@ -407,7 +410,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
     const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
     try {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/');
+      await page.goto('/furniture/');
       await expect(page.getByTestId('dashboard-stocks')).toBeVisible();
       await page.route('**/rest/v1/stocks*', (route: Route) =>
         route.fulfill({ status: 500, contentType: 'application/json', body: '{"message":"e2e"}' }),
@@ -424,7 +427,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
     const s = await createScenario({ status: 'allocating', dataset: 'synthetic', allocations: 'reference', roles: { admin: true } });
     try {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/');
+      await page.goto('/furniture/');
       await expect(page.getByTestId('dashboard-validation-counts')).toBeVisible();
       await page.getByTestId('year-status-actions').getByRole('button', { name: '確定', exact: true }).click();
       await expect(page.getByRole('dialog')).toBeVisible();
@@ -455,13 +458,13 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       );
       await sql("delete from public.stocks where year_id = $1 and room_id in (select id from public.rooms where name in ('1-1', '1-2'))", [s.yearId]);
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/');
+      await page.goto('/furniture/');
       await expect(page.getByTestId('dashboard-unsubmitted')).toBeVisible();
       await shoot(page, 'T09', 'dashboard-requesting-pc', { fullPage: true });
 
       const p2 = await page.context().newPage();
       await pinYear(p2, SEED_USER_IDS.admin, c.yearId);
-      await p2.goto('/');
+      await p2.goto('/furniture/');
       await expect(p2.getByTestId('dashboard-validation-counts')).toBeVisible();
       await shoot(p2, 'T09', 'dashboard-confirmed-pc', { fullPage: true });
       await p2.getByTestId('year-status-actions').getByRole('button', { name: '終了' }).click();
@@ -485,7 +488,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
         await route.continue();
       });
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/');
+      await page.goto('/furniture/');
       await expect(page.getByTestId('dashboard-loading')).toBeVisible();
       await shoot(page, 'T09', 'dashboard-loading-pc');
       release();
@@ -503,7 +506,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
     try {
       await page.setViewportSize(MOBILE);
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
-      await page.goto('/');
+      await page.goto('/furniture/');
       await expect(page.getByTestId('dashboard-validation-counts')).toBeVisible();
       expect(await page.evaluate('document.documentElement.scrollWidth')).toBeLessThanOrEqual(MOBILE.width);
       await shoot(page, 'T09', 'dashboard-mobile', { fullPage: true });
@@ -526,7 +529,7 @@ test.describe('T09 ダッシュボード（部員）', () => {
         [s.yearId, s.ids.rooms[SMALL.rooms.class1]],
       );
       await pinYear(page, SEED_USER_IDS.staff, s.yearId);
-      await page.goto('/');
+      await page.goto('/furniture/');
       await expect(page.getByTestId('dashboard-problems')).toBeVisible();
       await shoot(page, 'T09', 'dashboard-staff-pc', { fullPage: true });
     } finally {
@@ -571,11 +574,12 @@ test.describe('T09 ホーム（閲覧のみ）', () => {
     try {
       await pinYear(page, SEED_USER_IDS.viewer, s.yearId);
       await page.goto('/');
-      await expect(page.getByTestId('viewer-home')).toBeVisible();
+      const card = page.locator('[data-testid="module-card"][data-module="furniture"]');
+      await expect(card).toBeVisible();
       await shoot(page, 'T09', 'home-viewer-mobile');
       await sql("update public.years set status = 'confirmed' where id = $1", [s.yearId]);
       await page.reload();
-      await expect(page.getByTestId('viewer-home').getByRole('link', { name: '振り分け表を見る' })).toBeVisible();
+      await expect(card.getByRole('link', { name: '振り分け表を見る' })).toBeVisible();
       await shoot(page, 'T09', 'home-viewer-confirmed-mobile');
     } finally {
       await s.cleanup();

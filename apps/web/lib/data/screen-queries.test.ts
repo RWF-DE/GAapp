@@ -1,14 +1,24 @@
-// 画面を開くときに最初に読むもの（D-45）：先読みの決め方・使用場所の名前の埋め込み・年度の行のキャッシュを使う /my の読み込み
+// 画面を開くときに最初に読むもの（D-45）：先読みの決め方・使用場所の名前の埋め込み・年度の行のキャッシュを使う /my の読み込み。
+// T16：ダッシュボード（/）の先読み（planHomePrefetch。欄が読むクエリと同じキー。版・スナップショットを読まない）と、
+// ルートのレイアウトの JS に机椅子の数え方・スナップショット・検証を入れないこと
 import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
+import type { AppRole, GroupSummary, Membership } from '@/lib/auth/membership';
+import type { YearRow } from '@/lib/db/types';
+import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
+import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
+import { PORTAL_WIDGETS, portalContextsOf, portalWidgetQuery } from '@/lib/modules/portal';
+import { PORTAL_PROVIDERS } from '@/lib/modules/providers';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys, STALE_TIME_MS } from '@/lib/query';
 import { parseRoomParam } from '@/lib/schemas/stock';
+import { staticImportGraph } from '@/lib/testing/import-graph';
 import {
   EARLY_FETCH_PATHS,
   fetchRepRequest,
   freshYearRow,
   loadMyData,
+  planHomePrefetch,
   planMyPrefetch,
   planRequestPrefetch,
   planStockPrefetch,
@@ -21,7 +31,7 @@ const R = '11111111-2222-4333-8444-555555555555';
 const G1 = '00000000-0000-4000-8000-0000000000b1';
 const G2 = '00000000-0000-4000-8000-0000000000b2';
 
-const ctx = (search: string, groupIds: string[] = []) => ({ yearId: Y, groupIds, params: new URLSearchParams(search) });
+const ctx = (search: string, groupIds: string[] = [], role: AppRole | null = null) => ({ yearId: Y, groupIds, role, params: new URLSearchParams(search) });
 const keys = (list: { options: { queryKey: readonly unknown[] } }[]) => list.map((e) => e.options.queryKey);
 
 describe('先読みの決め方（URL と覚えた id から）', () => {
@@ -72,13 +82,107 @@ function fakeClient(rows: Record<string, unknown>, gates: Record<string, Promise
 }
 
 describe('先送りしてよい画面（EARLY_FETCH_PATHS）', () => {
-  it('版を使わない画面（先読みの表と同じ /stock・/request・/my）だけで、振り分けに関わる画面（版を先に読む。D-33）は入らない', () => {
-    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/my', '/request', '/stock']);
+  it('版を使わない画面（先読みの表と同じ /・/stock・/request・/my）だけで、振り分けに関わる画面（版を先に読む。D-33）は入らない', () => {
+    // T16：ダッシュボード（/）は版・振り分けの行を読まないので入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）
+    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/', '/my', '/request', '/stock']);
     expect(EARLY_FETCH_PATHS).toEqual(Object.keys(SCREEN_PREFETCH));
-    for (const p of ['/', '/allocation', '/swaps']) {
+    expect(SCREEN_PREFETCH['/']).toBe(planHomePrefetch);
+    // 振り分けに関わる画面（スナップショットで版を先に読む：机椅子の状況・振り分け・キャスター机交換）
+    for (const p of ['/furniture', '/allocation', '/swaps']) {
       expect(EARLY_FETCH_PATHS).not.toContain(p);
       expect(Object.keys(SCREEN_PREFETCH)).not.toContain(p);
     }
+  });
+});
+
+// ---------------------------------------------------------------- ダッシュボード /（T16）
+
+describe('T16 / の先読み（planHomePrefetch）', () => {
+  const G1g: GroupSummary = { id: G1, name: '模擬店01', year_id: Y, role: 'manager' };
+  const G2g: GroupSummary = { id: G2, name: '模擬店02', year_id: Y, role: 'deputy_manager' };
+  const member = (role: AppRole | null, groups: GroupSummary[] = []): Membership => {
+    const year = { id: Y, label: 'R8', status: 'requesting' as const, festival_start: '2026-10-17' };
+    return { displayName: null, year, role, groups, years: [year], latestYear: year, adminOfOpenYear: role === 'admin' };
+  };
+  const yearRow = { id: Y, label: 'R8', status: 'requesting', allocation_version: 3, festival_start: '2026-10-17' } as unknown as YearRow;
+  /** その立場のダッシュボードの欄（要対応・締切と予定・カード）が並べるクエリのキー（重なりを除く） */
+  const widgetKeys = (m: Membership) => {
+    const out = new Map<string, readonly unknown[]>();
+    for (const c of portalContextsOf(m, yearRow, 0)) {
+      for (const p of PORTAL_PROVIDERS) {
+        if (!p.kinds.includes(c.kind)) continue;
+        for (const w of PORTAL_WIDGETS) {
+          const q = portalWidgetQuery(p, c, w);
+          if (q) out.set(JSON.stringify(q.queryKey), q.queryKey);
+        }
+      }
+    }
+    return [...out.values()];
+  };
+  const home = (m: Membership) => planHomePrefetch(ctx('', m.groups.map((g) => g.id), m.role));
+
+  it.each(['admin', 'head', 'deputy_head', 'staff'] as const)('総務（%s）：机椅子の軽い読み取り（要対応とカードと同じキー）だけ', (role) => {
+    expect(keys(home(member(role)))).toEqual([furnitureSoumuOptions(Y).queryKey]);
+  });
+
+  it('閲覧のみ：読まない（年度の行だけ）。ロールも団体もなければ読まない', () => {
+    expect(home(member('viewer'))).toEqual([]);
+    expect(home(member(null))).toEqual([]);
+  });
+
+  it('店長・副店長：自団体の提出と了承（代表する団体の欄と要対応と同じキー。団体は立場の一覧の順）。兼ねた人は両方', () => {
+    expect(keys(home(member(null, [G1g, G2g])))).toEqual([furnitureRepOptions(Y, [G1, G2]).queryKey]);
+    expect(keys(home(member('admin', [G1g])))).toEqual([furnitureSoumuOptions(Y).queryKey, furnitureRepOptions(Y, [G1]).queryKey]);
+    expect(keys(home(member('viewer', [G1g])))).toEqual([furnitureRepOptions(Y, [G1]).queryKey]);
+  });
+
+  it('先読みするキーは、同じ立場のダッシュボードの欄が並べるクエリのキーと同じ（同じキャッシュを読み、余分に読まない）', () => {
+    const cases = [member('admin'), member('staff'), member('viewer'), member(null, [G1g]), member('admin', [G1g, G2g]), member('viewer', [G2g])];
+    for (const m of cases) {
+      expect(keys(home(m)), `${m.role}・${m.groups.length}`).toEqual(widgetKeys(m));
+    }
+  });
+
+  it('版・振り分けの行・ルール・スナップショットのキーは先読みしない（キーはどれも ["year", 年度, "portal", "furniture", …]）', () => {
+    for (const m of [member('admin', [G1g]), member('staff'), member(null, [G1g, G2g])]) {
+      for (const key of keys(home(m))) expect(key.slice(0, 4)).toEqual(['year', Y, 'portal', 'furniture']);
+    }
+  });
+
+  it('立場が届いて、総務でなくなった・代表する団体が変わったら使わない（usable が偽。settleEarlyLoad が消す）', () => {
+    const [soumu] = home(member('staff'));
+    expect(soumu!.usable!(member('staff'))).toBe(true);
+    expect(soumu!.usable!(member('head'))).toBe(true);
+    expect(soumu!.usable!(member('viewer'))).toBe(false);
+    expect(soumu!.usable!(member(null, [G1g]))).toBe(false);
+    const [rep] = home(member(null, [G1g, G2g]));
+    expect(rep!.usable!(member(null, [G1g, G2g]))).toBe(true);
+    expect(rep!.usable!(member(null, [G1g]))).toBe(false);
+    expect(rep!.usable!(member(null, [G2g, G1g]))).toBe(false);
+  });
+});
+
+describe('T16 ルートのレイアウトの JS（Providers が先読みの表を読む）', () => {
+  it('先読みの表からたどれるファイルに、机椅子の数え方・要対応の組み立て・ナビゲーション・スナップショット・検証がない', () => {
+    // components/layout/providers.tsx はどのページでも最初に読む。/ の先読みが使うのは机椅子のクエリ（soumu.ts・rep.ts）と
+    // そのキー（query-key.ts）だけ
+    const g = staticImportGraph('components/layout/providers.tsx');
+    expect(g.files).toContain('lib/data/screen-queries.ts');
+    expect(g.files).toContain('lib/modules/furniture/soumu.ts');
+    expect(g.files).toContain('lib/modules/furniture/rep.ts');
+    const heavy = [
+      'lib/modules/furniture/portal.ts',
+      'lib/modules/furniture/counts.ts',
+      'lib/modules/providers.ts',
+      'lib/modules/portal.ts',
+      'lib/navigation.ts',
+      'lib/data/dashboard.ts',
+      'lib/data/snapshot.ts',
+      'lib/data/validation.ts',
+      'lib/data/swaps.ts',
+    ];
+    expect(g.files.filter((f) => heavy.includes(f))).toEqual([]);
+    expect(g.packages.filter((p) => /^(@gaapp\/|highs|exceljs)/.test(p))).toEqual([]);
   });
 });
 

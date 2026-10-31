@@ -1,5 +1,7 @@
 # 振り分けと検証
 
+机椅子の機能（D-51）の振り分けと検証、Excel 出力。総務アプリのほかの機能は、この文書のルールに関わらない。
+
 ## 入力と出力
 
 振り分けは DB に触れない純粋関数 `allocate(input, solver): AllocateResult` として `packages/allocator` に置き、部門長以上（管理者・総務部門長・総務副部門長）のブラウザの Web Worker で実行する。solver は highs-js のインスタンスで、呼ぶ側が読み込んで渡す（Worker の中で1回だけ読み込んで使い回す。Node のテストでは `loadHighs()` で作る）。allocator は highs を import しない。画面は DB から入力を組み立てて呼び、結果を RPC `save_auto_allocations` で保存する。型と zod スキーマは `packages/shared` に置く。R8 の fixtures（fixtures/r8）と、R8 と合計が同じ合成データ（fixtures/synthetic/r8like）で単体テストする。

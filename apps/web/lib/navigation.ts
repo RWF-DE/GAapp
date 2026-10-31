@@ -1,14 +1,30 @@
 import type { Audience, YearStatus } from '@/lib/auth/membership';
 import { APP_ROLES, isAdmin, isLead, LEAD_ROLES, SOUMU_ROLES, type AppRole } from '@/lib/auth/roles';
+import { MODULES, type ModuleId } from '@/lib/modules/registry';
 
 // 画面のルートと立場（画面の設計 1.1・1.3。T09a）。ナビ・ページの守り（RequireAudience）・画面の中のリンク（AppLink）を、
 // この表1か所で決める。各チケットは自分のページのファイルを中身に置き換えるだけで、このファイルを触らない（8.2）。
 // 動きのある部分（useGuardedRouter・useCanOpen）は lib/navigation/ に置く（このファイルは純粋な関数だけ）。
 // 立場はロールの段（lib/auth/roles.ts。D-48・D-50）から作り、画面ごとにロールを並べ直さない（04「共通レイアウト」の表）。
+// ナビは見出し（NAV_SECTIONS：ホーム → 機能〔lib/modules/registry.ts の MODULES の順〕→ 共通）ごとにまとめる（T16。D-51・D-52）。
+// 機能のチケット（T17〜T21）は、自分の見出しの行（section がその機能の id のルート）を ROUTES の自分の見出しの所に足す
+// （見出しは MODULES に1行足せば増える。05「チケット分割」）。
+
+/** ナビの見出し：ホーム・機能ごと（ModuleId）・共通（マスタ設定・履歴） */
+export type NavSectionId = 'home' | ModuleId | 'common';
+
+/** ナビの見出し（並びは表示の順。機能の見出しは MODULES の label。T16） */
+export const NAV_SECTIONS: readonly { id: NavSectionId; heading: string }[] = [
+  { id: 'home', heading: 'ホーム' },
+  ...MODULES.map((m) => ({ id: m.id, heading: m.label })),
+  { id: 'common', heading: '共通' },
+];
 
 export interface RouteDef {
   href: string;
   label: string;
+  /** ナビの見出し（NAV_SECTIONS の id。ROUTES は見出しの順にまとめて並べる） */
+  section: NavSectionId;
   /** 開ける立場（04「共通レイアウト」の表。部門長以上＝LEAD_ROLES、総務＝SOUMU_ROLES、団体＝rep） */
   audiences: readonly Audience[];
   /** audiences のうち、振り分けが決まった（確定・終了の）年度でだけ開ける立場（Q1：viewer の振り分け表。D-39） */
@@ -24,6 +40,8 @@ export interface RouteDef {
 export interface NavItem {
   href: string;
   label: string;
+  /** ナビの見出し */
+  section: NavSectionId;
   audiences: readonly Audience[];
   finalOnly?: readonly Audience[];
   /** 画面ができているか。T09a で全画面に雛形のページを置いたので、すべて true */
@@ -42,35 +60,41 @@ const REP: readonly Audience[] = ['rep'];
 /** 閲覧のみが確定前に振り分けを開いたときの説明（04「共通レイアウト」。T13-1） */
 export const ALLOCATION_BEFORE_FINAL_NOTE = '振り分けは確定後に表示されます。';
 
-// 00_overview.md「画面一覧」のフェーズ1の画面。順番はナビゲーションの並び。
+// 00_overview.md「画面一覧」のフェーズ1の画面。順番はナビゲーションの並びで、見出し（section）ごとにひと続きにし、
+// 見出しは NAV_SECTIONS の順に並べる（navItemsFor の平らな一覧と、見出しごとの表示を同じ並びにする。T16）。
 export const ROUTES: readonly RouteDef[] = [
-  { href: '/', label: 'ホーム', audiences: ALL, nav: true, ticket: 'T09' },
-  // 部門長・副部門長はマスタ設定の一部のタブだけ（settingsTabsFor）
-  { href: '/settings', label: 'マスタ設定', audiences: LEAD, nav: true, ticket: 'T09' },
-  { href: '/stock', label: '在庫入力', audiences: SOUMU, nav: true, ticket: 'T10' },
-  { href: '/stocks', label: '在庫一覧', audiences: SOUMU, nav: true, ticket: 'T10' },
-  { href: '/stocks/qr', label: '部屋の QR の印刷', audiences: SOUMU, nav: false, ticket: 'T10' },
-  { href: '/requests', label: '申請一覧', audiences: SOUMU, nav: true, ticket: 'T11' },
-  { href: '/rules', label: 'ルール', audiences: LEAD, nav: true, ticket: 'T12' },
+  // ホーム（ダッシュボード。D-51）
+  { href: '/', label: 'ホーム', section: 'home', audiences: ALL, nav: true, ticket: 'T16' },
+  // 机椅子（furniture）
+  { href: '/furniture', label: '机椅子の状況', section: 'furniture', audiences: SOUMU, nav: true, ticket: 'T16' },
+  { href: '/stock', label: '在庫入力', section: 'furniture', audiences: SOUMU, nav: true, ticket: 'T10' },
+  { href: '/stocks', label: '在庫一覧', section: 'furniture', audiences: SOUMU, nav: true, ticket: 'T10' },
+  { href: '/stocks/qr', label: '部屋の QR の印刷', section: 'furniture', audiences: SOUMU, nav: false, ticket: 'T10' },
+  { href: '/requests', label: '申請一覧', section: 'furniture', audiences: SOUMU, nav: true, ticket: 'T11' },
+  { href: '/rules', label: 'ルール', section: 'furniture', audiences: LEAD, nav: true, ticket: 'T12' },
   // Q1（D-39）：総務部門員はいつでも読み取り専用、viewer は確定後だけ
   {
     href: '/allocation',
     label: '振り分け',
+    section: 'furniture',
     audiences: [...SOUMU, 'viewer'],
     finalOnly: ['viewer'],
     finalOnlyNote: ALLOCATION_BEFORE_FINAL_NOTE,
     nav: true,
     ticket: 'T13',
   },
-  { href: '/swaps', label: 'キャスター机交換', audiences: LEAD, nav: true, ticket: 'T13' },
-  { href: '/history', label: '履歴', audiences: LEAD, nav: true, ticket: 'T14' },
-  { href: '/request', label: '申請', audiences: REP, nav: true, ticket: 'T11' },
-  { href: '/my', label: '自団体の振り分け', audiences: REP, nav: true, ticket: 'T13' },
+  { href: '/swaps', label: 'キャスター机交換', section: 'furniture', audiences: LEAD, nav: true, ticket: 'T13' },
+  { href: '/request', label: '申請', section: 'furniture', audiences: REP, nav: true, ticket: 'T11' },
+  { href: '/my', label: '自団体の振り分け', section: 'furniture', audiences: REP, nav: true, ticket: 'T13' },
+  // 共通（部門長・副部門長はマスタ設定の一部のタブだけ。settingsTabsFor）
+  { href: '/settings', label: 'マスタ設定', section: 'common', audiences: LEAD, nav: true, ticket: 'T09' },
+  { href: '/history', label: '履歴', section: 'common', audiences: LEAD, nav: true, ticket: 'T14' },
 ];
 
-export const NAV_ITEMS: readonly NavItem[] = ROUTES.filter((r) => r.nav).map(({ href, label, audiences, finalOnly }) => ({
+export const NAV_ITEMS: readonly NavItem[] = ROUTES.filter((r) => r.nav).map(({ href, label, section, audiences, finalOnly }) => ({
   href,
   label,
+  section,
   audiences,
   ...(finalOnly ? { finalOnly } : {}),
   ready: true,
@@ -162,13 +186,36 @@ export function finalOnlyNoteFor(href: string, audiences: readonly Audience[], y
   return r.finalOnly.some((a) => audiences.includes(a)) ? r.finalOnlyNote : null;
 }
 
-/** その人に見せるナビゲーションの項目（立場のどれかが合うもの） */
+/** その人に見せるナビゲーションの項目（立場のどれかが合うもの。平らな一覧で、並びは見出しの順） */
 export function navItemsFor(
   audiences: readonly Audience[],
   yearStatus?: YearStatus | null,
   items: readonly NavItem[] = NAV_ITEMS,
 ): NavItem[] {
   return items.filter((item) => allowed(item, yearStatus).some((a) => audiences.includes(a)));
+}
+
+/** ナビの見出しと、その下の項目 */
+export interface NavSection {
+  id: NavSectionId;
+  heading: string;
+  items: NavItem[];
+}
+
+/**
+ * その人に見せるナビゲーションを見出しごとに（NAV_SECTIONS の順。項目のない見出しは除く。T16。04「共通レイアウト」）。
+ * 項目は navItemsFor と同じもの（見出しごとの items を順につなぐと navItemsFor と同じ並び）。
+ *
+ * @example
+ * navSectionsFor(['staff']).map((s) => s.heading) // ['ホーム', '机椅子']
+ */
+export function navSectionsFor(
+  audiences: readonly Audience[],
+  yearStatus?: YearStatus | null,
+  items: readonly NavItem[] = NAV_ITEMS,
+): NavSection[] {
+  const mine = navItemsFor(audiences, yearStatus, items);
+  return NAV_SECTIONS.map((s) => ({ ...s, items: mine.filter((i) => i.section === s.id) })).filter((s) => s.items.length > 0);
 }
 
 /** 今のパスがその項目に当たるか（trailingSlash とクエリは無視する） */

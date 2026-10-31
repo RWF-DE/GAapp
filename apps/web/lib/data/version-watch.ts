@@ -1,4 +1,4 @@
-// 版の見張り（画面の設計 2.6、D-33。T09a）。ダッシュボード・振り分け・キャスター机交換で、年度の allocation_version だけを
+// 版の見張り（画面の設計 2.6、D-33。T09a）。机椅子の状況（/furniture）・振り分け・キャスター机交換で、年度の allocation_version だけを
 // 60 秒ごとと、ウィンドウにフォーカスが戻ったときに読み、持っている版より新しければ StaleBanner を出す。自動では読み直さない。
 import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/query';

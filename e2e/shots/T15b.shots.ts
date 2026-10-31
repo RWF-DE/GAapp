@@ -191,8 +191,9 @@ test.describe('T15b マスタ設定のユーザー（総務部門長）', () => 
     const s = await createScenario({ status: 'confirmed', dataset: 'synthetic', allocations: 'reference', roles: { head: true } });
     try {
       await pinYear(page, SEED_USER_IDS.head, s.yearId);
-      await page.goto('/');
-      await expect(page.getByRole('heading', { level: 1, name: 'ダッシュボード' })).toBeVisible();
+      // 年度の状態のボタンは机椅子の状況（T16 より前は / のダッシュボード。D-51。画像は T16 より前に撮ったまま）
+      await page.goto('/furniture/');
+      await expect(page.getByRole('heading', { level: 1, name: '机椅子の状況' })).toBeVisible();
       await expect(page.getByTestId('year-status-actions').getByRole('button')).toHaveText(['確定を解除']);
       await expect(page.getByRole('main').getByRole('status').filter({ hasText: '読み込み中…' })).toHaveCount(0);
       await shoot(page, 'T15b', 'dashboard-head-confirmed-pc');
