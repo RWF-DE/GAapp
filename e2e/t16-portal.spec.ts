@@ -137,6 +137,12 @@ function watchRest(page: Page): RestRequest[] {
 /** 立場の読み込み（lib/auth/load-membership.ts）。年度の行（years）は立場と一緒に読む（D-45） */
 const MEMBERSHIP_READS = ['rpc/accept_my_invitations', 'profiles', 'year_roles', 'group_members', 'years'];
 
+/**
+ * ダッシュボードのお知らせの欄の新着（T17。04「お知らせ一覧」の「ダッシュボードに出すもの」：id・宛先・題名・ピン留め・出した日時だけ。
+ * 総務は総務内、閲覧のみ・店長・副店長は団体あて。宛先と年度で絞り、5件）
+ */
+const NOTICES_LATEST_READ = 'notices?select=id,audience,title,pinned,created_at';
+
 /** 版だけの読み取り（版の見張り・スナップショットの最初。years?select=allocation_version） */
 const isVersionRead = (r: RestRequest) => r.table === 'years' && r.select === 'allocation_version';
 
@@ -228,12 +234,14 @@ test.describe('T16 ダッシュボード（管理者）', () => {
     }
   });
 
-  test('T16 総務の / は版・振り分けの行・ルールを読まない（机椅子の6つの表を1回ずつ。在庫は room_id だけ）。先読みと、2回目の先送りでも1回ずつ', async ({
+  test('T16 総務の / は版・振り分けの行・ルールを読まない（机椅子の6つの表と、T17 のお知らせの新着を1回ずつ。在庫は room_id だけ）。先読みと、2回目の先送りでも1回ずつ', async ({
     page,
   }) => {
     const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
+    // 机椅子の6つの表と、総務内のお知らせの新着（T17。本文・宛先の団体・書いた人は読まない）
     const FURNITURE_READS = [
       'GET groups?select=id,name,category,sort_order',
+      `GET ${NOTICES_LATEST_READ}`,
       'GET request_submissions?select=group_id,submitted_at,groups!inner(year_id)',
       'GET room_years?select=room_id,usable',
       'GET rooms?select=id,name,is_storage,sort_order',
@@ -249,20 +257,21 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       await expect(furnitureCard(page)).toBeVisible();
       await page.waitForLoadState('networkidle');
       expect(reads.some((r) => r.table === 'year_roles'), '立場の読み込みを見ている').toBe(true);
-      // 先読みと、要対応・カードの欄が同じ読み込み（キー）を使うので、表ごとに1回（締切と予定は年度の行だけで決まり、読まない）
+      // 先読みと、要対応・カード・総務内のお知らせの欄が同じ読み込み（キー）を使うので、表ごとに1回（締切と予定は年度の行だけで
+      // 決まり、読まない）
       expect(readsBeyondMembership(reads).sort()).toEqual(FURNITURE_READS);
       expect(reads.filter(isVersionRead), '版だけの読み取り').toEqual([]);
 
       // / は先送りしてよい画面（T16。D-45・D-51）：開いたときの読み取りを覚える。覚えたものに版・振り分けの行・ルールはない
       const recorded = await recordedRequests(page, SEED_USER_IDS.admin, '/');
       const recordedTables = recorded.map((r) => /^\/rest\/v1\/([^?]+)/.exec(r.u)?.[1] ?? r.u);
-      for (const t of ['groups', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']) expect(recordedTables).toContain(t);
+      for (const t of ['groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']) expect(recordedTables).toContain(t);
       expect(recordedTables.filter((t) => ['allocations', 'rules', 'requests', 'items', 'distance_overrides'].includes(t))).toEqual([]);
       expect(recorded.filter((r) => r.u.includes('select=allocation_version'))).toEqual([]);
 
       // 2回目：<head> の script が覚えた読み取りを JS より先に送り、アプリは同じリクエストならその応答を使う（送らない）。JS が
       // ブラウザのキャッシュからすぐに動くと、script より先にアプリが送ることがある（どちらの順でも中身は正しい。速さは e2e:perf で
-      // 計る）ので、アプリの読み取りは表ごとに1回まで、script は覚えた読み取りだけ、合わせて6つの表がそろい、版を読まないことを見る
+      // 計る）ので、アプリの読み取りは表ごとに1回まで、script は覚えた読み取りだけ、合わせて7つの表がそろい、版を読まないことを見る
       reads.length = 0;
       await openPortal(page, 'ダッシュボード');
       await expect(furnitureCard(page)).toBeVisible();
@@ -440,10 +449,12 @@ test('T16 部門長以上の要対応：受付期間が空・受付開始（過�
 test.describe('T16 ホーム（閲覧のみ）', () => {
   test.use({ storageState: storageStateFor('viewer') });
 
-  test('T16 閲覧のみ：h1「ホーム」、要対応の欄がなく、机椅子のカードと締切と予定だけ。年度の行と立場のほかに何も読まない', async ({ page }) => {
+  test('T16 閲覧のみ：h1「ホーム」、要対応の欄がなく、机椅子のカードと締切と予定とお知らせ（T17）だけ。年度の行と立場のほかには、お知らせの新着だけを読む', async ({
+    page,
+  }) => {
     const s = await createScenario({ status: 'allocating', dataset: 'small', roles: { viewer: true } });
     try {
-      // 前にこの年度を閲覧のみとして開いた（覚えたロールが閲覧のみなら、/ で先に読むものはない）
+      // 前にこの年度を閲覧のみとして開いた（覚えたロールが閲覧のみなら、/ で先に読むのは団体あてのお知らせの新着だけ。T17）
       await rememberYear(page, SEED_USER_IDS.viewer, s.yearId, { role: 'viewer' });
       const reads = watchRest(page);
       await pinYear(page, SEED_USER_IDS.viewer, s.yearId);
@@ -451,6 +462,9 @@ test.describe('T16 ホーム（閲覧のみ）', () => {
       await expect(page.getByTestId('home-roles')).toHaveText('閲覧のみ');
       await expect(todosWidget(page)).toHaveCount(0);
       await expect(page.getByTestId('rep-card')).toHaveCount(0);
+      // お知らせ（T17）：団体あての欄だけ（総務内のお知らせの欄はない）
+      await expect(page.getByTestId('portal-notices').getByTestId('portal-notices-empty')).toHaveText('お知らせはありません');
+      await expect(page.getByTestId('portal-soumu-notices')).toHaveCount(0);
       const card = furnitureCard(page);
       await expect(card.getByRole('listitem')).toHaveText(['振り分けが確定すると、ここから見られます']);
       await expect(card.getByRole('link')).toHaveCount(0);
@@ -461,7 +475,7 @@ test.describe('T16 ホーム（閲覧のみ）', () => {
 
       await page.waitForLoadState('networkidle');
       expect(reads.some((r) => r.table === 'year_roles'), '立場の読み込みを見ている').toBe(true);
-      expect(readsBeyondMembership(reads), '立場の読み込みのほかの読み取り').toEqual([]);
+      expect(readsBeyondMembership(reads), '立場の読み込みのほかの読み取り').toEqual([`GET ${NOTICES_LATEST_READ}`]);
       expect(reads.filter(isVersionRead), '版だけの読み取り').toEqual([]);
 
       // 確定すると振り分け表へ
@@ -480,7 +494,7 @@ test.describe('T16 ホーム（閲覧のみ）', () => {
 test.describe('T16 ホーム（団体代表）', () => {
   test.use({ storageState: storageStateFor('rep') });
 
-  test('T16 団体代表：要対応（未提出・交換の依頼・確定）・締切と予定・代表する団体のカード。在庫・振り分けの行・ルール・版を読まない', async ({
+  test('T16 団体代表：要対応（未提出・交換の依頼・確定）・締切と予定・代表する団体のカード。在庫・振り分けの行・ルール・版を読まない（T17 のお知らせの新着は読む）', async ({
     page,
   }) => {
     const s = await createScenario({ status: 'requesting', dataset: 'small', repGroup: SMALL.groups.stall });
@@ -514,10 +528,16 @@ test.describe('T16 ホーム（団体代表）', () => {
       await expect(card.getByTestId('rep-submission')).toHaveText('未提出');
       await expect(card.getByTestId('rep-consent-asked')).toContainText('キャスター机への交換の依頼があります');
 
-      // 読むのは立場と、自団体の提出と了承だけ（先読み・代表する団体のカード・要対応が同じ読み込みを使うので、1回ずつ）
+      // 読むのは立場と、自団体の提出と了承と、お知らせの新着（T17）だけ（先読み・代表する団体のカード・要対応・お知らせの欄が同じ
+      // 読み込みを使うので、1回ずつ）
       await page.waitForLoadState('networkidle');
       expect(reads.some((r) => r.table === 'year_roles'), '立場の読み込みを見ている').toBe(true);
-      expect(readsBeyondMembership(reads).map((r) => r.split('?')[0]).sort()).toEqual(['GET request_submissions', 'GET substitution_consents']);
+      expect(readsBeyondMembership(reads).map((r) => r.split('?')[0]).sort()).toEqual([
+        'GET notices',
+        'GET request_submissions',
+        'GET substitution_consents',
+      ]);
+      expect(readsBeyondMembership(reads)).toContain(`GET ${NOTICES_LATEST_READ}`);
       expect(reads.filter(isVersionRead), '版だけの読み取り').toEqual([]);
 
       // 締切まで 24 時間を切ると、未提出は急ぎ
@@ -588,7 +608,7 @@ test('T16 管理者で店長も務める人：ダッシュボードに代表す�
 test.describe('T16 ナビの見出し（管理者・PC）', () => {
   test.use({ storageState: storageStateFor('admin'), viewport: PC });
 
-  test('T16 ナビ（PC）：見出し「机椅子」「共通」の中に項目が並び（「ホーム」の見出しは見た目では出さない）、机椅子の状況を開くと aria-current', async ({
+  test('T16 ナビ（PC）：見出し「机椅子」「お知らせ」（T17）「共通」の中に項目が並び（「ホーム」の見出しは見た目では出さない）、机椅子の状況を開くと aria-current', async ({
     page,
   }) => {
     await page.goto('/');
@@ -601,6 +621,11 @@ test.describe('T16 ナビの見出し（管理者・PC）', () => {
     const furniture = nav.getByRole('group', { name: '机椅子' });
     await expect(furniture.getByRole('heading', { level: 2, name: '机椅子' })).toBeVisible();
     await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換']);
+    // お知らせ（T17）：機能の登録の順で、机椅子の後・共通の前
+    const notices = nav.getByRole('group', { name: 'お知らせ' });
+    await expect(notices.getByRole('heading', { level: 2, name: 'お知らせ' })).toBeVisible();
+    await expect(notices.getByRole('link')).toHaveText(['お知らせ一覧']);
+    await expect(nav.getByRole('group')).toHaveCount(4);
     const common = nav.getByRole('group', { name: '共通' });
     await expect(common.getByRole('heading', { level: 2, name: '共通' })).toBeVisible();
     await expect(common.getByRole('link')).toHaveText(['マスタ設定', '履歴']);
@@ -618,7 +643,7 @@ test.describe('T16 ナビの見出し（管理者・PC）', () => {
 test.describe('T16 ナビの見出し（総務部門員・スマホ）', () => {
   test.use({ storageState: storageStateFor('staff'), viewport: MOBILE });
 
-  test('T16 ナビ（スマホ）：メニューの見出しは「机椅子」まで（共通はない）。机椅子の状況を開くとメニューが閉じ、開き直すと aria-current', async ({
+  test('T16 ナビ（スマホ）：メニューの見出しは「机椅子」「お知らせ」（T17）まで（共通はない）。机椅子の状況を開くとメニューが閉じ、開き直すと aria-current', async ({
     page,
   }) => {
     await page.goto('/');
@@ -628,10 +653,11 @@ test.describe('T16 ナビの見出し（総務部門員・スマホ）', () => {
     await open.click();
     const menu = page.locator('#app-mobile-nav');
     const nav = menu.getByRole('navigation', { name: 'メインメニュー' });
-    await expect(nav.getByRole('group')).toHaveCount(2);
+    await expect(nav.getByRole('group')).toHaveCount(3);
     await expect(nav.getByRole('group', { name: 'ホーム' }).getByRole('link')).toHaveText(['ホーム']);
     const furniture = nav.getByRole('group', { name: '机椅子' });
     await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
+    await expect(nav.getByRole('group', { name: 'お知らせ' }).getByRole('link')).toHaveText(['お知らせ一覧']);
     await expect(nav.getByRole('group', { name: '共通' })).toHaveCount(0);
     expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(MOBILE.width);
 

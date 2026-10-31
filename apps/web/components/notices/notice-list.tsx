@@ -132,7 +132,9 @@ function NoticeItem({
         </Badge>
         {n.audience === 'groups' ? (
           names.length > 0 ? (
-            <span data-testid="notice-groups" className="min-w-0 text-xs text-muted-foreground [overflow-wrap:anywhere]">
+            // 団体の名前の中では折り返さず「・」の後で折り返す（keep-all。PC の宛先の列〔9rem〕は狭く、「模擬店02・模 / 擬店03」と
+            // 名前が割れるため）。区切りのない長い名前だけは anywhere で折り返す
+            <span data-testid="notice-groups" className="min-w-0 text-xs text-muted-foreground [word-break:keep-all] [overflow-wrap:anywhere]">
               {names.join('・')}
             </span>
           ) : (
@@ -161,8 +163,12 @@ function NoticeItem({
         <p>
           <NoticeTime value={n.created_at} testId="notice-time" />
           {updated ? (
+            // 日時と「に更新）」の中では折り返さない（PC の書いた人と日時の列〔10rem〕では収まらず、「に更 / 新）」と割れるため）
             <span data-testid="notice-updated" className="block">
-              （<NoticeTime value={n.updated_at} testId="notice-updated-time" /> に更新）
+              <span className="whitespace-nowrap">
+                （<NoticeTime value={n.updated_at} testId="notice-updated-time" />
+              </span>{' '}
+              <span className="whitespace-nowrap">に更新）</span>
             </span>
           ) : null}
         </p>
