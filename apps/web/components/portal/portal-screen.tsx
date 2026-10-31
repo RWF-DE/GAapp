@@ -6,10 +6,12 @@
 //   総務（soumu）：要対応・締切と予定・機能ごとのカード（店長・副店長も務める管理者は代表する団体も）
 //   閲覧のみ（viewer）：締切と予定・機能ごとのカード（読み取り）（店長・副店長も務める人は要対応と代表する団体も）
 //   店長・副店長（rep）：要対応・締切と予定・代表する団体
-// 欄ごとに別々に読み（components/portal/use-portal.ts）、欄ごとに読み込み中・失敗ともう一度・エラーの境界を持つ（1つの機能・
-// 1つの欄の失敗でほかを止めない）。年度の行は立場と一緒に読んだキャッシュ（useYearRow。D-45）を使い、年度の行だけで決まる項目は
-// ほかの読み込みを待たずに出す。版・振り分けの行・検証・スナップショットは読まず、それらを読む部品（components/dashboard/dashboard.tsx
-// など）を import しない（団体代表・閲覧のみの / を軽くする。D-51）。
+// 欄ごとに別々に読み（components/portal/use-portal.ts。機能の読み取りは、その結果を使う欄〔query.widgets〕にだけ並べる）、欄ごとに
+// 読み込み中・失敗ともう一度・エラーの境界を持つ（1つの機能・1つの欄の失敗でほかを止めない。机椅子の読み込み中・失敗は要対応と
+// カードの欄にだけ出し、年度の行だけで決まる締切と予定の欄には出さない）。年度の行は立場と一緒に読んだキャッシュ（useYearRow。
+// D-45）を使い、年度の行だけで決まる項目はほかの読み込みを待たずに出す。版・振り分けの行・検証・スナップショットは読まず、それらを
+// 読む部品（components/dashboard/dashboard.tsx など）を import しない（団体代表・閲覧のみの / を軽くする。D-51）。/ の欄が読むものは、
+// 開いたときに立場と同時に読み始める（lib/data/screen-queries.ts の planHomePrefetch。D-45）。
 import { useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { PageHeader } from '@/components/common/page-header';

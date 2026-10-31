@@ -24,8 +24,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   if (SUPABASE_URL) preconnect(SUPABASE_URL, { crossOrigin: 'anonymous' });
   // 前に開いたときに覚えた Supabase への読み取りを、JS を読む前に送る（D-45。lib/boot/early-fetch.ts。JS が動き始めると
   // supabase-js が同じリクエストの応答を受け取る）。ログインしていない・覚えたものがない・トークンの期限が近いときは何もしない。
-  // 送るのは版を使わない画面（EARLY_FETCH_PATHS）だけ（振り分けに関わる画面〔/furniture・/allocation・/swaps〕は版を読み終えてから
-  // 残りを読むため。D-33。ダッシュボード〔/〕は版を使わないが T16 では入れない。D-51）
+  // 送るのは版を使わない画面（EARLY_FETCH_PATHS。/・/stock・/request・/my）だけ（振り分けに関わる画面〔/furniture・/allocation・
+  // /swaps〕は版を読み終えてから残りを読むため。D-33。ダッシュボード〔/〕は版を使わないので T16 で入れた。D-45・D-51）
   const early =
     SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY
       ? earlyFetchScript({ u: SUPABASE_URL, a: SUPABASE_PUBLISHABLE_KEY, k: authStorageKey(), p: PREFETCH_HINT_PREFIX, b: BASE_PATH, post: EARLY_POSTS, paths: EARLY_FETCH_PATHS })

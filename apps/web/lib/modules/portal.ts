@@ -2,9 +2,11 @@
 // 機能は PortalProvider を1つ作り（lib/modules/<機能>/portal.ts）、providers.ts の PORTAL_PROVIDERS に並べる。
 // 欄（components/portal）は次のように使う：
 // 1. 立場の種類（PortalKind）ごとに PortalContext を作る（portalContextsOf。年度の行は立場と一緒に読んだキャッシュ）。
-// 2. プロバイダ × 種類（provider.kinds に入るもの）ごとに、query(ctx) が null でなければ useQueries に並べる（同じキーは1回だけ読む）。
+// 2. プロバイダ × 種類（provider.kinds に入るもの）ごとに、その欄が読み取りの結果を使う欄（query.widgets）なら、
+//    query.options(ctx) が null でなければ useQueries に並べる（同じキーは1回だけ読む）。
 // 3. 欄に出すのは portalSectionOf(provider, ctx, data)：query の data（select の後。fromYear の分を含む）があればそれ、
-//    なければ fromYear(ctx)（リクエストを送らない）。読み込み中・失敗は欄がプロバイダ × 種類ごとに出す。
+//    なければ fromYear(ctx)（リクエストを送らない）。読み込み中・失敗は、並べた query の分だけ欄がプロバイダ × 種類ごとに出す
+//    （query.widgets にない欄には出さない。年度の行だけで決まる欄に、使わない読み取りの読み込み中・失敗を出さない）。
 // 4. mergePortalSections で機能ごとにまとめ（兼ねた人の重なりを消す）、要対応は sortTodos、締切と予定は upcomingDated で並べる。
 // React・Supabase・lib/data を import しない（型と、membership・roles・datetime・registry の小さな関数だけ）。
 import type { UseQueryOptions } from '@tanstack/react-query';
@@ -12,10 +14,17 @@ import { audiencesOf, type Audience, type GroupSummary, type Membership } from '
 import { isSoumu, type AppRole } from '@/lib/auth/roles';
 import { tokyoStartOfDay, tokyoToday } from '@/lib/datetime';
 import type { YearRow } from '@/lib/db/types';
+import type { PortalQueryKey } from './query-key';
 import { MODULES, type ModuleId } from './registry';
 
 /** 立場の種類：総務（管理者・総務部門長・総務副部門長・総務部門員）・閲覧のみ・団体代表（店長・副店長） */
 export type PortalKind = 'soumu' | 'viewer' | 'rep';
+
+/** ダッシュボードの欄（読み込みを分けるもの）：要対応・締切と予定・機能ごとのカード */
+export type PortalWidgetId = 'todos' | 'dated' | 'cards';
+
+/** 欄の一覧（04「ダッシュボード」の欄の順） */
+export const PORTAL_WIDGETS: readonly PortalWidgetId[] = ['todos', 'dated', 'cards'];
 
 /** 種類の順（兼ねた人の欄の中の並びと、カードを選ぶ順） */
 export const PORTAL_KINDS: readonly PortalKind[] = ['soumu', 'viewer', 'rep'];
@@ -89,18 +98,9 @@ export interface PortalContext {
   now: number;
 }
 
-/** ダッシュボードのクエリのキー（queryKeys.yearPart と同じ形。年度の invalidate で一緒に消える） */
-export type PortalQueryKey = readonly ['year', string, 'portal', ModuleId, PortalKind, ...string[]];
-
-/**
- * ダッシュボードのクエリのキー：`['year', yearId, 'portal', moduleId, kind, ...extra]`。
- *
- * @example
- * portalQueryKey(yearId, 'furniture', 'rep', ...groupIds)
- */
-export function portalQueryKey(yearId: string, moduleId: ModuleId, kind: PortalKind, ...extra: readonly string[]): PortalQueryKey {
-  return ['year', yearId, 'portal', moduleId, kind, ...extra];
-}
+// ダッシュボードのクエリのキー（portalQueryKey・PortalQueryKey）は query-key.ts（/ の先読みがルートのレイアウトから使うので、
+// このファイルを読ませないために分けた）。ここから同じ名前で出し直す
+export { portalQueryKey, type PortalQueryKey } from './query-key';
 
 /**
  * 機能の読み取りのクエリ（useQueries に並べて渡す。data は select の後の PortalSection）。queryFn は生の行を返し、
@@ -122,6 +122,18 @@ export function portalQueryOptions<TRaw>(
   return { ...base, select } as unknown as PortalQueryOptions;
 }
 
+/**
+ * 機能の読み取り（D-52）。読んだ行で中身が変わる欄（widgets）だけがこの読み取りを並べ、その読み込み中・失敗を出す。
+ * ほかの欄は fromYear だけを出す（その欄の項目は年度の行だけで決まる約束。読み取りの select の結果のその欄の分は fromYear と
+ * 同じにする）。例：机椅子の締切と予定は年度の行だけで決まるので、机椅子の読み取りの widgets は要対応とカード。
+ */
+export interface PortalQuery {
+  /** この読み取りの結果を使う欄（1つ以上） */
+  widgets: readonly PortalWidgetId[];
+  /** 読む分（select の結果は fromYear の分を含む）。その種類で読まないときは null */
+  options: (ctx: PortalContext) => PortalQueryOptions | null;
+}
+
 /** ダッシュボードに出す機能（lib/modules/<機能>/portal.ts が1つ作る） */
 export interface PortalProvider {
   moduleId: ModuleId;
@@ -129,8 +141,20 @@ export interface PortalProvider {
   kinds: readonly PortalKind[];
   /** 年度の行だけから同期で作る（リクエストを送らない。読み込みを待たずに出す） */
   fromYear?: (ctx: PortalContext) => PortalSection;
-  /** 読む分（select の結果は fromYear の分を含む）。その種類で読まないときは null */
-  query?: (ctx: PortalContext) => PortalQueryOptions | null;
+  /** 読む分と、その結果を使う欄 */
+  query?: PortalQuery;
+}
+
+/**
+ * その欄で、そのプロバイダ × 種類の読み取りを並べるか（並べるならその query の設定、並べないなら null）。
+ * 欄が query.widgets に入っていて、その種類で読むとき（options が null でない）だけ。
+ *
+ * @example
+ * portalWidgetQuery(furniturePortalProvider, ctx, 'dated') // null（机椅子の締切と予定は年度の行だけ）
+ */
+export function portalWidgetQuery(provider: Pick<PortalProvider, 'query'>, ctx: PortalContext, widget: PortalWidgetId): PortalQueryOptions | null {
+  const q = provider.query;
+  return q && q.widgets.includes(widget) ? q.options(ctx) : null;
 }
 
 /** 読むものも年度の行だけで決まるものもないときの PortalSection */

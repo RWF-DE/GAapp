@@ -1,23 +1,20 @@
 // 机椅子がダッシュボード（/）に出すもの（D-52。04「机椅子の状況」の「ダッシュボードに出すもの」、notes/T16.md「固めた約束」4）。
-// - 総務（soumu）：軽い読み取りだけ（loadFurnitureSoumu。6つの表を並行に）。版（years）・振り分けの行・ルール・申請の行・検証・
-//   スナップショットは読まない（机椅子の重い読み込みは机椅子の状況〔/furniture〕だけ）。数え方は counts.ts（summarizeDashboard と同じ）。
+// - 総務（soumu）：軽い読み取りだけ（soumu.ts の loadFurnitureSoumu。6つの表を並行に）。版（years）・振り分けの行・ルール・申請の行・
+//   検証・スナップショットは読まない（机椅子の重い読み込みは机椅子の状況〔/furniture〕だけ）。数え方は counts.ts（summarizeDashboard と同じ）。
 // - 団体代表（rep）：自団体の提出と了承（rep.ts の furnitureRepOptions。代表する団体の欄と同じキャッシュ）。
 // - 閲覧のみ（viewer）：読まない（年度の行だけ）。
 // furniturePortal(raw, ctx) は純粋関数：raw が null なら年度の行だけで決まる分（fromYear）を、raw があればその種類の全部
 // （fromYear の分を含む）を返す。時計を読まない（ctx.now だけ）。リンクはどれも canOpen で確かめ、開けない要対応は作らない。
+// 締切と予定は年度の行だけで決まる（読んだ行で変わらない）ので、読み取りの結果を使う欄は要対応とカードだけ（query.widgets。
+// 締切と予定の欄に机椅子の読み込み中・失敗を出さない。T16 の決定 7）。
 // lib/data を import しない（/ の JS にスナップショット・検証・swaps.ts を入れない）。
-import { queryOptions } from '@tanstack/react-query';
 import { YEAR_STATUS_LABELS, type YearStatus } from '@/lib/auth/membership';
 import { isAdmin, isLead, isSoumu } from '@/lib/auth/roles';
 import { addDays, formatShortDateTime, tokyoStartOfDay } from '@/lib/datetime';
-import { fetchAll } from '@/lib/db/fetch-all';
-import type { ConsentDbRow, GroupRow, RoomRow, RoomYearRow, SubmissionRow, YearRow } from '@/lib/db/types';
-import { toAppError } from '@/lib/errors';
+import type { YearRow } from '@/lib/db/types';
 import { canOpen } from '@/lib/navigation';
-import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import {
   moduleLabel,
-  portalQueryKey,
   portalQueryOptions,
   type DatedItem,
   type ModuleCardModel,
@@ -36,77 +33,14 @@ import {
   type SubmissionCounts,
 } from './counts';
 import { furnitureRepOptions, repGroupCards, requestWindowOpen, type RepGroupCard, type RepHomeRows } from './rep';
+import { furnitureSoumuOptions, type FurnitureSoumuRaw } from './soumu';
+
+// 総務の読み取りは soumu.ts（/ の先読みも使う）。今の import のために、ここから同じ名前で出し直す
+export { FURNITURE_SOUMU_SELECT, furnitureSoumuOptions, loadFurnitureSoumu, type FurnitureSoumuRaw } from './soumu';
 
 const MODULE_ID: ModuleId = 'furniture';
 
-// ---------------------------------------------------------------- 総務の読み取り
-
-/** 総務の読み取りの結果（04「ダッシュボードに出すもの」の6つの表。join の列は外してある） */
-export interface FurnitureSoumuRaw {
-  groups: Pick<GroupRow, 'id' | 'name' | 'category' | 'sort_order'>[];
-  submissions: Pick<SubmissionRow, 'group_id' | 'submitted_at'>[];
-  rooms: Pick<RoomRow, 'id' | 'name' | 'is_storage' | 'sort_order'>[];
-  roomYears: Pick<RoomYearRow, 'room_id' | 'usable'>[];
-  /** 在庫の行の room_id（重なりを除いたもの。行は場所×品目） */
-  stockRoomIds: string[];
-  consents: Pick<ConsentDbRow, 'group_id' | 'status'>[];
-}
-
-/** 総務の読み取りの select（版・振り分けの行・ルール・申請の行・品目・距離は読まない） */
-export const FURNITURE_SOUMU_SELECT = {
-  groups: 'id, name, category, sort_order',
-  request_submissions: 'group_id, submitted_at, groups!inner(year_id)',
-  rooms: 'id, name, is_storage, sort_order',
-  room_years: 'room_id, usable',
-  stocks: 'room_id',
-  substitution_consents: 'group_id, status, groups!inner(year_id)',
-} as const;
-
-function rowsOf<T>(res: { data: T[] | null; error: unknown; status?: number }): T[] {
-  if (res.error) throw toAppError(res.error, res.status);
-  return res.data ?? [];
-}
-
-/**
- * 総務の机椅子のダッシュボードの行を読む（どれも今の RLS で総務が読めるもの）。6つを並行に読み、年度の行（版）を待たない。
- * 提出と了承は `groups!inner(year_id)` で年度に絞る。在庫の行（場所×品目）は fetchAll で読む。
- */
-export async function loadFurnitureSoumu(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<FurnitureSoumuRaw> {
-  const S = FURNITURE_SOUMU_SELECT;
-  const [groups, submissions, rooms, roomYears, stocks, consents] = await Promise.all([
-    client.from('groups').select(S.groups).eq('year_id', yearId).order('sort_order').order('id'),
-    client.from('request_submissions').select(S.request_submissions).eq('groups.year_id', yearId).order('group_id'),
-    client.from('rooms').select(S.rooms).order('sort_order').order('id'),
-    client.from('room_years').select(S.room_years).eq('year_id', yearId).order('room_id'),
-    fetchAll((from, to) => client.from('stocks').select(S.stocks).eq('year_id', yearId).order('room_id').order('item_id').range(from, to)),
-    fetchAll((from, to) =>
-      client
-        .from('substitution_consents')
-        .select(S.substitution_consents)
-        .eq('groups.year_id', yearId)
-        .order('group_id')
-        .order('from_item_id')
-        .order('to_item_id')
-        .range(from, to),
-    ),
-  ]);
-  return {
-    groups: rowsOf(groups).map(({ id, name, category, sort_order }) => ({ id, name, category, sort_order })),
-    submissions: rowsOf(submissions).map(({ group_id, submitted_at }) => ({ group_id, submitted_at })),
-    rooms: rowsOf(rooms).map(({ id, name, is_storage, sort_order }) => ({ id, name, is_storage, sort_order })),
-    roomYears: rowsOf(roomYears).map(({ room_id, usable }) => ({ room_id, usable })),
-    stockRoomIds: [...new Set(stocks.map((s) => s.room_id))],
-    consents: consents.map(({ group_id, status }) => ({ group_id, status })),
-  };
-}
-
-/** 総務の机椅子のクエリ（キーは `['year', yearId, 'portal', 'furniture', 'soumu']`） */
-export function furnitureSoumuOptions(yearId: string) {
-  return queryOptions({
-    queryKey: portalQueryKey(yearId, 'furniture', 'soumu'),
-    queryFn: () => loadFurnitureSoumu(yearId),
-  });
-}
+// ---------------------------------------------------------------- 総務の数え方
 
 export interface FurnitureSoumuCounts {
   submissions: SubmissionCounts<FurnitureSoumuRaw['groups'][number]>;
@@ -348,26 +282,31 @@ export function furniturePortal(raw: FurnitureRaw | null, ctx: PortalContext): P
 
 /**
  * 机椅子のプロバイダ（providers.ts の PORTAL_PROVIDERS に並べる）。総務は furnitureSoumuOptions、団体代表は
- * furnitureRepOptions（代表する団体の欄と同じキー）に select を足して読む。閲覧のみは読まない（query は null）。
+ * furnitureRepOptions（代表する団体の欄と同じキー）に select を足して読む。閲覧のみは読まない（options は null）。
+ * 読んだ行で変わるのは要対応とカードだけ（締切と予定は年度の行だけで決まる）なので、読み取りの結果を使う欄は要対応とカード
+ * （締切と予定の欄は fromYear だけを出し、机椅子の読み込み中・失敗を出さない）。
  */
 export const furniturePortalProvider: PortalProvider = {
   moduleId: MODULE_ID,
   kinds: ['soumu', 'viewer', 'rep'],
   fromYear: (ctx) => furniturePortal(null, ctx),
-  query: (ctx) => {
-    switch (ctx.kind) {
-      case 'soumu':
-        return portalQueryOptions(furnitureSoumuOptions(ctx.year.id), (raw) => furniturePortal({ kind: 'soumu', ...raw }, ctx));
-      case 'rep':
-        return portalQueryOptions(
-          furnitureRepOptions(
-            ctx.year.id,
-            ctx.groups.map((g) => g.id),
-          ),
-          (raw) => furniturePortal({ kind: 'rep', ...raw }, ctx),
-        );
-      case 'viewer':
-        return null;
-    }
+  query: {
+    widgets: ['todos', 'cards'],
+    options: (ctx) => {
+      switch (ctx.kind) {
+        case 'soumu':
+          return portalQueryOptions(furnitureSoumuOptions(ctx.year.id), (raw) => furniturePortal({ kind: 'soumu', ...raw }, ctx));
+        case 'rep':
+          return portalQueryOptions(
+            furnitureRepOptions(
+              ctx.year.id,
+              ctx.groups.map((g) => g.id),
+            ),
+            (raw) => furniturePortal({ kind: 'rep', ...raw }, ctx),
+          );
+        case 'viewer':
+          return null;
+      }
+    },
   },
 };

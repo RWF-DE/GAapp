@@ -4,14 +4,15 @@
 // / の部品がスナップショット・検証・机椅子の状況の部品を import しないこと。
 // Supabase は偽のクライアント（lib/testing/fake-supabase.ts）、立場は useAuth の差し替え、年度の行は立場と一緒に読んだキャッシュ
 // （QueryClient に入れておく）。時計は Date だけを止める（ダッシュボードを開いた時刻）。
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, queryOptions } from '@tanstack/react-query';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MembershipState } from '@/lib/auth/auth-provider';
 import type { AppRole, GroupSummary, Membership, YearStatus } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
-import type { PortalProvider } from '@/lib/modules/portal';
+import { portalQueryKey, portalQueryOptions, type PortalProvider } from '@/lib/modules/portal';
+import type { AppSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/query';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 import { staticImportGraph } from '@/lib/testing/import-graph';
@@ -294,7 +295,7 @@ describe('T16 ダッシュボード：読むもの（版・振り分けの行・
 // ---------------------------------------------------------------- 読み込み中・失敗・エラーの境界
 
 describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04「ダッシュボード」の読み込みと失敗）', () => {
-  it('読み込み中：年度の行だけで決まる項目（締切を過ぎた・締切と予定）は先に出し、机椅子の分は Skeleton（portal-loading）', async () => {
+  it('読み込み中：年度の行だけで決まる項目（締切を過ぎた・締切と予定）は先に出し、机椅子の分は要対応とカードの欄に Skeleton（portal-loading）', async () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => (release = r));
     override = (call) => (call.table === 'request_submissions' ? gate.then(() => ({ data: SOUMU_ROWS.request_submissions })) : undefined);
@@ -306,6 +307,8 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     expect(within(screen.getByTestId('portal-cards')).queryByTestId('module-card')).toBeNull();
     expect(datedIds()).toHaveLength(4);
     expect(screen.queryByTestId('portal-todos-empty')).toBeNull();
+    // 締切と予定は年度の行だけで決まるので、机椅子の読み込み中を出さない（決定 7）
+    expect(within(screen.getByTestId('portal-dated')).queryByTestId('portal-loading')).toBeNull();
 
     release();
     await screen.findByTestId('module-card');
@@ -329,8 +332,10 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     const cardErr = within(cards).getByTestId('portal-module-error');
     expect(within(cardErr).getByRole('link', { name: '机椅子の状況へ' }).getAttribute('href')).toBe('/furniture');
     expect(within(cards).queryByTestId('module-card')).toBeNull();
-    // ほかの欄は出したまま
+    // ほかの欄は出したまま。締切と予定は年度の行だけで決まるので、机椅子の失敗を出さない（決定 7。失敗は要対応とカードの2か所）
     expect(datedIds()).toHaveLength(4);
+    expect(within(screen.getByTestId('portal-dated')).queryByTestId('portal-module-error')).toBeNull();
+    expect(screen.getAllByTestId('portal-module-error')).toHaveLength(2);
     expect(screen.getByTestId('home-roles').textContent).toBe('管理者');
     expect(screen.queryByTestId('portal-widget-error')).toBeNull();
 
@@ -398,6 +403,54 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     await user.click(within(errs[0]!).getByRole('button', { name: 'もう一度' }));
     await screen.findByTestId('module-card');
     expect(screen.queryByTestId('portal-year-error')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------- 読み取りを使う欄（query.widgets。決定 7）
+
+describe('T16 ダッシュボード：機能の読み取りは、その結果を使う欄（query.widgets）にだけ並べる', () => {
+  /** 締切と予定だけに使う読み取りを持つテストのプロバイダ（T18 の予定と締切のような機能）。読むのは test_events の表 */
+  function datedOnlyProvider(): PortalProvider {
+    return {
+      moduleId: 'furniture',
+      kinds: ['soumu'],
+      query: {
+        widgets: ['dated'],
+        options: (ctx) =>
+          portalQueryOptions(
+            queryOptions({
+              queryKey: portalQueryKey(ctx.year.id, 'furniture', 'soumu', 'test-events'),
+              queryFn: async () => {
+                const res = await (h.client as AppSupabaseClient).from('test_events' as never).select('*');
+                if (res.error) throw new Error('読めませんでした');
+                return res.data as unknown[];
+              },
+            }),
+            () => ({ card: null, todos: [], dated: [{ id: 'test:event', moduleId: 'furniture', title: 'テストの予定', at: '2026-10-10', kind: 'event' }] }),
+          ),
+      },
+    };
+  }
+
+  it('締切と予定だけに使う読み取りは、締切と予定の欄にだけ読み込み中・失敗を出し、要対応とカードには出さない', async () => {
+    let fail = true;
+    h.providers.push(datedOnlyProvider());
+    override = (call) => (call.table === 'test_events' ? (fail ? NETWORK : { data: [{ id: 'e1' }] }) : undefined);
+    const user = userEvent.setup({ advanceTimers: () => {} });
+    renderPortal(member('admin', [], 'requesting'));
+    const dated = screen.getByTestId('portal-dated');
+    const err = await within(dated).findByTestId('portal-module-error');
+    expect(err.textContent).toContain('机椅子：');
+    // 要対応とカードは机椅子の読み取りだけ（テストの読み取りの失敗を出さない）
+    await screen.findByTestId('module-card');
+    expect(within(screen.getByTestId('portal-todos')).queryByTestId('portal-module-error')).toBeNull();
+    expect(within(screen.getByTestId('portal-cards')).queryByTestId('portal-module-error')).toBeNull();
+    expect(issued.filter((c) => c.table === 'test_events')).toHaveLength(1);
+
+    fail = false;
+    await user.click(within(err).getByRole('button', { name: 'もう一度' }));
+    await waitFor(() => expect(datedIds()).toContain('test:event'));
+    expect(screen.queryByTestId('portal-module-error')).toBeNull();
   });
 });
 

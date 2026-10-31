@@ -29,13 +29,10 @@ const ROOM = '11111111-2222-4333-8444-555555555555';
 const USER = '00000000-0000-4000-8000-000000000002';
 const TOKEN = 'token-1';
 const PREFIX = 'gaapp:prefetch:';
-/** 先送りしてよい画面（lib/data/screen-queries.ts の EARLY_FETCH_PATHS と同じ） */
-const PATHS = ['/stock', '/request', '/my'];
-/**
- * 記録・先送りしないパス：振り分けに関わる画面（/furniture・/allocation・/swaps。スナップショットで版を先に読む。D-33）と、
- * ダッシュボード（/。版は読まないが T16 では許可リストに入れない。D-51）
- */
-const SNAPSHOT_PATHS = ['/', '/furniture', '/allocation', '/swaps'];
+/** 先送りしてよい画面（lib/data/screen-queries.ts の EARLY_FETCH_PATHS と同じ。T16 でダッシュボード〔/〕を足した。D-45・D-51） */
+const PATHS = ['/', '/stock', '/request', '/my'];
+/** 記録・先送りしないパス：振り分けに関わる画面（/furniture・/allocation・/swaps。スナップショットで版を先に読む。D-33） */
+const SNAPSHOT_PATHS = ['/furniture', '/allocation', '/swaps'];
 
 const win = () => window as unknown as Record<string, unknown>;
 
@@ -125,7 +122,7 @@ describe('記録', () => {
         paths: {
           '/allocation': entry('/rest/v1/allocations?select=*'),
           '/stock': entry('/rest/v1/stocks?select=*'),
-          '/': entry('/rest/v1/years?select=id,allocation_version'),
+          '/furniture': entry('/rest/v1/years?select=id,allocation_version'),
           '/swaps': entry('/rest/v1/swaps?select=*'),
         },
       }),
@@ -139,7 +136,21 @@ describe('記録', () => {
     expect(paths['/stock']).toEqual(entry('/rest/v1/stocks?select=*'));
   });
 
-  it.each(SNAPSHOT_PATHS)('先送りしてよい画面にないパス（%s。版を先に読む画面と、T16 のダッシュボード）は覚えない', async (path) => {
+  it('T16 ダッシュボード（/）は先送りしてよい画面：開いたときの読み取りを / として覚え（basePath の / も同じ）、次に / を開くと送る', async () => {
+    vi.stubGlobal('fetch', fetchOk());
+    const key = requestsKey(USER, PREFIX);
+    window.history.replaceState(null, '', '/');
+    startRecording('/', window.location);
+    await earlyAwareFetch(`${URL0}/rest/v1/request_submissions?select=*&group_id=in.(g1)`, { method: 'GET', headers: { Accept: 'application/json' } });
+    await earlyAwareFetch(`${URL0}/rest/v1/substitution_consents?select=*&group_id=in.(g1)`, { method: 'GET' });
+    expect(finishRecording(key, true, window.localStorage, PATHS)).toBe(true);
+    expect(readRecorded(key, window.localStorage)?.paths['/']).toEqual<RecordedRequest[]>([
+      { m: 'GET', u: '/rest/v1/request_submissions?select=*&group_id=in.(g1)', h: { accept: 'application/json' } },
+      { m: 'GET', u: '/rest/v1/substitution_consents?select=*&group_id=in.(g1)', h: {} },
+    ]);
+  });
+
+  it.each(SNAPSHOT_PATHS)('先送りしてよい画面にないパス（%s。版を先に読む画面）は覚えない', async (path) => {
     vi.stubGlobal('fetch', fetchOk());
     const key = requestsKey(USER, PREFIX);
     window.history.replaceState(null, '', path);
@@ -282,7 +293,7 @@ describe('<head> の script（EARLY_FETCH_SOURCE）', () => {
       { m: 'GET', u: '/rest/v1/allocations?select=*', h: {} },
     ];
     window.localStorage.setItem(`${PREFIX}${USER}:requests`, JSON.stringify({ paths: { [path]: snapshot, '/stock': recorded } }));
-    window.history.replaceState(null, '', `/GAapp${path === '/' ? '/' : `${path}/`}`);
+    window.history.replaceState(null, '', `/GAapp${path}/`);
     run();
     (0, eval)(earlyFetchScript(config));
     expect(f).not.toHaveBeenCalled();
@@ -291,6 +302,23 @@ describe('<head> の script（EARLY_FETCH_SOURCE）', () => {
     window.history.replaceState(null, '', `/GAapp/stock/?room=${ROOM}`);
     (0, eval)(`(${EARLY_FETCH_SOURCE})`)({ ...config, paths: undefined });
     expect(f).not.toHaveBeenCalled();
+  });
+
+  it('T16 ダッシュボード（/GAapp/ と /GAapp）では、/ として覚えたものを送る（ほかのパスの分は送らない）', () => {
+    const f = vi.fn(async () => new Response('[]'));
+    vi.stubGlobal('fetch', f);
+    session(3600);
+    const home: RecordedRequest[] = [
+      { m: 'POST', u: '/rest/v1/rpc/accept_my_invitations', h: { 'content-type': 'application/json' }, b: '{}' },
+      { m: 'GET', u: '/rest/v1/request_submissions?select=*&group_id=in.(g1)', h: {} },
+    ];
+    window.localStorage.setItem(`${PREFIX}${USER}:requests`, JSON.stringify({ paths: { '/': home, '/stock': recorded } }));
+    for (const url of ['/GAapp/', '/GAapp']) {
+      f.mockClear();
+      window.history.replaceState(null, '', url);
+      run();
+      expect(f.mock.calls.map((c) => (c as unknown[])[0]), url).toEqual([`${URL0}/rest/v1/rpc/accept_my_invitations`, `${URL0}/rest/v1/request_submissions?select=*&group_id=in.(g1)`]);
+    }
   });
 
   it('earlyFetchScript（改行を詰めた本体と設定）も同じように動く', () => {

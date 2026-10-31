@@ -8,7 +8,7 @@ import { fetchAll } from '@/lib/db/fetch-all';
 import { COLUMNS, type ConsentDbRow, type SubmissionRow, type YearRow } from '@/lib/db/types';
 import { toAppError } from '@/lib/errors';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
-import { portalQueryKey } from '../portal';
+import { portalQueryKey } from '../query-key';
 
 export interface RepGroupCard {
   groupId: string;

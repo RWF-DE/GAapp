@@ -3,7 +3,7 @@
 // スマホの 4G・遅い CPU では、ページの JS（約 330 KB）を読んで動かし始めるまでに 1 秒ほどかかり、Supabase への最初の
 // リクエストはその後になる。そこで、
 //   1. 記録：ページを開いたときにアプリが Supabase に送った読み取り（GET の /rest/v1/ と、引数のない accept_my_invitations）を、
-//      版を使わない画面（/stock・/request・/my。lib/data/screen-queries.ts の EARLY_FETCH_PATHS。許可リスト）のパスごとに localStorage の `gaapp:prefetch:<user_id>:requests` に覚える（URL・応答を変えるヘッダーだけ。
+//      版を使わない画面（/・/stock・/request・/my。lib/data/screen-queries.ts の EARLY_FETCH_PATHS。許可リスト）のパスごとに localStorage の `gaapp:prefetch:<user_id>:requests` に覚える（URL・応答を変えるヘッダーだけ。
 //      トークンは覚えない）。URL の中のページのクエリ（room・group など）の値は {{room}} のように置き換えて覚える
 //      （別の部屋の QR から開いても使えるように）。
 //   2. 先送り：次にそのパスを開いたとき、<head> の script（earlyFetchScript）が、localStorage のセッションのトークン（期限内の
@@ -14,7 +14,8 @@
 // 開いた画面にいる間（SPA の画面移動でパスが変われば捨てる）だけ使う。
 // 振り分けに関わる画面（/furniture・/allocation・/swaps。T16 より前は / も）は記録も先送りもしない。スナップショット（lib/data/snapshot.ts）は
 // 年度の行（版）を読み終えてから残りを読む決まり（D-33）で、先送りすると版とデータが同時に読まれ、新しい版に古いデータを組み合わせてしまうため。
-// ダッシュボード（/。T16）は版を使わないが、T16 では許可リストに入れない（団体代表の / の 4G の速さを計ってから決める。D-51）。
+// ダッシュボード（/。T16）は版・振り分けの行を読まないので、許可リストに入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）。
+// SPA の画面移動でパスが変われば先送りの応答を捨てるので、/ から机椅子の状況（/furniture）へ移っても、版の読み取りに / の応答は渡らない。
 // 読める範囲は今までどおり RLS が決める（同じトークンで同じリクエストを送るだけ）。送り先は Supabase の URL の /rest/v1/ だけ。
 // 覚えたものは先読みの id と同じ扱い（lib/boot/early-load.ts。手動のログアウトでその人の分、別の人のログインで前の人の分を消す）。
 import { SUPABASE_URL } from '@/lib/env';

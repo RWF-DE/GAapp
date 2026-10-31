@@ -1,28 +1,31 @@
 'use client';
 
 // ダッシュボード（/）の欄のデータ（04「ダッシュボード」の読み込みと失敗、notes/T16.md「固めた約束」5。T16）。
-// 欄（要対応・締切と予定・機能ごとのカード）ごとに、自分の要る種類の「プロバイダ × 種類」の query を useQueries に並べる
-// （同じキーは TanStack が1回だけ読むので、欄が3つでもリクエストは機能・種類ごとに1回）。欄に出すのは portalSectionOf
-// （query の data があればそれ、なければ fromYear）を機能ごとにまとめたもの（mergePortalSections）。data のない query の
-// 読み込み中・失敗は機能ごとに返し、欄がその機能の分だけ Skeleton・失敗ともう一度を出す（ほかの機能と fromYear の項目は出したまま）。
-// data があって読み直しだけが失敗したときは data を出し続ける（QueryState と同じ考え）。
+// 欄（要対応・締切と予定・機能ごとのカード）ごとに、自分の要る種類の「プロバイダ × 種類」のうち、その欄が読み取りの結果を使う
+// もの（provider.query.widgets）の query を useQueries に並べる（同じキーは TanStack が1回だけ読むので、欄が3つでもリクエストは
+// 機能・種類ごとに1回）。欄に出すのは portalSectionOf（query の data があればそれ、なければ fromYear）を機能ごとにまとめたもの
+// （mergePortalSections）。data のない query の読み込み中・失敗は機能ごとに返し、欄がその機能の分だけ Skeleton・失敗ともう一度を
+// 出す（ほかの機能と fromYear の項目は出したまま）。並べない欄（机椅子の締切と予定。年度の行だけで決まる）には読み込み中・失敗を
+// 出さない（T16 の決定 7）。data があって読み直しだけが失敗したときは data を出し続ける（QueryState と同じ考え）。
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { useCallback } from 'react';
 import {
   mergePortalSections,
   portalSectionOf,
+  portalWidgetQuery,
   type ModulePortalSection,
   type PortalContext,
   type PortalKind,
   type PortalPart,
   type PortalProvider,
   type PortalQueryOptions,
+  type PortalWidgetId,
 } from '@/lib/modules/portal';
 import { PORTAL_PROVIDERS } from '@/lib/modules/providers';
 import type { ModuleId } from '@/lib/modules/registry';
 
-/** ダッシュボードの欄（読み込みを分けるもの） */
-export type PortalWidgetId = 'todos' | 'dated' | 'cards';
+/** ダッシュボードの欄（読み込みを分けるもの。型は lib/modules/portal.ts） */
+export type { PortalWidgetId } from '@/lib/modules/portal';
 
 /** 欄ごとに使う立場の種類（要対応：総務・団体代表、締切と予定：全部、カード：総務・閲覧のみ。04「ダッシュボード」の欄と立場の表） */
 export const WIDGET_KINDS: Readonly<Record<PortalWidgetId, readonly PortalKind[]>> = {
@@ -36,14 +39,17 @@ export function showsWidget(kinds: readonly PortalKind[], widget: PortalWidgetId
   return kinds.some((k) => WIDGET_KINDS[widget].includes(k));
 }
 
-/** 欄で使うプロバイダ × 種類と、その query（読まない種類は null） */
+/** 欄で使うプロバイダ × 種類と、その欄に並べる query（読まない種類と、その欄が結果を使わない読み取りは null） */
 export interface PortalEntry {
   provider: PortalProvider;
   ctx: PortalContext;
   query: PortalQueryOptions | null;
 }
 
-/** その欄で使う、プロバイダ × 種類（provider.kinds と欄の種類の両方に入るもの。並びはプロバイダの順 → 種類の順） */
+/**
+ * その欄で使う、プロバイダ × 種類（provider.kinds と欄の種類の両方に入るもの。並びはプロバイダの順 → 種類の順）。
+ * query はその欄が読み取りの結果を使うときだけ（portalWidgetQuery。使わない欄は fromYear だけを出す）。
+ */
 export function widgetEntries(
   ctxs: readonly PortalContext[],
   widget: PortalWidgetId,
@@ -53,7 +59,7 @@ export function widgetEntries(
   return providers.flatMap((provider) =>
     ctxs
       .filter((ctx) => kinds.includes(ctx.kind) && provider.kinds.includes(ctx.kind))
-      .map((ctx) => ({ provider, ctx, query: provider.query?.(ctx) ?? null })),
+      .map((ctx) => ({ provider, ctx, query: portalWidgetQuery(provider, ctx, widget) })),
   );
 }
 

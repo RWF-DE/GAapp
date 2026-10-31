@@ -19,7 +19,7 @@
 // - first：初めて開いた（先読みのために覚えた id〔localStorage の gaapp:prefetch:<user_id>〕がない）。
 // - again：前に開いたことがある（同じ画面を一度開いて覚えた id とリクエストを、計る前のコンテキストの localStorage に入れる。
 //   HTTP のキャッシュは使わない）。<head> の script が JS より先に Supabase へ送り、立場の読み込みと同時に画面のデータも読む。
-// / は先読み・記録・先送りの表に入れていない（T16。D-51）ので、again でも覚えるのは先読みの id だけ（リクエストは覚えない）。
+// / は T16 で先読み・記録・先送りの表に入れた（D-45・D-51）ので、again では / も覚えたリクエストを <head> の script が先に送る。
 // PERF_VISIT=first・again で片方だけ、PERF_ONLY=stock・request・my・home（カンマ区切り）で画面を絞れる（原因を調べるとき）。
 // データはシナリオの年度（合成データ r8like。受付中。部員と団体代表〔模擬店10〕のロール）。
 import { execFileSync } from 'node:child_process';
@@ -53,7 +53,7 @@ interface Target {
   user: StoredUser;
   /**
    * 開いたときのリクエストを覚える画面か（先読みの表〔lib/data/screen-queries.ts の EARLY_FETCH_PATHS〕にある画面）。
-   * 偽なら again の準備で、覚えたリクエスト（`…:requests`）を待たない（/ は T16 では表にない）
+   * 偽なら again の準備で、覚えたリクエスト（`…:requests`）を待たない（今はどの対象も表にある。/ は T16 で入れた）
    */
   records: boolean;
   url: (s: Scenario) => string;
@@ -127,12 +127,12 @@ const ALL_TARGETS: Target[] = [
     },
     shown: SHOWN.my,
   },
-  // ダッシュボード（T16。D-51）：団体代表の /。表示の印は代表する団体のカード（模擬店10）が見えたこと
+  // ダッシュボード（T16。D-51）：団体代表の /。表示の印は代表する団体のカード（模擬店10）が見えたこと。先読み・先送りの表にある（D-45）
   {
     id: 'home',
     name: '/（団体代表）',
     user: 'rep',
-    records: false,
+    records: true,
     url: () => '/',
     ready: async (page) => {
       await expect(page.locator(`[data-testid="rep-card"][data-group="${REP_GROUP}"]`)).toBeVisible({ timeout: 30_000 });
@@ -274,7 +274,7 @@ async function learnHints(browser: Browser, s: Scenario, t: Target, origin: stri
     await pinYear(page, SEED_USER_IDS[t.user], s.yearId);
     await page.goto(t.url(s), { waitUntil: 'commit' });
     await t.ready(page);
-    // 開いたときのリクエスト（<head> の script が先に送るもの）は、立場が届いてから少し後に覚える。覚えない画面（/）は、
+    // 開いたときのリクエスト（<head> の script が先に送るもの）は、立場が届いてから少し後に覚える。覚えない画面（records が偽）は、
     // 先読みの id（`gaapp:prefetch:<user_id>`）だけを待つ
     await page.waitForFunction(
       ({ prefix, records }) => {

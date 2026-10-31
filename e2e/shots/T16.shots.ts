@@ -75,7 +75,9 @@ test.describe('T16 管理者', () => {
       await shoot(page, 'T16', 'nav-grouped-pc');
       await shoot(page, 'T16', 'furniture-pc', { fullPage: true });
 
-      // 欄の読み込み中：机椅子の読み込み（提出の記録）を止める。年度の行だけで決まる項目は先に出ている
+      // 欄の読み込み中：机椅子の読み込み（提出の記録）を止める。年度の行だけで決まる項目は先に出ている。読み込み中は要対応とカード
+      // だけで、締切と予定（年度の行だけで決まる）には出さない（決定 7）。2回目の / なので覚えた id で机椅子の読み取りを先に始める
+      // （先読み。D-45）が、その提出の記録も同じ route で止まる
       const held = new Promise<void>((r) => (release = r));
       await page.route(route, async (r: Route) => {
         await held;
@@ -85,6 +87,8 @@ test.describe('T16 管理者', () => {
       await expect(page.locator('[data-testid="portal-todo"][data-id="furniture:lead:close-requests"]')).toBeVisible();
       await expect(page.getByTestId('portal-todos').locator('[data-testid="portal-loading"][data-module="furniture"]')).toBeVisible();
       await expect(page.getByTestId('portal-cards').getByTestId('portal-loading')).toBeVisible();
+      await expect(page.getByTestId('portal-dated').getByTestId('portal-loading')).toHaveCount(0);
+      await expect(page.getByTestId('portal-dated-item')).toHaveCount(4);
       await shoot(page, 'T16', 'portal-loading-pc', { fullPage: true });
       release();
       await expect(furnitureCard(page)).toBeVisible();
@@ -95,6 +99,7 @@ test.describe('T16 管理者', () => {
       await page.goto('/');
       await expect(page.getByTestId('portal-todos').getByTestId('portal-module-error')).toBeVisible({ timeout: 45_000 });
       await expect(page.getByTestId('portal-cards').getByTestId('portal-module-error')).toBeVisible();
+      await expect(page.getByTestId('portal-dated').getByTestId('portal-module-error')).toHaveCount(0);
       await shoot(page, 'T16', 'portal-widget-error-pc', { fullPage: true });
     } finally {
       release();

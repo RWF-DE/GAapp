@@ -56,13 +56,30 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
   it('portal.ts（型と小さな関数）は React・Supabase・TanStack・lib/data を実行時に読まない', () => {
     const g = staticImportGraph('lib/modules/portal.ts');
     expect(g.packages).toEqual([]);
-    expect(g.files).toEqual(['lib/auth/membership.ts', 'lib/auth/roles.ts', 'lib/datetime.ts', 'lib/modules/portal.ts', 'lib/modules/registry.ts']);
+    expect(g.files).toEqual([
+      'lib/auth/membership.ts',
+      'lib/auth/roles.ts',
+      'lib/datetime.ts',
+      'lib/modules/portal.ts',
+      'lib/modules/query-key.ts',
+      'lib/modules/registry.ts',
+    ]);
   });
 
-  it('プロバイダと団体代表のクエリは lib/data・画面の部品・振り分けと書き出しのパッケージを読まない（/ にスナップショット・検証を入れない）', () => {
-    const g = staticImportGraph('lib/modules/providers.ts', 'lib/modules/furniture/rep.ts');
+  it('プロバイダと団体代表・総務のクエリは lib/data・画面の部品・振り分けと書き出しのパッケージを読まない（/ にスナップショット・検証を入れない）', () => {
+    const g = staticImportGraph('lib/modules/providers.ts', 'lib/modules/furniture/rep.ts', 'lib/modules/furniture/soumu.ts');
     expect(g.files.filter((f) => f.startsWith('lib/data/') || f.startsWith('components/') || f.startsWith('app/'))).toEqual([]);
     expect(g.packages.filter((p) => /^(@gaapp\/(allocator|exporter|importer)|highs|react|react-dom|next)(\/|$)/.test(p))).toEqual([]);
     expect(g.files).toContain('lib/modules/furniture/portal.ts');
+  });
+
+  it('T16 / の先読みが使う机椅子のクエリ（soumu.ts・rep.ts）は、数え方・要対応の組み立て・ダッシュボードの型と関数・ナビゲーションを読まない（ルートのレイアウトの JS を軽く）', () => {
+    const g = staticImportGraph('lib/modules/furniture/rep.ts', 'lib/modules/furniture/soumu.ts');
+    for (const f of ['lib/modules/furniture/portal.ts', 'lib/modules/furniture/counts.ts', 'lib/modules/portal.ts', 'lib/navigation.ts', 'lib/datetime.ts']) {
+      expect(g.files).not.toContain(f);
+    }
+    expect(g.files).toContain('lib/modules/query-key.ts');
+    expect(staticImportGraph('lib/modules/query-key.ts')).toEqual({ files: ['lib/modules/query-key.ts'], packages: [] });
+    expect(g.packages.filter((p) => p.startsWith('@gaapp/'))).toEqual([]);
   });
 });

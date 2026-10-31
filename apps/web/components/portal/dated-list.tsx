@@ -3,6 +3,8 @@
 // 締切と予定（ダッシュボード〔/〕の欄「締切と予定」。04「ダッシュボード」、notes/T16.md「固めた約束」2。T16）。
 // どの立場にも出す。機能が出す日時の決まった項目のうち、これからのもの（時刻のあるものは今より後、日付だけのものは今日〔Asia/Tokyo〕
 // 以降）を早い順に 8 件まで（upcomingDated）。続きは「ほか N 件」。行き先を開けるものだけ行をリンクにする。
+// 読み込み中・失敗は、読み取りの結果をこの欄に使う機能（query.widgets に 'dated' がある機能）の分だけ出す。机椅子の締切と予定は
+// 年度の行だけで決まるので、机椅子の読み込み中・失敗はこの欄に出さない（T16 の決定 7。要対応とカードの欄に出す）。
 import { AppLink } from '@/components/common/app-link';
 import { Badge } from '@/components/ui/badge';
 import { formatShortDate, formatShortDateTime } from '@/lib/datetime';

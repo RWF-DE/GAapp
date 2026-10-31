@@ -11,7 +11,7 @@ import { AppError } from '@/lib/errors';
 import { canOpen } from '@/lib/navigation';
 import { createFakeSupabase, opArgs, type FakeCall } from '@/lib/testing/fake-supabase';
 import { FIXTURE_UPDATED_AT, fixtureSnapshot } from '@/lib/testing/fixture-rows';
-import { mergePortalSections, type PortalContext, type PortalKind, type PortalSection } from '../portal';
+import { mergePortalSections, portalWidgetQuery, type PortalContext, type PortalKind, type PortalSection } from '../portal';
 import { consentGroupCounts } from './counts';
 import {
   FURNITURE_SOUMU_SELECT,
@@ -467,7 +467,7 @@ describe('T16 机椅子の閲覧のみ', () => {
       linkLabel: '振り分け表を見る',
     });
     expect(out.todos).toEqual([]);
-    expect(furniturePortalProvider.query!(k)).toBeNull();
+    expect(furniturePortalProvider.query!.options(k)).toBeNull();
   });
 });
 
@@ -663,10 +663,31 @@ describe('T16 furniturePortalProvider', () => {
     expect(p.kinds).toEqual(['soumu', 'viewer', 'rep']);
     const k = ctx('soumu', year('requesting'), { role: 'admin' });
     expect(p.fromYear!(k)).toEqual(furniturePortal(null, k));
-    expect(p.query!(k)?.queryKey).toEqual(['year', Y, 'portal', 'furniture', 'soumu']);
-    expect(p.query!(k)?.queryKey).toEqual(furnitureSoumuOptions(Y).queryKey);
-    expect(p.query!(ctx('rep', year('requesting'), { groups: [G1, G2] }))?.queryKey).toEqual(['year', Y, 'portal', 'furniture', 'rep', 'g1', 'g2']);
-    expect(p.query!(ctx('viewer', year('confirmed'), { role: 'viewer' }))).toBeNull();
+    expect(p.query!.options(k)?.queryKey).toEqual(['year', Y, 'portal', 'furniture', 'soumu']);
+    expect(p.query!.options(k)?.queryKey).toEqual(furnitureSoumuOptions(Y).queryKey);
+    expect(p.query!.options(ctx('rep', year('requesting'), { groups: [G1, G2] }))?.queryKey).toEqual(['year', Y, 'portal', 'furniture', 'rep', 'g1', 'g2']);
+    expect(p.query!.options(ctx('viewer', year('confirmed'), { role: 'viewer' }))).toBeNull();
+  });
+
+  it('読み取りの結果を使う欄は要対応とカードだけ。締切と予定は年度の行だけで決まるので、その欄には読み取りを並べない（決定 7）', () => {
+    const p = furniturePortalProvider;
+    expect(p.query!.widgets).toEqual(['todos', 'cards']);
+    const k = ctx('soumu', year('requesting'), { role: 'admin' });
+    const r = ctx('rep', year('requesting'), { groups: [G1, G2] });
+    expect(portalWidgetQuery(p, k, 'todos')?.queryKey).toEqual(furnitureSoumuOptions(Y).queryKey);
+    expect(portalWidgetQuery(p, k, 'cards')?.queryKey).toEqual(furnitureSoumuOptions(Y).queryKey);
+    expect(portalWidgetQuery(p, k, 'dated')).toBeNull();
+    expect(portalWidgetQuery(p, r, 'todos')?.queryKey).toEqual(furnitureRepOptions(Y, ['g1', 'g2']).queryKey);
+    expect(portalWidgetQuery(p, r, 'dated')).toBeNull();
+    // この決まりの元：どの立場・状態でも、読んだ後の締切と予定は年度の行だけの分と同じ（上の「fromYear は query の結果に入っている」）
+    for (const c of CASES) {
+      expect(furniturePortal(soumu(), ctx('soumu', c.y, { role: 'admin', now: c.now })).dated).toEqual(
+        furniturePortal(null, ctx('soumu', c.y, { role: 'admin', now: c.now })).dated,
+      );
+      expect(furniturePortal(rep(), ctx('rep', c.y, { groups: [G1, G2], now: c.now })).dated).toEqual(
+        furniturePortal(null, ctx('rep', c.y, { groups: [G1, G2], now: c.now })).dated,
+      );
+    }
   });
 
   it('select は読んだ行から furniturePortal を作る。団体代表は代表する団体の欄（furnitureRepOptions）と同じキャッシュを読む', () => {
@@ -675,7 +696,7 @@ describe('T16 furniturePortalProvider', () => {
     const r = ctx('rep', year('requesting'), { groups: [G1, G2], now: at(CLOSE) - 2 * DAY });
     qc.setQueryData(furnitureSoumuOptions(Y).queryKey, RAW);
     qc.setQueryData(furnitureRepOptions(Y, ['g1', 'g2']).queryKey, REP_ROWS);
-    const data = (k: PortalContext) => new QueryObserver(qc, furniturePortalProvider.query!(k)!).getCurrentResult().data;
+    const data = (k: PortalContext) => new QueryObserver(qc, furniturePortalProvider.query!.options(k)!).getCurrentResult().data;
     expect(data(s)).toEqual(furniturePortal(soumu(), s));
     expect(data(r)).toEqual(furniturePortal(rep(), r));
     expect(data(r)?.todos.map((t) => t.id)).toEqual(['furniture:rep:g2:unsubmitted', 'furniture:rep:g2:consent']);

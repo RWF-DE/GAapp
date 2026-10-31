@@ -2,16 +2,17 @@
 // スマホの 4G では、JS を読み終えてから Supabase へ「立場 → 年度のデータ → 画面のデータ」と順に往復すると 2 秒を超える。
 // そこで、ページを開いたら（Providers の最初の描画で startEarlyLoad）すぐに、
 //   1. 立場の読み込み（loadMembershipSource）を始め、AuthProvider が takeEarlyMembership でその結果を使う。
-//   2. 前に開いた年度（と、その年度で代表を務める団体）の id を localStorage（`gaapp:prefetch:<user_id>`）から読み、
-//      開いた画面（routes に渡した /stock・/request・/my。lib/data/screen-queries.ts の SCREEN_PREFETCH）のデータを
+//   2. 前に開いた年度（と、その年度のロールと、その年度で代表を務める団体）の id を localStorage（`gaapp:prefetch:<user_id>`）
+//      から読み、開いた画面（routes に渡した /・/stock・/request・/my。lib/data/screen-queries.ts の SCREEN_PREFETCH）のデータを
 //      React Query のキャッシュに読み始める。画面の部品のモジュールは立場が届いて画面を描くまで読まれないので、先読みの
 //      決め方はルートのレイアウトから読める軽いモジュールに置く。
-// 立場が届いたら settleEarlyLoad で、開く年度・団体が同じ先読みだけを残し、違うものは消す（使わない）。
+// 立場が届いたら settleEarlyLoad で、開く年度・団体が同じで、立場に合う（usable）先読みだけを残し、違うものは消す（使わない）。
 // 画面に出すのは今までどおり立場で開けると決まった後だけ（RequireAudience）。読める範囲は RLS が守る。
 // 覚えた id は下書きと同じ扱い（設計 1.4）：手動のログアウトでその人の分、別の user_id でログインしたら自分以外の分を消す。
 import type { FetchQueryOptions, QueryClient, QueryKey } from '@tanstack/react-query';
 import { loadMembershipSource } from '@/lib/auth/load-membership';
-import { myYears, type Membership, type MembershipSource } from '@/lib/auth/membership';
+import { myYears, type AppRole, type Membership, type MembershipSource } from '@/lib/auth/membership';
+import { APP_ROLES } from '@/lib/auth/roles';
 import { readSelectedYear } from '@/lib/auth/selected-year';
 import { BASE_PATH } from '@/lib/env';
 import { dropEarlyResponses, finishRecording, requestsKey, startRecording, stopRecording } from './early-fetch';
@@ -21,11 +22,16 @@ import { getSupabase, supabaseConfigError, type AppSupabaseClient } from '@/lib/
 
 export const PREFETCH_HINT_PREFIX = 'gaapp:prefetch:';
 
-/** 覚える id：自分の年度ごとの団体代表の団体（立場と同じ並び）と、最新の年度 */
+/** 覚える id：自分の年度ごとの団体代表の団体（立場と同じ並び）とロール、最新の年度 */
 export interface PrefetchHint {
   latestYearId: string | null;
   /** 年度の id → その年度で代表を務める団体の id（名前 → id の順。立場の groups と同じ） */
   years: Record<string, string[]>;
+  /**
+   * 年度の id → その年度のロール（ロールのない年度は入れない）。/ の先読みで立場の種類（総務か）を決める（T16）。
+   * 前の形（roles のない値）は空として読む
+   */
+  roles: Record<string, AppRole>;
 }
 
 export type HintStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'key' | 'length'>;
@@ -46,17 +52,20 @@ export function hintKey(userId: string): string {
   return `${PREFETCH_HINT_PREFIX}${userId}`;
 }
 
-/** 立場の元から覚える id を作る（年度は myYears の順。団体は buildMembership と同じ並び） */
+/** 立場の元から覚える id を作る（年度は myYears の順。団体は buildMembership と同じ並び。ロールは年度ごとに1つ） */
 export function hintFromSource(source: MembershipSource): PrefetchHint {
   const years = myYears(source);
   const out: Record<string, string[]> = {};
+  const roles: Record<string, AppRole> = {};
   for (const y of years) {
     out[y.id] = source.groups
       .filter((g) => g.year_id === y.id)
       .sort((a, b) => a.name.localeCompare(b.name, 'ja') || a.id.localeCompare(b.id))
       .map((g) => g.id);
+    const role = source.roles.find((r) => r.year_id === y.id)?.role;
+    if (role) roles[y.id] = role;
   }
-  return { latestYearId: years[0]?.id ?? null, years: out };
+  return { latestYearId: years[0]?.id ?? null, years: out, roles };
 }
 
 /** 覚えた id を読む（形が違う・読めなければ null） */
@@ -66,7 +75,7 @@ export function readHint(userId: string, storage: HintStorage | null = localStor
     if (!raw) return null;
     const v = JSON.parse(raw) as unknown;
     if (!v || typeof v !== 'object') return null;
-    const { latestYearId, years } = v as { latestYearId?: unknown; years?: unknown };
+    const { latestYearId, years, roles } = v as { latestYearId?: unknown; years?: unknown; roles?: unknown };
     if (latestYearId !== null && (typeof latestYearId !== 'string' || !UUID.test(latestYearId))) return null;
     if (!years || typeof years !== 'object' || Array.isArray(years)) return null;
     const entries = Object.entries(years as Record<string, unknown>);
@@ -77,7 +86,18 @@ export function readHint(userId: string, storage: HintStorage | null = localStor
       if (!groups.every((g): g is string => typeof g === 'string' && UUID.test(g))) return null;
       out[id] = groups;
     }
-    return { latestYearId, years: out };
+    // ロール（T16 で足した。前の形〔roles がない〕は空として読む）
+    const outRoles: Record<string, AppRole> = {};
+    if (roles !== undefined) {
+      if (!roles || typeof roles !== 'object' || Array.isArray(roles)) return null;
+      const roleEntries = Object.entries(roles as Record<string, unknown>);
+      if (roleEntries.length > MAX_YEARS) return null;
+      for (const [id, role] of roleEntries) {
+        if (!UUID.test(id) || typeof role !== 'string' || !(APP_ROLES as readonly string[]).includes(role)) return null;
+        outRoles[id] = role as AppRole;
+      }
+    }
+    return { latestYearId, years: out, roles: outRoles };
   } catch {
     return null;
   }
@@ -130,6 +150,11 @@ export function pickHintYear(hint: PrefetchHint, selectedYearId: string | null):
 /** 先読みするクエリ（groupId があれば、その団体を開くときだけ使う） */
 export interface PrefetchEntry {
   groupId?: string;
+  /**
+   * 立場が届いたときに、この先読みを使うか（年度と groupId のほかに確かめること。偽なら settleEarlyLoad が消す）。
+   * 例：/ の総務の読み取りは、ロールが総務のままのときだけ使う
+   */
+  usable?: (m: Membership) => boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 画面ごとに型の違うクエリを並べる
   options: FetchQueryOptions<any, any, any, any>;
 }
@@ -138,6 +163,8 @@ export interface RoutePrefetchContext {
   yearId: string;
   /** その年度で代表を務める団体（覚えた順） */
   groupIds: readonly string[];
+  /** その年度のロール（覚えたもの。立場が届いた後は立場のロール。なければ null） */
+  role: AppRole | null;
   /** URL のクエリ（room・group） */
   params: URLSearchParams;
 }
@@ -157,6 +184,7 @@ export function normalizePath(pathname: string, basePath: string = BASE_PATH): s
 interface EarlyEntry {
   yearId: string;
   groupId?: string;
+  usable?: (m: Membership) => boolean;
   key: QueryKey;
 }
 
@@ -209,9 +237,9 @@ export function startEarlyLoad(queryClient: QueryClient, opts: StartEarlyLoadOpt
   };
   early = e;
   // ページを開いたときに送るリクエストを覚え始める（次に開いたときに <head> の script が先に送る。early-fetch.ts）。
-  // 覚えるのは先読みの表（routes）にある、版を使わない画面だけ。振り分けに関わる画面（/furniture・/allocation・/swaps）は覚えない
-  // （スナップショットは版を読み終えてから残りを読む。D-33。先送りすると版とデータが同時に読まれる）。ダッシュボード（/）は版を
-  // 使わないが、T16 では表に入れない（団体代表の / の 4G の速さを計ってから決める。D-51）
+  // 覚えるのは先読みの表（routes）にある、版を使わない画面（/・/stock・/request・/my）だけ。振り分けに関わる画面（/furniture・
+  // /allocation・/swaps）は覚えない（スナップショットは版を読み終えてから残りを読む。D-33。先送りすると版とデータが同時に読まれる）。
+  // ダッシュボード（/）は版を使わないので、T16 で表に入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）
   const path = normalizePath(location.pathname);
   if (Object.prototype.hasOwnProperty.call(e.routes, path)) startRecording(path, location);
   else stopRecording();
@@ -226,7 +254,7 @@ export function startEarlyLoad(queryClient: QueryClient, opts: StartEarlyLoadOpt
       const yearId = hint ? pickHintYear(hint, selectedYear(userId)) : null;
       const prefetcher = e.routes[normalizePath(location.pathname)];
       if (hint && yearId && prefetcher) {
-        const ctx = { yearId, groupIds: hint.years[yearId] ?? [], params: new URLSearchParams(location.search) };
+        const ctx = { yearId, groupIds: hint.years[yearId] ?? [], role: hint.roles[yearId] ?? null, params: new URLSearchParams(location.search) };
         // 立場の読み込みのリクエストを先に送らせる。ブラウザは HTTP/1.1 では1つのホストへ同時に6本までなので、先読みが先に
         // 並ぶと立場の読み込み（画面を出す前に要る）が後ろで待つ。supabase-js は送る前に getSession を待ち、その順は
         // 呼んだ順なので、もう1回 getSession を待ってから先読みを始めれば、立場の読み込みが先に送られる
@@ -250,7 +278,7 @@ function prefetch(e: Early, prefetcher: RoutePrefetcher, ctx: RoutePrefetchConte
     return;
   }
   for (const entry of list) {
-    e.entries.push({ yearId: ctx.yearId, groupId: entry.groupId, key: entry.options.queryKey });
+    e.entries.push({ yearId: ctx.yearId, groupId: entry.groupId, usable: entry.usable, key: entry.options.queryKey });
     void e.queryClient.prefetchQuery(entry.options);
   }
 }
@@ -271,8 +299,8 @@ export function takeEarlyMembership(userId: string): Promise<MembershipSource> |
 }
 
 /**
- * 立場が届いたら呼ぶ。先読みのうち、同じ利用者で、開く年度（と団体）が同じものだけを残し、ほかはキャッシュから消す。
- * 残した数と消した数を返す。2回目からは何もしない。
+ * 立場が届いたら呼ぶ。先読みのうち、同じ利用者で、開く年度（と団体）が同じで、立場に合う（usable）ものだけを残し、
+ * ほかはキャッシュから消す。残した数と消した数を返す。2回目からは何もしない。
  */
 export function settleEarlyLoad(userId: string, membership: Membership): { kept: number; removed: number } {
   const e = early;
@@ -284,7 +312,8 @@ export function settleEarlyLoad(userId: string, membership: Membership): { kept:
     const same =
       e.userId === userId &&
       membership.year?.id === entry.yearId &&
-      (entry.groupId === undefined || membership.groups.some((g) => g.id === entry.groupId));
+      (entry.groupId === undefined || membership.groups.some((g) => g.id === entry.groupId)) &&
+      (entry.usable === undefined || entry.usable(membership));
     if (same) kept++;
     else {
       e.queryClient.removeQueries({ queryKey: entry.key, exact: true });
@@ -319,7 +348,12 @@ export function prefetchOpenedScreen(membership: Membership, location: Pick<Loca
   if (!prefetcher) return 0;
   let list: PrefetchEntry[];
   try {
-    list = prefetcher({ yearId: membership.year.id, groupIds: membership.groups.map((g) => g.id), params: new URLSearchParams(location.search) });
+    list = prefetcher({
+      yearId: membership.year.id,
+      groupIds: membership.groups.map((g) => g.id),
+      role: membership.role,
+      params: new URLSearchParams(location.search),
+    });
   } catch {
     return 0;
   }

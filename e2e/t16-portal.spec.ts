@@ -41,6 +41,45 @@ async function openPortal(page: Page, h1: 'ダッシュボード' | 'ホーム')
   await expect(page.getByTestId('rep-home-loading')).toHaveCount(0);
 }
 
+/** 先読みのために覚えた id の localStorage のキーの頭（apps/web/lib/boot/early-load.ts の PREFETCH_HINT_PREFIX と同じ） */
+const PREFETCH_HINT_PREFIX = 'gaapp:prefetch:';
+
+/**
+ * 前にこの年度を開いたことにする（先読みのために覚えた id：年度・その年度のロールと代表する団体。D-45。goto の前に呼ぶ）。
+ * storageState の id は ログインの準備で開いた seed の年度のもので、シナリオの年度を pinYear で開くと、覚えた最新の年度
+ * （seed の年度）を先に読んでしまう。ふだんの利用者は開いた年度を覚えているので、その形にそろえる。
+ */
+async function rememberYear(page: Page, userId: string, yearId: string, opts: { role?: string; groupIds?: string[] } = {}): Promise<void> {
+  const hint = { latestYearId: yearId, years: { [yearId]: opts.groupIds ?? [] }, roles: opts.role ? { [yearId]: opts.role } : {} };
+  await page.addInitScript(
+    ([key, value]) => {
+      try {
+        globalThis.localStorage.setItem(key, value);
+      } catch {
+        // localStorage が使えなければ覚えない（先読みしないだけ）
+      }
+    },
+    [`${PREFETCH_HINT_PREFIX}${userId}`, JSON.stringify(hint)] as const,
+  );
+}
+
+/** 開いたときに覚えた、そのパスの読み取り（`gaapp:prefetch:<user_id>:requests`。立場が届いて 2 秒後に覚える）を待って返す */
+async function recordedRequests(page: Page, userId: string, path: string): Promise<{ m: string; u: string }[]> {
+  const key = `${PREFETCH_HINT_PREFIX}${userId}:requests`;
+  await page.waitForFunction(
+    ([k, p]) => {
+      const v = JSON.parse(globalThis.localStorage.getItem(k) ?? 'null') as { paths?: Record<string, unknown> } | null;
+      return !!v?.paths && Array.isArray(v.paths[p]);
+    },
+    [key, path] as const,
+    { timeout: 15_000 },
+  );
+  return page.evaluate(
+    ([k, p]) => (JSON.parse(globalThis.localStorage.getItem(k)!) as { paths: Record<string, { m: string; u: string }[]> }).paths[p]!,
+    [key, path] as const,
+  );
+}
+
 /** 別のブラウザのコンテキストで、その利用者がシナリオの年度を開くページ */
 async function openAs(browser: Browser, user: StoredUser, s: Scenario): Promise<Page> {
   const context = await browser.newContext({ storageState: storageStateFor(user), viewport: PC });
@@ -76,6 +115,11 @@ interface RestRequest {
   /** select（なければ null） */
   select: string | null;
   method: string;
+  /**
+   * アプリ（supabase-js。x-client-info のヘッダーがある）が送ったか。偽なら <head> の script が JS より先に送った読み取り
+   * （覚えた読み取りの先送り。lib/boot/early-fetch.ts。D-45）
+   */
+  app: boolean;
 }
 
 /** ページが Supabase の /rest/v1/ に送ったリクエスト（CORS の preflight を除く）を集める。goto の前に呼ぶ */
@@ -85,7 +129,7 @@ function watchRest(page: Page): RestRequest[] {
     const u = new URL(r.url());
     const m = /\/rest\/v1\/(.+)$/.exec(u.pathname);
     if (!m || r.method() === 'OPTIONS') return;
-    out.push({ table: m[1]!, select: u.searchParams.get('select'), method: r.method() });
+    out.push({ table: m[1]!, select: u.searchParams.get('select'), method: r.method(), app: 'x-client-info' in r.headers() });
   });
   return out;
 }
@@ -184,24 +228,52 @@ test.describe('T16 ダッシュボード（管理者）', () => {
     }
   });
 
-  test('T16 総務の / は版・振り分けの行・ルールを読まない（机椅子の6つの表を1回ずつ。在庫は room_id だけ）', async ({ page }) => {
+  test('T16 総務の / は版・振り分けの行・ルールを読まない（机椅子の6つの表を1回ずつ。在庫は room_id だけ）。先読みと、2回目の先送りでも1回ずつ', async ({
+    page,
+  }) => {
     const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
+    const FURNITURE_READS = [
+      'GET groups?select=id,name,category,sort_order',
+      'GET request_submissions?select=group_id,submitted_at,groups!inner(year_id)',
+      'GET room_years?select=room_id,usable',
+      'GET rooms?select=id,name,is_storage,sort_order',
+      'GET stocks?select=room_id',
+      'GET substitution_consents?select=group_id,status,groups!inner(year_id)',
+    ];
     try {
+      // 前にこの年度を管理者として開いた（覚えたロールで、立場の読み込みと同時に机椅子の読み取りを始める。D-45）
+      await rememberYear(page, SEED_USER_IDS.admin, s.yearId, { role: 'admin' });
       const reads = watchRest(page);
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       await openPortal(page, 'ダッシュボード');
       await expect(furnitureCard(page)).toBeVisible();
       await page.waitForLoadState('networkidle');
       expect(reads.some((r) => r.table === 'year_roles'), '立場の読み込みを見ている').toBe(true);
-      // 要対応・締切と予定・カードの3つの欄が同じ読み込み（キー）を使うので、表ごとに1回
-      expect(readsBeyondMembership(reads).sort()).toEqual([
-        'GET groups?select=id,name,category,sort_order',
-        'GET request_submissions?select=group_id,submitted_at,groups!inner(year_id)',
-        'GET room_years?select=room_id,usable',
-        'GET rooms?select=id,name,is_storage,sort_order',
-        'GET stocks?select=room_id',
-        'GET substitution_consents?select=group_id,status,groups!inner(year_id)',
-      ]);
+      // 先読みと、要対応・カードの欄が同じ読み込み（キー）を使うので、表ごとに1回（締切と予定は年度の行だけで決まり、読まない）
+      expect(readsBeyondMembership(reads).sort()).toEqual(FURNITURE_READS);
+      expect(reads.filter(isVersionRead), '版だけの読み取り').toEqual([]);
+
+      // / は先送りしてよい画面（T16。D-45・D-51）：開いたときの読み取りを覚える。覚えたものに版・振り分けの行・ルールはない
+      const recorded = await recordedRequests(page, SEED_USER_IDS.admin, '/');
+      const recordedTables = recorded.map((r) => /^\/rest\/v1\/([^?]+)/.exec(r.u)?.[1] ?? r.u);
+      for (const t of ['groups', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']) expect(recordedTables).toContain(t);
+      expect(recordedTables.filter((t) => ['allocations', 'rules', 'requests', 'items', 'distance_overrides'].includes(t))).toEqual([]);
+      expect(recorded.filter((r) => r.u.includes('select=allocation_version'))).toEqual([]);
+
+      // 2回目：<head> の script が覚えた読み取りを JS より先に送り、アプリは同じリクエストならその応答を使う（送らない）。JS が
+      // ブラウザのキャッシュからすぐに動くと、script より先にアプリが送ることがある（どちらの順でも中身は正しい。速さは e2e:perf で
+      // 計る）ので、アプリの読み取りは表ごとに1回まで、script は覚えた読み取りだけ、合わせて6つの表がそろい、版を読まないことを見る
+      reads.length = 0;
+      await openPortal(page, 'ダッシュボード');
+      await expect(furnitureCard(page)).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      const byApp = readsBeyondMembership(reads.filter((r) => r.app));
+      const early = readsBeyondMembership(reads.filter((r) => !r.app));
+      expect(early.length, '<head> の script が覚えた読み取りを送った').toBeGreaterThan(0);
+      expect(new Set(byApp).size, 'アプリの読み取りは表ごとに1回まで').toBe(byApp.length);
+      expect(new Set(early).size, '<head> の script の読み取りは表ごとに1回まで').toBe(early.length);
+      for (const r of early) expect(FURNITURE_READS).toContain(r);
+      expect([...new Set([...byApp, ...early])].sort()).toEqual(FURNITURE_READS);
       expect(reads.filter(isVersionRead), '版だけの読み取り').toEqual([]);
     } finally {
       await s.cleanup();
@@ -236,15 +308,19 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       await expect(cardError.getByRole('link', { name: '机椅子の状況へ' })).toHaveAttribute('href', /\/furniture\/?$/);
       await expect(furnitureCard(page)).toHaveCount(0);
 
-      // ほかは出したまま：立場の一覧・締切と予定の欄・年度だけの要対応。欄ごとの例外の表示にはならない
+      // ほかは出したまま：立場の一覧・締切と予定の欄・年度だけの要対応。欄ごとの例外の表示にはならない。締切と予定は年度の行だけで
+      // 決まるので、机椅子の失敗も読み込み中も出さない（決定 7）
       await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（申請受付中）`);
       await expect(page.getByTestId('home-roles')).toHaveText('管理者');
       await expect(datedWidget(page).getByRole('heading', { level: 2, name: '締切と予定' })).toBeVisible();
+      await expect(datedWidget(page).getByTestId('portal-module-error')).toHaveCount(0);
+      await expect(datedWidget(page).getByTestId('portal-loading')).toHaveCount(0);
+      await expect(page.getByTestId('portal-module-error')).toHaveCount(2);
       expect(await todoIds(page)).toEqual(['furniture:lead:close-requests']);
       await expect(todo(page, 'furniture:lead:close-requests')).toHaveAttribute('data-severity', 'urgent');
       await expect(page.getByTestId('portal-widget-error')).toHaveCount(0);
 
-      // 通信が戻って要対応の「もう一度」を押すと、未提出の要対応とカードが出る（3つの欄は同じ読み込みなので、どの欄の失敗も消える）
+      // 通信が戻って要対応の「もう一度」を押すと、未提出の要対応とカードが出る（2つの欄は同じ読み込みなので、どちらの失敗も消える）
       await page.unroute(route);
       await todoError.getByRole('button', { name: 'もう一度' }).click();
       await expect(todo(page, 'furniture:soumu:unsubmitted')).toBeVisible();
@@ -328,6 +404,8 @@ test.describe('T16 ホーム（閲覧のみ）', () => {
   test('T16 閲覧のみ：h1「ホーム」、要対応の欄がなく、机椅子のカードと締切と予定だけ。年度の行と立場のほかに何も読まない', async ({ page }) => {
     const s = await createScenario({ status: 'allocating', dataset: 'small', roles: { viewer: true } });
     try {
+      // 前にこの年度を閲覧のみとして開いた（覚えたロールが閲覧のみなら、/ で先に読むものはない）
+      await rememberYear(page, SEED_USER_IDS.viewer, s.yearId, { role: 'viewer' });
       const reads = watchRest(page);
       await pinYear(page, SEED_USER_IDS.viewer, s.yearId);
       await openPortal(page, 'ホーム');
@@ -372,6 +450,8 @@ test.describe('T16 ホーム（団体代表）', () => {
       await sql('delete from public.request_submissions where group_id = $1', [gid]);
       await insertConsent(gid, 'asked');
       const close = await closeLabel(s.yearId);
+      // 前にこの年度を店長として開いた（覚えた団体で、立場の読み込みと同時に自団体の提出と了承を読み始める。D-45）
+      await rememberYear(page, SEED_USER_IDS.rep, s.yearId, { groupIds: [gid] });
       const reads = watchRest(page);
       await pinYear(page, SEED_USER_IDS.rep, s.yearId);
       await openPortal(page, 'ホーム');
@@ -395,7 +475,7 @@ test.describe('T16 ホーム（団体代表）', () => {
       await expect(card.getByTestId('rep-submission')).toHaveText('未提出');
       await expect(card.getByTestId('rep-consent-asked')).toContainText('キャスター机への交換の依頼があります');
 
-      // 読むのは立場と、自団体の提出と了承だけ（代表する団体のカードと要対応が同じ読み込みを使うので、1回ずつ）
+      // 読むのは立場と、自団体の提出と了承だけ（先読み・代表する団体のカード・要対応が同じ読み込みを使うので、1回ずつ）
       await page.waitForLoadState('networkidle');
       expect(reads.some((r) => r.table === 'year_roles'), '立場の読み込みを見ている').toBe(true);
       expect(readsBeyondMembership(reads).map((r) => r.split('?')[0]).sort()).toEqual(['GET request_submissions', 'GET substitution_consents']);
