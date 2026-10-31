@@ -1,6 +1,6 @@
 // 列挙の日本語（02_data.md「列挙型」の表示名と同じ。画面の設計 1.5・2.5。T09a）。E2E（Node）からも lib/errors.ts 経由で読むので、`@/` の別名を使わず
 // 相対の import とパッケージの import だけにする。
-import type { AllocOrigin, ConsentStatus, GroupCategory, RoomKind, RuleKind } from '@gaapp/shared';
+import type { AllocOrigin, ConsentStatus, Enums, GroupCategory, RoomKind, RuleKind } from '@gaapp/shared';
 
 // ロール・団体代表の立場（店長・副店長）・年度の状態は T04 の membership.ts にある（ヘッダー・ホームと同じ言い方にするため、ここから出し直す）
 export { GROUP_ROLE_LABELS, ROLE_LABELS, YEAR_STATUS_LABELS } from './auth/membership';
@@ -41,6 +41,13 @@ export const ORIGIN_LABELS: Record<AllocOrigin, string> = {
   manual: '手動',
 };
 
+/** お知らせの宛先（02 の列挙型 notice_audience の表示名。T17・D-53） */
+export const NOTICE_AUDIENCE_LABELS: Record<Enums<'notice_audience'>, string> = {
+  soumu: '総務内',
+  all_groups: '全団体',
+  groups: '指定の団体',
+};
+
 /** 監査ログの表（履歴の絞り込み。3.12） */
 export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   requests: '申請',
@@ -57,6 +64,9 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   rooms: '場所',
   items: '品目',
   distance_overrides: '距離',
+  // お知らせ（T17）
+  notices: 'お知らせ',
+  notice_groups: '宛先の団体',
 };
 
 /** 監査ログの操作（audit_logs.action） */
@@ -99,6 +109,14 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   name: '名前',
   category: '区分',
   location_room_id: '使用場所',
+  // お知らせ（save_notice・delete_notice。T17）。title・body・group_ids は lib/errors.ts が専用の文言にする
+  audience: '宛先',
+  title: '題名',
+  body: '本文',
+  pinned: 'ピン留め',
+  group_ids: '宛先の団体',
+  base_updated_at: 'お知らせの版',
+  notice: 'お知らせ',
 };
 
 /** 表にない値は、そのまま出さず fallback にする（新しい列挙が増えても画面が壊れない） */

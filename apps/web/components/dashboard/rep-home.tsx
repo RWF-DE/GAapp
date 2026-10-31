@@ -1,6 +1,9 @@
 'use client';
 
-// 団体代表・閲覧のみのホーム（画面の設計 3.1「rep・viewer：ホーム」。T09）。スマホでも使う。
+// 代表する団体（ダッシュボード〔/〕の欄。04「ダッシュボード」。T09 の団体代表のホームのカードを T16 でダッシュボードの欄にした）。
+// スマホでも使う。読むのは自団体の提出と了承だけ（lib/modules/furniture/rep.ts の furnitureRepOptions。机椅子の団体代表の要対応と
+// 同じキー〔['year', y, 'portal', 'furniture', 'rep', ...団体の id]〕なので、リクエストは1回）。/ の JS に入るので、lib/data/dashboard.ts
+// （swaps.ts の ruleSchema）・スナップショット・検証を import しない。閲覧のみのホームのカードは、ダッシュボードの机椅子のカードにした（T16）。
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { CalendarClock, CheckCircle2, CircleDashed, Repeat } from 'lucide-react';
@@ -10,28 +13,28 @@ import { ErrorState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import type { GroupSummary, YearStatus } from '@/lib/auth/membership';
+import type { GroupSummary } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
-import { loadRepHome, repGroupCards, requestWindowOpen, type RepGroupCard } from '@/lib/data/dashboard';
-import { isAllocationFinal, useYearRow } from '@/lib/data/year';
+import { useYearRow } from '@/lib/data/year';
 import { classifyError, messageFor } from '@/lib/errors';
-import { queryKeys } from '@/lib/query';
+import { furnitureRepOptions, repGroupCards, requestWindowOpen, type RepGroupCard } from '@/lib/modules/furniture/rep';
 
-/** 団体代表のカード（代表する団体ごと） */
-export function RepHome({ yearId, groups }: { yearId: string; groups: readonly GroupSummary[] }) {
+/**
+ * 団体代表のカード（代表する団体ごと）。now はダッシュボードを開いた時刻（要対応と同じ時刻で受付中かを決める。なければ
+ * この部品を出した時刻）。
+ */
+export function RepHome({ yearId, groups, now: openedAt }: { yearId: string; groups: readonly GroupSummary[]; now?: number }) {
   const year = useYearRow(yearId);
   // 受付中かは開いた時刻で決める（描画のたびに時計を読まない。締切を過ぎたら読み直しで変わる）
-  const [now] = useState(() => Date.now());
-  const ids = groups.map((g) => g.id);
-  const q = useQuery({
-    queryKey: queryKeys.yearPart(yearId, 'home', 'rep', ...ids),
-    queryFn: () => loadRepHome(ids),
-  });
+  const [mountedAt] = useState(() => Date.now());
+  const now = openedAt ?? mountedAt;
+  const q = useQuery(furnitureRepOptions(yearId, groups.map((g) => g.id)));
 
-  if (q.isError || year.isError) {
+  // data のない失敗だけを ErrorState にする（読み直しだけの失敗は前の data を出し続ける。ダッシュボードの欄と同じ。T16）
+  if ((q.isError && !q.data) || (year.isError && !year.data)) {
     return (
       <ErrorState
-        message={messageFor(classifyError(q.error ?? year.error))}
+        message={messageFor(classifyError(q.isError && !q.data ? q.error : year.error))}
         onRetry={() => {
           void q.refetch();
           void year.refetch();
@@ -39,7 +42,7 @@ export function RepHome({ yearId, groups }: { yearId: string; groups: readonly G
       />
     );
   }
-  if (q.isPending || year.isPending) {
+  if (!q.data || !year.data) {
     return (
       <div className="grid gap-4 md:grid-cols-2" data-testid="rep-home-loading">
         {groups.map((g) => (
@@ -50,11 +53,11 @@ export function RepHome({ yearId, groups }: { yearId: string; groups: readonly G
   }
   const cards = repGroupCards({ groups, ...q.data }, year.data.status);
   return (
-    <section aria-label="代表する団体" className="grid gap-4 md:grid-cols-2" data-testid="rep-home">
+    <div className="grid gap-4 md:grid-cols-2" data-testid="rep-home">
       {cards.map((c) => (
         <RepCard key={c.groupId} card={c} year={year.data} now={now} />
       ))}
-    </section>
+    </div>
   );
 }
 
@@ -88,7 +91,8 @@ function RepCard({ card: c, year, now }: { card: RepGroupCard; year: YearRow; no
           <dd>
             <span className="inline-flex items-center gap-1">
               <CalendarClock aria-hidden className="size-4 text-muted-foreground" />
-              <TokyoTime value={closeAt} empty="未定" />
+              {/* 要対応・締切と予定と同じ短い形（「10/5 17:00」） */}
+              <TokyoTime value={closeAt} format="short" empty="未定" />
             </span>
           </dd>
         </dl>
@@ -114,26 +118,6 @@ function RepCard({ card: c, year, now }: { card: RepGroupCard; year: YearRow; no
         <Button asChild variant={open ? 'default' : 'outline'} size="sm">
           <AppLink href={`/request?group=${c.groupId}`}>{open ? (c.submittedAt ? '申請を直す' : '申請する') : '申請を見る'}</AppLink>
         </Button>
-      </CardContent>
-    </Card>
-  );
-}
-
-/** 閲覧のみのホーム（Q1：確定・終了なら振り分け表へ） */
-export function ViewerHome({ status }: { status: YearStatus }) {
-  return (
-    <Card data-testid="viewer-home">
-      <CardHeader>
-        <CardTitle className="text-lg">振り分け表</CardTitle>
-      </CardHeader>
-      <CardContent className="text-sm">
-        {isAllocationFinal(status) ? (
-          <Button asChild>
-            <AppLink href="/allocation">振り分け表を見る</AppLink>
-          </Button>
-        ) : (
-          <p className="text-muted-foreground">振り分けが確定すると、ここから見られます。</p>
-        )}
       </CardContent>
     </Card>
   );

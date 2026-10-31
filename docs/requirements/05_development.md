@@ -8,11 +8,11 @@ GitHub の組織の公開リポジトリにする。pnpm workspace のモノレ�
 GAapp/
 ├─ apps/web/                 Next.js（App Router、output: 'export'）
 │   ├─ app/(auth)/           login、auth/callback（Google から戻る先）
-│   ├─ app/(app)/            ログインが要る画面（共通レイアウトの中）。総務向け：/（dashboard）, allocation, swaps, requests, stocks, stocks/qr, stock, rules, settings, history。団体向け：/（ホーム）, request, my
-│   ├─ components/           ui/（shadcn/ui の部品。手で置く）、common/（表・数の入力・理由の入力・エラーの帯など画面に共通の部品）、layout/・auth/・states（T04）、画面ごとの部品（dashboard/・settings/・stock/ など）
+│   ├─ app/(app)/            ログインが要る画面（共通レイアウトの中）。全員：/（ダッシュボード・ホーム）。机椅子：furniture（机椅子の状況）, allocation, swaps, requests, stocks, stocks/qr, stock, rules（ここまで総務向け）, request, my（団体向け）。共通：settings, history。お知らせ：notices（T17）。機能のチケットは自分の機能のパスを足す（D-52）
+│   ├─ components/           ui/（shadcn/ui の部品。手で置く）、common/（表・数の入力・理由の入力・エラーの帯など画面に共通の部品）、layout/・auth/・states（T04）、portal/（ダッシュボードの欄。T16）、画面ごとの部品（dashboard/〔机椅子の状況。T09 からの名前のまま〕・settings/・stock/ など）
 │   ├─ workers/              振り分けの Web Worker（highs を読み込むのはここだけ）
 │   ├─ public/               highs.wasm（predev・prebuild で highs からコピー。git に入れない）。PWA のマニフェストとアイコンは app/ のファイルの規約（manifest.ts・icon.png・apple-icon.png）
-│   └─ lib/                  supabase/（ブラウザ用クライアント）、auth/（ログイン状態・今の年度の立場・年度の切り替え）、navigation（ロールごとのメニュー）、db/・rpc/（読み書きの補助と RPC の引数・返り値の zod）、errors（エラーの分類と日本語）、drafts（保存していない入力の下書き）、data/（画面ごとの読み書き。版を先に読むスナップショット）、allocation/（振り分け画面の純粋関数と Worker の呼び出し）、schemas/（入力の zod）
+│   └─ lib/                  supabase/（ブラウザ用クライアント）、auth/（ログイン状態・今の年度の立場・年度の切り替え・ロールの段）、navigation（見出しごとのメニューと、画面を開ける立場）、modules/（機能の登録 registry.ts・ダッシュボードの型 portal.ts・ダッシュボードに出すものの一覧 providers.ts・機能ごとのフォルダ〔furniture/・notices/〕。D-52）、db/・rpc/（読み書きの補助と RPC の引数・返り値の zod）、errors（エラーの分類と日本語）、drafts（保存していない入力の下書き）、data/（画面ごとの読み書き。版を先に読むスナップショット）、allocation/（振り分け画面の純粋関数と Worker の呼び出し）、schemas/（入力の zod）
 ├─ e2e/                      Playwright。setup/（年度をまたぐ表を1回だけ入れる・ログインの保存）、support/（シナリオの年度・データセット・使い捨てのユーザー・スクリーンショット。ローカルの DB にだけつなぐ）、チケットごとの *.spec.ts、serial/（年度の作成・年度をまたぐ表・通しの流れ。並行のテストの後に別に流す）、fixtures/（E2E 専用の入力。個人情報なし）、basepath/（basePath で書き出したもののスモーク）、shots/（スクリーンショット）・manual/（手での確かめのデータ作り）・perf.spec.ts（4G の速さ）は CI では流さない
 ├─ scripts/                  copy-highs-wasm.mjs、build-e2e.mjs、e2e.mjs（並行のテストと serial を別に流す）、first-load-js.mjs、local-supabase-env.mjs、check-emails.mjs など
 ├─ packages/allocator/       allocate()、validate()、LP の組み立て（DB に依存しない）
@@ -57,7 +57,7 @@ seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DA
 
 ## チケット分割
 
-フェーズ1を16チケットに分ける（画面の共通基盤 T09a を T09 の前に足した。D-32）。その後に、アプリを総務部門のアプリにするチケット（T15 から。2026-10-31 のユーザーの決定。D-48・D-49）を足した。見積もりは目安で、S＝半日〜1日、M＝2〜3日、L＝1週間（放課後の作業を想定）。担当と状態はこの表で管理する。
+フェーズ1を16チケットに分ける（画面の共通基盤 T09a を T09 の前に足した。D-32）。その後に、アプリを総務部門のアプリにするチケット（T15 から。2026-10-31 のユーザーの決定。D-48・D-49）を足した。T15・T15b でロールを見直し、T16 で総務アプリの土台（ダッシュボード・機能の登録・見出しごとのナビゲーション・名前）を入れ、T17〜T21 で機能を足す（D-51・D-52）。見積もりは目安で、S＝半日〜1日、M＝2〜3日、L＝1週間（放課後の作業を想定）。担当と状態はこの表で管理する。
 
 | ID | 内容 | 前提 | 見積もり | 担当 | 状態 |
 | --- | --- | --- | --- | --- | --- |
@@ -79,9 +79,21 @@ seed は seed.sql の1本。R8 の区間は `-- BEGIN R8 DATA` と `-- END R8 DA
 | T14 | 画面：履歴。通しの E2E テスト。画面の受け入れと 4G の表示の速さの確かめ。basePath のスモーク。README（7月の再開と年度の始め方、ルールの変え方、年度末の書き出し、障害時の対応、本番の Auth で必ず守る設定）。PWA のマニフェスト（K-20） | T09〜T13 | M | Claude | 一部完了（残り：実機の 4G での計り直し〔このコンテナでは初めて開くときの中央値が 1.73〜2.04 秒で余裕が少ない〕、人が確かめる受け入れ・実機の PWA・QR の印刷。notes/T14.md） |
 | T15 | ロールの見直し（DB）：app_role に総務部門長（head）・総務副部門長（deputy_head）、団体代表の立場 group_role（店長・副店長）、3つの段（管理者だけ・部門長以上・総務）の判定関数・RLS・RPC（set_group_member_role を足し、invite に group_role）、兼任の禁止（トリガー・招待・受け入れ）、pgTAP（0011〜0013。D-48・D-49）。今の画面のまま動く（足した引数は既定値つき。型の生成に伴う最小の直しだけ） | T03・T04（main の 0001〜0010） | L | Claude | 作業中（設計・0011〜0013・pgTAP・画面の最小の直しが済み、全チェックと後方互換の E2E が通った。reviewer・security-reviewer のレビューの指摘を直した。残り：PR。notes/T15.md） |
 | T15b | ロールの画面：表示名（管理者・総務部門長・総務副部門長・総務部門員・閲覧のみ、店長・副店長）、段ごとのナビゲーションと画面の出し分け、ユーザーの設定（部門長・副部門長の招待、店長⇄副店長、段ごとに出す操作）、兼任のエラーの出し方 | T15（本番に 0011〜0013 を適用した後に出す） | L | Claude | 作業中（段ごとの画面を 04 に書き〔D-50〕、実装・Vitest・E2E・スクリーンショット・README の 5 と docs/runbook.md が済み、レビューの指摘を直して全チェックが通った。残り：PR。notes/T15b.md） |
-| T16 | 総務アプリの土台：ポータル、機能の登録、机椅子の画面を /furniture へ、アプリの名前 | T15b | 未定 |  | 未着手 |
+| T16 | 総務アプリの土台：ダッシュボード（/。要対応の一覧・締切と予定・機能ごとのカード。機能ごとに軽く読み、版・振り分けの行・検証を読まない）、機能の登録（lib/modules）、見出しごとのナビゲーション、机椅子のダッシュボードを「机椅子の状況」（/furniture）へ、アプリの名前「電波祭 総務」とアイコン（D-51・D-52） | T15b | L | Claude | 作業中（要件〔D-51・D-52〕・機能の登録・見出しごとのナビゲーション・机椅子の状況・ダッシュボード・名前とアイコン・Vitest・E2E・4G の計測・スクリーンショットが済み、T15b の直しを取り込み、リードの決定で / を先読み・先送りに入れ〔団体代表の / は 4G で 2 秒以内になった〕、締切と予定の欄を机椅子の読み込みから切り離して、全チェックが通った。残り：reviewer・security-reviewer のレビュー、PR。notes/T16.md） |
+| T17 | 機能：お知らせ（表 notices・notice_groups と RPC save_notice・delete_notice〔0014〕、お知らせ一覧 /notices〔宛先ごとの一覧・書く・編集・削除〕、ダッシュボードの欄「総務内のお知らせ」〔総務〕と「お知らせ」〔閲覧のみ・店長・副店長〕。D-53） | T16 | L | Claude | 作業中（前半の DB〔0014・pgTAP・型〕とそのレビューの直しが済み、main〔T16〕を取り込んで、後半の画面とダッシュボードの欄を 04・notes/T17.md に書き、画面を実装して Vitest を足した。E2E〔t17-notices の 9 件と、今の E2E のナビ・/ の読み取りの期待値〕・スクリーンショット〔notes/T17/ の 16 枚〕・4G の計測〔団体代表の / は 2 秒以内のまま〕も済み、DB と画面を合わせたレビューの指摘〔T17-R1・R2〕も直した。残り：PR〔DB と画面を1つの PR で〕。notes/T17.md） |
+| T18 | 機能：予定と締切（予定と締切の表・/calendar・ダッシュボードの「締切と予定」に機能ごとの日付をまとめる） | T16 | 未定 |  | 未着手 |
+| T19 | 機能：提出物（中身は T19 の計画で決める） | T16 | 未定 |  | 未着手 |
+| T20 | 機能：シフト・作業分担（中身は T20 の計画で決める） | T16 | 未定 |  | 未着手 |
+| T21 | 機能：テント等の貸し出し（00 の対象外から外したテントなどの貸し出し。中身と、机椅子のフェーズ2の受け渡しとの分け方は T21 の計画で決める） | T16 | 未定 |  | 未着手 |
 
 T06 は fixtures/r8 がなくても、合成データ fixtures/synthetic/r8like で不変条件を確かめて進められる。R8 の元データは使わず、fixtures/r8 は作らない（D-40）ので、R8 を前提にした完了基準は合成データで確かめる（fixtures/r8 を作ることになれば、同じテストがそちらにも流れる）。T02〜T04 は全員の土台なので、最初に管理者役がまとめて作る。画面は、T09a（共通の部品・依存・ナビゲーション・テストの土台）を、T04・T05・T07・T08 のマージの後に入れ、その後 T09〜T13 を並行して進める。各チケットは自分の画面のディレクトリ（app/(app)/<画面>/、components/<画面>/、lib/data/<画面>.ts、e2e/t<番号>-*.spec.ts）と、04 の自分の画面の節だけを直す。いちばん長い道は T09a → T13 → T14 なので、T13 を最初に始める。2人なら「T09・T10・T12」と「T11・T13」、3人なら「T09・T12」「T10・T11」「T13」に分ける。画面のチケットの PR では、この表の「状態」の列と notes/decisions.md を直さない（並行するブランチで隣の行を変えて衝突するため。新しい決定は notes/<チケットID>.md に書き、マージの後にまとめて直す。D-32）。
+
+機能のチケット（T17〜T21）の持ち物（D-52。D-32 と同じ考え）：
+- 自分の機能のものだけを直す：自分の機能のディレクトリ（app/(app)/<パス>/、components/<機能>/、lib/modules/<機能>/、lib/data/<機能>.ts、e2e/t<番号>-*.spec.ts、e2e/shots/T<番号>.shots.ts、supabase/tests の自分のテストのファイル）、lib/navigation.ts の自分の見出しの行（section が自分の機能の RouteDef）、lib/modules/registry.ts の MODULES と lib/modules/providers.ts の PORTAL_PROVIDERS の自分の1行、04 の自分の画面の節（「ダッシュボードに出すもの」を含む）、01 の用語集の自分の行と 02 の自分の表の節
+- 共有の一覧には自分の行を足すだけにする（並べ替えない・ほかの行を直さない。並行のブランチでぶつかったら両方を残す）：pgTAP の 010_grants（期待する関数の一覧）と 011_rls_matrix（権限表）、00 の機能の一覧と画面一覧、この表の自分の行、01 の用語集の表の最後
+- マイグレーションの番号はマージの順に取る（並行のブランチで同じ番号になったら、後からマージする方が付け直す。本番に適用したファイルは書き換えない）。packages/shared/src/database.types.ts は生成物なので、積み直した後に `pnpm gen:types` で作り直す
+- ダッシュボードの部品（components/portal）と型（lib/modules/portal.ts）は、どの機能も使う共有のもの（T16 で作る）。機能のチケットで変える必要があれば、先に 04「ダッシュボード」と D-52 を直し、変えるのは1つの PR にまとめる（並行のチケットに知らせる）。依存（package.json・pnpm-lock.yaml）を足すときも同じく1つの PR にまとめる（T09a と同じ理由。lockfile は並行のブランチで衝突する）
+- 並行して進めるときは、この表の「状態」の列と notes/decisions.md を直さず、notes/<チケットID>.md に書いてマージの後にまとめて直す（D-32 と同じ）
 
 ## 受け入れ基準とR8テストデータ
 

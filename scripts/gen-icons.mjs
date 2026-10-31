@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// PWA のアイコン（D-38。T14）を作る：apps/web/app/icon.png（512×512）と apps/web/app/apple-icon.png（180×180）。
+// PWA のアイコン（D-38。T14。T16 で総務アプリの絵〔クリップボードとチェックの印〕に描き直した。D-51）を作る：
+// apps/web/app/icon.png（512×512）と apps/web/app/apple-icon.png（180×180）。
 // 依存を足さないため、下の SVG を Playwright の Chromium で開いて PNG に撮る（文字は使わない。フォントの有無で絵が変わらないように）。
 // 使い方：node scripts/gen-icons.mjs（アイコンの絵を変えたときだけ。できた PNG はコミットする）
 //   Chromium がなければ先に pnpm exec playwright install chromium。
@@ -11,23 +12,31 @@ import { chromium } from '@playwright/test';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const APP = path.join(ROOT, 'apps/web/app');
 
-/** 机（天板と脚）と椅子（背もたれ・座面・脚）。512 の座標で描く。rounded は角を丸める（ブラウザのタブ・Android 向け） */
+/**
+ * 総務アプリ（D-51。T16）のアイコン：クリップボード（白い板と上の留め具）と、チェックの印と線を3段。文字は使わない。
+ * 512 の座標で描く。背景は theme_color と同じ #1d4ed8、絵は白（板の上の印と線は背景と同じ青）。
+ * rounded は角を丸める（ブラウザのタブ・Android 向け）。
+ */
 function svg({ rounded }) {
   const bg = '#1d4ed8';
   const fg = '#ffffff';
+  const clip = '#bfdbfe';
+  // チェックの印（左）と線（右）を3段。cy は段の中心
+  const rows = [208, 288, 368]
+    .map(
+      (cy) => `
+    <polyline points="166,${cy} 186,${cy + 20} 222,${cy - 18}" fill="none" stroke="${bg}" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="244" y="${cy - 9}" width="100" height="18" rx="9" fill="${bg}"/>`,
+    )
+    .join('');
   return `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="${rounded ? 96 : 0}" fill="${bg}"/>
-  <g fill="${fg}">
-    <!-- 机 -->
-    <rect x="72" y="214" width="240" height="30" rx="8"/>
-    <rect x="92" y="244" width="24" height="148" rx="6"/>
-    <rect x="268" y="244" width="24" height="148" rx="6"/>
-    <rect x="92" y="300" width="200" height="16" rx="6" opacity="0.55"/>
-    <!-- 椅子 -->
-    <rect x="404" y="148" width="26" height="244" rx="8"/>
-    <rect x="336" y="272" width="94" height="26" rx="8"/>
-    <rect x="340" y="298" width="22" height="94" rx="6"/>
-  </g>
+  <!-- 板 -->
+  <rect x="128" y="96" width="256" height="344" rx="32" fill="${fg}"/>
+  <!-- 留め具（板の上にかぶせる。真ん中に穴） -->
+  <rect x="192" y="68" width="128" height="68" rx="20" fill="${clip}" stroke="${bg}" stroke-width="8"/>
+  <circle cx="256" cy="94" r="11" fill="${bg}"/>
+  <!-- チェックの印と線 -->${rows}
 </svg>`;
 }
 

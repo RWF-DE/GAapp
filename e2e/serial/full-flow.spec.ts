@@ -180,12 +180,13 @@ test('T14 通しの流れ：在庫 → 申請・取り込み → 締切 → 自�
     expect(await countsOf(a)).toEqual(countsA);
 
     // ---------------------------------------------------------------- 5. 締切 → 自動振り分け → error 0 → 確定
-    await page.goto('/');
-    await expect(page.getByRole('heading', { level: 1, name: 'ダッシュボード' })).toBeVisible();
+    // 締切は机椅子の状況（/furniture。T16 より前は / のダッシュボード。D-51）で押し、ヘッダーの年度の印で状態を見る
+    await page.goto('/furniture/');
+    await expect(page.getByRole('heading', { level: 1, name: '机椅子の状況' })).toBeVisible();
     const actions = page.getByTestId('year-status-actions');
     await actions.getByRole('button', { name: '締切（振り分けを始める）' }).click();
     await page.getByRole('dialog').getByRole('button', { name: '締切（振り分けを始める）' }).click();
-    await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+    await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
 
     await page.goto('/allocation/');
     await expect(page.getByRole('heading', { level: 1, name: '振り分け' })).toBeVisible();

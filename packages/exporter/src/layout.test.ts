@@ -155,6 +155,8 @@ describe('団体名の確認と出力', () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(bytes as unknown as ArrayBuffer);
     expect(wb.worksheets.map((w) => w.name)).toHaveLength(8);
+    // 作成者は総務アプリの名前（T16。D-51）
+    expect(wb.creator).toBe('電波祭 総務アプリ');
     const c = wb.getWorksheet('机(木)')!.getCell('D4').value as { formula: string; result: number };
     expect(c.formula).toBe('G5-SUM(D2:D3)');
     expect(c.result).toBe(5);

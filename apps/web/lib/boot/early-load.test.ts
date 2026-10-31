@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
-// ページを開いたときの先読み（D-45）：覚える id・立場の読み込みの使い回し・先読みを使う／捨てる条件・ユーザーが変わったら消す
+// ページを開いたときの先読み（D-45）：覚える id・立場の読み込みの使い回し・先読みを使う／捨てる条件・ユーザーが変わったら消す。
+// T16：覚える id に年度ごとのロールを足し（/ の先読みで立場の種類を決める）、先読みに「立場に合うか（usable）」を足した
+// T17：覚えたロールが閲覧のみなら、/ の先読みはお知らせの新着（団体あて）だけを読む（本物の planHomePrefetch で確かめる）
 import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildMembership, type MembershipSource } from '@/lib/auth/membership';
+import { planHomePrefetch } from '@/lib/data/screen-queries';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
+import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
 import { EARLY_GLOBAL, earlyAwareFetch } from './early-fetch';
 import {
   discardEarlyLoad,
@@ -21,6 +25,7 @@ import {
   startEarlyLoad,
   takeEarlyMembership,
   writeHint,
+  type PrefetchEntry,
   type RoutePrefetchContext,
 } from './early-load';
 
@@ -31,9 +36,16 @@ const loadMembershipSource = vi.fn(async (_c: unknown, userId: string) => {
 });
 vi.mock('@/lib/env', () => ({ SUPABASE_URL: 'https://db.example.test', SUPABASE_PUBLISHABLE_KEY: 'pk', BASE_PATH: '' }));
 vi.mock('@/lib/auth/load-membership', () => ({ loadMembershipSource: (c: unknown, u: string) => loadMembershipSource(c, u) }));
+// 画面のクエリ（本物の planHomePrefetch の読み取り）が使う Supabase（T17。偽のクライアント）
+const db = vi.hoisted(() => ({ client: null as unknown }));
+vi.mock('@/lib/supabase/client', async (orig) => ({
+  ...(await orig<typeof import('@/lib/supabase/client')>()),
+  getSupabase: () => db.client,
+}));
 
 const U1 = '00000000-0000-4000-8000-000000000001';
 const U2 = '00000000-0000-4000-8000-000000000002';
+const U3 = '00000000-0000-4000-8000-000000000003';
 const Y8 = '00000000-0000-4000-8000-0000000000a8';
 const Y9 = '00000000-0000-4000-8000-0000000000a9';
 const G1 = '00000000-0000-4000-8000-0000000000b1';
@@ -52,6 +64,8 @@ const sources: Record<string, MembershipSource> = {
     ],
   },
   [U2]: { displayName: '部員', years: [year(Y9, 'R9', '2027-10-16')], roles: [{ year_id: Y9, role: 'staff' }], groups: [] },
+  // T17：閲覧のみ
+  [U3]: { displayName: '閲覧', years: [year(Y9, 'R9', '2027-10-16')], roles: [{ year_id: Y9, role: 'viewer' }], groups: [] },
 };
 
 /** getSession の呼び出しを記録する偽の supabase */
@@ -66,8 +80,24 @@ function fakeSupabase(userId: string | null) {
   } as unknown as AppSupabaseClient;
 }
 
-/** /my の先読み：団体ごとのキー（読み方は呼ばれた順を記録するだけ） */
+/** /my の先読み：団体ごとのキー（読み方は呼ばれた順を記録するだけ）。/ は lib/data/screen-queries.ts の planHomePrefetch と同じ形 */
 const routes = {
+  '/': (ctx: RoutePrefetchContext) => {
+    const out: PrefetchEntry[] = [];
+    if (ctx.role === 'staff' || ctx.role === 'admin') {
+      out.push({
+        usable: (m) => m.role === 'staff' || m.role === 'admin',
+        options: {
+          queryKey: ['year', ctx.yearId, 'portal', 'furniture', 'soumu'],
+          queryFn: async () => {
+            calls.push(`home:soumu:${ctx.yearId}:${ctx.role}`);
+            return 'soumu';
+          },
+        },
+      });
+    }
+    return out;
+  },
   '/my': (ctx: RoutePrefetchContext) => {
     const group = ctx.groupIds.find((g) => g === ctx.params.get('group')) ?? ctx.groupIds[0];
     return group
@@ -105,17 +135,31 @@ describe('覚える id（gaapp:prefetch:<user_id>）', () => {
     const hint = hintFromSource(sources[U1]!);
     expect(hint.latestYearId).toBe(Y9);
     expect(hint.years[Y9]).toEqual([G1, G2]);
+    expect(hint.roles).toEqual({});
     writeHint(U1, hint);
     expect(readHint(U1)).toEqual(hint);
   });
 
-  it('形の違う値・id でない値は読まない', () => {
+  it('T16 年度ごとのロールも覚える（/ の先読みで総務かを決める）。前の形（roles のない値）は空として読む', () => {
+    const hint = hintFromSource(sources[U2]!);
+    expect(hint.roles).toEqual({ [Y9]: 'staff' });
+    writeHint(U2, hint);
+    expect(readHint(U2)).toEqual(hint);
+    window.localStorage.setItem(hintKey(U2), JSON.stringify({ latestYearId: Y9, years: { [Y9]: [] } }));
+    expect(readHint(U2)).toEqual({ latestYearId: Y9, years: { [Y9]: [] }, roles: {} });
+  });
+
+  it('形の違う値・id でない値・知らないロールは読まない', () => {
     window.localStorage.setItem(hintKey(U1), '{"latestYearId":"x","years":{}}');
     expect(readHint(U1)).toBeNull();
     window.localStorage.setItem(hintKey(U1), JSON.stringify({ latestYearId: Y9, years: { [Y9]: ['<script>'] } }));
     expect(readHint(U1)).toBeNull();
     window.localStorage.setItem(hintKey(U1), 'broken');
     expect(readHint(U1)).toBeNull();
+    for (const roles of [{ [Y9]: 'owner' }, { x: 'admin' }, [], 'admin', null]) {
+      window.localStorage.setItem(hintKey(U1), JSON.stringify({ latestYearId: Y9, years: { [Y9]: [] }, roles }));
+      expect(readHint(U1), JSON.stringify(roles)).toBeNull();
+    }
   });
 
   it('下書きと同じ扱い：手動のログアウトでその人の分（覚えたリクエストも）を消し、強制では残し、別の人のログインで前の人の分を消す', () => {
@@ -225,6 +269,42 @@ describe('ページを開いたときの読み込み', () => {
     await expect(takeEarlyMembership(U2)).resolves.toBe(sources[U2]);
   });
 
+  it('T16 覚えたロールを先読みに渡す（/ の総務の読み取り）。立場が届いてロールが合えば残す', async () => {
+    writeHint(U2, hintFromSource(sources[U2]!));
+    const qc = start(U2, '/');
+    await flush();
+    expect(calls).toEqual(['getSession', `membership:${U2}`, 'getSession', `home:soumu:${Y9}:staff`]);
+    expect(settleEarlyLoad(U2, buildMembership(sources[U2]!, null))).toEqual({ kept: 1, removed: 0 });
+    expect(qc.getQueryData(['year', Y9, 'portal', 'furniture', 'soumu'])).toBe('soumu');
+  });
+
+  it('T16 立場が届いて先読みが立場に合わない（usable が偽。総務でなくなった）なら捨て、そのページの読み取りは覚えない', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')));
+      writeHint(U2, hintFromSource(sources[U2]!));
+      const qc = start(U2, '/');
+      await vi.advanceTimersByTimeAsync(0);
+      await earlyAwareFetch('https://db.example.test/rest/v1/groups?select=id', { method: 'GET' });
+      const viewer = buildMembership({ ...sources[U2]!, roles: [{ year_id: Y9, role: 'viewer' }] }, null);
+      expect(settleEarlyLoad(U2, viewer)).toEqual({ kept: 0, removed: 1 });
+      expect(qc.getQueryData(['year', Y9, 'portal', 'furniture', 'soumu'])).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(RECORD_SETTLE_MS);
+      expect(window.localStorage.getItem(`${hintKey(U2)}:requests`)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('T16 覚えたロールがない（前の形の値・閲覧のみ）なら、/ の総務の読み取りは先に読まない', async () => {
+    window.localStorage.setItem(hintKey(U2), JSON.stringify({ latestYearId: Y9, years: { [Y9]: [] } }));
+    const qc = start(U2, '/');
+    await flush();
+    expect(calls).toEqual(['getSession', `membership:${U2}`, 'getSession']);
+    expect(qc.getQueryCache().getAll()).toHaveLength(0);
+  });
+
   it('立場が届いたとき（描画の前）に、立場の年度と団体で開いた画面のデータを読み始める', async () => {
     const qc = start(U1, '/my/');
     await flush();
@@ -233,6 +313,43 @@ describe('ページを開いたときの読み込み', () => {
     expect(qc.getQueryData(['year', Y9, 'my', G1])).toEqual({ group: G1 });
     window.history.replaceState(null, '', '/history/');
     expect(prefetchOpenedScreen(buildMembership(sources[U1]!, null), window.location)).toBe(0); // 先読みのない画面
+  });
+
+  it('T17 覚えたロールが閲覧のみなら、/ の先読み（本物の planHomePrefetch）はお知らせの新着（団体あて）だけを読む。閲覧のみのままなら残す', async () => {
+    const fake = createFakeSupabase(() => ({ data: [] }));
+    db.client = fake.client;
+    writeHint(U3, hintFromSource(sources[U3]!));
+    window.history.replaceState(null, '', '/');
+    const qc = new QueryClient();
+    startEarlyLoad(qc, { supabase: fakeSupabase(U3), routes: { '/': planHomePrefetch } });
+    await vi.waitFor(() => expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toEqual([]));
+    expect(fake.issued.map((c) => c.table)).toEqual(['notices']);
+    expect(opArgs(fake.issued[0]!, 'in')).toEqual([['audience', ['all_groups', 'groups']]]);
+    expect(opArgs(fake.issued[0]!, 'select')).toEqual([['id, audience, title, pinned, created_at']]);
+    expect(settleEarlyLoad(U3, buildMembership(sources[U3]!, null))).toEqual({ kept: 1, removed: 0 });
+  });
+
+  it('T17 閲覧のみと覚えていたが、立場が届くと総務部門員だった：お知らせの新着（団体あて）の先読みは捨てる', async () => {
+    db.client = createFakeSupabase(() => ({ data: [] })).client;
+    writeHint(U3, hintFromSource(sources[U3]!));
+    window.history.replaceState(null, '', '/');
+    const qc = new QueryClient();
+    startEarlyLoad(qc, { supabase: fakeSupabase(U3), routes: { '/': planHomePrefetch } });
+    await vi.waitFor(() => expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toEqual([]));
+    const staff = buildMembership({ ...sources[U3]!, roles: [{ year_id: Y9, role: 'staff' }] }, null);
+    expect(settleEarlyLoad(U3, staff)).toEqual({ kept: 0, removed: 1 });
+    expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toBeUndefined();
+  });
+
+  it('T16 立場が届いたときの先読みには、立場のロールを渡す（/ の総務の読み取り）', async () => {
+    const qc = start(U2, '/');
+    await flush();
+    expect(prefetchOpenedScreen(buildMembership(sources[U2]!, null), window.location)).toBe(1);
+    await flush();
+    expect(calls).toContain(`home:soumu:${Y9}:staff`);
+    expect(qc.getQueryData(['year', Y9, 'portal', 'furniture', 'soumu'])).toBe('soumu');
+    // 閲覧のみ・団体代表だけ（このテストの / は総務の分だけ）では読まない
+    expect(prefetchOpenedScreen(buildMembership(sources[U1]!, null), window.location)).toBe(0);
   });
 });
 
@@ -260,8 +377,25 @@ describe('開いたときのリクエストの記録（early-fetch.ts）を覚�
     }
   });
 
-  it.each(['/', '/allocation/', '/swaps/'])(
-    '先読みの表にない画面（%s。振り分けに関わり、版を先に読む）は記録しない（localStorage に残らない）',
+  it('T16 ダッシュボード（/）も先読みの表にあれば記録する（/ は版を使わない。D-45・D-51）', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')));
+      start('/');
+      await send();
+      await vi.advanceTimersByTimeAsync(0);
+      settleEarlyLoad(U1, buildMembership(sources[U1]!, null));
+      await vi.advanceTimersByTimeAsync(RECORD_SETTLE_MS);
+      expect(JSON.parse(window.localStorage.getItem(`${hintKey(U1)}:requests`)!).paths['/']).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  // 記録・先送りしないパス：振り分けに関わる画面（/furniture・/allocation・/swaps。版を先に読む。先読みの表〔SCREEN_PREFETCH〕にない）
+  it.each(['/furniture/', '/allocation/', '/swaps/'])(
+    '先読みの表にない画面（%s。振り分けに関わり版を先に読む画面）は記録しない（localStorage に残らない）',
     async (url) => {
       vi.useFakeTimers();
       try {

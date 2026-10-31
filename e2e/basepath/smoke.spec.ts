@@ -76,7 +76,17 @@ test.describe('T14 basePath（/GAapp）のスモーク', () => {
 
       const manifestRes = await request.get(`${baseURL}${manifestHref}`);
       expect(manifestRes.status()).toBe(200);
-      const manifest = (await manifestRes.json()) as { display: string; start_url: string; scope: string; icons: { src: string; type: string }[] };
+      const manifest = (await manifestRes.json()) as {
+        name: string;
+        short_name: string;
+        display: string;
+        start_url: string;
+        scope: string;
+        icons: { src: string; type: string }[];
+      };
+      // 名前は総務アプリ（T16。D-51）
+      expect(manifest.name).toBe('電波祭 総務');
+      expect(manifest.short_name).toBe('総務');
       expect(manifest.display).toBe('browser');
       expect(manifest.start_url).toBe(`${BP}/`);
       expect(manifest.scope).toBe(`${BP}/`);

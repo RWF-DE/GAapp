@@ -4,8 +4,13 @@
 import { expect, type Page } from '@playwright/test';
 import type { TestUser } from './db';
 
-/** 部門長以上（管理者・総務部門長・総務副部門長）のナビ（lib/navigation.ts の ROUTES のうち LEAD と SOUMU の画面） */
-export const LEAD_NAV = ['ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴'];
+/**
+ * 部門長以上（管理者・総務部門長・総務副部門長）のナビ（lib/navigation.ts の ROUTES のうち LEAD と SOUMU の画面と、招待されている
+ * 全員のお知らせ一覧〔T17〕）。見出し（ホーム／机椅子／お知らせ／共通。T16・T17）の順で、平らに並べたもの
+ */
+export const LEAD_NAV = [
+  'ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', 'マスタ設定', '履歴',
+];
 
 /** 総務部門長・総務副部門長のマスタ設定のタブ（年度・場所・ユーザーだけ） */
 export const LEAD_SETTINGS_TABS = ['年度', '場所', 'ユーザー'];

@@ -5,7 +5,7 @@ import type { SheetModel } from './report';
 
 export async function writeWorkbook(sheets: readonly SheetModel[], generatedAt: Date = new Date()): Promise<Uint8Array> {
   const wb = new ExcelJS.Workbook();
-  wb.creator = '電波祭 総務 机椅子管理アプリ';
+  wb.creator = '電波祭 総務アプリ';
   wb.created = generatedAt;
   wb.modified = generatedAt;
   wb.calcProperties.fullCalcOnLoad = true;

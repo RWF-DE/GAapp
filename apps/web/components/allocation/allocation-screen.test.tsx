@@ -115,6 +115,16 @@ describe('AllocationScreen：段ごとの出し分け（T15b・D-50）', () => {
   });
 });
 
+describe('T16 準備中・受付中の案内は机椅子の状況（/furniture）へ（04「振り分け」。D-51）', () => {
+  it.each(['preparing', 'requesting'] as const)('%s：「申請の締切（振り分けを始める）は机椅子の状況から行います。」とリンク「机椅子の状況へ」', (status) => {
+    auth.membership = as('staff', status);
+    render(<AllocationScreen />);
+    expect(screen.getByText('申請の締切（振り分けを始める）は机椅子の状況から行います。')).toBeTruthy();
+    expect(screen.getByRole('link', { name: '机椅子の状況へ' }).getAttribute('href')).toBe('/furniture');
+    expect(screen.queryByRole('link', { name: 'ホームへ' })).toBeNull();
+  });
+});
+
 // ---- 振り分け中（部門長以上は編集できる。D-50・04「振り分け」） ----
 
 const fx = readFixtureDir(fixturePath('synthetic', 'r8like'));

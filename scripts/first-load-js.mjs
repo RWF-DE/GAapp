@@ -4,7 +4,8 @@
 //   basePath つきの書き出しは NEXT_PUBLIC_BASE_PATH（例 /GAapp）か --base-path /GAapp で、URL の頭を外して読む。
 // 数えるもの：各ページの index.html が読む <script src>（noModule の古いブラウザ向けは除く）と
 // <link rel="preload" as="script">。大きさは各ファイルを gzip（既定の強さ）にしたものの合計。
-// 重い部品の印（目安）：ExcelJS は "xl/workbook.xml"、highs は "Highs_" をチャンクの中に含むかで見分ける。
+// 重い部品の印（目安）：ExcelJS は "xl/workbook.xml"、highs は "Highs_"、振り分けの検証（@gaapp/allocator の validate）は
+// packages/allocator/src/validate.ts の中だけにある文言をチャンクの中に含むかで見分ける（T16：ダッシュボード〔/〕に検証が入っていないことを確かめる。D-51）。
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -24,6 +25,7 @@ const SKIP_PAGES = new Set(['/404/', '/_not-found/']);
 const MARKERS = [
   { name: 'ExcelJS', text: 'xl/workbook.xml' },
   { name: 'highs', text: 'Highs_' },
+  { name: 'allocator', text: '行が、年度のデータにない場所・団体・品目を参照しています' },
 ];
 
 function* htmlPages(dir) {

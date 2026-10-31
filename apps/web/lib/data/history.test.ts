@@ -3,6 +3,7 @@ import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
 import {
   actionLabel,
   actorLabel,
+  AUDIT_TABLES,
   auditTarget,
   crossYearNote,
   diffAudit,
@@ -21,6 +22,7 @@ import {
   NAME_UNKNOWN,
   OUTSIDE_LABEL,
   parseHistoryParams,
+  tableLabel,
   type AuditLogRow,
   type HistoryFilter,
 } from './history';
@@ -154,6 +156,22 @@ describe('差の表示', () => {
     expect(auditTarget(row('distance_overrides', { building_a: 'A棟', building_b: 'B棟' }), lookups)).toBe('A棟・B棟');
     expect(auditTarget(row('rules', { code: 'S01' }), lookups)).toBe('S01');
     expect(auditTarget(row('year_roles', { user_id: U }), lookups)).toBe(NAME_UNKNOWN);
+  });
+
+  it('T17 お知らせ：表の絞り込みの最後に notices・notice_groups（足すだけ）。表の名前、対象（題名・宛先の団体の名前）、宛先と書いた人の値', () => {
+    expect(AUDIT_TABLES.slice(-2)).toEqual(['notices', 'notice_groups']);
+    expect(AUDIT_TABLES.slice(0, 2)).toEqual(['requests', 'request_submissions']);
+    expect(tableLabel('notices')).toBe('お知らせ');
+    expect(tableLabel('notice_groups')).toBe('宛先の団体');
+    const lookups = { groups: new Map([[G, '模擬店A']]), users: new Map([[U, '総務 太郎']]) };
+    const row = (table_name: string, data: Record<string, unknown>) => ({ table_name, row_pk: {}, group_id: (data.group_id as string) ?? null, before: null, after: data });
+    expect(auditTarget(row('notices', { id: 'n1', title: '机の返却' }), lookups)).toBe('机の返却');
+    expect(auditTarget(row('notice_groups', { notice_id: 'n1', group_id: G }), lookups)).toBe('模擬店A');
+    expect(auditTarget(row('notice_groups', { notice_id: 'n1', group_id: 'gone' }), lookups)).toBe('（消えた団体）');
+    expect(formatAuditValue('notices', 'audience', 'all_groups')).toBe('全団体');
+    expect(formatAuditValue('notices', 'audience', 'soumu')).toBe('総務内');
+    expect(formatAuditValue('notices', 'created_by', U, lookups)).toBe('総務 太郎');
+    expect(formatAuditValue('notices', 'created_by', 'x', lookups)).toBe(NAME_UNKNOWN);
   });
 });
 
