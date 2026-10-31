@@ -29,10 +29,13 @@ import { pinYear } from './support/year';
 const dialog = (page: Page) => page.getByRole('dialog');
 const statusOf = async (yearId: string) => (await sql<{ status: string }>('select status::text from public.years where id = $1', [yearId]))[0]!.status;
 
-/** ダッシュボードが読み終わるのを待つ（総務〔部門長以上と総務部門員〕のホーム） */
+/**
+ * 机椅子の状況が読み終わるのを待つ（総務〔部門長以上と総務部門員〕。T16 より前は / のダッシュボード。年度の状態のボタンはここ。
+ * D-51）
+ */
 async function openDashboard(page: Page): Promise<void> {
-  await page.goto('/');
-  await expect(page.getByRole('heading', { level: 1, name: 'ダッシュボード' })).toBeVisible();
+  await page.goto('/furniture/');
+  await expect(page.getByRole('heading', { level: 1, name: '机椅子の状況' })).toBeVisible();
   await expect(page.getByTestId('dashboard-year')).toBeVisible();
 }
 
@@ -47,8 +50,9 @@ test.describe('T15b 総務部門長（seed）', () => {
     await expect(page.getByRole('banner')).toContainText('テスト部門長');
     await expect(page.getByRole('banner')).toContainText('総務部門長');
     expect(await navLabels(page)).toEqual(LEAD_NAV);
-    // 総務のホームはダッシュボード（受付中の遷移は「締切」）
+    // 総務のホームはダッシュボード。年度の状態のボタン（受付中の遷移は「締切」）は机椅子の状況（T16）
     await expect(page.getByRole('heading', { level: 1, name: 'ダッシュボード' })).toBeVisible();
+    await openDashboard(page);
     await expect(page.getByTestId('year-status-actions').getByRole('button')).toHaveText(['締切（振り分けを始める）']);
 
     // R8 は総務部門長の最新の年度だが、年度の作成は管理者だけ（作成の欄を出さず、管理者が作ると知らせる。読むだけで何も変えない）
@@ -348,14 +352,14 @@ test.describe('T15b 総務部門長（seed）', () => {
       await expect(buttons).toHaveText(['受付開始']);
       await actions.getByRole('button', { name: '受付開始' }).click();
       await dialog(page).getByRole('button', { name: '受付開始' }).click();
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（申請受付中）`);
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・申請受付中`);
       expect(await statusOf(s.yearId)).toBe('requesting');
 
       // 受付中 → 締切（振り分けを始める）
       await expect(buttons).toHaveText(['締切（振り分けを始める）']);
       await actions.getByRole('button', { name: '締切（振り分けを始める）' }).click();
       await dialog(page).getByRole('button', { name: '締切（振り分けを始める）' }).click();
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
       expect(await statusOf(s.yearId)).toBe('allocating');
 
       // 振り分け中 → 確定（理由が必須。検証〔合成データ〕が済んでから押せる。並行のテストで遅くなっても待つ）
@@ -366,7 +370,7 @@ test.describe('T15b 総務部門長（seed）', () => {
       const check = dialog(page).getByLabel('warning を確認しました');
       if ((await check.count()) > 0) await check.check();
       await dialog(page).getByRole('button', { name: '確定', exact: true }).click();
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（確定）`);
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・確定`);
       expect(await statusOf(s.yearId)).toBe('confirmed');
 
       // 確定中：総務部門長は「確定を解除」だけ（終了は管理者だけ。D-48）
@@ -381,7 +385,7 @@ test.describe('T15b 総務部門長（seed）', () => {
       await actions.getByRole('button', { name: '確定を解除' }).click();
       await dialog(page).getByLabel(/理由/).fill('E2E 総務部門長が確定を解除する');
       await dialog(page).getByRole('button', { name: '確定を解除' }).click();
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・振り分け中`);
       expect(await statusOf(s.yearId)).toBe('allocating');
     } finally {
       await ctxA.close().catch(() => undefined);
@@ -399,6 +403,7 @@ test('T15b 総務副部門長（使い捨て）：ナビ・マスタ設定のタ
     await expect(page.getByTestId('home-roles')).toHaveText('総務副部門長');
     await expect(page.getByRole('banner')).toContainText('総務副部門長');
     expect(await navLabels(page)).toEqual(LEAD_NAV);
+    await openDashboard(page);
     await expect(page.getByTestId('year-status-actions').getByRole('button')).toHaveText(['締切（振り分けを始める）']);
 
     await page.goto('/settings/?tab=items');

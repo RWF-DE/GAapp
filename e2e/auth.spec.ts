@@ -7,7 +7,7 @@ test.describe('ロールごとの表示', () => {
   test('管理者：総務の画面がすべてメニューに出る', async ({ page }) => {
     await loginAs(page, 'admin');
     expect(await navLabels(page)).toEqual([
-      'ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴',
+      'ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'マスタ設定', '履歴',
     ]);
     await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
     await expect(page.getByTestId('home-roles')).toHaveText('管理者');
@@ -17,16 +17,16 @@ test.describe('ロールごとの表示', () => {
   test('総務部門長：管理者と同じ画面がメニューに出る', async ({ page }) => {
     await loginAs(page, 'head');
     expect(await navLabels(page)).toEqual([
-      'ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴',
+      'ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'マスタ設定', '履歴',
     ]);
     await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
     await expect(page.getByTestId('home-roles')).toHaveText('総務部門長');
   });
 
   // Q1（D-39。T09a）：総務部門員は振り分けをいつでも読み取り専用で開ける
-  test('総務部門員：在庫・申請一覧と振り分け（閲覧）だけ（マスタ設定・団体の画面は出ない）', async ({ page }) => {
+  test('総務部門員：机椅子の状況・在庫・申請一覧と振り分け（閲覧）だけ（マスタ設定・団体の画面は出ない）', async ({ page }) => {
     await loginAs(page, 'staff');
-    expect(await navLabels(page)).toEqual(['ホーム', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
+    expect(await navLabels(page)).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
     await expect(page.getByTestId('home-roles')).toHaveText('総務部門員');
   });
 

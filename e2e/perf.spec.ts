@@ -1,6 +1,7 @@
 // 4G での表示の速さ（00「性能と可用性」の「画面はスマホの 4G でも 2 秒以内に開く」。画面の設計 7.7。T14）。
 // pnpm e2e:perf（E2E_PERF=1。CI では流さない。機械の速さで結果がぶれるため）。pnpm build:e2e の書き出し（apps/web/out）を使う。
-// スマホで使う3画面（/stock?room=…・/request・/my）を、Chromium の CDP で回線を Fast 4G 相当（下り 9 Mbps・上り 1.5 Mbps・
+// スマホで使う画面（/stock?room=…・/request・/my と、T16 で足した団体代表の /〔ダッシュボード。代表する団体のカードが出るまで〕）を、
+// Chromium の CDP で回線を Fast 4G 相当（下り 9 Mbps・上り 1.5 Mbps・
 // 遅延 170 ms。T00 と同じ）に絞り、CPU を 4 倍遅くして、キャッシュなしの新しいコンテキスト（storageState でログイン済み）で
 // page.goto から画面の主な内容が見えるまでを3回ずつ計る。中央値と内訳を annotations・console・test-results/perf/perf.json に出し、
 // notes/T14.md に写す。2 秒を超えても失敗にはしない（記録して原因を調べる。設計 7.7）。
@@ -18,7 +19,8 @@
 // - first：初めて開いた（先読みのために覚えた id〔localStorage の gaapp:prefetch:<user_id>〕がない）。
 // - again：前に開いたことがある（同じ画面を一度開いて覚えた id とリクエストを、計る前のコンテキストの localStorage に入れる。
 //   HTTP のキャッシュは使わない）。<head> の script が JS より先に Supabase へ送り、立場の読み込みと同時に画面のデータも読む。
-// PERF_VISIT=first・again で片方だけ、PERF_ONLY=stock・request・my（カンマ区切り）で画面を絞れる（原因を調べるとき）。
+// / は先読み・記録・先送りの表に入れていない（T16。D-51）ので、again でも覚えるのは先読みの id だけ（リクエストは覚えない）。
+// PERF_VISIT=first・again で片方だけ、PERF_ONLY=stock・request・my・home（カンマ区切り）で画面を絞れる（原因を調べるとき）。
 // データはシナリオの年度（合成データ r8like。受付中。部員と団体代表〔模擬店10〕のロール）。
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
@@ -45,8 +47,15 @@ const OUT_DIR = fileURLToPath(new URL('../apps/web/out/', import.meta.url));
 const H2_PORT = Number(process.env.E2E_PERF_H2_PORT ?? 3102);
 
 interface Target {
+  /** PERF_ONLY で選ぶ名前 */
+  id: 'stock' | 'request' | 'my' | 'home';
   name: string;
   user: StoredUser;
+  /**
+   * 開いたときのリクエストを覚える画面か（先読みの表〔lib/data/screen-queries.ts の EARLY_FETCH_PATHS〕にある画面）。
+   * 偽なら again の準備で、覚えたリクエスト（`…:requests`）を待たない（/ は T16 では表にない）
+   */
+  records: boolean;
   url: (s: Scenario) => string;
   /** 画面の主な内容が見えた（読み込みが終わった）ことの印（Playwright で確かめる） */
   ready: (page: Page) => Promise<void>;
@@ -75,12 +84,18 @@ const SHOWN = {
     const p = document.querySelector('[data-testid="my-in-progress"]');
     return !!g && g.textContent.includes(a.group) && !!p && p.textContent.includes('振り分け作業中');
   }`,
+  home: `(a) => {
+    const card = [...document.querySelectorAll('[data-testid="rep-card"]')].find((c) => c.getAttribute('data-group') === a.group);
+    return !!card && card.offsetParent !== null;
+  }`,
 };
 
 const ALL_TARGETS: Target[] = [
   {
+    id: 'stock',
     name: '/stock?room=（部員）',
     user: 'staff',
+    records: true,
     url: (s) => `/stock/?room=${s.ids.rooms[ROOM]}`,
     ready: async (page) => {
       await expect(page.getByTestId('stock-room-name')).toHaveText(ROOM, { timeout: 30_000 });
@@ -89,8 +104,10 @@ const ALL_TARGETS: Target[] = [
     shown: SHOWN.stock,
   },
   {
+    id: 'request',
     name: '/request（団体代表）',
     user: 'rep',
+    records: true,
     url: () => '/request/',
     ready: async (page) => {
       await expect(page.getByTestId('request-group-name')).toHaveText(REP_GROUP, { timeout: 30_000 });
@@ -99,14 +116,28 @@ const ALL_TARGETS: Target[] = [
     shown: SHOWN.request,
   },
   {
+    id: 'my',
     name: '/my（団体代表）',
     user: 'rep',
+    records: true,
     url: () => '/my/',
     ready: async (page) => {
       await expect(page.getByTestId('my-group')).toContainText(REP_GROUP, { timeout: 30_000 });
       await expect(page.getByTestId('my-in-progress')).toContainText('振り分け作業中', { timeout: 30_000 });
     },
     shown: SHOWN.my,
+  },
+  // ダッシュボード（T16。D-51）：団体代表の /。表示の印は代表する団体のカード（模擬店10）が見えたこと
+  {
+    id: 'home',
+    name: '/（団体代表）',
+    user: 'rep',
+    records: false,
+    url: () => '/',
+    ready: async (page) => {
+      await expect(page.locator(`[data-testid="rep-card"][data-group="${REP_GROUP}"]`)).toBeVisible({ timeout: 30_000 });
+    },
+    shown: SHOWN.home,
   },
 ];
 
@@ -116,7 +147,7 @@ type Visit = 'first' | 'again';
 const VISITS: Visit[] = process.env.PERF_VISIT === 'first' || process.env.PERF_VISIT === 'again' ? [process.env.PERF_VISIT] : ['first', 'again'];
 
 const ONLY = (process.env.PERF_ONLY ?? '').split(',').map((x) => x.trim()).filter(Boolean);
-const TARGETS = ONLY.length > 0 ? ALL_TARGETS.filter((t) => ONLY.some((o) => t.name.startsWith(`/${o}`))) : ALL_TARGETS;
+const TARGETS = ONLY.length > 0 ? ALL_TARGETS.filter((t) => ONLY.includes(t.id)) : ALL_TARGETS;
 
 interface Run {
   /** ナビゲーションの始まりから、画面の主な内容が見えた最初のフレームまで（ms。ページの中の performance.now()） */
@@ -243,14 +274,18 @@ async function learnHints(browser: Browser, s: Scenario, t: Target, origin: stri
     await pinYear(page, SEED_USER_IDS[t.user], s.yearId);
     await page.goto(t.url(s), { waitUntil: 'commit' });
     await t.ready(page);
-    // 開いたときのリクエスト（<head> の script が先に送るもの）は、立場が届いてから少し後に覚える
+    // 開いたときのリクエスト（<head> の script が先に送るもの）は、立場が届いてから少し後に覚える。覚えない画面（/）は、
+    // 先読みの id（`gaapp:prefetch:<user_id>`）だけを待つ
     await page.waitForFunction(
-      (prefix) => {
+      ({ prefix, records }) => {
         const ls = (globalThis as unknown as { localStorage: Storage }).localStorage;
-        for (let i = 0; i < ls.length; i++) if (ls.key(i)?.startsWith(prefix) && ls.key(i)?.endsWith(':requests')) return true;
+        for (let i = 0; i < ls.length; i++) {
+          const k = ls.key(i);
+          if (k?.startsWith(prefix) && (!records || k.endsWith(':requests'))) return true;
+        }
         return false;
       },
-      PREFETCH_HINT_PREFIX,
+      { prefix: PREFETCH_HINT_PREFIX, records: t.records },
       { timeout: 15_000 },
     );
     const hints = await page.evaluate((prefix) => {
@@ -362,7 +397,7 @@ async function measure(browser: Browser, s: Scenario, t: Target, origin: string 
 
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 
-test('T14 4G での表示の速さ：/stock?room=・/request・/my を Fast 4G と CPU 4 倍で3回ずつ', async ({ browser }, testInfo) => {
+test('T14 4G での表示の速さ：/stock?room=・/request・/my・団体代表の /（T16）を Fast 4G と CPU 4 倍で3回ずつ', async ({ browser }, testInfo) => {
   test.setTimeout(15 * 60_000);
   const tls = selfSignedCert(path.join(testInfo.outputDir, 'tls'));
   if (!tls) testInfo.annotations.push({ type: '4G の速さ', description: 'openssl がないので h2（HTTP/2）の配り方を飛ばした' });

@@ -79,7 +79,7 @@ CI では流さない E2E（環境変数のときだけ playwright.config.ts に
 
 ```bash
 pnpm e2e:shots --grep "T14 "   # スクリーンショット（notes/<チケット>/。--grep はチケット ID と空白で絞る）
-pnpm e2e:perf                   # 4G での表示の速さ（/stock・/request・/my。結果は test-results/perf/）
+pnpm e2e:perf                   # 4G での表示の速さ（/stock・/request・/my・団体代表の /。PERF_ONLY=home などで絞る。結果は test-results/perf/）
 pnpm e2e:manual                 # 手での確かめ（画面の受け入れ）の年度とユーザーを作り、ログインの情報を出す。片付けは MANUAL_CLEANUP=1
 ```
 

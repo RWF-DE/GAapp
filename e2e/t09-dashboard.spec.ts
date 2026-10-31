@@ -1,29 +1,27 @@
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL } from './helpers';
 import { storageStateFor } from './support/auth';
-import { createScenario, createUser, sql, type TestUser } from './support/db';
+import { createScenario, sql } from './support/db';
 import { SMALL } from './support/datasets';
 import { SEED_USER_IDS } from './support/users';
 import { pinYear } from './support/year';
 
 // T09 ダッシュボード・ホーム（画面の設計 3.1・7.2 の表の T09 の行）。シナリオの年度（2001 年）で閉じる。
-// seed の利用者にはシナリオの年度にだけロールを付ける。兼ねる人のテストは createUser のユーザーで（D-36）。
+// seed の利用者にはシナリオの年度にだけロールを付ける。
+// T16 で、T09 のダッシュボード（版を先に読む数と状態の遷移）は「机椅子の状況」（/furniture）に移り（h1「机椅子の状況」。部品と
+// data-testid は同じ）、/ は総務アプリのダッシュボードになった（D-51）。立場の一覧（home-year・home-roles）と代表する団体のカード
+// （rep-card）は / のまま。机椅子の状況では、状態の遷移の結果をヘッダーの年度の印（current-year）で見る（立場と一緒に読み直す。
+// T16 より前の home-year と同じ元）。管理者で店長も務める人のテストは e2e/t16-portal.spec.ts に移した。
 
-async function loginWith(page: Page, u: TestUser): Promise<void> {
-  await page.goto('/login/');
-  const form = page.getByTestId('test-login-form');
-  await form.getByLabel('メールアドレス').fill(u.email);
-  await form.getByLabel('パスワード').fill(u.password);
-  await form.getByRole('button', { name: 'テスト用ユーザーでログイン' }).click();
-  await expect(page.getByTestId('current-year')).toBeVisible();
-}
-
-/** ダッシュボードが読み終わるのを待つ */
+/** 机椅子の状況（T16 より前は / のダッシュボード）が読み終わるのを待つ */
 async function openDashboard(page: Page): Promise<void> {
-  await page.goto('/');
-  await expect(page.getByRole('heading', { level: 1, name: 'ダッシュボード' })).toBeVisible();
+  await page.goto('/furniture/');
+  await expect(page.getByRole('heading', { level: 1, name: '机椅子の状況' })).toBeVisible();
   await expect(page.getByTestId('dashboard-year')).toBeVisible();
 }
+
+/** ヘッダーの年度の印（`{年度名}・{状態}`） */
+const currentYear = (page: Page) => page.getByTestId('current-year');
 
 const statusOf = async (yearId: string) => (await sql<{ status: string }>('select status from public.years where id = $1', [yearId]))[0]!.status;
 const versionOf = async (yearId: string) =>
@@ -34,7 +32,7 @@ const dialog = (page: Page) => page.getByRole('dialog');
 test.describe('T09 ダッシュボード（管理者）', () => {
   test.use({ storageState: storageStateFor('admin') });
 
-  test('T09 受付中：提出・在庫・検証（振り分け前）・了承の数と立場の一覧が出る', async ({ page }) => {
+  test('T09 受付中：提出・在庫・検証（振り分け前）・了承の数が出る（机椅子の状況）', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
     try {
       // 模擬店1 を未提出に、倉庫B を数えていないことにする
@@ -43,8 +41,11 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       await openDashboard(page);
 
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（申請受付中）`);
-      await expect(page.getByTestId('home-roles')).toHaveText('管理者');
+      await expect(currentYear(page)).toHaveText(`${s.label}・申請受付中`);
+      await expect(page.getByTestId('dashboard-year')).toContainText(s.label);
+      await expect(page.getByTestId('dashboard-year')).toContainText('申請受付中');
+      // 立場の一覧はダッシュボード（/）に出す（机椅子の状況には出さない。T16）
+      await expect(page.getByTestId('home-roles')).toHaveCount(0);
 
       const sub = page.getByTestId('dashboard-submissions');
       await expect(sub).toContainText('2 ／ 3団体');
@@ -83,13 +84,13 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await expect(dialog(page)).toContainText('団体代表が申請を書けるようになります。');
       await dialog(page).getByRole('button', { name: '受付開始' }).click();
       await expect(page.getByText(`${s.label} を「受付開始」にしました`)).toBeVisible();
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（申請受付中）`);
+      await expect(currentYear(page)).toHaveText(`${s.label}・申請受付中`);
       expect(await statusOf(s.yearId)).toBe('requesting');
 
       await actions(page).getByRole('button', { name: '締切（振り分けを始める）' }).click();
       await expect(dialog(page)).toContainText('締切の前ですが、団体代表は申請を変えられなくなります。');
       await dialog(page).getByRole('button', { name: '締切（振り分けを始める）' }).click();
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      await expect(currentYear(page)).toHaveText(`${s.label}・振り分け中`);
       expect(await statusOf(s.yearId)).toBe('allocating');
       // 振り分け中は検証の数が出る
       await expect(page.getByTestId('dashboard-validation-counts')).toBeVisible();
@@ -137,7 +138,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await expect(confirm).toBeEnabled();
       await confirm.click();
       await confirmInDialog(page, '在庫の確認が済んだため');
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（確定）`);
+      await expect(currentYear(page)).toHaveText(`${s.label}・確定`);
       expect(await statusOf(s.yearId)).toBe('confirmed');
       await expect(page.getByTestId('error-banner')).toHaveCount(0);
 
@@ -148,7 +149,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await expect(dialog(page)).toContainText('理由を入れてください');
       await dialog(page).getByLabel(/理由/).fill('団体の申請の直しのため');
       await dialog(page).getByRole('button', { name: '確定を解除' }).click();
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      await expect(currentYear(page)).toHaveText(`${s.label}・振り分け中`);
       expect(await statusOf(s.yearId)).toBe('allocating');
     } finally {
       await other.context().close();
@@ -170,11 +171,11 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       // もう1つの画面で、画面から確定して確定を解除する（状態が2回変わり、版が進む）
       await actions(other).getByRole('button', { name: '確定', exact: true }).click();
       await confirmInDialog(other, '別の画面での確定');
-      await expect(other.getByTestId('home-year')).toHaveText(`${s.label}（確定）`);
+      await expect(currentYear(other)).toHaveText(`${s.label}・確定`);
       await actions(other).getByRole('button', { name: '確定を解除' }).click();
       await dialog(other).getByLabel(/理由/).fill('別の画面での確定の解除');
       await dialog(other).getByRole('button', { name: '確定を解除' }).click();
-      await expect(other.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
+      await expect(currentYear(other)).toHaveText(`${s.label}・振り分け中`);
       expect(await statusOf(s.yearId)).toBe('allocating');
       expect(await versionOf(s.yearId)).toBeGreaterThan(before);
 
@@ -187,7 +188,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await expect(confirm).toBeEnabled();
       await confirm.click();
       await confirmInDialog(page, '在庫の確認が済んだため');
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（確定）`);
+      await expect(currentYear(page)).toHaveText(`${s.label}・確定`);
       expect(await statusOf(s.yearId)).toBe('confirmed');
     } finally {
       await other.context().close();
@@ -236,7 +237,7 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await d.getByTestId('close-export-xlsx').click();
       expect((await xlsx).suggestedFilename()).toBe(`${s.label}_椅子机振り分け_部門員共有用.xlsx`);
       await d.getByRole('button', { name: '終了' }).click();
-      await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（終了）`);
+      await expect(currentYear(page)).toHaveText(`${s.label}・終了`);
       expect(await statusOf(s.yearId)).toBe('closed');
       await expect(actions(page)).toHaveCount(0);
       await expect(page.getByTestId('dashboard-validation')).toContainText('終了した年度です');
@@ -310,8 +311,10 @@ test.describe('T09 ダッシュボード（部員）', () => {
         [s.yearId, s.ids.rooms[SMALL.rooms.class1]],
       );
       await pinYear(page, SEED_USER_IDS.staff, s.yearId);
-      await openDashboard(page);
+      // 立場の一覧はダッシュボード（/）で見る（T16）
+      await page.goto('/');
       await expect(page.getByTestId('home-roles')).toHaveText('総務部門員');
+      await openDashboard(page);
 
       await expect(page.getByTestId('dashboard-consents')).toContainText('未依頼 1');
       await expect(page.getByTestId('dashboard-problems')).toContainText('E2E-BROKEN');
@@ -378,41 +381,23 @@ test.describe('T09 ホーム（団体代表）', () => {
 test.describe('T09 ホーム（閲覧のみ）', () => {
   test.use({ storageState: storageStateFor('viewer') });
 
+  // 閲覧のみのホームの案内は、T16 でダッシュボードの机椅子のカード（module-card）になった（文言は同じ）
   test('T09 閲覧のみ：確定前は案内だけ、確定後は振り分け表へのリンク', async ({ page }) => {
     const s = await createScenario({ status: 'allocating', dataset: 'small', roles: { viewer: true } });
     try {
       await pinYear(page, SEED_USER_IDS.viewer, s.yearId);
       await page.goto('/');
       await expect(page.getByTestId('home-roles')).toHaveText('閲覧のみ');
-      await expect(page.getByTestId('viewer-home')).toContainText('振り分けが確定すると、ここから見られます。');
+      const card = page.locator('[data-testid="module-card"][data-module="furniture"]');
+      await expect(card).toContainText('振り分けが確定すると、ここから見られます。');
       await expect(page.getByRole('main').locator('a[href*="/allocation"]')).toHaveCount(0);
       await expect(page.getByTestId('dashboard-year')).toHaveCount(0);
 
       await sql("update public.years set status = 'confirmed' where id = $1", [s.yearId]);
       await page.reload();
-      await expect(page.getByTestId('viewer-home').getByRole('link', { name: '振り分け表を見る' })).toHaveAttribute('href', /\/allocation\/?$/);
+      await expect(card.getByRole('link', { name: '振り分け表を見る' })).toHaveAttribute('href', /\/allocation\/?$/);
     } finally {
       await s.cleanup();
     }
   });
-});
-
-// 部員（staff）は同じ年度の団体代表を兼ねられない（兼任の禁止。T15・D-49。group_members の insert が role_overlap になる）ので、
-// 兼ねられる管理者で確かめる
-test('T09 管理者で団体代表も兼ねる人：団体代表のカードがダッシュボードの上に出る', async ({ page }) => {
-  const u = await createUser({ purpose: 'adminrep' });
-  const s = await createScenario({ status: 'requesting', dataset: 'small', grants: [{ userId: u.id, role: 'admin' }] });
-  try {
-    await sql('insert into public.group_members (group_id, user_id) values ($1, $2)', [s.ids.groups[SMALL.groups.department], u.id]);
-    await loginWith(page, u);
-    await expect(page.getByTestId('home-roles')).toHaveText(`管理者${SMALL.groups.department} の店長`);
-    await expect(page.getByTestId('rep-card')).toHaveAttribute('data-group', SMALL.groups.department);
-    await expect(page.getByTestId('dashboard-year')).toBeVisible();
-    const repTop = (await page.getByTestId('rep-card').boundingBox())!.y;
-    const dashTop = (await page.getByTestId('dashboard-year').boundingBox())!.y;
-    expect(repTop).toBeLessThan(dashTop);
-  } finally {
-    await s.cleanup();
-    await u.cleanup();
-  }
 });
