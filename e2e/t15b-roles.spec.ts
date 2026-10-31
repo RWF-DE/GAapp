@@ -60,7 +60,7 @@ test.describe('T15b 総務部門長（seed）', () => {
     await expect(page.getByTestId('year-edit-form')).toBeVisible();
     expect(await settingsTabLabels(page)).toEqual(LEAD_SETTINGS_TABS);
     await expect(page.getByTestId('year-create-form')).toHaveCount(0);
-    await expect(page.getByTestId('year-create-unavailable')).toHaveText('新しい年度は、最新の年度（R8）を開いて、その年度の管理者が作れます。');
+    await expect(page.getByTestId('year-create-unavailable')).toHaveText('新しい年度は、最新の年度（R8）の管理者が作ります。');
   });
 
   test('T15b 総務部門長：マスタ設定のタブは年度・場所・ユーザーだけ。開けないタブの ?tab= は年度。場所は今年の使用だけ変えられる', async ({ page }) => {
@@ -88,7 +88,9 @@ test.describe('T15b 総務部門長（seed）', () => {
       await expect(page.getByTestId('room-add')).toHaveCount(0);
       await expect(page.getByRole('button', { name: '編集', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: '削除', exact: true })).toHaveCount(0);
-      await expect(page.getByTestId('global-read-only')).toContainText('開いている年度の管理者でないため、場所は編集できません。');
+      await expect(page.getByTestId('global-read-only')).toHaveText(
+        '場所の追加・編集・削除は管理者が行います（すべての年度で共有の表のため）。今年の使用（使用不可と理由のメモ）は年度ごとで、各行の「変える」から変えられます。',
+      );
 
       await row.getByRole('button', { name: `${SMALL.rooms.class2}の今年の使用を変える` }).click();
       await dialog(page).getByLabel('今年は使用する').uncheck();
@@ -110,9 +112,11 @@ test.describe('T15b 総務部門長（seed）', () => {
       await pinYear(page, SEED_USER_IDS.head, s.yearId);
       await page.goto('/settings/?tab=years');
       const form = page.getByTestId('year-edit-form');
-      await expect(form.getByLabel('年度名')).toHaveValue(s.label);
-      await expect(form.getByLabel('年度名')).not.toBeEditable();
-      await expect(form.getByLabel('1日目')).not.toBeEditable();
+      // 年度名・1日目は入力欄でなく文字で出す（書ける欄と見分けられるように。管理者が変える）
+      await expect(page.getByTestId('year-fixed-label')).toHaveText(s.label);
+      await expect(page.getByTestId('year-fixed-festival-start')).toHaveText(s.festivalStart.replaceAll('-', '/'));
+      await expect(form.getByLabel('年度名')).toHaveCount(0);
+      await expect(form.getByLabel('1日目')).toHaveCount(0);
       await expect(form.getByLabel('受付開始（日本時間）')).toBeEditable();
       await expect(form.getByLabel('締切（日本時間）')).toBeEditable();
       await expect(page.getByTestId('year-edit-description')).toContainText('申請の受付期間を変えます（年度名と1日目は管理者が変えます）。');
@@ -409,7 +413,8 @@ test('T15b 総務副部門長（使い捨て）：ナビ・マスタ設定のタ
     await page.goto('/settings/?tab=items');
     await expect(page.getByTestId('year-edit-form')).toBeVisible();
     expect(await settingsTabLabels(page)).toEqual(LEAD_SETTINGS_TABS);
-    await expect(page.getByTestId('year-edit-form').getByLabel('年度名')).not.toBeEditable();
+    await expect(page.getByTestId('year-fixed-label')).toHaveText(s.label);
+    await expect(page.getByTestId('year-edit-form').getByLabel('年度名')).toHaveCount(0);
     await page.getByTestId('settings-tab-users').click();
     expect(await inviteKindLabels(page)).toEqual(LEAD_INVITE_KINDS);
     await expect(memberRow(page, 'E2E 副部門長')).toContainText('総務副部門長');

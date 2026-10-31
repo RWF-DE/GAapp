@@ -593,10 +593,15 @@ function RequestsBoard({ yearId, userId, role }: { yearId: string; userId: strin
       <UnsavedChangesGuard when={editable && unsaved > 0} />
 
       {tables.groups.length === 0 ? (
+        // 団体はマスタ（管理者がマスタ設定で登録する）。管理者でない人には、取り込みのダイアログと同じく管理者に頼む文を出す（D-50）
         <EmptyState
           title="団体がありません"
-          description="マスタ設定で団体を登録すると、ここに申請が並びます。"
-          action={<AppLink href="/settings?tab=groups">マスタ設定へ</AppLink>}
+          description={
+            isAdmin(role)
+              ? 'マスタ設定で団体を登録すると、ここに申請が並びます。'
+              : '管理者に団体の登録を頼んでください（登録されると、ここに申請が並びます）。'
+          }
+          action={isAdmin(role) ? <AppLink href="/settings?tab=groups">マスタ設定へ</AppLink> : undefined}
         />
       ) : (
         <>

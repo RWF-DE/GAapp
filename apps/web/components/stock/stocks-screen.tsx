@@ -8,7 +8,7 @@ import { useMemo } from 'react';
 import { AppLink } from '@/components/common/app-link';
 import { PageHeader } from '@/components/common/page-header';
 import { Button } from '@/components/ui/button';
-import { EmptyState, ErrorState, LoadingState } from '@/components/states';
+import { ErrorState, LoadingState } from '@/components/states';
 import {
   buildStockMatrix,
   formatCell,
@@ -22,11 +22,10 @@ import {
   type MatrixCell,
   type MatrixTotals,
 } from '@/lib/data/stocks';
-import { isAdmin } from '@/lib/auth/roles';
 import { useYearRow } from '@/lib/data/year';
 import { classifyError, messageFor } from '@/lib/errors';
 import { cn } from '@/lib/utils';
-import { UnusableBadge, useOpenYear } from './common';
+import { NoStorageState, UnusableBadge, useOpenYear } from './common';
 
 function TotalCell({ c }: { c: MatrixCell }) {
   return (
@@ -122,17 +121,7 @@ export function StocksScreen() {
     return (
       <>
         {header}
-        <EmptyState
-          title="保管場所がありません"
-          description={isAdmin(open.role) ? 'マスタ設定の場所で「保管場所」にしてください。' : '総務の管理者に、保管場所の登録を頼んでください。'}
-          action={
-            isAdmin(open.role) ? (
-              <AppLink href="/settings?tab=rooms" className="text-sm underline underline-offset-4">
-                マスタ設定（場所）へ
-              </AppLink>
-            ) : undefined
-          }
-        />
+        <NoStorageState role={open.role} />
       </>
     );
   }

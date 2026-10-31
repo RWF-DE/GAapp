@@ -34,7 +34,7 @@ create type delivery_status as enum ('pending','done','problem');
 | delivery_kind | furniture / tent / weight / side_curtain | 机等 / テント / 重し / 三方幕 |
 | delivery_status | pending / done / problem | 未 / 済 / 問題あり |
 
-app_role の head（総務部門長）と deputy_head（総務副部門長）は T15 で足した（D-48。deputy_head の権限は head と同じ）。`alter type … add value` で足した値は、同じトランザクションの中では使えないので、値を足すだけのマイグレーション（0011）を分け、値を使うのは 0013 からにする。group_role の店長と副店長も権限は同じで、表示名だけが違う。画面の表示名は T15b でこの表の名前にそろえた（T15b より前の画面は admin を「総務管理者」、staff を「総務部員」と出していた。head・deputy_head は T15b を出すまで付けない。README の 5）。団体代表は、画面では「{団体名} の店長」「{団体名} の副店長」と出す（04「共通レイアウト」。D-50）。
+app_role の head（総務部門長）と deputy_head（総務副部門長）は T15 で足した（D-48。deputy_head の権限は head と同じ）。`alter type … add value` で足した値は、同じトランザクションの中では使えないので、値を足すだけのマイグレーション（0011）を分け、値を使うのは 0013 からにする。group_role の店長と副店長も権限は同じで、表示名だけが違う。画面の表示名は T15b でこの表の名前にそろえた（T15b より前の画面は admin を「総務管理者」、staff を「総務部員」と出していた。head・deputy_head は T15b を出してから、管理者が招待で付ける。README の 5）。団体代表は、画面では「{団体名} の店長」「{団体名} の副店長」と出す（04「共通レイアウト」。D-50）。
 
 ## テーブル定義
 

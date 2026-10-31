@@ -10,7 +10,6 @@ import { LatestYearSwitch } from '@/components/common/latest-year';
 import { PageHeader } from '@/components/common/page-header';
 import { Input } from '@/components/ui/input';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
-import { isAdmin } from '@/lib/auth/roles';
 import type { YearRow } from '@/lib/db/types';
 import {
   countedByRoom,
@@ -22,7 +21,7 @@ import {
   type StorageRoom,
 } from '@/lib/data/stocks';
 import { classifyError, messageFor } from '@/lib/errors';
-import { CountedLabel, UnusableBadge, type OpenYear } from './common';
+import { CountedLabel, NoStorageState, UnusableBadge, type OpenYear } from './common';
 
 export function RoomPicker({ open, year, storage }: { open: OpenYear; year: YearRow; storage: StorageRoom[] }) {
   const stocksQ = useYearStocks(year.id);
@@ -38,19 +37,7 @@ export function RoomPicker({ open, year, storage }: { open: OpenYear; year: Year
 
   let body: React.ReactNode;
   if (storage.length === 0) {
-    body = (
-      <EmptyState
-        title="保管場所がありません"
-        description={isAdmin(open.role) ? 'マスタ設定の場所で「保管場所」にしてください。' : '総務の管理者に、保管場所の登録を頼んでください。'}
-        action={
-          isAdmin(open.role) ? (
-            <AppLink href="/settings?tab=rooms" className="text-sm underline underline-offset-4">
-              マスタ設定（場所）へ
-            </AppLink>
-          ) : undefined
-        }
-      />
-    );
+    body = <NoStorageState role={open.role} />;
   } else if (stocksQ.isError) {
     body = <ErrorState message={messageFor(classifyError(stocksQ.error))} onRetry={() => void stocksQ.refetch()} />;
   } else if (!stocksQ.data) {

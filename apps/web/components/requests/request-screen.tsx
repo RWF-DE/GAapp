@@ -79,7 +79,7 @@ export function RequestScreen() {
     return (
       <>
         <PageHeader title="申請" />
-        <EmptyState title="代表している団体がありません" description="団体の代表として招待されると、ここで申請できます。" />
+        <EmptyState title="店長・副店長を務める団体がありません" description="団体の店長・副店長として招待されると、ここで申請できます。" />
       </>
     );
   }

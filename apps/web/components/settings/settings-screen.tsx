@@ -3,7 +3,7 @@
 // マスタ設定 /settings（画面の設計 3.2。T09・T15b）。部門長以上（ページの RequireAudience）。タブは `?tab=` で、段ごとに出し分ける
 // （settingsTabsFor。D-50）：管理者はすべて、総務部門長・総務副部門長は年度（受付期間だけ）・場所（今年の使用だけ）・ユーザーだけ。
 // 開けないタブ・知らない値の `?tab=` は開けるタブの最初（年度）を出す（URL は書き換えない）。
-// closed の年度では、ロールを外す・店長・副店長を外す・招待の取り消し・新しい年度の作成（管理者）以外は読み取り専用。
+// closed の年度では、ロールを外す、店長・副店長を外す、招待の取り消し、新しい年度の作成（管理者）以外は読み取り専用。
 import { useSearchParams } from 'next/navigation';
 import { ErrorBanner } from '@/components/common/error-banner';
 import { PageHeader } from '@/components/common/page-header';
@@ -36,8 +36,8 @@ const TAB_COMPONENTS: Record<SettingsTab, () => React.ReactNode> = {
 
 /** 終了した年度の帯（できることが段で違う。04「マスタ設定」） */
 const CLOSED_NOTICE = {
-  admin: '終了した年度のため、読み取り専用です（ロールを外す・店長・副店長を外す・招待の取り消し・新しい年度の作成はできます）',
-  lead: '終了した年度のため、読み取り専用です（総務部門員のロールを外す・店長・副店長を外す・招待の取り消しはできます）',
+  admin: '終了した年度のため、読み取り専用です（ロールを外す、店長・副店長を外す、招待の取り消し、新しい年度の作成はできます）',
+  lead: '終了した年度のため、読み取り専用です（総務部門員のロールを外す、店長・副店長を外す、招待の取り消しはできます）',
 } as const;
 
 export function SettingsScreen() {

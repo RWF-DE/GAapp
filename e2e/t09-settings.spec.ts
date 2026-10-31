@@ -273,7 +273,7 @@ test.describe('T09 ユーザー（使い捨てのユーザー）', () => {
       const form = page.getByTestId('invite-form');
       // 説明は applied が偽を「アカウントがない」と読ませない（アカウントがあってもメールを確かめられなければ偽。D-17a）
       const description = page.getByTestId('invite-description');
-      await expect(description).toContainText('今のメールを本人のものと確かめられれば、その場でロールが付きます');
+      await expect(description).toContainText('今のメールを本人のものと確かめられれば、その場で付きます');
       await expect(description).toContainText('メールを確かめられない');
       await expect(description).not.toContainText('なければその人がログインしたときに付きます');
       const invite = async (email: string) => {
@@ -307,7 +307,7 @@ test.describe('T09 ユーザー（使い捨てのユーザー）', () => {
         await sql('select 1 from public.invitations where year_id = $1 and email = $2 and role is not null and used_at is null', [s.yearId, verified.email]),
       ).toEqual([]);
 
-      // 最後の管理者（自分）は外せない（メンバーの表のロールの列が「管理者」の行。招待の表の「ロール・団体」の列と取り違えない）
+      // 最後の管理者（自分）は外せない（メンバーの表のロールの列が「管理者」の行。招待の表の「立場」の列と取り違えない）
       await memberRowOfRole(page, '管理者').getByRole('button', { name: 'ロールを外す' }).click();
       await page.getByRole('dialog').getByRole('button', { name: '外す' }).click();
       await expect(page.getByText('最後の管理者は外せません', { exact: true })).toBeVisible();

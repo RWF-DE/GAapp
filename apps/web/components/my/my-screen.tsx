@@ -51,7 +51,7 @@ export function MyScreen() {
   const m = membership.status === 'ready' ? membership.membership : null;
   if (!m?.year) return <LoadingState />;
   const group = pickMyGroup(m.groups, groupParam.parse(params.get('group') ?? undefined));
-  if (!group) return <ForbiddenState description="この年度で代表を務める団体がありません。" />;
+  if (!group) return <ForbiddenState description="この年度で店長・副店長を務める団体がありません。" />;
   const groupSwitch =
     m.groups.length > 1 ? (
       <div className="mb-4 flex items-center gap-2">

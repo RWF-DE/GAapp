@@ -130,27 +130,46 @@ describe('年度の変更の段（D-50）', () => {
     expect(screen.getByTestId('year-create-form')).toBeTruthy();
   });
 
+  it('管理者で最新でない年度：作成の欄はなく、最新の年度を開いてその年度の管理者が作ると知らせる', async () => {
+    const value: SettingsContextValue = {
+      year,
+      membership: { years: [], adminOfOpenYear: true, role: 'admin', latestYear: { id: 'y10', label: 'R10' } } as unknown as Membership,
+      yearWritable: true,
+      globalWritable: true,
+    };
+    render(
+      <TestProviders>
+        <SettingsContext.Provider value={value}>
+          <YearsTab />
+        </SettingsContext.Provider>
+      </TestProviders>,
+    );
+    expect((await screen.findByTestId('year-create-unavailable')).textContent).toBe(
+      '新しい年度は、最新の年度（R10）を開いて、その年度の管理者が作れます。',
+    );
+    expect(screen.queryByTestId('year-fixed-fields')).toBeNull();
+  });
+
   for (const role of ['head', 'deputy_head'] as const) {
-    it(`${role}：年度名・1日目は読み取り、作成の欄はなく、送る patch は受付期間だけ`, async () => {
+    it(`${role}：年度名・1日目は入力欄でなく文字で出し、作成の欄はなく、送る patch は受付期間だけ`, async () => {
       rpc.callRpc.mockResolvedValue({});
       const user = userEvent.setup();
       renderTab(role);
       const form = await screen.findByTestId('year-edit-form');
-      expect(field(form, 'label').readOnly).toBe(true);
-      expect(field(form, 'festival_start').readOnly).toBe(true);
+      // 書ける欄と見分けられるよう、変えられない項目は入力欄にしない（「管理者が変えます」を添える）
+      expect(field(form, 'label')).toBeNull();
+      expect(field(form, 'festival_start')).toBeNull();
+      expect(screen.getByTestId('year-fixed-label').textContent).toBe('R9');
+      expect(screen.getByTestId('year-fixed-festival-start').textContent).toBe('2027/10/16');
+      expect(screen.getByTestId('year-fixed-fields').textContent).toBe('年度名R9（管理者が変えます）1日目2027/10/16（管理者が変えます）');
       expect(field(form, 'request_open_at').readOnly).toBe(false);
       expect(field(form, 'request_close_at').readOnly).toBe(false);
       expect(screen.getByTestId('year-edit-description').textContent).toBe(
         '申請の受付期間を変えます（年度名と1日目は管理者が変えます）。受付開始の前に締切を入れてください（受付中は締切を空にできません）。',
       );
-      // 最新の年度でも、作成の欄は出さずに管理者が作ると知らせる
+      // 最新の年度でも、作成の欄は出さずに最新の年度の管理者が作ると知らせる（開いている年度を開き直させない）
       expect(screen.queryByTestId('year-create-form')).toBeNull();
-      expect(screen.getByTestId('year-create-unavailable').textContent).toBe(
-        '新しい年度は、最新の年度（R9）を開いて、その年度の管理者が作れます。',
-      );
-      // 読み取りの欄は打っても変わらない
-      await user.type(field(form, 'label'), 'X');
-      expect(field(form, 'label').value).toBe('R9');
+      expect(screen.getByTestId('year-create-unavailable').textContent).toBe('新しい年度は、最新の年度（R9）の管理者が作ります。');
       fireEvent.change(field(form, 'request_close_at'), { target: { value: '2027-07-10T18:00' } });
       await user.click(screen.getByRole('button', { name: '年度を保存' }));
       await waitFor(() => expect(rpc.callRpc).toHaveBeenCalledTimes(1));

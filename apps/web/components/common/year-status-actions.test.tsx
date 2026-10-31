@@ -73,10 +73,16 @@ describe('YearStatusActions の段', () => {
     expect(await screen.findByRole('button', { name: '年度データを書き出す' })).toBeTruthy();
   });
 
-  it.each(['head', 'deputy_head'] as const)('%s：確定中は「確定を解除」だけ（終了と書き出しはない）', async (role) => {
+  it.each(['head', 'deputy_head'] as const)('%s：確定中は「確定を解除」だけ（終了と書き出しはない。終了は管理者が行うと添える）', async (role) => {
     await renderAs(role, 'confirmed');
     expect(buttons()).toEqual(['確定を解除']);
     expect(screen.queryByRole('button', { name: '年度データを書き出す' })).toBeNull();
+    expect(screen.getByTestId('close-admin-only').textContent).toBe('年度の終了は管理者が行います。');
+  });
+
+  it('管理者には終了の注を出さない（「終了」がある）', async () => {
+    await renderAs('admin', 'confirmed');
+    expect(screen.queryByTestId('close-admin-only')).toBeNull();
   });
 
   it('総務部門長：準備中は「受付開始」（締切がなければ押せず、マスタ設定の年度のタブへ案内する）', async () => {

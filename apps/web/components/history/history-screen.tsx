@@ -20,6 +20,7 @@ import {
   EMPTY_FILTER,
   formatDiffEntry,
   hasFilter,
+  historyEmptyNote,
   historyHref,
   parseHistoryParams,
   tableLabel,
@@ -122,7 +123,7 @@ function HistoryBody({ yearId, yearLabel, adminOfOpenYear }: { yearId: string; y
       ) : rows.length === 0 ? (
         <EmptyState
           title="この条件の変更はありません"
-          description={hasFilter(filter) ? '絞り込みを変えるか、消してください。' : undefined}
+          description={historyEmptyNote(filter, adminOfOpenYear)}
           action={
             hasFilter(filter) ? (
               <Button variant="outline" size="sm" onClick={() => changeFilter(() => EMPTY_FILTER)}>

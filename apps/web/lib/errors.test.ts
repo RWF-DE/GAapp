@@ -40,6 +40,16 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     expect(effectOf(classifyError(p0001('forbidden'))).reload).toBe('year');
   });
 
+  it('招待の forbidden：部門長・副部門長（canChangeRoles: false）には、管理者の未使用の招待があるメールかもしれないと添える（D-48）', () => {
+    expect(msg(p0001('forbidden'), { rpc: 'invite', canChangeRoles: false })).toBe(
+      '権限がありません。このメールアドレスに管理者が出した招待があるか、立場が変わった可能性があります（管理者に頼んでください）',
+    );
+    expect(msg(p0001('forbidden'), { rpc: 'invite', canChangeRoles: true })).toBe('権限がありません。立場が変わった可能性があります');
+    expect(msg(p0001('forbidden'), { rpc: 'invite' })).toBe('権限がありません。立場が変わった可能性があります');
+    // 招待のほかの RPC には添えない
+    expect(msg(p0001('forbidden'), { rpc: 'set_group_member_role', canChangeRoles: false })).toBe('権限がありません。立場が変わった可能性があります');
+  });
+
   it('P0001 not_found → not_found。読み直す', () => {
     expect(kind(p0001('not_found'))).toBe('not_found');
     expect(msg(p0001('not_found'))).toBe('対象が見つかりません（ほかの人が消した可能性があります）');
