@@ -72,10 +72,11 @@ function fakeClient(rows: Record<string, unknown>, gates: Record<string, Promise
 }
 
 describe('先送りしてよい画面（EARLY_FETCH_PATHS）', () => {
-  it('版を使わない画面（先読みの表と同じ /stock・/request・/my）だけで、振り分けに関わる画面（版を先に読む。D-33）は入らない', () => {
+  it('版を使わない画面（先読みの表と同じ /stock・/request・/my）だけで、振り分けに関わる画面（版を先に読む。D-33）と T16 のダッシュボード（/）は入らない', () => {
     expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/my', '/request', '/stock']);
     expect(EARLY_FETCH_PATHS).toEqual(Object.keys(SCREEN_PREFETCH));
-    for (const p of ['/', '/allocation', '/swaps']) {
+    // 振り分けに関わる画面（/furniture・/allocation・/swaps）と、ダッシュボード（/。版は読まないが T16 では入れない。D-51）
+    for (const p of ['/', '/furniture', '/allocation', '/swaps']) {
       expect(EARLY_FETCH_PATHS).not.toContain(p);
       expect(Object.keys(SCREEN_PREFETCH)).not.toContain(p);
     }

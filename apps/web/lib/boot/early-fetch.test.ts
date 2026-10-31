@@ -139,7 +139,7 @@ describe('記録', () => {
     expect(paths['/stock']).toEqual(entry('/rest/v1/stocks?select=*'));
   });
 
-  it.each(SNAPSHOT_PATHS)('先送りしてよい画面にないパス（%s。版を先に読む画面）は覚えない', async (path) => {
+  it.each(SNAPSHOT_PATHS)('先送りしてよい画面にないパス（%s。版を先に読む画面と、T16 のダッシュボード）は覚えない', async (path) => {
     vi.stubGlobal('fetch', fetchOk());
     const key = requestsKey(USER, PREFIX);
     window.history.replaceState(null, '', path);
