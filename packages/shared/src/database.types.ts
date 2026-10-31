@@ -404,6 +404,94 @@ export type Database = {
         };
         Relationships: [];
       };
+      notice_groups: {
+        Row: {
+          created_at: string;
+          group_id: string;
+          notice_id: string;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          group_id: string;
+          notice_id: string;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          group_id?: string;
+          notice_id?: string;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notice_groups_group_fkey";
+            columns: ["group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "notice_groups_notice_fkey";
+            columns: ["notice_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "notices";
+            referencedColumns: ["id", "year_id"];
+          },
+        ];
+      };
+      notices: {
+        Row: {
+          audience: Database["public"]["Enums"]["notice_audience"];
+          body: string | null;
+          created_at: string;
+          created_by: string | null;
+          id: string;
+          pinned: boolean;
+          title: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          audience: Database["public"]["Enums"]["notice_audience"];
+          body?: string | null;
+          created_at?: string;
+          created_by?: string | null;
+          id?: string;
+          pinned?: boolean;
+          title: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id: string;
+        };
+        Update: {
+          audience?: Database["public"]["Enums"]["notice_audience"];
+          body?: string | null;
+          created_at?: string;
+          created_by?: string | null;
+          id?: string;
+          pinned?: boolean;
+          title?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notices_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       profiles: {
         Row: {
           created_at: string;
@@ -961,6 +1049,10 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      delete_notice: {
+        Args: { p_base_updated_at: string; p_notice_id: string };
+        Returns: undefined;
+      };
       invite: {
         Args: {
           p_email: string;
@@ -1003,6 +1095,36 @@ export type Database = {
       save_auto_allocations: {
         Args: { p_base_version: number; p_mode: string; p_rows: Json; p_year_id: string };
         Returns: Json;
+      };
+      save_notice: {
+        Args: {
+          p_audience: Database["public"]["Enums"]["notice_audience"];
+          p_base_updated_at?: string;
+          p_body?: string;
+          p_group_ids?: string[];
+          p_notice_id?: string;
+          p_pinned?: boolean;
+          p_title: string;
+          p_year_id: string;
+        };
+        Returns: {
+          audience: Database["public"]["Enums"]["notice_audience"];
+          body: string | null;
+          created_at: string;
+          created_by: string | null;
+          id: string;
+          pinned: boolean;
+          title: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "notices";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
       };
       set_consent: {
         Args: {
@@ -1127,6 +1249,7 @@ export type Database = {
       festival_day: "day_minus2" | "day_minus1" | "day1" | "day2";
       group_category: "stall" | "department" | "company" | "rest_area";
       group_role: "manager" | "deputy_manager";
+      notice_audience: "soumu" | "all_groups" | "groups";
       room_kind: "room" | "gym" | "outdoor" | "other";
       rule_kind: "substitute" | "source_restrict" | "fixed_request" | "keep";
       year_status: "preparing" | "requesting" | "allocating" | "confirmed" | "closed";
@@ -1253,6 +1376,7 @@ export const Constants = {
       festival_day: ["day_minus2", "day_minus1", "day1", "day2"],
       group_category: ["stall", "department", "company", "rest_area"],
       group_role: ["manager", "deputy_manager"],
+      notice_audience: ["soumu", "all_groups", "groups"],
       room_kind: ["room", "gym", "outdoor", "other"],
       rule_kind: ["substitute", "source_restrict", "fixed_request", "keep"],
       year_status: ["preparing", "requesting", "allocating", "confirmed", "closed"],

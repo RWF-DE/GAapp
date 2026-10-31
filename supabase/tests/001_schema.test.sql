@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(156);
+select plan(206);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -18,11 +18,13 @@ select enum_has_labels('public', 'consent_status', array['not_asked','asked','ac
 select enum_has_labels('public', 'festival_day', array['day_minus2','day_minus1','day1','day2']);
 select enum_has_labels('public', 'delivery_kind', array['furniture','tent','weight','side_curtain']);
 select enum_has_labels('public', 'delivery_status', array['pending','done','problem']);
+-- notice_audience：お知らせの宛先（総務内・全団体・指定の団体。T17）
+select enum_has_labels('public', 'notice_audience', array['soumu','all_groups','groups']);
 
--- 表が 19 個、ビューが v_remaining
+-- 表が 21 個（T17 でお知らせの notices・notice_groups を足した）、ビューが v_remaining
 select tables_are('public', array['years','rooms','room_years','items','stocks','groups','year_roles','group_members',
   'invitations','request_submissions','requests','rules','substitution_consents','allocations',
-  'distance_overrides','slots','deliveries','profiles','audit_logs'], 'public の表は 19 個');
+  'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups'], 'public の表は 21 個');
 select views_are('public', array['v_remaining'], 'public のビューは v_remaining だけ');
 
 -- 列（表ごとに列の集合が一致する）
@@ -45,6 +47,8 @@ select columns_are('public', 'slots', array['id','year_id','day','starts_at','en
 select columns_are('public', 'deliveries', array['id','year_id','group_id','kind','slot_id','team','status','problem_note','returned','checked_by','checked_at','created_at','updated_at']);
 select columns_are('public', 'profiles', array['user_id','display_name','created_at','updated_at']);
 select columns_are('public', 'audit_logs', array['id','table_name','row_pk','action','year_id','group_id','before','after','reason','user_id','at']);
+select columns_are('public', 'notices', array['id','year_id','audience','title','body','pinned','created_by','updated_by','created_at','updated_at']);
+select columns_are('public', 'notice_groups', array['notice_id','year_id','group_id','created_at','updated_at']);
 select columns_are('public', 'v_remaining', array['year_id','room_id','item_id','stock','allocated','remaining']);
 
 -- 主な列の型・既定値
@@ -68,6 +72,27 @@ select col_default_is('group_members', 'role', 'manager');
 select col_type_is('invitations', 'group_role', 'group_role');
 select col_is_null('invitations', 'group_role');
 select col_hasnt_default('invitations', 'group_role');
+-- お知らせ（T17）：宛先・題名・ピン留めは not null（ピン留めの既定は false）。本文は任意（空白だけなら RPC が null にする）。
+-- 書いた人・直した人は null 可・既定なし（トリガー set_actor が入れる。アカウントが消えると set null）。宛先の団体の列はどれも not null
+select col_type_is('notices', 'audience', 'notice_audience');
+select col_not_null('notices', 'audience');
+select col_hasnt_default('notices', 'audience');
+select col_type_is('notices', 'title', 'text');
+select col_not_null('notices', 'title');
+select col_type_is('notices', 'body', 'text');
+select col_is_null('notices', 'body');
+select col_type_is('notices', 'pinned', 'boolean');
+select col_not_null('notices', 'pinned');
+select col_default_is('notices', 'pinned', 'false');
+select ok((select bool_and(data_type = 'uuid' and is_nullable = 'YES' and column_default is null)
+           from information_schema.columns
+           where table_schema = 'public' and table_name = 'notices' and column_name in ('created_by', 'updated_by'))
+          and (select count(*) = 2 from information_schema.columns
+               where table_schema = 'public' and table_name = 'notices' and column_name in ('created_by', 'updated_by')),
+  'notices.created_by・updated_by は uuid・null 可・既定なし');
+select ok((select bool_and(is_nullable = 'NO' and data_type = 'uuid') from information_schema.columns
+           where table_schema = 'public' and table_name = 'notice_groups' and column_name in ('notice_id', 'year_id', 'group_id')),
+  'notice_groups の notice_id・year_id・group_id は uuid・not null');
 select ok((select bool_and(is_nullable = 'NO' and column_default is not null)
            from information_schema.columns
            where table_schema = 'public' and column_name in ('created_at', 'updated_at')
@@ -86,6 +111,8 @@ select col_is_pk('substitution_consents', array['group_id','from_item_id','to_it
 select col_is_pk('distance_overrides', array['building_a','building_b']);
 select col_is_pk('profiles', 'user_id');
 select col_is_pk('audit_logs', 'id');
+select col_is_pk('notices', 'id');
+select col_is_pk('notice_groups', array['notice_id','group_id']);
 
 -- 一意制約
 select col_is_unique('years', 'label');
@@ -96,6 +123,10 @@ select col_is_unique('groups', array['id','year_id']);
 select col_is_unique('slots', array['id','year_id']);
 select col_is_unique('deliveries', array['group_id','kind']);
 select col_is_unique('rules', array['year_id','code']);
+-- notices の (id, year_id) は notice_groups の複合外部キーの参照先（T17。groups・slots と同じ）
+select col_is_unique('notices', array['id','year_id']);
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_id_year_id_key'), 'UNIQUE (id, year_id)',
+  'notices_id_year_id_key は unique (id, year_id)');
 
 -- 外部キー（年度の一致は複合外部キー）
 select fk_ok('public', 'allocations', array['group_id','year_id'], 'public', 'groups', array['id','year_id']);
@@ -104,6 +135,17 @@ select fk_ok('public', 'deliveries', array['slot_id','year_id'], 'public', 'slot
 select fk_ok('public', 'invitations', array['group_id','year_id'], 'public', 'groups', array['id','year_id']);
 select fk_ok('public', 'years', 'prev_year_id', 'public', 'years', 'id');
 select fk_ok('public', 'stocks', 'counted_by', 'auth', 'users', 'id');
+-- お知らせ（T17）：宛先の団体は、お知らせとも団体とも年度ごと結ぶ（お知らせと団体が同じ年度）
+select fk_ok('public', 'notices', 'year_id', 'public', 'years', 'id');
+select fk_ok('public', 'notices', 'created_by', 'auth', 'users', 'id');
+select fk_ok('public', 'notices', 'updated_by', 'auth', 'users', 'id');
+select fk_ok('public', 'notice_groups', array['notice_id','year_id'], 'public', 'notices', array['id','year_id']);
+select fk_ok('public', 'notice_groups', array['group_id','year_id'], 'public', 'groups', array['id','year_id']);
+select is((select string_agg(conname || ': ' || pg_get_constraintdef(oid), ' / ' order by conname collate "C") from pg_constraint
+           where conrelid = 'public.notice_groups'::regclass and contype = 'f'),
+  'notice_groups_group_fkey: FOREIGN KEY (group_id, year_id) REFERENCES groups(id, year_id) ON DELETE CASCADE / '
+  || 'notice_groups_notice_fkey: FOREIGN KEY (notice_id, year_id) REFERENCES notices(id, year_id) ON DELETE CASCADE',
+  'notice_groups の外部キーは2本とも名前つきの複合外部キーで cascade（お知らせを消す・団体を消すと行も消える）');
 
 -- on delete の動作（c＝cascade、r＝restrict、n＝set null）
 with fk as (
@@ -120,11 +162,12 @@ with fk as (
            where a.attrelid = c.conrelid and a.attnum = any (c.conkey)) as cols
   from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace)
 select is((select string_agg(tbl || '.' || cols, ' ' order by tbl, cols) from fk where del = 'n'),
-  'deliveries.checked_by deliveries.year_id,slot_id request_submissions.updated_by stocks.counted_by years.prev_year_id',
-  '記録のためのユーザー参照・時間枠・複製元は set null');
+  'deliveries.checked_by deliveries.year_id,slot_id notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by years.prev_year_id',
+  '記録のためのユーザー参照（お知らせの書いた人・直した人を含む）・時間枠・複製元は set null');
+-- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー
 select is((select count(*)::int from pg_constraint c
-           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 19,
-  '年度・団体・ユーザーへの参照は cascade（19 本）');
+           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 22,
+  '年度・団体・ユーザー・お知らせへの参照は cascade（22 本）');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'deliveries_slot_id_year_id_fkey'),
   'FOREIGN KEY (slot_id, year_id) REFERENCES slots(id, year_id) ON DELETE SET NULL (slot_id)',
   '時間枠を消しても受け渡しの year_id は残す（列を指定した set null）');
@@ -187,6 +230,36 @@ select throws_ok(format($$ insert into public.slots (year_id, day, starts_at, en
 select throws_ok(format($$ update public.deliveries set team = 0 where id = %L $$, tests.id('D_G1')), '23514', null, 'team は 1 以上');
 select throws_ok(format($$ update public.deliveries set team = 101 where id = %L $$, tests.id('D_G1')), '23514', null, 'team は 100 まで');
 select throws_ok($$ insert into public.audit_logs (table_name, row_pk, action) values ('x', '{}', 'merge') $$, '23514', null, 'audit_logs.action は insert・update・delete');
+-- お知らせ（T17）：題名は前後の空白（半角の空白・タブ・改行・全角の空白）を除いた形で 1〜100 字（RPC が除いてから入れ、CHECK は
+-- 除いた形であることを確かめる。SQL Editor から前後に空白のある題名を入れさせない）。本文は 4000 字まで（null 可）
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', '') $$, tests.id('Y1')),
+  '23514', null, 'notices.title が空');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E' \t\u3000') $$, tests.id('Y1')),
+  '23514', null, '題名が空白だけ（タブ・全角の空白を含む）');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', ' 題名') $$, tests.id('Y1')),
+  '23514', null, '題名の前に半角の空白');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'題名\u3000') $$, tests.id('Y1')),
+  '23514', null, '題名の後ろに全角の空白');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'\t題名') $$, tests.id('Y1')),
+  '23514', null, '題名の前にタブ');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'題名\n') $$, tests.id('Y1')),
+  '23514', null, '題名の後ろに改行（LF）');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'題名\r') $$, tests.id('Y1')),
+  '23514', null, '題名の後ろに改行（CR）');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', repeat('あ', 101)) $$, tests.id('Y1')),
+  '23514', null, '題名は 100 字まで');
+select lives_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', repeat('あ', 100)) $$, tests.id('Y1')),
+  '100 字の題名は入る');
+select lives_ok(format($$ insert into public.notices (year_id, audience, title) values (%L, 'soumu', E'題 名\u3000の中') $$, tests.id('Y1')),
+  '題名の中の空白はそのまま入る');
+select throws_ok(format($$ insert into public.notices (year_id, audience, title, body) values (%L, 'soumu', '本文', repeat('あ', 4001)) $$, tests.id('Y1')),
+  '23514', null, 'notices.body は 4000 字まで');
+select lives_ok(format($$ insert into public.notices (year_id, audience, title, body) values (%L, 'soumu', '本文', repeat('あ', 4000)) $$, tests.id('Y1')),
+  '4000 字の本文は入る');
+select lives_ok(format($$ insert into public.notices (year_id, audience, title, body) values (%L, 'soumu', '本文なし', null) $$, tests.id('Y1')),
+  '本文は null でよい');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_body_check'), 'CHECK ((length(body) <= 4000))',
+  'notices_body_check は 4000 字まで');
 
 -- 部分一意 index：未使用の招待は二重にできない
 select throws_ok(format($$ insert into public.invitations (year_id, email, role) values (%L, 'someone@pgtap.test', 'viewer') $$,
@@ -206,6 +279,11 @@ select has_index('allocations', 'allocations_year_group_idx');
 select has_index('audit_logs', 'audit_logs_year_at_idx');
 select has_index('audit_logs', 'audit_logs_table_at_idx');
 select has_index('audit_logs', 'audit_logs_group_at_idx');
+-- お知らせ（T17）：年度ごとの一覧（新しい順）とポリシーの year_id in (…) 用。宛先の団体は団体からの引き（集合の関数・団体の連鎖削除）用
+select is((select pg_get_indexdef('public.notices_year_id_idx'::regclass)),
+  'CREATE INDEX notices_year_id_idx ON public.notices USING btree (year_id, created_at DESC)', 'notices_year_id_idx は (year_id, created_at desc)');
+select is((select pg_get_indexdef('public.notice_groups_group_id_idx'::regclass)),
+  'CREATE INDEX notice_groups_group_id_idx ON public.notice_groups USING btree (group_id)', 'notice_groups_group_id_idx は (group_id)');
 
 -- ビュー：security_invoker（RLS を素通りしない）
 select ok((select 'security_invoker=true' = any (reloptions) from pg_class where oid = 'public.v_remaining'::regclass),
@@ -249,11 +327,49 @@ select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schem
           and not has_schema_privilege('anon', 'private', 'create') and not has_schema_privilege('authenticated', 'private', 'create'),
   'private スキーマは anon・PUBLIC から使えず、だれも create できない（authenticated の usage は T03 の 010）');
 
--- 年度・団体の付け替えを止めるトリガーが 12 表にある
+-- 年度・団体の付け替えを止めるトリガーが 14 表にある（T17 で notices の year_id と notice_groups の鍵の列を足した）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'check_immutable' and c.relnamespace = 'public'::regnamespace),
-  'allocations deliveries group_members groups invitations request_submissions requests room_years slots stocks substitution_consents year_roles',
-  'check_immutable が 12 表にある');
+  'allocations deliveries group_members groups invitations notice_groups notices request_submissions requests room_years slots stocks substitution_consents year_roles',
+  'check_immutable が 14 表にある');
+select is((select string_agg(c.relname || ': ' || pg_get_triggerdef(t.oid), ' / ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where t.tgname = 'check_immutable' and c.relname in ('notices', 'notice_groups') and c.relnamespace = 'public'::regnamespace),
+  'notice_groups: CREATE TRIGGER check_immutable BEFORE UPDATE OF notice_id, year_id, group_id ON public.notice_groups FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''notice_id'', ''year_id'', ''group_id'') / '
+  || 'notices: CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.notices FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'')',
+  'notices は year_id、notice_groups は鍵の列（notice_id・year_id・group_id）を全部変えられない');
+
+-- お知らせ（T17）のトリガー：版の増分（bump_version_*）と確定中・終了の守りはない（振り分けの入力でない。終了の年度の読み取り専用は RPC）。
+-- 宛先の団体の行は宛先が groups のお知らせにだけ置ける（notice_groups の insert の check_audience と、notices の audience の更新の
+-- check_groups）。書いた人・直した人は set_actor。BEFORE ROW のトリガーは名前の順に動く
+select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.notices'::regclass and not t.tgisinternal),
+  'audit check_groups check_immutable set_actor set_timestamps', 'notices のトリガーは5つ（版の増分・確定中の守りはない）');
+select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.notice_groups'::regclass and not t.tgisinternal),
+  'audit check_audience check_immutable set_timestamps', 'notice_groups のトリガーは4つ');
+select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.notices'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
+  'check_groups check_immutable set_actor set_timestamps', 'notices の BEFORE ROW のトリガーの順');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'check_groups' and t.tgrelid = 'public.notices'::regclass),
+  'CREATE TRIGGER check_groups BEFORE UPDATE OF audience ON public.notices FOR EACH ROW EXECUTE FUNCTION private.tg_notices_check_groups()',
+  'notices の check_groups：BEFORE UPDATE OF audience・行ごと');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'set_actor' and t.tgrelid = 'public.notices'::regclass),
+  'CREATE TRIGGER set_actor BEFORE INSERT OR UPDATE ON public.notices FOR EACH ROW EXECUTE FUNCTION private.tg_notices_set_actor()',
+  'notices の set_actor：BEFORE INSERT OR UPDATE・行ごと');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'check_audience' and t.tgrelid = 'public.notice_groups'::regclass),
+  'CREATE TRIGGER check_audience BEFORE INSERT ON public.notice_groups FOR EACH ROW EXECUTE FUNCTION private.tg_notice_groups_check_audience()',
+  'notice_groups の check_audience：BEFORE INSERT・行ごと');
+select is((select string_agg(c.relname || '=' || pg_get_triggerdef(t.oid), ' / ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where t.tgname = 'audit' and c.relname in ('notices', 'notice_groups') and c.relnamespace = 'public'::regnamespace),
+  'notice_groups=CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.notice_groups FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''notice_id,group_id'') / '
+  || 'notices=CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.notices FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''id'')',
+  '監査の row_pk はお知らせの id と、宛先の団体の (notice_id, group_id)');
+-- トリガー関数：set_actor は INVOKER（auth.uid() を読むだけ）、宛先の団体の決まりの2つは DEFINER（RLS を通らずにもう一方の表を読む）
+select is((select string_agg(p.proname || '=' || case when p.prosecdef then 'definer' else 'invoker' end, ' ' order by p.proname)
+           from pg_proc p where p.pronamespace = 'private'::regnamespace
+             and p.proname in ('tg_notices_set_actor', 'tg_notice_groups_check_audience', 'tg_notices_check_groups')),
+  'tg_notice_groups_check_audience=definer tg_notices_check_groups=definer tg_notices_set_actor=invoker',
+  'お知らせのトリガー関数の SECURITY');
 
 -- 兼任の禁止（T15。0013）：check_role_overlap が year_roles・group_members にだけあり、BEFORE・ROW・列が約束どおり。
 -- 店長⇄副店長（group_members の role だけの更新）では動かない（列に role がない）
@@ -274,16 +390,16 @@ select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
            where t.tgrelid = 'public.group_members'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
   'check_immutable check_role_overlap set_timestamps', 'group_members の BEFORE ROW のトリガーの順');
 
--- 時刻のトリガーが audit_logs 以外の 18 表にある
+-- 時刻のトリガーが audit_logs 以外の 20 表にある（T17 で notices・notice_groups を足した）
 select is((select count(distinct c.relname)::int from pg_trigger t join pg_class c on c.oid = t.tgrelid
-           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 18,
-  'set_timestamps が 18 表にある');
+           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 20,
+  'set_timestamps が 20 表にある');
 
 -- トリガーの一覧（表ごとの名前の集合）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'audit' and c.relnamespace = 'public'::regnamespace),
-  'allocations distance_overrides group_members groups items request_submissions requests room_years rooms rules stocks substitution_consents year_roles years',
-  'audit が 14 表にある（invitations・profiles は個人情報のため記録しない）');
+  'allocations distance_overrides group_members groups items notice_groups notices request_submissions requests room_years rooms rules stocks substitution_consents year_roles years',
+  'audit が 16 表にある（invitations・profiles は個人情報のため記録しない。T17 でお知らせの2表を足した）');
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'bump_version_upd' and c.relnamespace = 'public'::regnamespace),
   'allocations distance_overrides groups items request_submissions requests room_years rooms rules stocks substitution_consents',
