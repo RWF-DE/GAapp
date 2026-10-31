@@ -30,6 +30,7 @@ insert into public.rooms (name, kind, building, floor, is_storage, sort_order) v
 -- R8 の年度は固定の id（…a1）。T05 の R8 の本データはこの年度に団体・在庫を足し、年度を作り直さない。
 -- テスト用の団体は R8 の団体名と重ならない名前にする（groups の unique (year_id, name)）。
 -- ユーザーの id は固定（Playwright から参照できるように）。メールは予約済みのドメイン（@example.test）。
+-- 総務部門長（head）は T15b で足した（…06。総務副部門長は seed に入れず、E2E がテストごとに使い捨てのユーザーに付ける。D-36）。
 -- パスワードはローカル専用の固定値で、秘密ではない。pgTAP のペルソナは別のドメイン（@pgtap.test）を使う。
 insert into public.years (id, label, festival_start, status, request_close_at)
 values ('00000000-0000-4000-8000-0000000000a1', 'R8', date '2026-10-17', 'requesting', now() + interval '30 days');
@@ -38,7 +39,8 @@ values ('00000000-0000-4000-8000-0000000000b1', '00000000-0000-4000-8000-0000000
 insert into public.invitations (year_id, email, role) values
   ('00000000-0000-4000-8000-0000000000a1', 'admin@example.test', 'admin'),
   ('00000000-0000-4000-8000-0000000000a1', 'staff@example.test', 'staff'),
-  ('00000000-0000-4000-8000-0000000000a1', 'viewer@example.test', 'viewer');
+  ('00000000-0000-4000-8000-0000000000a1', 'viewer@example.test', 'viewer'),
+  ('00000000-0000-4000-8000-0000000000a1', 'head@example.test', 'head');
 -- 団体の招待には立場（group_role）が要る（T15 の 0013 の invitations_group_role_check）。テスト用の団体代表は店長
 insert into public.invitations (year_id, email, group_id, group_role) values
   ('00000000-0000-4000-8000-0000000000a1', 'rep@example.test', '00000000-0000-4000-8000-0000000000b1', 'manager');
@@ -48,7 +50,8 @@ with u (id, email, name) as (values
   ('00000000-0000-4000-8000-000000000002'::uuid, 'staff@example.test',    'テスト部員'),
   ('00000000-0000-4000-8000-000000000003'::uuid, 'rep@example.test',      'テスト団体代表'),
   ('00000000-0000-4000-8000-000000000004'::uuid, 'viewer@example.test',   'テスト閲覧'),
-  ('00000000-0000-4000-8000-000000000005'::uuid, 'outsider@example.test', 'テスト未招待')),
+  ('00000000-0000-4000-8000-000000000005'::uuid, 'outsider@example.test', 'テスト未招待'),
+  ('00000000-0000-4000-8000-000000000006'::uuid, 'head@example.test',     'テスト部門長')),
 ins as (
   insert into auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
                           raw_app_meta_data, raw_user_meta_data, created_at, updated_at,

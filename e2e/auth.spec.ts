@@ -10,20 +10,30 @@ test.describe('ロールごとの表示', () => {
       'ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴',
     ]);
     await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
-    await expect(page.getByTestId('home-roles')).toHaveText('総務管理者');
+    await expect(page.getByTestId('home-roles')).toHaveText('管理者');
   });
 
-  // Q1（D-39。T09a）：部員は振り分けをいつでも読み取り専用で開ける
-  test('部員：在庫・申請一覧と振り分け（閲覧）だけ（マスタ設定・団体の画面は出ない）', async ({ page }) => {
+  // 部門長以上（D-48・D-50。T15b）：ナビは管理者と同じ（マスタ設定の中のタブは段で分ける）
+  test('総務部門長：管理者と同じ画面がメニューに出る', async ({ page }) => {
+    await loginAs(page, 'head');
+    expect(await navLabels(page)).toEqual([
+      'ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴',
+    ]);
+    await expect(page.getByTestId('current-year')).toHaveText('R8・申請受付中');
+    await expect(page.getByTestId('home-roles')).toHaveText('総務部門長');
+  });
+
+  // Q1（D-39。T09a）：総務部門員は振り分けをいつでも読み取り専用で開ける
+  test('総務部門員：在庫・申請一覧と振り分け（閲覧）だけ（マスタ設定・団体の画面は出ない）', async ({ page }) => {
     await loginAs(page, 'staff');
     expect(await navLabels(page)).toEqual(['ホーム', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
-    await expect(page.getByTestId('home-roles')).toHaveText('総務部員');
+    await expect(page.getByTestId('home-roles')).toHaveText('総務部門員');
   });
 
-  test('団体代表：申請と自団体の振り分けだけ', async ({ page }) => {
+  test('団体代表（店長）：申請と自団体の振り分けだけ', async ({ page }) => {
     await loginAs(page, 'rep');
     expect(await navLabels(page)).toEqual(['ホーム', '申請', '自団体の振り分け']);
-    await expect(page.getByTestId('home-roles')).toHaveText('テスト団体 の団体代表');
+    await expect(page.getByTestId('home-roles')).toHaveText('テスト団体 の店長');
   });
 
   test('閲覧のみ：ホームだけ', async ({ page }) => {

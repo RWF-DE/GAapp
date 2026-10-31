@@ -1,6 +1,6 @@
 'use client';
 
-// ルール（/rules。admin。PC）の画面（画面の設計 3.8。T12）。
+// ルール（/rules。部門長以上。PC）の画面（画面の設計 3.8。T12）。
 // 一覧（コード・種別・内容の文・有効・メモ）、種別ごとのフォームでの追加・編集、R8 の初期ルールのひな形、有効・無効の切り替え。
 // 削除は出さない（無効にしてメモに理由を書く。無効のルールも次の年度に引き継がれる）。確定中と終了の年度はメモだけ直せる。
 import { useQueryClient } from '@tanstack/react-query';
@@ -28,6 +28,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/lib/auth/auth-provider';
+import { isAdmin } from '@/lib/auth/roles';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
 import {
   checkEnable,
@@ -132,9 +133,11 @@ function RulesView({
   onReload: () => void;
 }) {
   const queryClient = useQueryClient();
-  const { reloadMembership } = useAuth();
+  const { membership, reloadMembership } = useAuth();
   const onAuthError = useAuthErrorHandler();
   const yearId = data.year.id;
+  // 団体のマスタ（使用場所）を直せるのは管理者だけ（ルールは部門長以上が変える。D-50）
+  const canEditGroups = membership.status === 'ready' && isAdmin(membership.membership.role);
   const editMode = ruleEditMode(data.year.status);
   const names = useMemo(() => ruleNamesOf(data), [data]);
   const problems = useMemo(() => ruleProblems(data), [data]);
@@ -411,6 +414,7 @@ function RulesView({
         onInsert={onInsert}
         onUpdate={onUpdate}
         onReload={onReload}
+        canEditGroups={canEditGroups}
       />
 
       {disableTarget ? (

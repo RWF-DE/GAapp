@@ -4,9 +4,12 @@
 // 2つ目の画面が要るまでは components/common に移さない（画面の設計 1.2。T09a の申し送り）。
 import { Ban } from 'lucide-react';
 import { useSyncExternalStore } from 'react';
+import { AppLink } from '@/components/common/app-link';
+import { EmptyState } from '@/components/states';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/lib/auth/auth-provider';
 import type { AppRole, Membership, YearSummary } from '@/lib/auth/membership';
+import { isAdmin } from '@/lib/auth/roles';
 import { formatShortDateTime } from '@/lib/datetime';
 import type { CountedInfo } from '@/lib/data/stocks';
 import { cn } from '@/lib/utils';
@@ -60,6 +63,28 @@ export function CountedLabel({
     <span data-testid="counted-label" data-counted="true" className={cn('text-muted-foreground', className)}>
       数えた（{formatShortDateTime(info.countedAt)}・{countedName(info, names)}）
     </span>
+  );
+}
+
+/**
+ * 保管場所が1つもないとき（在庫一覧・在庫入力の場所の選び方）。保管場所にする（場所の is_storage）のはマスタの変更なので、
+ * 管理者にだけマスタ設定の場所へのリンクを出し、ほかの人（総務部門長・総務副部門長・総務部門員）には管理者に頼む文を出す
+ * （部門長・副部門長は場所のタブを開けるが、変えられるのは今年の使用だけ。D-50）。
+ */
+export function NoStorageState({ role }: { role: AppRole | null }) {
+  const admin = isAdmin(role);
+  return (
+    <EmptyState
+      title="保管場所がありません"
+      description={admin ? 'マスタ設定の場所で「保管場所」にしてください。' : '管理者に、保管場所の登録を頼んでください。'}
+      action={
+        admin ? (
+          <AppLink href="/settings?tab=rooms" className="text-sm underline underline-offset-4">
+            マスタ設定（場所）へ
+          </AppLink>
+        ) : undefined
+      }
+    />
   );
 }
 

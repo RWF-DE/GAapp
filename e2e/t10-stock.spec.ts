@@ -505,7 +505,7 @@ test.describe('T10 部員', () => {
       await page.setViewportSize(MOBILE);
       await page.goto(`/stock/?room=${roomA}`);
       await waitInput(page, 10);
-      await expect(page.getByTestId('read-only-notice')).toHaveText('振り分けが始まったので、在庫は総務管理者だけが直せます');
+      await expect(page.getByTestId('read-only-notice')).toHaveText('振り分けが始まったので、在庫は管理者・総務部門長・総務副部門長だけが直せます');
       await expect(input(page, '机(木)')).toBeDisabled();
       await expect(plus(page, '机(木)')).toBeDisabled();
       await expect(page.getByRole('button', { name: '保存', exact: true })).toHaveCount(0);

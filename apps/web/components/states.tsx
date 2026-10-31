@@ -58,7 +58,7 @@ export function EmptyState({
 }
 
 export function ForbiddenState({
-  description = 'この画面を開く権限がありません。必要なら総務の管理者に確認してください。',
+  description = 'この画面を開く権限がありません。必要なら管理者に確認してください。',
   className,
 }: {
   description?: React.ReactNode;
@@ -154,7 +154,7 @@ const READ_ONLY_MESSAGES: Partial<Record<YearStatus, string>> = {
  *
  * @example
  * {!writable ? <ReadOnlyNotice status={year.status} /> : null}
- * <ReadOnlyNotice>部員は振り分けを見るだけです</ReadOnlyNotice>
+ * <ReadOnlyNotice>総務部門員は振り分けを見るだけです</ReadOnlyNotice>
  */
 export function ReadOnlyNotice({
   status,

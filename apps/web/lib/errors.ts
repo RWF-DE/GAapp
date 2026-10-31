@@ -6,7 +6,7 @@
 // - 文言にメールアドレス・CSV の中身を入れない。P0001 以外の details（23505 の「Key (email)=(…)」など、DB の値を含みうる）は持たない。
 // - details の団体・部屋・品目の id は、画面が渡す名前に置き換える（名前がなければ id は出さない）。
 // - 表にない field・reason は「入力の形が違います」「この操作はできません」にする（新しい RPC が増えても落ちない）。
-import { FIELD_LABELS, labelOf, ROLE_LABELS, YEAR_STATUS_LABELS, type YearStatus } from './labels';
+import { FIELD_LABELS, GROUP_ROLE_LABELS, labelOf, ROLE_LABELS, YEAR_STATUS_LABELS, type YearStatus } from './labels';
 
 export type ErrorKind =
   | 'forbidden'
@@ -258,6 +258,13 @@ export interface MessageContext {
   prevFestivalStart?: string;
   /** 申請一覧・取り込みで対象の団体（conflict の item_id・invalid_input の submittedAt に名前を添える） */
   groupId?: string;
+  /**
+   * 招待の conflict（field: role。この人はすでに別のロールを持つ）の後ろの文を選ぶ（04「マスタ設定」のユーザー。D-50）：
+   * ロールを変えられる人（管理者）は「ロールの変更はメンバーの一覧から」、変えられない人（総務部門長・総務副部門長）は
+   * 「ロールの変更は管理者に頼んでください」。省くと真（管理者の文）。偽のときは、招待の forbidden も、管理者の未使用の
+   * 招待があるメールかもしれないと添える（部門長・副部門長にはその招待が見えず、DB は理由を返さない。D-48）
+   */
+  canChangeRoles?: boolean;
 }
 
 const statusLabel = (s: unknown): string | undefined =>
@@ -352,7 +359,13 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   if (d.field === 'label') return '同じ年度名があります';
   if (d.field === 'role') {
     const role = typeof d.current === 'string' ? labelOf(ROLE_LABELS, d.current) : '';
-    return role ? `この人はすでに「${role}」です。ロールの変更はメンバーの一覧から` : 'この人にはすでに別のロールがあります。ロールの変更はメンバーの一覧から';
+    const next = ctx.canChangeRoles === false ? 'ロールの変更は管理者に頼んでください' : 'ロールの変更はメンバーの一覧から';
+    return role ? `この人はすでに「${role}」です。${next}` : `この人にはすでに別のロールがあります。${next}`;
+  }
+  // 招待：同じ団体に別の立場（店長・副店長）でいる（invite の details は {field: 'group_role', current}。T15）
+  if (d.field === 'group_role') {
+    const position = typeof d.current === 'string' ? labelOf(GROUP_ROLE_LABELS, d.current) : '';
+    return `この人はすでにこの団体の${position || '店長・副店長'}です。店長・副店長の切り替えはメンバーの一覧から`;
   }
   if ('asked' in d && 'current' in d) {
     const asked = num(d.asked);
@@ -428,9 +441,13 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
 export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string {
   switch (e.kind) {
     case 'forbidden':
-      return ctx.rpc === 'revoke_invitation'
-        ? '取り消せませんでした。読み直しました'
-        : '権限がありません。立場が変わった可能性があります';
+      if (ctx.rpc === 'revoke_invitation') return '取り消せませんでした。読み直しました';
+      // 部門長・副部門長の招待：管理者が出した未使用の招待（管理者・総務部門長・総務副部門長・閲覧のみ）のあるメールは DB が止める
+      // （上書きさせない。D-48）。その招待は部門長・副部門長に見えず、DB は理由を返さないので、立場の変化と並べて出す
+      if (ctx.rpc === 'invite' && ctx.canChangeRoles === false) {
+        return '権限がありません。このメールアドレスに管理者が出した招待があるか、立場が変わった可能性があります（管理者に頼んでください）';
+      }
+      return '権限がありません。立場が変わった可能性があります';
     case 'not_found':
       if (e.reason === 'lock_missing') return 'すでに消えていました（ほかの人が消した可能性があります）。読み直しました';
       return isRecord(e.details) && e.details.field === 'user_id'

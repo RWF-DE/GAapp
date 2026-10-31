@@ -40,6 +40,16 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     expect(effectOf(classifyError(p0001('forbidden'))).reload).toBe('year');
   });
 
+  it('招待の forbidden：部門長・副部門長（canChangeRoles: false）には、管理者の未使用の招待があるメールかもしれないと添える（D-48）', () => {
+    expect(msg(p0001('forbidden'), { rpc: 'invite', canChangeRoles: false })).toBe(
+      '権限がありません。このメールアドレスに管理者が出した招待があるか、立場が変わった可能性があります（管理者に頼んでください）',
+    );
+    expect(msg(p0001('forbidden'), { rpc: 'invite', canChangeRoles: true })).toBe('権限がありません。立場が変わった可能性があります');
+    expect(msg(p0001('forbidden'), { rpc: 'invite' })).toBe('権限がありません。立場が変わった可能性があります');
+    // 招待のほかの RPC には添えない
+    expect(msg(p0001('forbidden'), { rpc: 'set_group_member_role', canChangeRoles: false })).toBe('権限がありません。立場が変わった可能性があります');
+  });
+
   it('P0001 not_found → not_found。読み直す', () => {
     expect(kind(p0001('not_found'))).toBe('not_found');
     expect(msg(p0001('not_found'))).toBe('対象が見つかりません（ほかの人が消した可能性があります）');
@@ -74,10 +84,37 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     expect(msg(p0001('conflict'))).toBe('他の人が先に変更しました。読み直しました');
     expect(msg(p0001('conflict', { field: 'label' }))).toBe('同じ年度名があります');
     expect(msg(p0001('conflict', { field: 'role', current: 'staff' }))).toBe(
-      'この人はすでに「総務部員」です。ロールの変更はメンバーの一覧から',
+      'この人はすでに「総務部門員」です。ロールの変更はメンバーの一覧から',
     );
     expect(msg(p0001('conflict', { asked: 6, current: 8 }))).toBe(
       '依頼した台数（6）より置き換えが増えています（8）。依頼し直してください',
+    );
+  });
+
+  it('招待の conflict（field: role）の後ろの文は、ロールを変えられる人かで変わる（管理者はメンバーの一覧、部門長・副部門長は管理者に頼む。D-50）', () => {
+    const e = p0001('conflict', { field: 'role', current: 'viewer' });
+    expect(msg(e, { rpc: 'invite', canChangeRoles: true })).toBe('この人はすでに「閲覧のみ」です。ロールの変更はメンバーの一覧から');
+    expect(msg(e, { rpc: 'invite', canChangeRoles: false })).toBe('この人はすでに「閲覧のみ」です。ロールの変更は管理者に頼んでください');
+    expect(msg(p0001('conflict', { field: 'role', current: 'head' }), { canChangeRoles: false })).toBe(
+      'この人はすでに「総務部門長」です。ロールの変更は管理者に頼んでください',
+    );
+    // 今のロールが分からない（表にない値・ない）ときは名前を出さない
+    expect(msg(p0001('conflict', { field: 'role', current: 'other' }), { canChangeRoles: false })).toBe(
+      'この人にはすでに別のロールがあります。ロールの変更は管理者に頼んでください',
+    );
+    expect(msg(p0001('conflict', { field: 'role' }))).toBe('この人にはすでに別のロールがあります。ロールの変更はメンバーの一覧から');
+  });
+
+  it('招待の conflict（field: group_role。同じ団体に別の立場でいる。T15）→ 今の立場と、切り替えはメンバーの一覧から', () => {
+    const e = p0001('conflict', { field: 'group_role', current: 'deputy_manager' });
+    expect(classifyError(e)).toMatchObject({ kind: 'conflict', reason: 'conflict' });
+    expect(effectOf(classifyError(e))).toMatchObject({ reload: 'data', keepInput: true });
+    expect(msg(e, { rpc: 'invite' })).toBe('この人はすでにこの団体の副店長です。店長・副店長の切り替えはメンバーの一覧から');
+    expect(msg(p0001('conflict', { field: 'group_role', current: 'manager' }), { canChangeRoles: false })).toBe(
+      'この人はすでにこの団体の店長です。店長・副店長の切り替えはメンバーの一覧から',
+    );
+    expect(msg(p0001('conflict', { field: 'group_role' }))).toBe(
+      'この人はすでにこの団体の店長・副店長です。店長・副店長の切り替えはメンバーの一覧から',
     );
   });
 
@@ -93,6 +130,8 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     // invite の早めのエラー（reason つき）と details のないものも同じ
     expect(msg(p0001('role_overlap', { year_id: Y, reason: 'pending_invitation' }), { rpc: 'invite' })).toBe(overlap);
     expect(msg(p0001('role_overlap'))).toBe(overlap);
+    // 部門長・副部門長の招待（canChangeRoles: false）でも同じ
+    expect(msg(p0001('role_overlap', { year_id: Y, user_id: U, reason: 'current_membership' }), { rpc: 'invite', canChangeRoles: false })).toBe(overlap);
   });
 
   it('P0001 invalid_input → input（欄の日本語名を添える）。入力を残す', () => {

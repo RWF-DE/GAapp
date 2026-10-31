@@ -1,13 +1,17 @@
 // ダッシュボードの集計とホームのカード（画面の設計 3.1・6。T09）。summarizeDashboard は純粋関数で、3.1 の数をすべて返す。
 // 了承の集計は /swaps（T13）と同じ swapRows を使う（同じ数え方を2か所に書かない）。リンクは今の立場で開ける画面だけを返す
-// （開けなければ href を null にする。部員にキャスター机交換・ルール・マスタ設定へのリンクを出さない。1.1 の canOpen）。
+// （開けなければ href を null にする。総務部門員にキャスター机交換・ルール・マスタ設定へのリンクを、部門長・副部門長に管理者だけの
+// マスタ設定のタブ〔団体など〕へのリンクを出さない。1.1 の canOpen。D-50）。マスタ（場所・品目・団体・距離）を直す案内のリンク
+// （入力の誤りのマスタ設定・保管場所の登録）は管理者だけに出す（部門長・副部門長が開ける場所のタブでも、保管場所や場所の
+// 中身はマスタなので直せない。D-50。ほかの人には管理者に頼むよう文で出す）。
 import { compareBySortOrder, type GroupCategory, type InputError, type Issue } from '@gaapp/shared';
 import type { Audience, YearStatus } from '@/lib/auth/membership';
+import { isAdmin } from '@/lib/auth/roles';
 import { fetchAll } from '@/lib/db/fetch-all';
 import { COLUMNS, type ConsentDbRow, type SubmissionRow, type YearTables } from '@/lib/db/types';
 import { toAppError } from '@/lib/errors';
 import { CATEGORY_LABELS } from '@/lib/labels';
-import { canOpen } from '@/lib/navigation';
+import { canOpen, type SettingsTab } from '@/lib/navigation';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import type { Snapshot } from './snapshot';
 import { swapRows } from './swaps';
@@ -41,7 +45,10 @@ export interface CodeCount {
 export interface ProblemLine {
   message: string;
   ruleCode: string | null;
-  /** ルールなら /rules?code=…、ほかはマスタ設定。開けなければ null */
+  /**
+   * ルールなら /rules?code=…（開けなければ null）。ほかはマスタの誤りで、管理者にだけ直すマスタ設定のタブ
+   * （`/settings?tab=items` など。直すタブが決まらなければ /settings）。管理者でなければ null
+   */
   href: string | null;
 }
 
@@ -70,7 +77,7 @@ export interface DashboardSummary {
     unsubmittedCount: number;
     /** 未提出だけの申請一覧（開けなければ null） */
     unsubmittedHref: string | null;
-    /** 団体がないときの「マスタ設定の団体へ」（開けなければ null） */
+    /** 団体がないときの「マスタ設定の団体へ」（開けなければ null。ほかの人には管理者に頼む文を出す） */
     emptyHref: string | null;
   };
   stocks: {
@@ -80,7 +87,7 @@ export interface DashboardSummary {
     /** まだ数えていない保管場所（W104 と同じ。場所の並びで DASHBOARD_LIST_LIMIT 件まで。リンクは在庫入力） */
     uncounted: NamedLink[];
     uncountedCount: number;
-    /** 保管場所がないときの「マスタ設定の場所へ」（開けなければ null） */
+    /** 保管場所がないときの「マスタ設定の場所へ」（管理者だけ。保管場所はマスタなので、部門長・副部門長には null。D-50） */
     emptyHref: string | null;
   };
   validation: {
@@ -95,6 +102,8 @@ export interface DashboardSummary {
   };
   /** 入力の誤り（toYearData の problems） */
   problems: ProblemLine[];
+  /** 入力の誤りのカードの説明（直す人が段で違う：ルールは部門長以上、マスタは管理者。D-50） */
+  problemsNote: string;
   consents: {
     /** 了承が要る代替の置き換えがある団体の数（今の置き換え台数が1以上） */
     groups: number;
@@ -106,7 +115,7 @@ export interface DashboardSummary {
     reask: number;
     /** 拒否したので最小変更での再実行が要る団体 */
     rerun: number;
-    /** キャスター机交換の画面（admin だけ。開けなければ null） */
+    /** キャスター机交換の画面（部門長以上だけ。開けなければ null） */
     href: string | null;
   };
 }
@@ -135,7 +144,7 @@ export interface SummarizeOptions {
 type DashboardSource = Pick<Snapshot, 'year'> & Pick<YearTables, 'items' | 'rooms' | 'roomYears' | 'groups' | 'submissions' | 'stocks' | 'rules' | 'consents' | 'allocations'>;
 
 /**
- * ダッシュボードの数（3.1）。snapshot は part = full（admin・staff）。validation は useValidation の結果。
+ * ダッシュボードの数（3.1）。snapshot は part = full（総務）。validation は useValidation の結果。
  *
  * @example
  * const v = useValidation(snap.data);
@@ -148,6 +157,9 @@ export function summarizeDashboard(
 ): DashboardSummary {
   const status = snapshot.year.status;
   const link = (href: string): string | null => (canOpen(href, opts.audiences, status) ? href : null);
+  // マスタを直す案内のリンクは管理者だけ（D-50）。管理者で店長も務める人は audiences に admin と rep がある
+  const admin = opts.audiences.some((a) => a !== 'rep' && isAdmin(a));
+  const masterLink = (href: string): string | null => (admin ? link(href) : null);
 
   // 申請
   const groups = snapshot.groups
@@ -198,14 +210,14 @@ export function summarizeDashboard(
       unsubmitted: unsubmitted.slice(0, DASHBOARD_LIST_LIMIT).map((g) => ({ id: g.id, name: g.name })),
       unsubmittedCount: unsubmitted.length,
       unsubmittedHref: link('/requests?filter=unsubmitted'),
-      emptyHref: link('/settings?tab=groups'),
+      emptyHref: masterLink('/settings?tab=groups'),
     },
     stocks: {
       counted: storages.length - uncounted.length,
       total: storages.length,
       uncounted: uncounted.slice(0, DASHBOARD_LIST_LIMIT).map((r) => ({ id: r.id, name: r.name, href: link(`/stock?room=${r.id}`) })),
       uncountedCount: uncounted.length,
-      emptyHref: link('/settings?tab=rooms'),
+      emptyHref: masterLink('/settings?tab=rooms'),
     },
     validation: {
       phase,
@@ -215,7 +227,12 @@ export function summarizeDashboard(
       topCodes: topIssueCodes(issues),
       href: link('/allocation'),
     },
-    problems: problemLines(validation.problems, link),
+    problems: problemLines(validation.problems, link, masterLink),
+    problemsNote: admin
+      ? '直すまで確定できません。ルールの設定やマスタ設定を確かめてください。'
+      : link('/rules')
+        ? '直すまで確定できません。ルールを確かめるか、管理者にマスタの修正を頼んでください。'
+        : '直すまで確定できません。ルールは管理者・総務部門長・総務副部門長が、マスタは管理者が直します。',
     consents: {
       groups: groupsWhere(() => true),
       notAsked: groupsWhere((r) => r.status === 'not_asked'),
@@ -229,13 +246,39 @@ export function summarizeDashboard(
   };
 }
 
-/** 入力の誤りの行（ルールならコードとルールの画面、ほかはマスタ設定へ） */
-function problemLines(problems: readonly InputError[], link: (href: string) => string | null): ProblemLine[] {
-  return problems.map((p) => ({
-    message: p.message,
-    ruleCode: p.ruleCode ?? null,
-    href: p.ruleCode ? link(`/rules?code=${encodeURIComponent(p.ruleCode)}`) : link('/settings'),
-  }));
+/** 入力の誤りの path の頭 → 直すマスタ設定のタブ */
+const MASTER_TABS: ReadonlyMap<string, SettingsTab> = new Map<string, SettingsTab>([
+  ['items', 'items'],
+  ['rooms', 'rooms'],
+  ['groups', 'groups'],
+  ['distanceOverrides', 'distance'],
+]);
+
+/**
+ * 入力の誤り（ルールでないもの）の path の頭から、直すマスタ設定のタブ（toYearData と allocator の createContext の path。
+ * 在庫・申請・了承・振り分けの行の誤り〔消えた場所・団体の参照など〕はマスタ設定では直せないので null）。
+ *
+ * @example
+ * masterTabOf('distanceOverrides.0') // 'distance'
+ */
+export function masterTabOf(path: string): SettingsTab | null {
+  return MASTER_TABS.get(path.split('.', 1)[0] ?? '') ?? null;
+}
+
+/**
+ * 入力の誤りの行：ルールならコードとルールの画面（開ければ）、ほかはマスタの誤りで、管理者にだけ直すタブへのリンク
+ * （masterLink。直すタブが決まらなければタブのない /settings）
+ */
+function problemLines(
+  problems: readonly InputError[],
+  link: (href: string) => string | null,
+  masterLink: (href: string) => string | null,
+): ProblemLine[] {
+  return problems.map((p) => {
+    if (p.ruleCode) return { message: p.message, ruleCode: p.ruleCode, href: link(`/rules?code=${encodeURIComponent(p.ruleCode)}`) };
+    const tab = masterTabOf(p.path);
+    return { message: p.message, ruleCode: null, href: masterLink(tab ? `/settings?tab=${tab}` : '/settings') };
+  });
 }
 
 // ---- 団体代表・閲覧のみのホーム ----

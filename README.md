@@ -56,11 +56,14 @@ supabase start -x realtime,storage-api,imgproxy,mailpit,studio,edge-runtime,logf
 
 | メール | パスワード | R8 での立場 |
 | --- | --- | --- |
-| `admin@example.test` | `password123` | 総務管理者 |
-| `staff@example.test` | `password123` | 総務部員 |
-| `rep@example.test` | `password123` | 「テスト団体」の団体代表 |
+| `admin@example.test` | `password123` | 管理者 |
+| `head@example.test` | `password123` | 総務部門長 |
+| `staff@example.test` | `password123` | 総務部門員 |
+| `rep@example.test` | `password123` | 「テスト団体」の店長 |
 | `viewer@example.test` | `password123` | 閲覧のみ |
 | `outsider@example.test` | `password123` | 未招待（「総務から招待されていません」） |
+
+総務副部門長（deputy_head）のテストユーザーは seed にない（権限は総務部門長と同じ）。E2E はテストごとに使い捨てのユーザーに付ける（D-36）。
 
 テスト用ログインのフォームは、`NEXT_PUBLIC_ENABLE_TEST_LOGIN=true` でビルド（または `pnpm dev`）し、かつ Supabase の URL が `127.0.0.1`・`localhost` のときだけ出る。本番のビルド（deploy.yml）には入らない（CI の `pnpm check:no-test-login` で確かめる）。`pnpm dev` で使うときは apps/web/.env.local に次を書く（`supabase status -o env` の値）：
 
@@ -237,7 +240,8 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
   order by y.festival_start, r.email;
   ```
 
-- 総務部門長・総務副部門長のロールは、T15b（画面）を出すまで付けない（今の画面はこの2つのロールを知らず、ナビゲーションに何も出ない）。今までの admin・staff・viewer・団体代表は、そのまま使える（今の団体代表は店長になる）。
+- 総務部門長・総務副部門長は、0011〜0013 を流した後に T15b（ロールの画面）を本番に出してから付ける（T15b より前の画面はこの2つのロールを知らず、ナビゲーションに何も出ない）。出す順は、T15 のマージ → この 0011〜0013 の適用 → T15b のマージ（Deploy）。今までの admin・staff・viewer・団体代表は、そのまま使える（表示は管理者・総務部門員・閲覧のみ・「{団体} の店長」になる）。
+- T15b を出した後の付け方：その年度の管理者が、アプリのマスタ設定 → ユーザー の「招待する」で、メールアドレスを入れて立場に「総務部門長」か「総務副部門長」を選んで招待する（1回に1つの立場。すでにアカウントがあり、今のメールを本人のものと確かめられれば、その場で付く。ほかは、その人が学校の Google アカウントでログインしたときに付く）。年度の作成（create_year_from）で新しい年度に付くロールは作った人の管理者だけなので、**新しい年度を作るたびに招待し直す**（D-48。docs/runbook.md の 1.3）。総務部門員・店長・副店長は、管理者のほか総務部門長・総務副部門長も招待できる。総務部門長・総務副部門長・総務部門員は、同じ年度の店長・副店長を兼ねられない（管理者と閲覧のみは兼ねられる。D-49）。その年度の店長・副店長を総務部門長などに招待すると、立場の欄に兼任のエラーが出るので、先にメンバーの一覧で「代表を外す」か、別の人を招待する。
 
 ### 6. 最初の年度と最初の管理者（D-01）
 
@@ -246,7 +250,7 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
 1. オーナーが本番のアプリに学校の Google アカウントで1回ログインする（auth.users と profiles ができる。招待がないので「総務から招待されていません」と出る）。
 2. 管理画面の SQL Editor で年度を1行入れる：`insert into public.years (label, festival_start) values ('R9', '2027-10-16') returning id;`
 3. 同じく、自分を admin にする：`insert into public.year_roles (year_id, user_id, role) select '<年度の id>', id, 'admin' from auth.users where email = '<自分のメール>';`（メールはこの SQL にだけ書き、どこにも保存しない）
-4. アプリを開き直す。ほかの総務・団体代表は、アプリの招待（invite）で足す。招待された人は、初めてログインしたときにロールが付く。
+4. アプリを開き直す。ほかの人（総務部門長・総務副部門長・総務部門員・閲覧のみ・店長・副店長）は、アプリの招待（invite）で足す。招待された人は、初めてログインしたときにロールが付く。
 5. 最新の年度の admin が誰も残っていない（全員卒業して外した）ときは、3 と同じ SQL で、最新の年度に次の担当者を admin として足してから create_year_from を使う。
 
 SQL Editor は postgres で動くので RLS を通らず、監査の user_id は null になる。

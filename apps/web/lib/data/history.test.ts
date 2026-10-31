@@ -4,6 +4,7 @@ import {
   actionLabel,
   actorLabel,
   auditTarget,
+  crossYearNote,
   diffAudit,
   EMPTY_FILTER,
   fetchDeletedGroupNames,
@@ -14,12 +15,14 @@ import {
   historyQueries,
   atMicros,
   compareHistoryRows,
+  historyEmptyNote,
   historyHref,
   isDateParam,
   NAME_UNKNOWN,
   OUTSIDE_LABEL,
   parseHistoryParams,
   type AuditLogRow,
+  type HistoryFilter,
 } from './history';
 
 const Y = '11111111-1111-4111-8111-111111111111';
@@ -91,6 +94,39 @@ describe('差の表示', () => {
     expect(formatAuditValue('groups', 'aliases', ['a', 'b'])).toBe('a、b');
     expect(formatAuditValue('rules', 'params', { group: 'x' })).toBe('{"group":"x"}');
     expect(formatAuditValue('groups', 'year_id', Y, { years: new Map([[Y, 'R8']]) })).toBe('R8');
+  });
+
+  it('ロールは表示名、団体代表の立場（group_members の role）は店長・副店長（T15b。04「履歴」）', () => {
+    expect(formatAuditValue('year_roles', 'role', 'admin')).toBe('管理者');
+    expect(formatAuditValue('year_roles', 'role', 'head')).toBe('総務部門長');
+    expect(formatAuditValue('year_roles', 'role', 'deputy_head')).toBe('総務副部門長');
+    expect(formatAuditValue('year_roles', 'role', 'staff')).toBe('総務部門員');
+    expect(formatAuditValue('year_roles', 'role', 'viewer')).toBe('閲覧のみ');
+    expect(formatAuditValue('group_members', 'role', 'manager')).toBe('店長');
+    expect(formatAuditValue('group_members', 'role', 'deputy_manager')).toBe('副店長');
+    // 招待の立場（invitations は監査しないが、出ても日本語にする）
+    expect(formatAuditValue('invitations', 'group_role', 'deputy_manager')).toBe('副店長');
+    expect(formatAuditValue('invitations', 'role', 'staff')).toBe('総務部門員');
+    // 表にない値はそのまま
+    expect(formatAuditValue('group_members', 'role', 'owner')).toBe('owner');
+    expect(formatDiffEntry('group_members', { key: 'role', before: 'manager', after: 'deputy_manager' })).toBe('role：店長 → 副店長');
+  });
+
+  it('表の選びの注：開いている年度の管理者には年度をまたぐ表の説明、ほか（部門長・副部門長）には見られない理由', () => {
+    expect(crossYearNote(true)).toBe('場所・品目・距離は年度をまたぐ表です（年度のない記録も出します）。');
+    expect(crossYearNote(false)).toBe('場所・品目・距離の記録（年度のない記録）は、開いている年度の管理者だけが見られます。');
+  });
+
+  it('0 件のときの説明：年度をまたぐ表だけを選んだ部門長・副部門長には見られない理由を先に出す', () => {
+    const f = (tables: HistoryFilter['tables'], more: Partial<HistoryFilter> = {}): HistoryFilter => ({ ...EMPTY_FILTER, tables, ...more });
+    expect(historyEmptyNote(f(['rooms', 'items']), false)).toBe(
+      '場所・品目・距離の記録（年度のない記録）は、開いている年度の管理者だけが見られます。絞り込みを変えるか、消してください。',
+    );
+    // 開いている年度の管理者・年度の表も選んだ・絞り込みがない
+    expect(historyEmptyNote(f(['rooms']), true)).toBe('絞り込みを変えるか、消してください。');
+    expect(historyEmptyNote(f(['rooms', 'rules']), false)).toBe('絞り込みを変えるか、消してください。');
+    expect(historyEmptyNote(f([]), false)).toBeUndefined();
+    expect(historyEmptyNote(f([], { from: '2026-10-01' }), false)).toBe('絞り込みを変えるか、消してください。');
   });
 
   it('操作・した人', () => {

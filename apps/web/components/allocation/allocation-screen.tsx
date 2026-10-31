@@ -1,9 +1,10 @@
 'use client';
 
 // 振り分け /allocation（画面の設計 3.9、04「振り分け」、D-34・D-39。T13）。
-// - 管理者は振り分け中に自動振り分け・最小変更で再実行・確定・Excel 出力。計算エンジン（Worker と highs）は、管理者が振り分け中に
-//   この画面を開いたときだけ読み込み始める。
-// - 部員はいつでも読み取り専用（在庫・余り・検証・Excel 出力つき。書き込みのボタンは出さない。Q1）。
+// - 部門長以上（管理者・総務部門長・総務副部門長。T15b・D-50）は振り分け中に自動振り分け・最小変更で再実行・確定・Excel 出力。
+//   計算エンジン（Worker と highs）は、部門長以上が振り分け中にこの画面を開いたときだけ読み込み始める。確定中の「終了」は管理者だけ
+//   （YearStatusActions）。
+// - 総務部門員はいつでも読み取り専用（在庫・余り・検証・Excel 出力つき。書き込みのボタンは出さない。Q1）。
 // - 閲覧のみは確定後だけ、行の一覧（運び元・運び先・団体・品目・数）。在庫・申請は RLS で読めないので、余り・検証・団体別は出さない（Q1）。
 // 段 1：読み込みと表示・自動振り分け・検証の一覧・確定・Excel。
 // 段 2：行の手での編集（未保存の変更に溜めて save_allocation_rows で保存）、部屋の見出しからの「今年は使用不可にする」、
@@ -44,6 +45,7 @@ import { itemTabs, tabKeyByItem } from '@/lib/allocation/tabs';
 import { buildViewModel, namesOf } from '@/lib/allocation/view-model';
 import { useAuth } from '@/lib/auth/auth-provider';
 import { audiencesOf, type Audience } from '@/lib/auth/membership';
+import { isLead, isSoumu } from '@/lib/auth/roles';
 import { saveAutoAllocations } from '@/lib/data/allocation';
 import { downloadAllocationXlsx, ExportBlockedError, isBeforeConfirm } from '@/lib/data/export';
 import { setRoomUsable, type FixedRowOp } from '@/lib/data/room-years';
@@ -53,6 +55,7 @@ import { useVersionWatch } from '@/lib/data/version-watch';
 import { fetchYearVersion, isAllocationFinal } from '@/lib/data/year';
 import { toStoredRows } from '@/lib/data/year-data';
 import { classifyError, effectOf, messageFor } from '@/lib/errors';
+import { ALLOCATION_BEFORE_FINAL_NOTE } from '@/lib/navigation';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
 import { cn } from '@/lib/utils';
@@ -78,17 +81,17 @@ export function AllocationScreen() {
   const status = m.year.status;
   const audiences = audiencesOf(m);
 
-  if (role !== 'admin' && role !== 'staff') {
-    // 閲覧のみ（Q1）：確定後だけ。RequireAudience（href）は確定前の viewer を通さないが、念のためここでも分ける
+  if (!isSoumu(role)) {
+    // 閲覧のみ（Q1）：確定後だけ。ページの RequireAudience（href）が確定前の viewer を通さず同じ文言を出すが、二重の守りとしてここでも分ける
     if (role !== 'viewer') return <ForbiddenState />;
-    if (!isAllocationFinal(status)) return <ForbiddenState description="振り分けは確定後に表示されます。" />;
+    if (!isAllocationFinal(status)) return <ForbiddenState description={ALLOCATION_BEFORE_FINAL_NOTE} />;
   }
 
   if (status === 'preparing' || status === 'requesting') {
     return (
       <>
         <PageHeader title="振り分け" />
-        <Toolbar disabled isAdmin={role === 'admin'} canExport={false} />
+        <Toolbar disabled lead={isLead(role)} canExport={false} />
         <EmptyState
           title="締切の後に振り分けます"
           description="申請の締切（振り分けを始める）はホームのダッシュボードから行います。"
@@ -102,14 +105,14 @@ export function AllocationScreen() {
     );
   }
 
-  const part: SnapshotPart = role === 'admin' || role === 'staff' ? 'full' : 'public';
-  return <AllocationBody key={`${m.year.id}:${part}`} yearId={m.year.id} part={part} isAdmin={role === 'admin'} audiences={audiences} />;
+  const part: SnapshotPart = isSoumu(role) ? 'full' : 'public';
+  return <AllocationBody key={`${m.year.id}:${part}`} yearId={m.year.id} part={part} lead={isLead(role)} audiences={audiences} />;
 }
 
 /** 上部のボタン（段 1：自動振り分け・最小変更で再実行・Excel 出力。確定は YearStatusActions） */
 function Toolbar({
   disabled = false,
-  isAdmin,
+  lead,
   canExport,
   autoDisabled = true,
   minimalDisabled = true,
@@ -121,7 +124,7 @@ function Toolbar({
   emphasizeMinimal = false,
 }: {
   disabled?: boolean;
-  isAdmin: boolean;
+  lead: boolean;
   canExport: boolean;
   autoDisabled?: boolean;
   minimalDisabled?: boolean;
@@ -136,7 +139,7 @@ function Toolbar({
   return (
     <div className="mb-3 space-y-1 print:hidden" data-testid="allocation-toolbar">
       <div className="flex flex-wrap items-center gap-2">
-        {isAdmin ? (
+        {lead ? (
           <>
             <Button disabled={disabled || autoDisabled} onClick={() => onAuto?.('full')}>
               自動振り分け
@@ -167,7 +170,7 @@ function Toolbar({
   );
 }
 
-function AllocationBody({ yearId, part, isAdmin, audiences }: { yearId: string; part: SnapshotPart; isAdmin: boolean; audiences: Audience[] }) {
+function AllocationBody({ yearId, part, lead, audiences }: { yearId: string; part: SnapshotPart; lead: boolean; audiences: Audience[] }) {
   const snap = useSnapshot(yearId, part);
   if (snap.isPending) return <LoadingState />;
   // まだ中身がないときだけ ErrorState。中身があって読み直しが失敗したら（保存の後・StaleBanner・部屋の使用の conflict など）、
@@ -183,7 +186,7 @@ function AllocationBody({ yearId, part, isAdmin, audiences }: { yearId: string; 
         snapshot={snap.data}
         refetch={() => snap.refetch()}
         fetching={snap.isFetching}
-        isAdmin={isAdmin}
+        lead={lead}
         audiences={audiences}
       />
     </>
@@ -194,14 +197,14 @@ function AllocationLoaded({
   snapshot,
   refetch,
   fetching,
-  isAdmin,
+  lead,
   audiences,
 }: {
   snapshot: Snapshot;
   /** 読み直す（react-query の refetch。部屋の使用の conflict で、読み直した room_years を見るために結果を使う） */
   refetch: () => Promise<{ data?: Snapshot | undefined; isError?: boolean }>;
   fetching: boolean;
-  isAdmin: boolean;
+  lead: boolean;
   audiences: Audience[];
 }) {
   const yearId = snapshot.year.id;
@@ -216,8 +219,8 @@ function AllocationLoaded({
 
   const vm = useMemo(() => buildViewModel(snapshot), [snapshot]);
   const stored = useMemo(() => toStoredRows(snapshot).rows, [snapshot]);
-  // 行の手での編集（管理者・振り分け中だけ。確定中・終了・部員・閲覧のみは読み取り）
-  const editable = isAdmin && allocating && full;
+  // 行の手での編集（部門長以上・振り分け中だけ。確定中・終了・総務部門員・閲覧のみは読み取り）
+  const editable = lead && allocating && full;
   const pend = usePendingRows({ snapshot, refetch, editable });
   const dirty = pend.pending.length > 0;
   const rows = pend.rows;
@@ -236,10 +239,10 @@ function AllocationLoaded({
     [full, validation.yearData, vm, rows],
   );
 
-  // 計算エンジン：管理者が振り分け中に開いたときだけ（部員・閲覧のみと、振り分け中以外は Worker を作らない）
+  // 計算エンジン：部門長以上が振り分け中に開いたときだけ（総務部門員・閲覧のみと、振り分け中以外は Worker を作らない）
   const engine = useMemo<AllocatorEngine | null>(
-    () => (isAdmin && allocating && typeof window !== 'undefined' ? getAllocatorEngine() : null),
-    [isAdmin, allocating],
+    () => (lead && allocating && typeof window !== 'undefined' ? getAllocatorEngine() : null),
+    [lead, allocating],
   );
   const [engineLoadMs, setEngineLoadMs] = useState<number | null>(null);
   useEffect(() => {
@@ -355,7 +358,7 @@ function AllocationLoaded({
     unverified,
     engineState,
   });
-  const engineNote = isAdmin && allocating && engineState === 'failed' ? '計算エンジンを読み込めませんでした。「自動振り分け」を押すと、もう一度読み込みます。' : null;
+  const engineNote = lead && allocating && engineState === 'failed' ? '計算エンジンを読み込めませんでした。「自動振り分け」を押すと、もう一度読み込みます。' : null;
 
   // ---- Excel 出力（Q3：確定前は確かめて、ファイル名に「_確定前」） ----
   const [xlsxConfirm, setXlsxConfirm] = useState(false);
@@ -607,7 +610,7 @@ function AllocationLoaded({
       ) : null}
       {full ? (
         <Toolbar
-          isAdmin={isAdmin && allocating}
+          lead={lead && allocating}
           canExport={full}
           autoDisabled={autoDisabled}
           minimalDisabled={autoDisabled || autoRows === 0}
@@ -615,12 +618,12 @@ function AllocationLoaded({
           exporting={exporting}
           onAuto={(mode) => setConfirmMode(mode)}
           onExport={onExport}
-          autoHint={isAdmin ? (autoBlock ?? engineNote) : null}
+          autoHint={lead ? (autoBlock ?? engineNote) : null}
           emphasizeMinimal={suggestMinimal !== null && !dirty && !running}
         />
       ) : null}
 
-      {isAdmin && (allocating || status === 'confirmed') ? (
+      {lead && (allocating || status === 'confirmed') ? (
         // 計算中は確定・確定を解除・終了を押せない（disabled の fieldset の中のボタンは押せない）
         <fieldset disabled={running} data-testid="year-status-fieldset" className="m-0 mb-3 min-w-0 border-0 p-0 print:hidden">
           <YearStatusActions
@@ -641,10 +644,10 @@ function AllocationLoaded({
       ) : null}
 
       <div className="mb-3 space-y-2">
-        {!isAdmin && full ? (
-          <ReadOnlyNotice>部員は振り分けを見るだけです（自動振り分け・編集・確定は管理者が行います）。</ReadOnlyNotice>
+        {!lead && full ? (
+          <ReadOnlyNotice>総務部門員は振り分けを見るだけです（自動振り分け・編集・確定は管理者・総務部門長・総務副部門長が行います）。</ReadOnlyNotice>
         ) : null}
-        {isAdmin && status === 'confirmed' ? <ReadOnlyNotice>確定中です。直すときは「確定を解除」してください。</ReadOnlyNotice> : null}
+        {lead && status === 'confirmed' ? <ReadOnlyNotice>確定中です。直すときは「確定を解除」してください。</ReadOnlyNotice> : null}
         {status === 'closed' ? <ReadOnlyNotice status="closed" /> : null}
         {pend.draft ? <DraftNotice savedAt={pend.draft.savedAt} onRestore={pend.draft.restore} onDiscard={pend.draft.discard} /> : null}
         {suggestMinimal && editable ? (
@@ -669,7 +672,7 @@ function AllocationLoaded({
           <EmptyState
             className="rounded-md border border-dashed py-6"
             title="まだ自動振り分けをしていません"
-            description={isAdmin && allocating ? '「自動振り分け」を押すと、申請と在庫から振り分けを作ります。' : undefined}
+            description={lead && allocating ? '「自動振り分け」を押すと、申請と在庫から振り分けを作ります。' : undefined}
           />
         ) : null}
       </div>

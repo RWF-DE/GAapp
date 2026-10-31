@@ -150,6 +150,11 @@ export interface RuleFieldsProps {
   data: RulesData;
   /** 確定中・終了・送信中は params を変えられない */
   disabled: boolean;
+  /**
+   * 団体のマスタ（使用場所）を直せる人か（管理者）。「残す」の団体に使用場所がないときの案内を選ぶ：管理者はマスタ設定で
+   * 決める、ほかの人（総務部門長・総務副部門長）は管理者に頼む（団体はマスタ。D-50）
+   */
+  canEditGroups: boolean;
 }
 
 /** 種別ごとの欄（params） */
@@ -331,7 +336,7 @@ function FixedRequestFields({ values, onChange, errors, data, disabled }: RuleFi
   );
 }
 
-function KeepFields({ values, onChange, errors, data, disabled }: RuleFieldsProps) {
+function KeepFields({ values, onChange, errors, data, disabled, canEditGroups }: RuleFieldsProps) {
   const s = values.keep;
   const set = (patch: Partial<typeof s>) => onChange({ ...values, keep: { ...s, ...patch } });
   const base = useId();
@@ -372,7 +377,9 @@ function KeepFields({ values, onChange, errors, data, disabled }: RuleFieldsProp
         {group && !group.location_room_id ? (
           <p data-field-notice="params.room" className="flex items-start gap-1.5 text-sm text-amber-800">
             <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0" />
-            この団体には使用場所がありません。「残す」は団体の使用場所にしか使えないので、マスタ設定で団体の使用場所を決めてください
+            {canEditGroups
+              ? 'この団体には使用場所がありません。「残す」は団体の使用場所にしか使えないので、マスタ設定で団体の使用場所を決めてください'
+              : 'この団体には使用場所がありません。「残す」は団体の使用場所にしか使えないので、管理者に団体の使用場所の登録を頼んでください'}
           </p>
         ) : null}
         {unusableWarning ? (

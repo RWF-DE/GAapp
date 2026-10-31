@@ -58,6 +58,8 @@ export interface RuleFormSheetProps {
   onUpdate: (rule: RuleDbRow, patch: Partial<RuleWrite>) => Promise<SaveOutcome>;
   /** エラーの後に「読み直す」 */
   onReload: () => void;
+  /** 団体のマスタを直せる人か（管理者。「残す」の団体に使用場所がないときの案内を選ぶ。RuleFieldsProps） */
+  canEditGroups: boolean;
 }
 
 const memoSchema = optionalText(NOTE_MAX);
@@ -73,7 +75,16 @@ export function RuleFormSheet(props: RuleFormSheetProps) {
   );
 }
 
-function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate, onReload }: RuleFormSheetProps & { target: RuleSheetTarget }) {
+function RuleFormSheetBody({
+  target,
+  onClose,
+  data,
+  editMode,
+  onInsert,
+  onUpdate,
+  onReload,
+  canEditGroups,
+}: RuleFormSheetProps & { target: RuleSheetTarget }) {
   const [values, setValues] = useState<RuleFormValues>(target.initial);
   const [errors, setErrors] = useState<RuleFieldErrors>({});
   // 前の保存の失敗（runRuleWrite の結果）。rebased：読み直した行を入力の元にした（changed）
@@ -266,7 +277,7 @@ function RuleFormSheetBody({ target, onClose, data, editMode, onInsert, onUpdate
               <CheckOne label="有効（振り分けに使う）" checked={values.enabled} onChange={(v) => setValues({ ...values, enabled: v })} disabled={paramsDisabled} />
             </div>
           </div>
-          <RuleParamsFields values={values} onChange={setValues} errors={errors} data={data} disabled={paramsDisabled} />
+          <RuleParamsFields values={values} onChange={setValues} errors={errors} data={data} disabled={paramsDisabled} canEditGroups={canEditGroups} />
           <FieldErrors errors={errors} path="params" exact />
           <div data-field="memo" className="space-y-1.5">
             <Label htmlFor={memoId}>メモ（見直し点や、無効にした理由など）</Label>

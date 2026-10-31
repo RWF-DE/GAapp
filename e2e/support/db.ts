@@ -20,7 +20,10 @@ import { buildScenarioRows, type DbItem, type DbRoom, type ExtraGroup, type Scen
 import { SEED_USER_IDS, TEST_PASSWORD } from './users';
 
 export type YearStatus = 'preparing' | 'requesting' | 'allocating' | 'confirmed' | 'closed';
-export type AppRole = 'admin' | 'staff' | 'viewer';
+/** ロール（app_role。02「列挙型」の順。head・deputy_head は T15） */
+export type AppRole = 'admin' | 'head' | 'deputy_head' | 'staff' | 'viewer';
+/** 団体代表の立場（group_role。店長・副店長。T15） */
+export type GroupRole = 'manager' | 'deputy_manager';
 
 let pool: pg.Pool | null = null;
 
@@ -104,12 +107,17 @@ export interface CreateScenarioOptions {
   prevYear?: { dataset: 'small' | 'synthetic'; status?: YearStatus };
   /** 場所の名前 → 今年の使用 */
   usable?: Record<string, boolean>;
-  /** seed のテストユーザーに、この年度のロールを付ける */
-  roles?: { admin?: boolean; staff?: boolean; viewer?: boolean };
-  /** seed の団体代表（rep）を、この年度のこの団体の代表にする */
+  /** seed のテストユーザーに、この年度のロールを付ける（head は seed の総務部門長。T15b） */
+  roles?: { admin?: boolean; head?: boolean; staff?: boolean; viewer?: boolean };
+  /** seed の団体代表（rep）を、この年度のこの団体の代表（店長）にする */
   repGroup?: string;
   /** createUser のユーザーに、この年度のロールを付ける */
   grants?: { userId: string; role: AppRole }[];
+  /**
+   * createUser のユーザーを、この年度の団体（名前）の店長・副店長にする（既定は店長。T15b）。部門のロール（head・deputy_head・staff）を
+   * grants で付けた人は、同じ年度の団体代表にできない（兼任の禁止のトリガーが role_overlap で止める。D-49）
+   */
+  groupMembers?: { userId: string; group: string; role?: GroupRole }[];
   /** 既定 before-seed（2001 年。前年度は 2000 年）。latest は seed の R8 より後（2199 年。serial でだけ） */
   festivalStart?: 'before-seed' | 'latest';
   /** cleanup しない（手での確かめの年度。年度名は MANUAL- で始める） */
@@ -283,7 +291,7 @@ export async function createScenario(opts: CreateScenarioOptions = {}): Promise<
     await insertScenarioRows(c, rows);
 
     const roles: { user_id: string; role: AppRole }[] = [];
-    for (const r of ['admin', 'staff', 'viewer'] as const) if (opts.roles?.[r]) roles.push({ user_id: SEED_USER_IDS[r], role: r });
+    for (const r of ['admin', 'head', 'staff', 'viewer'] as const) if (opts.roles?.[r]) roles.push({ user_id: SEED_USER_IDS[r], role: r });
     for (const g of opts.grants ?? []) roles.push({ user_id: g.userId, role: g.role });
     await insertRows(
       c,
@@ -295,6 +303,15 @@ export async function createScenario(opts: CreateScenarioOptions = {}): Promise<
       const gid = rows.ids.groups[opts.repGroup];
       if (!gid) throw new Error(`repGroup の団体「${opts.repGroup}」がシナリオにありません`);
       await c.query('insert into public.group_members (group_id, user_id) values ($1, $2)', [gid, SEED_USER_IDS.rep]);
+    }
+    for (const m of opts.groupMembers ?? []) {
+      const gid = rows.ids.groups[m.group];
+      if (!gid) throw new Error(`groupMembers の団体「${m.group}」がシナリオにありません`);
+      await c.query('insert into public.group_members (group_id, user_id, role) values ($1, $2, $3::public.group_role)', [
+        gid,
+        m.userId,
+        m.role ?? 'manager',
+      ]);
     }
 
     if (prev && prev.status !== 'allocating') await c.query('update public.years set status = $2 where id = $1', [prev.id, prev.status]);

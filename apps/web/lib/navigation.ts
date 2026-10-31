@@ -1,16 +1,20 @@
 import type { Audience, YearStatus } from '@/lib/auth/membership';
+import { APP_ROLES, isAdmin, isLead, LEAD_ROLES, SOUMU_ROLES, type AppRole } from '@/lib/auth/roles';
 
 // 画面のルートと立場（画面の設計 1.1・1.3。T09a）。ナビ・ページの守り（RequireAudience）・画面の中のリンク（AppLink）を、
 // この表1か所で決める。各チケットは自分のページのファイルを中身に置き換えるだけで、このファイルを触らない（8.2）。
 // 動きのある部分（useGuardedRouter・useCanOpen）は lib/navigation/ に置く（このファイルは純粋な関数だけ）。
+// 立場はロールの段（lib/auth/roles.ts。D-48・D-50）から作り、画面ごとにロールを並べ直さない（04「共通レイアウト」の表）。
 
 export interface RouteDef {
   href: string;
   label: string;
-  /** 開ける立場（00「画面一覧」のロール。総務＝admin・staff、団体＝rep） */
+  /** 開ける立場（04「共通レイアウト」の表。部門長以上＝LEAD_ROLES、総務＝SOUMU_ROLES、団体＝rep） */
   audiences: readonly Audience[];
   /** audiences のうち、振り分けが決まった（確定・終了の）年度でだけ開ける立場（Q1：viewer の振り分け表。D-39） */
   finalOnly?: readonly Audience[];
+  /** finalOnly の立場だけを持つ人が、確定前に開いたときに「権限がありません」に添える説明 */
+  finalOnlyNote?: string;
   /** ナビに出すか（/stocks/qr は在庫一覧から開く） */
   nav: boolean;
   /** 中身を作るチケット（雛形のページの「準備中（T10）」に出す） */
@@ -26,23 +30,42 @@ export interface NavItem {
   ready: boolean;
 }
 
-const ALL: readonly Audience[] = ['admin', 'staff', 'viewer', 'rep'];
+/** どの立場でも（5つのロールと団体代表） */
+const ALL: readonly Audience[] = [...APP_ROLES, 'rep'];
+/** 部門長以上（管理者・総務部門長・総務副部門長） */
+const LEAD: readonly Audience[] = LEAD_ROLES;
+/** 総務（部門長以上と総務部門員） */
+const SOUMU: readonly Audience[] = SOUMU_ROLES;
+/** 団体代表（店長・副店長） */
+const REP: readonly Audience[] = ['rep'];
+
+/** 閲覧のみが確定前に振り分けを開いたときの説明（04「共通レイアウト」。T13-1） */
+export const ALLOCATION_BEFORE_FINAL_NOTE = '振り分けは確定後に表示されます。';
 
 // 00_overview.md「画面一覧」のフェーズ1の画面。順番はナビゲーションの並び。
 export const ROUTES: readonly RouteDef[] = [
   { href: '/', label: 'ホーム', audiences: ALL, nav: true, ticket: 'T09' },
-  { href: '/settings', label: 'マスタ設定', audiences: ['admin'], nav: true, ticket: 'T09' },
-  { href: '/stock', label: '在庫入力', audiences: ['admin', 'staff'], nav: true, ticket: 'T10' },
-  { href: '/stocks', label: '在庫一覧', audiences: ['admin', 'staff'], nav: true, ticket: 'T10' },
-  { href: '/stocks/qr', label: '部屋の QR の印刷', audiences: ['admin', 'staff'], nav: false, ticket: 'T10' },
-  { href: '/requests', label: '申請一覧', audiences: ['admin', 'staff'], nav: true, ticket: 'T11' },
-  { href: '/rules', label: 'ルール', audiences: ['admin'], nav: true, ticket: 'T12' },
-  // Q1（D-39）：staff はいつでも読み取り専用、viewer は確定後だけ
-  { href: '/allocation', label: '振り分け', audiences: ['admin', 'staff', 'viewer'], finalOnly: ['viewer'], nav: true, ticket: 'T13' },
-  { href: '/swaps', label: 'キャスター机交換', audiences: ['admin'], nav: true, ticket: 'T13' },
-  { href: '/history', label: '履歴', audiences: ['admin'], nav: true, ticket: 'T14' },
-  { href: '/request', label: '申請', audiences: ['rep'], nav: true, ticket: 'T11' },
-  { href: '/my', label: '自団体の振り分け', audiences: ['rep'], nav: true, ticket: 'T13' },
+  // 部門長・副部門長はマスタ設定の一部のタブだけ（settingsTabsFor）
+  { href: '/settings', label: 'マスタ設定', audiences: LEAD, nav: true, ticket: 'T09' },
+  { href: '/stock', label: '在庫入力', audiences: SOUMU, nav: true, ticket: 'T10' },
+  { href: '/stocks', label: '在庫一覧', audiences: SOUMU, nav: true, ticket: 'T10' },
+  { href: '/stocks/qr', label: '部屋の QR の印刷', audiences: SOUMU, nav: false, ticket: 'T10' },
+  { href: '/requests', label: '申請一覧', audiences: SOUMU, nav: true, ticket: 'T11' },
+  { href: '/rules', label: 'ルール', audiences: LEAD, nav: true, ticket: 'T12' },
+  // Q1（D-39）：総務部門員はいつでも読み取り専用、viewer は確定後だけ
+  {
+    href: '/allocation',
+    label: '振り分け',
+    audiences: [...SOUMU, 'viewer'],
+    finalOnly: ['viewer'],
+    finalOnlyNote: ALLOCATION_BEFORE_FINAL_NOTE,
+    nav: true,
+    ticket: 'T13',
+  },
+  { href: '/swaps', label: 'キャスター机交換', audiences: LEAD, nav: true, ticket: 'T13' },
+  { href: '/history', label: '履歴', audiences: LEAD, nav: true, ticket: 'T14' },
+  { href: '/request', label: '申請', audiences: REP, nav: true, ticket: 'T11' },
+  { href: '/my', label: '自団体の振り分け', audiences: REP, nav: true, ticket: 'T13' },
 ];
 
 export const NAV_ITEMS: readonly NavItem[] = ROUTES.filter((r) => r.nav).map(({ href, label, audiences, finalOnly }) => ({
@@ -83,14 +106,60 @@ export function audiencesFor(href: string, yearStatus?: YearStatus | null): Audi
   return r ? allowed(r, yearStatus) : [];
 }
 
+// ---- マスタ設定のタブ（D-50。canOpen が `/settings?tab=…` を見るので、データの層ではなくここに置く） ----
+
+/** マスタ設定のタブ（`?tab=`。並びはタブの並び） */
+export const SETTINGS_TABS = ['years', 'rooms', 'items', 'groups', 'distance', 'users', 'export'] as const;
+export type SettingsTab = (typeof SETTINGS_TABS)[number];
+
+/** 総務部門長・総務副部門長のタブ：年度（受付期間だけ変えられる）・場所（今年の使用だけ）・ユーザー（総務部門員と店長・副店長） */
+const LEAD_SETTINGS_TABS: readonly SettingsTab[] = ['years', 'rooms', 'users'];
+
+/**
+ * そのロールで開けるマスタ設定のタブ（並びはタブの並び。最初のものが、開けないタブ・知らない値の `?tab=` の行き先）。
+ * 管理者はすべて、総務部門長・総務副部門長は年度・場所・ユーザーだけ、ほかは何もない（マスタ設定を開けない）。
+ *
+ * @example
+ * settingsTabsFor('head') // ['years', 'rooms', 'users']
+ */
+export function settingsTabsFor(role: AppRole | null | undefined): readonly SettingsTab[] {
+  if (isAdmin(role)) return SETTINGS_TABS;
+  if (isLead(role)) return LEAD_SETTINGS_TABS;
+  return [];
+}
+
+/** `/settings?tab=X` の X（パスがマスタ設定でないか、tab がない・空なら null。知らない値もそのまま返す） */
+function settingsTabParam(href: string): string | null {
+  if (normalizePath(href) !== '/settings') return null;
+  const noHash = href.split('#', 1)[0] ?? '';
+  const q = noHash.indexOf('?');
+  return (q < 0 ? null : new URLSearchParams(noHash.slice(q + 1)).get('tab')) || null;
+}
+
 /**
  * 今の立場でそのページを開けるか（画面の中のリンクを出し分ける。1.1）。
- * 表にないパス（/login など）は判定しないので真。
+ * 表にないパス（/login など）は判定しないので真。マスタ設定のタブへのリンク（`/settings?tab=X`）は、立場のどれかで
+ * X のタブを開けるときだけ真（D-50。部門長・副部門長に団体・品目・距離・書き出しのタブへのリンクを出さない。
+ * tab のない /settings と、ページの守り〔RequireAudience・audiencesFor〕はパスだけを見る）。
  */
 export function canOpen(href: string, audiences: readonly Audience[], yearStatus?: YearStatus | null): boolean {
   const r = routeFor(href);
   if (!r) return true;
-  return allowed(r, yearStatus).some((a) => audiences.includes(a));
+  if (!allowed(r, yearStatus).some((a) => audiences.includes(a))) return false;
+  const tab = settingsTabParam(href);
+  return tab === null || audiences.some((a) => a !== 'rep' && (settingsTabsFor(a) as readonly string[]).includes(tab));
+}
+
+/**
+ * 確定前の年度のために開けないとき（finalOnly の立場では開けるが、年度がまだ確定・終了でない）の説明（04「共通レイアウト」：
+ * 閲覧のみが確定前に振り分けを開いたときは「振り分けは確定後に表示されます」を添える）。ほかは null（ほかの立場で開ける・
+ * 年度の状態によらず開けない・表にないパス）。
+ */
+export function finalOnlyNoteFor(href: string, audiences: readonly Audience[], yearStatus?: YearStatus | null): string | null {
+  const r = routeFor(href);
+  if (!r?.finalOnly || !r.finalOnlyNote || isFinal(yearStatus)) return null;
+  if (allowed(r, yearStatus).some((a) => audiences.includes(a))) return null;
+  return r.finalOnly.some((a) => audiences.includes(a)) ? r.finalOnlyNote : null;
 }
 
 /** その人に見せるナビゲーションの項目（立場のどれかが合うもの） */

@@ -1,9 +1,10 @@
 import { expect, type Page } from '@playwright/test';
 
-// supabase/seed.sql のテストユーザー（ローカル専用。パスワードは秘密ではない）
+// supabase/seed.sql のテストユーザー（ローカル専用。パスワードは秘密ではない）。総務部門長（head）は T15b で足した
 export const TEST_PASSWORD = 'password123';
 export const USERS = {
   admin: 'admin@example.test',
+  head: 'head@example.test',
   staff: 'staff@example.test',
   rep: 'rep@example.test',
   viewer: 'viewer@example.test',

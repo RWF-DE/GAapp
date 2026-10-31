@@ -192,7 +192,9 @@ test.describe('T13 部員（Q1：いつでも読み取り専用）', () => {
       await pinYear(page, SEED_USER_IDS.staff, s.yearId);
       await page.goto('/allocation/');
       await expect(page.getByTestId('issues-panel')).toBeVisible();
-      await expect(page.getByTestId('read-only-notice')).toContainText('部員は振り分けを見るだけです');
+      await expect(page.getByTestId('read-only-notice')).toHaveText(
+        '総務部門員は振り分けを見るだけです（自動振り分け・編集・確定は管理者・総務部門長・総務副部門長が行います）。',
+      );
       await expect(page.getByRole('button', { name: '自動振り分け', exact: true })).toHaveCount(0);
       await expect(page.getByRole('button', { name: '最小変更で再実行' })).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Excel出力' })).toBeEnabled();

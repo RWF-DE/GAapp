@@ -48,9 +48,10 @@ export function useSettings(): SettingsContextValue {
  * 年度をまたぐ表（場所・品目・距離）のタブの説明に添える、読み取り専用の理由。終了した年度では、ほかの開いている年度の
  * 管理者でも直せない（04「終了した年度では読み取り専用」）ので、直せる年度を開くよう案内する。行き先は、自分が admin の、
  * 終了していない最新の年度だけ（部員・閲覧のみ・団体代表の年度は開いても直せない）。なければボタンを出さず、
- * 開いている年度の管理者が直すと知らせる。
+ * 開いている年度の管理者が直すと知らせる。終了していない年度で開いている年度の管理者でない人（総務部門長・総務副部門長）には
+ * yearWritableNote（できることを書いた文。場所のタブの今年の使用など）か、編集できない理由を出す。
  */
-export function GlobalReadOnlyNote({ what }: { what: '場所' | '品目' | '距離' }) {
+export function GlobalReadOnlyNote({ what, yearWritableNote }: { what: '場所' | '品目' | '距離'; yearWritableNote?: string }) {
   const { year, membership, yearWritable, globalWritable } = useSettings();
   const { session } = useAuth();
   const setYear = useGuardedSetYear();
@@ -64,7 +65,7 @@ export function GlobalReadOnlyNote({ what }: { what: '場所' | '品目' | '距�
   });
   if (globalWritable) return null;
   if (yearWritable) {
-    return <span data-testid="global-read-only"> 開いている年度の管理者でないため、{what}は編集できません。</span>;
+    return <span data-testid="global-read-only">{yearWritableNote ?? `開いている年度の管理者でないため、${what}は編集できません。`}</span>;
   }
   // 読み直し中・失敗では前の結果を使わない（ロールが変わっていれば、直せない年度へ案内してしまうため）
   const roles = freshDataOf(rolesQ);
@@ -342,12 +343,15 @@ export function Field({
   error,
   hint,
   className,
+  errorTestId,
   children,
 }: {
   label: string;
   error?: string | undefined;
   hint?: React.ReactNode;
   className?: string;
+  /** エラーの文の data-testid（E2E が欄の下の文を名指しで見るとき。招待の立場の欄など） */
+  errorTestId?: string;
   children: (props: { id: string; 'aria-invalid'?: true; 'aria-describedby'?: string }) => React.ReactNode;
 }) {
   const id = useId();
@@ -364,7 +368,7 @@ export function Field({
         </p>
       ) : null}
       {error ? (
-        <p id={errId} role="alert" className="text-xs text-destructive">
+        <p id={errId} role="alert" className="text-xs text-destructive" data-testid={errorTestId}>
           {error}
         </p>
       ) : null}

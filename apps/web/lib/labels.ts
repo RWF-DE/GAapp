@@ -2,9 +2,9 @@
 // 相対の import とパッケージの import だけにする。
 import type { AllocOrigin, ConsentStatus, GroupCategory, RoomKind, RuleKind } from '@gaapp/shared';
 
-// ロールと年度の状態は T04 の membership.ts にある（ヘッダー・ホームと同じ言い方にするため、ここから出し直す）
-export { ROLE_LABELS, YEAR_STATUS_LABELS } from './auth/membership';
-export type { AppRole, YearStatus } from './auth/membership';
+// ロール・団体代表の立場（店長・副店長）・年度の状態は T04 の membership.ts にある（ヘッダー・ホームと同じ言い方にするため、ここから出し直す）
+export { GROUP_ROLE_LABELS, ROLE_LABELS, YEAR_STATUS_LABELS } from './auth/membership';
+export type { AppRole, GroupRole, YearStatus } from './auth/membership';
 
 /** 団体の区分（exporter の CATEGORY_LABELS と同じ。exporter は動的 import だけなのでここに持つ） */
 export const CATEGORY_LABELS: Record<GroupCategory, string> = {
@@ -77,6 +77,7 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   request_open_at: '受付開始',
   request_close_at: '締切',
   role: 'ロール',
+  group_role: '店長・副店長',
   email: 'メールアドレス',
   note: '備考',
   reason: '理由',

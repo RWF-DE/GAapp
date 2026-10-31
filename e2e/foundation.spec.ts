@@ -20,7 +20,9 @@ const ALL_PAGES = [
 
 const NAV: Record<StoredUser, string[]> = {
   admin: ['ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴'],
-  // Q1（D-39）：部員は振り分けをいつでも読み取り専用で開ける
+  // 総務部門長（部門長以上）のナビは管理者と同じ（マスタ設定の中のタブは段で分ける。D-50。e2e/t15b-roles.spec.ts）
+  head: ['ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴'],
+  // Q1（D-39）：総務部門員は振り分けをいつでも読み取り専用で開ける
   staff: ['ホーム', '在庫入力', '在庫一覧', '申請一覧', '振り分け'],
   // 閲覧のみは振り分けが確定・終了の年度だけ。R8 は申請受付中なのでホームだけ
   viewer: ['ホーム'],
@@ -30,6 +32,7 @@ const NAV: Record<StoredUser, string[]> = {
 /** R8（申請受付中）で開ける画面（lib/navigation.ts の ROUTES の立場から） */
 const OPENS: Record<StoredUser, string[]> = {
   admin: ['/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/'],
+  head: ['/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/'],
   staff: ['/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/allocation/'],
   viewer: [],
   rep: ['/request/', '/my/'],
@@ -53,7 +56,7 @@ async function expectForbidden(page: Page): Promise<void> {
   await expect(page.getByText(/この画面は準備中です/)).toHaveCount(0);
 }
 
-for (const user of ['admin', 'staff', 'viewer', 'rep'] as const) {
+for (const user of ['admin', 'head', 'staff', 'viewer', 'rep'] as const) {
   test.describe(`T09a ${user}`, () => {
     test.use({ storageState: storageStateFor(user) });
 
@@ -183,10 +186,10 @@ test.describe('T09a 団体代表の年度の切り替え', () => {
     const s = await createScenario({ status: 'requesting', repGroup: 'E2E模擬店1' });
     try {
       await page.goto('/');
-      await expect(page.getByTestId('home-roles')).toHaveText(`${SEED_R8.groupName} の団体代表`);
+      await expect(page.getByTestId('home-roles')).toHaveText(`${SEED_R8.groupName} の店長`);
       await page.getByTestId('year-select').selectOption(s.yearId);
       await expect(page.getByTestId('current-year')).toHaveText(`${s.label}・申請受付中`);
-      await expect(page.getByTestId('home-roles')).toHaveText('E2E模擬店1 の団体代表');
+      await expect(page.getByTestId('home-roles')).toHaveText('E2E模擬店1 の店長');
       expect(await navLabels(page)).toEqual(NAV.rep);
     } finally {
       await s.cleanup();

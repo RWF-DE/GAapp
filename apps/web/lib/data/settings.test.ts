@@ -18,6 +18,7 @@ import {
   lockedRowOutcome,
   runLockedWrite,
   settleLockedCall,
+  fetchMembers,
   fetchMyYearRoles,
   fetchOpenYearRules,
   freshDataOf,
@@ -28,6 +29,8 @@ import {
   roomRefsAcrossYears,
   rulesReferencing,
   saveGroupImport,
+  SETTINGS_TABS,
+  settingsTabsFor,
   yearPatch,
 } from './settings';
 
@@ -98,6 +101,18 @@ describe('parseSettingsTab', () => {
     expect(parseSettingsTab('foo')).toBe('years');
     expect(parseSettingsTab(null)).toBe('years');
   });
+
+  it('開けるタブ（settingsTabsFor）にない値は、開けるタブの最初（D-50）：部門長・副部門長の groups・items・distance・export は年度', () => {
+    for (const role of ['head', 'deputy_head'] as const) {
+      const tabs = settingsTabsFor(role);
+      for (const t of ['years', 'rooms', 'users'] as const) expect(parseSettingsTab(t, tabs)).toBe(t);
+      for (const t of ['groups', 'items', 'distance', 'export', 'foo', '', null]) expect(parseSettingsTab(t, tabs)).toBe('years');
+    }
+    // 管理者は7つすべて
+    for (const t of SETTINGS_TABS) expect(parseSettingsTab(t, settingsTabsFor('admin'))).toBe(t);
+    // 開けるタブがない（ページの守りの外）ときも years にする
+    expect(parseSettingsTab('users', [])).toBe('years');
+  });
 });
 
 describe('yearPatch', () => {
@@ -112,6 +127,97 @@ describe('yearPatch', () => {
     expect(
       yearPatch(year, { label: 'R9b', festival_start: '2027-10-17', request_open_at: null, request_close_at: '2027-07-10T18:00:00+09:00' }),
     ).toEqual({ label: 'R9b', festival_start: '2027-10-17', request_open_at: null, request_close_at: '2027-07-10T18:00:00+09:00' });
+  });
+
+  it('windowOnly（総務部門長・総務副部門長）は受付期間だけ（update_year は管理者でない人のほかのキーを forbidden にする。D-48）', () => {
+    const next = { label: 'R9b', festival_start: '2027-10-17', request_open_at: null, request_close_at: '2027-07-10T18:00:00+09:00' };
+    expect(yearPatch(year, next, { windowOnly: true })).toEqual({ request_open_at: null, request_close_at: '2027-07-10T18:00:00+09:00' });
+    expect(yearPatch(year, { ...next, request_open_at: year.request_open_at, request_close_at: null }, { windowOnly: true })).toEqual({});
+  });
+});
+
+describe('fetchMembers（ユーザーのタブ）', () => {
+  const U1 = '00000000-0000-4000-8000-0000000000b1';
+  const U2 = '00000000-0000-4000-8000-0000000000b2';
+  const U3 = '00000000-0000-4000-8000-0000000000b3';
+  const U4 = '00000000-0000-4000-8000-0000000000b4';
+  const T0 = '2026-10-29T01:00:00.000001+00:00';
+
+  it('ロール（列挙の順）と店長・副店長（group_members.role）を人ごとにまとめ、招待は立場（group_role）も読む', async () => {
+    const { client, issued } = createFakeSupabase((call) => {
+      if (call.table === 'year_roles') {
+        return {
+          data: [
+            { user_id: U1, role: 'staff', updated_at: T0 },
+            { user_id: U2, role: 'admin', updated_at: T0 },
+            { user_id: U3, role: 'head', updated_at: T0 },
+          ],
+        };
+      }
+      if (call.table === 'group_members') {
+        return {
+          data: [
+            { group_id: G2, user_id: U2, role: 'deputy_manager', groups: { year_id: 'y', name: '模擬店B' } },
+            { group_id: G1, user_id: U2, role: 'manager', groups: { year_id: 'y', name: '模擬店A' } },
+            { group_id: G1, user_id: U4, role: 'deputy_manager', groups: { year_id: 'y', name: '模擬店A' } },
+          ],
+        };
+      }
+      if (call.table === 'invitations') {
+        return {
+          data: [
+            { id: 'i1', email: 'staff@example.test', role: 'staff', group_id: null, group_role: null, used_at: null, created_at: T0 },
+            { id: 'i2', email: 'rep@example.test', role: null, group_id: G1, group_role: 'deputy_manager', used_at: T0, created_at: T0 },
+          ],
+        };
+      }
+      if (call.table === 'profiles') {
+        return {
+          data: [
+            { user_id: U1, display_name: '部門員' },
+            { user_id: U2, display_name: '管理者' },
+            { user_id: U3, display_name: '部門長' },
+            { user_id: U4, display_name: '副店長' },
+          ],
+        };
+      }
+      throw new Error(call.table);
+    });
+    const r = await fetchMembers('y', client);
+    // 並びは APP_ROLES の順（admin・head・deputy_head・staff・viewer）、ロールのない人（店長・副店長だけ）は最後
+    expect(r.members.map((m) => [m.displayName, m.role, m.groups])).toEqual([
+      [
+        '管理者',
+        'admin',
+        [
+          { id: G1, name: '模擬店A', role: 'manager' },
+          { id: G2, name: '模擬店B', role: 'deputy_manager' },
+        ],
+      ],
+      ['部門長', 'head', []],
+      ['部門員', 'staff', []],
+      ['副店長', null, [{ id: G1, name: '模擬店A', role: 'deputy_manager' }]],
+    ]);
+    expect(r.invitations).toEqual([
+      { id: 'i1', email: 'staff@example.test', role: 'staff', groupId: null, groupRole: null, usedAt: null, createdAt: T0 },
+      { id: 'i2', email: 'rep@example.test', role: null, groupId: G1, groupRole: 'deputy_manager', usedAt: T0, createdAt: T0 },
+    ]);
+    expect([...r.repCount]).toEqual([
+      [G2, 1],
+      [G1, 2],
+    ]);
+    const select = (table: string) => opArgs(issued.find((c) => c.table === table)!, 'select')[0]![0];
+    expect(select('group_members')).toBe('group_id, user_id, role, groups!inner(year_id, name)');
+    expect(select('invitations')).toBe('id, email, role, group_id, group_role, used_at, created_at');
+    expect(opArgs(issued.find((c) => c.table === 'group_members')!, 'eq')).toEqual([['groups.year_id', 'y']]);
+    expect(opArgs(issued.find((c) => c.table === 'profiles')!, 'in')).toEqual([['user_id', [U1, U2, U3, U4]]]);
+  });
+
+  it('読めなければ AppError を投げる', async () => {
+    const denied = createFakeSupabase((call) =>
+      call.table === 'invitations' ? { error: { code: '42501', message: 'permission denied' }, status: 403 } : { data: [] },
+    );
+    await expect(fetchMembers('y', denied.client)).rejects.toMatchObject({ info: { kind: 'forbidden' } });
   });
 });
 
@@ -250,6 +356,19 @@ describe('場所の削除の前：終了していない年度のルール（場�
   const R9 = y('y9', 'R9', 'preparing', '2027-10-16');
   const R7 = y('y7', 'R7', 'closed', '2025-10-18');
   const R10 = y('y10', 'R10', 'requesting', '2028-10-14');
+
+  it('openYearsForRoomRefs：総務部門長・総務副部門長の年度もルールを読める（rules_select は総務。D-48）', () => {
+    const scope = openYearsForRoomRefs(
+      [R8, R9, R10],
+      [
+        { year_id: 'y8', role: 'head' },
+        { year_id: 'y9', role: 'deputy_head' },
+        { year_id: 'y10', role: 'viewer' },
+      ],
+    );
+    expect(scope.readable.map((x) => x.label)).toEqual(['R9', 'R8']);
+    expect(scope.unreadable.map((x) => x.label)).toEqual(['R10']);
+  });
 
   it('openYearsForRoomRefs：終了した年度は見ない。admin・staff の年度は読め、団体代表・閲覧のみ・ロールのない年度は読めない', () => {
     const scope = openYearsForRoomRefs(

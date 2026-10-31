@@ -1,6 +1,6 @@
 'use client';
 
-// 履歴 /history（画面の設計 3.12、04「履歴」。T14）。管理者。PC。
+// 履歴 /history（画面の設計 3.12、04「履歴」。T14）。部門長以上（年度のない記録は開いている年度の管理者だけ。RLS。T15b）。PC。
 // - 絞り込み（表〔複数〕・団体・期間・した人）は URL のクエリ（table・group・from・to・user）に入れる。合わない値は無視する。
 // - 表：日時・操作・表・対象・変更（diffAudit）・理由・した人。at desc・id desc で 50 件ずつ、「さらに読み込む」で続き。件数は数えない。
 import { useSearchParams } from 'next/navigation';
@@ -20,6 +20,7 @@ import {
   EMPTY_FILTER,
   formatDiffEntry,
   hasFilter,
+  historyEmptyNote,
   historyHref,
   parseHistoryParams,
   tableLabel,
@@ -38,7 +39,7 @@ export function HistoryScreen() {
   const { membership } = useAuth();
   const m = membership.status === 'ready' ? membership.membership : null;
   if (!m?.year) return <LoadingState />;
-  return <HistoryBody key={m.year.id} yearId={m.year.id} yearLabel={m.year.label} />;
+  return <HistoryBody key={m.year.id} yearId={m.year.id} yearLabel={m.year.label} adminOfOpenYear={m.adminOfOpenYear} />;
 }
 
 const ACTION_VARIANT: Record<string, 'default' | 'secondary' | 'outline' | 'destructive'> = {
@@ -47,7 +48,7 @@ const ACTION_VARIANT: Record<string, 'default' | 'secondary' | 'outline' | 'dest
   delete: 'destructive',
 };
 
-function HistoryBody({ yearId, yearLabel }: { yearId: string; yearLabel: string }) {
+function HistoryBody({ yearId, yearLabel, adminOfOpenYear }: { yearId: string; yearLabel: string; adminOfOpenYear: boolean }) {
   const params = useSearchParams();
   const filter = useMemo(() => parseHistoryParams(params), [params]);
   const router = useGuardedRouter();
@@ -114,7 +115,7 @@ function HistoryBody({ yearId, yearLabel }: { yearId: string; yearLabel: string 
   return (
     <>
       {header}
-      <HistoryFilters filter={filter} options={optionsQ.data} onChange={changeFilter} />
+      <HistoryFilters filter={filter} options={optionsQ.data} adminOfOpenYear={adminOfOpenYear} onChange={changeFilter} />
       {pagesQ.isPending ? (
         <LoadingState />
       ) : pagesQ.isError && rows.length === 0 ? (
@@ -122,7 +123,7 @@ function HistoryBody({ yearId, yearLabel }: { yearId: string; yearLabel: string 
       ) : rows.length === 0 ? (
         <EmptyState
           title="この条件の変更はありません"
-          description={hasFilter(filter) ? '絞り込みを変えるか、消してください。' : undefined}
+          description={historyEmptyNote(filter, adminOfOpenYear)}
           action={
             hasFilter(filter) ? (
               <Button variant="outline" size="sm" onClick={() => changeFilter(() => EMPTY_FILTER)}>

@@ -1,4 +1,4 @@
-// auth-setup（画面の設計 7.2。T09a）：seed の admin・staff・viewer・rep に1回ずつ画面からログインし、
+// auth-setup（画面の設計 7.2。T09a）：seed の admin・head・staff・viewer・rep に1回ずつ画面からログインし、
 // storageState（e2e/.auth/<user>.json。git に入れない）を保存する。supabase-js のセッションは localStorage にあるので入る。
 // アプリのログアウトは signOut({ scope: 'local' }) なので、ほかのテストのログアウトがこのセッションを壊さない。
 import { expect, test as setup } from '@playwright/test';

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { inviteKindsFor } from '@/lib/auth/roles';
 import {
   distanceFormSchema,
   groupFormSchema,
+  INVITE_KINDS,
   inviteFormSchema,
   itemFormSchema,
   joinAliases,
@@ -184,17 +186,54 @@ describe('場所・品目・団体・距離・招待の入力', () => {
     expect(distanceFormSchema.safeParse({ building_a: 'A', building_b: 'B', cost: '-1' }).success).toBe(false);
   });
 
-  it('招待：メールは小文字にし、団体代表は団体が要る', () => {
-    expect(inviteFormSchema.parse({ email: ' Staff@Example.Test ', kind: 'staff', group_id: '' })).toEqual({
+  it('招待：メールは小文字にし、ロールは団体なし、店長・副店長は団体が要る（ロールと団体を一度に送らない）', () => {
+    const admin = inviteFormSchema(inviteKindsFor('admin'));
+    expect(admin.parse({ email: ' Staff@Example.Test ', kind: 'staff', group_id: '' })).toEqual({
       email: 'staff@example.test',
       role: 'staff',
       group_id: null,
+      group_role: null,
     });
-    expect(inviteFormSchema.parse({ email: 'rep@example.test', kind: 'rep', group_id: R1 })).toEqual({ email: 'rep@example.test', role: null, group_id: R1 });
-    expect(inviteFormSchema.safeParse({ email: 'rep@example.test', kind: 'rep', group_id: '' }).error?.issues[0]).toMatchObject({
+    // ロールを選んだときは、前に選んだ団体が残っていても送らない
+    expect(admin.parse({ email: 'head@example.test', kind: 'head', group_id: R1 })).toEqual({
+      email: 'head@example.test',
+      role: 'head',
+      group_id: null,
+      group_role: null,
+    });
+    expect(admin.parse({ email: 'rep@example.test', kind: 'manager', group_id: R1 })).toEqual({
+      email: 'rep@example.test',
+      role: null,
+      group_id: R1,
+      group_role: 'manager',
+    });
+    expect(admin.parse({ email: 'rep@example.test', kind: 'deputy_manager', group_id: R1 })).toEqual({
+      email: 'rep@example.test',
+      role: null,
+      group_id: R1,
+      group_role: 'deputy_manager',
+    });
+    expect(admin.safeParse({ email: 'rep@example.test', kind: 'deputy_manager', group_id: '' }).error?.issues[0]).toMatchObject({
       path: ['group_id'],
       message: '団体を選んでください',
     });
-    expect(inviteFormSchema.safeParse({ email: 'not-mail', kind: 'staff', group_id: '' }).error?.issues[0]?.message).toBe('メールアドレスの形が違います');
+    expect(admin.safeParse({ email: 'not-mail', kind: 'staff', group_id: '' }).error?.issues[0]?.message).toBe('メールアドレスの形が違います');
+  });
+
+  it('招待：選べる立場（段。inviteKindsFor）の外は立場の欄の誤り。INVITE_KINDS はロールと店長・副店長の7つ', () => {
+    expect(INVITE_KINDS).toEqual(['admin', 'head', 'deputy_head', 'staff', 'viewer', 'manager', 'deputy_manager']);
+    const head = inviteFormSchema(inviteKindsFor('head'));
+    expect(head.parse({ email: 'staff@example.test', kind: 'staff', group_id: '' })).toMatchObject({ role: 'staff', group_id: null });
+    expect(head.parse({ email: 'rep@example.test', kind: 'deputy_manager', group_id: R1 })).toMatchObject({ role: null, group_role: 'deputy_manager' });
+    for (const kind of ['admin', 'head', 'deputy_head', 'viewer', 'rep', '']) {
+      expect(head.safeParse({ email: 'x@example.test', kind, group_id: R1 }).error?.issues).toEqual([
+        expect.objectContaining({ path: ['kind'], message: '立場を選び直してください' }),
+      ]);
+    }
+    // 管理者は7つすべてを選べる
+    const admin = inviteFormSchema(inviteKindsFor('admin'));
+    for (const kind of INVITE_KINDS) expect(admin.safeParse({ email: 'x@example.test', kind, group_id: R1 }).success).toBe(true);
+    // メールと立場の誤りは一緒に出る
+    expect(head.safeParse({ email: 'bad', kind: 'admin', group_id: '' }).error?.issues.map((i) => i.path)).toEqual([['email'], ['kind']]);
   });
 });

@@ -24,7 +24,7 @@ import { queryKeys } from '@/lib/query';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import { fetchYear } from './year';
 
-/** full：admin・staff（在庫・申請・ルール・了承も読む）。public：viewer（RLS で読める行と名前だけ） */
+/** full：総務（admin・head・deputy_head・staff。在庫・申請・ルール・了承も読む）。public：viewer（RLS で読める行と名前だけ） */
 export type SnapshotPart = 'full' | 'public';
 
 export interface Snapshot extends YearTables {
@@ -152,7 +152,7 @@ export async function loadSnapshot(yearId: string, part: SnapshotPart, client: A
 
 /**
  * スナップショットのクエリ（staleTime: Infinity。読み直しは refetch か invalidate で明示的に行う。1.7）。
- * 立場で part を決める：admin・staff は full、viewer は public（確定後だけ）。
+ * 立場で part を決める：総務（isSoumu）は full、viewer は public（確定後だけ）。
  */
 export function useSnapshot(yearId: string | null | undefined, part: SnapshotPart, enabled = true) {
   return useQuery({

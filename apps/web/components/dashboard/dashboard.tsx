@@ -1,7 +1,10 @@
 'use client';
 
-// 総務（admin・staff）のダッシュボード（画面の設計 3.1・6。T09）。版を先に読むスナップショット → useValidation → summarizeDashboard。
-// 状態の遷移と確定の流れは T09a の YearStatusActions（admin にだけ出る）。版の見張りで、ほかの人の変更に気づいたら帯を出す。
+// 総務（管理者・総務部門長・総務副部門長・総務部門員）のダッシュボード（画面の設計 3.1・6。T09）。版を先に読むスナップショット →
+// useValidation → summarizeDashboard。状態の遷移と確定の流れは T09a の YearStatusActions（部門長以上に出る。終了とその確認の書き出しは
+// 管理者だけ。T15b）。総務部門員は読み取り（キャスター机交換・ルール・マスタ設定へのリンクは canOpen で出さず、数だけ）。
+// マスタを直す案内のリンク（入力の誤りのマスタ設定・団体と保管場所の登録）は管理者だけで、ほかの人には管理者に頼む文を出す（D-50）。
+// 版の見張りで、ほかの人の変更に気づいたら帯を出す。
 import { AlertTriangle } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -215,7 +218,7 @@ function ProblemsCard({ summary }: { summary: DashboardSummary }) {
           <AlertTriangle aria-hidden className="size-5" />
           入力の誤りが {summary.problems.length} 件あります
         </CardTitle>
-        <CardDescription>直すまで確定できません。ルールの設定やマスタ設定を確かめてください。</CardDescription>
+        <CardDescription data-testid="dashboard-problems-note">{summary.problemsNote}</CardDescription>
       </CardHeader>
       <CardContent>
         <ul className="list-inside list-disc space-y-1 text-sm">
@@ -266,13 +269,15 @@ function SubmissionsCard({ summary }: { summary: DashboardSummary }) {
             ))}
           </ul>
         ) : (
-          <p className="text-muted-foreground">
+          <p className="text-muted-foreground" data-testid="dashboard-submissions-empty">
             団体がありません。
             {sub.emptyHref ? (
               <AppLink href={sub.emptyHref} className="ml-1 underline">
                 マスタ設定の団体へ
               </AppLink>
-            ) : null}
+            ) : (
+              '管理者に団体の登録を頼んでください。'
+            )}
           </p>
         )}
         {sub.unsubmittedCount > 0 ? (
@@ -307,13 +312,15 @@ function StocksCard({ summary }: { summary: DashboardSummary }) {
       <CardContent className="space-y-3 text-sm">
         <Stat value={st.counted} total={st.total} unit="か所" />
         {st.total === 0 ? (
-          <p className="text-muted-foreground">
+          <p className="text-muted-foreground" data-testid="dashboard-stocks-empty">
             保管場所がありません。
             {st.emptyHref ? (
               <AppLink href={st.emptyHref} className="ml-1 underline">
                 マスタ設定の場所へ
               </AppLink>
-            ) : null}
+            ) : (
+              '管理者に保管場所の登録を頼んでください。'
+            )}
           </p>
         ) : st.uncountedCount > 0 ? (
           <div data-testid="dashboard-uncounted">

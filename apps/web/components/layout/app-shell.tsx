@@ -11,7 +11,7 @@ import { useGuardedSetYear, useGuardedSignOut } from '@/lib/auth/guarded';
 import {
   audiencesOf,
   isInvited,
-  ROLE_LABELS,
+  positionLabels,
   YEAR_STATUS_LABELS,
   yearOptionLabel,
   type Membership,
@@ -72,13 +72,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function roleSummary(m: Membership): string[] {
-  const parts: string[] = [];
-  if (m.role) parts.push(ROLE_LABELS[m.role]);
-  for (const g of m.groups) parts.push(`${g.name} の団体代表`);
-  return parts;
-}
-
 /** 年度の選択（自分の年度が2つ以上あるときだけ。1日目の新しい順。D-31） */
 function YearSelect({ membership }: { membership: Membership }) {
   const setYear = useGuardedSetYear();
@@ -109,7 +102,8 @@ function Frame({ membership, onSignOut, children }: { membership: Membership; on
   const [menuOpen, setMenuOpen] = useState(false);
   const year = membership.year;
   const items = navItemsFor(audiencesOf(membership), year?.status);
-  const roles = roleSummary(membership);
+  // 立場：ロールの表示名と、代表する団体ごとの「{団体名} の店長」「{団体名} の副店長」（T15b。ホームの立場の一覧と同じ言い方）
+  const roles = positionLabels(membership);
   // スマホ（md 未満）では年度の選択があれば印を隠す（選択に今の年度が出る。幅 390px でヘッダーがはみ出さないように）
   const hasYearSelect = membership.years.length >= 2 && !!year;
 

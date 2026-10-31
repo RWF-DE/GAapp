@@ -8,6 +8,8 @@
 
 本文は推奨案で書いた。業務の意味を変える判断は 9 章（ユーザーに確認すること）に残した。決定事項の案は 11 章（D-31〜D-38）。要件定義への差分案は同じフォルダの spec-changes-ui.md。批評（第2版）と、実装者の目で見た抜け（第3版）を受けて直したところは、末尾の「改訂の記録」に番号ごとにまとめた。
 
+（2026-10-31 T15b の注：ロールの段〔D-48・D-50〕で、この設計の「admin」の業務の操作〔状態の遷移・振り分け・申請一覧の編集・ルール・キャスター机交換・履歴・今年の使用・振り分け中以降の在庫〕は部門長以上〔admin・head・deputy_head〕に、「admin・staff」は総務〔部門長以上と staff〕に広がった。マスタ・年度の作成・終了・年度名と1日目・書き出しは admin のまま。表の 1.1・2.1・3.3・3.9 は直した。ほかの節の admin・staff は、04「画面仕様」の各画面の節〔共通レイアウトの段の表〕を正として読み替える。店長・副店長は rep〔団体代表〕の立場で、表示だけが違う。notes/T15b.md）
+
 ## 0. 要点
 
 - **共通基盤を T09a として先に入れる。** UI 部品（shadcn/ui の手置き）、データの読み書きの層（版を先に読むスナップショット、楽観ロックつきの直接の更新・削除、エラーの分類と日本語）、年度の切り替え（K-19）、TanStack Query、未保存の入力の守り（アプリの中の移動の確認と下書き）、全画面のルートの仮置き（準備中のページ）とナビゲーション、テストの土台（jsdom・Playwright のシナリオの年度と年度をまたぐ表の準備）、使う依存の追加を1つの PR にする。T09a は T04・T05・T07・T08 がマージされてから始める（exporter・importer・validate の関数と型を使うため）。その後は T09〜T13 が自分のルートのディレクトリだけを触り、同じファイルを2つのブランチで作らない（8 章）。
@@ -25,21 +27,23 @@
 
 静的書き出し（`output: 'export'`、`trailingSlash: true`）なので動的セグメントは使わず、id はクエリ文字列で渡す。ログインが要る画面はすべて `app/(app)/` の下に置き、T04 の共通レイアウト（AppShell）の中で表示する。route group はこれ以上増やさない（立場の出し分けは各ページの `RequireAudience` で行い、レイアウトを分けない）。
 
+立場の列は T15b で段に直した（部門長以上＝admin・head・deputy_head、総務＝部門長以上と staff。lib/auth/roles.ts の一覧から作る。D-48・D-50）。
+
 | パス | ファイル | 立場（ナビ・表示） | 端末 | クエリ | チケット |
 | --- | --- | --- | --- | --- | --- |
 | /login・/auth/callback | app/(auth)/… | 全員 | 両方 | next | T04（済） |
-| / | app/(app)/page.tsx | admin・staff はダッシュボード、rep・viewer はホーム | PC（ホームはスマホも） | — | T09 |
-| /settings | app/(app)/settings/page.tsx | admin | PC | tab | T09 |
-| /stock | app/(app)/stock/page.tsx | admin・staff | スマホ | room | T10 |
-| /stocks | app/(app)/stocks/page.tsx | admin・staff | PC | — | T10 |
-| /stocks/qr | app/(app)/stocks/qr/page.tsx | admin・staff | PC（印刷） | rooms | T10 |
-| /request | app/(app)/request/page.tsx | rep | スマホ | group | T11 |
-| /requests | app/(app)/requests/page.tsx | admin・staff（staff は読み取り） | PC | category・filter | T11 |
-| /rules | app/(app)/rules/page.tsx | admin | PC | code | T12 |
-| /allocation | app/(app)/allocation/page.tsx | admin（Q1 の推奨：staff は読み取り、viewer は確定後に読み取り） | PC | view・tab・row・group | T13 |
-| /swaps | app/(app)/swaps/page.tsx | admin | PC | — | T13 |
-| /my | app/(app)/my/page.tsx | rep | スマホ | group | T13 |
-| /history | app/(app)/history/page.tsx | admin | PC | table・group・from・to・user | T14 |
+| / | app/(app)/page.tsx | 総務（admin・head・deputy_head・staff）はダッシュボード、rep・viewer はホーム | PC（ホームはスマホも） | — | T09 |
+| /settings | app/(app)/settings/page.tsx | 部門長以上（head・deputy_head のタブは年度・場所・ユーザーだけ。T15b） | PC | tab | T09 |
+| /stock | app/(app)/stock/page.tsx | 総務 | スマホ | room | T10 |
+| /stocks | app/(app)/stocks/page.tsx | 総務 | PC | — | T10 |
+| /stocks/qr | app/(app)/stocks/qr/page.tsx | 総務 | PC（印刷） | rooms | T10 |
+| /request | app/(app)/request/page.tsx | rep（店長・副店長） | スマホ | group | T11 |
+| /requests | app/(app)/requests/page.tsx | 総務（staff は読み取り） | PC | category・filter | T11 |
+| /rules | app/(app)/rules/page.tsx | 部門長以上 | PC | code | T12 |
+| /allocation | app/(app)/allocation/page.tsx | 部門長以上（Q1：staff は読み取り、viewer は確定後に読み取り） | PC | view・tab・row・group | T13 |
+| /swaps | app/(app)/swaps/page.tsx | 部門長以上 | PC | — | T13 |
+| /my | app/(app)/my/page.tsx | rep（店長・副店長） | スマホ | group | T13 |
+| /history | app/(app)/history/page.tsx | 部門長以上 | PC | table・group・from・to・user | T14 |
 
 - クエリの値は各ページで zod で確かめる（uuid・列挙・日付）。合わない値は無視して既定にする（例外にしない）。
 - 全ページの雛形（「この画面は準備中です（T10）」と出すだけのページ）を T09a が作り、ナビゲーションの項目をすべて `ready: true` にする。各チケットは自分のページのファイルを中身に置き換えるだけで、lib/navigation.ts を触らない（隣り合う行の変更でマージが衝突するため）。
@@ -230,18 +234,20 @@ ESLint（T09a が足す。apps/web）：
 
 画面は「RLS で読めない表を読みに行かない」ようにし、読めない結果（0 行）を「データがない」と取り違えない。年度の状態で書けなくなるときは、送る前に読み取り専用にする（送って拒否されても、2.5 のとおり読み直して読み取り専用に切り替える）。
 
-| 画面 | admin | staff | 団体代表（rep） | viewer |
-| --- | --- | --- | --- | --- |
-| / | ダッシュボード（すべて読める。状態の遷移） | ダッシュボード（読み取り。遷移のボタンなし） | ホーム（自団体の申請の状況・了承の依頼・確定後のリンク） | ホーム（確定後なら振り分け表へのリンク） |
-| /settings | 読み書き（closed は「外す」・招待の取り消し・新しい年度の作成〔create_year_from。複製元が終了していてもよい〕だけ） | — | — | — |
-| /stock・/stocks | 読み書き（closed 以外。確定中は在庫超過になる値を書けない） | preparing・requesting は読み書き、ほかは読み取り | — | — |
-| /request | （兼ねていれば rep として） | （同左） | 自団体だけ。受付期間内に提出 | — |
-| /requests | 読み書き（締切前は直接、締切後は RPC） | 読み取り | — | — |
-| /rules | 読み書き（confirmed・closed は memo だけ。confirmed は DB では書けるが、画面で止める。3.8） | （RLS は読めるがナビに出さない） | — | — |
-| /allocation | 読み書き（振り分け中） | Q1：読み取り（在庫・余り・検証も読める） | — | Q1：確定後の行だけ（在庫・余り・検証なし。stocks・requests を RLS で読めないため） |
-| /swaps | 読み書き（振り分け中） | — | — | — |
-| /my | — | — | 自団体：申請と了承の依頼、確定後の振り分け | — |
-| /history | 読める（その年度。年度をまたぐ3表は開いている年度の admin） | — | — | — |
+T15b で head・deputy_head の列を足した（D-48・D-50。04「共通レイアウト」の段の表が正）。
+
+| 画面 | admin | head・deputy_head | staff | 団体代表（rep。店長・副店長） | viewer |
+| --- | --- | --- | --- | --- | --- |
+| / | ダッシュボード（すべて読める。状態の遷移はすべて。終了とその確認の書き出しは admin だけ） | ダッシュボード（終了のほかの遷移） | ダッシュボード（読み取り。遷移のボタンなし） | ホーム（自団体の申請の状況・了承の依頼・確定後のリンク） | ホーム（確定後なら振り分け表へのリンク） |
+| /settings | 読み書き（closed は「外す」・招待の取り消し・新しい年度の作成〔create_year_from。複製元が終了していてもよい〕だけ） | 年度（受付期間だけ）・場所（今年の使用だけ）・ユーザー（staff と店長・副店長の分）のタブ。closed は staff を外す・店長・副店長を外す・招待の取り消しだけ | — | — | — |
+| /stock・/stocks | 読み書き（closed 以外。確定中は在庫超過になる値を書けない） | admin と同じ | preparing・requesting は読み書き、ほかは読み取り | — | — |
+| /request | （兼ねていれば rep として） | —（兼任の禁止。D-49） | —（同左） | 自団体だけ。受付期間内に提出 | （兼ねていれば rep として） |
+| /requests | 読み書き（締切前は直接、締切後は RPC） | admin と同じ | 読み取り | — | — |
+| /rules | 読み書き（confirmed・closed は memo だけ。confirmed は DB では書けるが、画面で止める。3.8） | admin と同じ | （RLS は読めるがナビに出さない） | — | — |
+| /allocation | 読み書き（振り分け中） | admin と同じ | Q1：読み取り（在庫・余り・検証も読める） | — | Q1：確定後の行だけ（在庫・余り・検証なし。stocks・requests を RLS で読めないため） |
+| /swaps | 読み書き（振り分け中） | admin と同じ | — | — | — |
+| /my | （兼ねていれば rep として） | — | — | 自団体：申請と了承の依頼、確定後の振り分け | （兼ねていれば rep として） |
+| /history | 読める（その年度。年度をまたぐ3表は開いている年度の admin） | 読める（その年度だけ） | — | — | — |
 
 画面ごとに読むもの・書くもの：
 
@@ -450,7 +456,7 @@ T04 は T03 の古い 1ef50c5（今の T03 の 9bddea3 に当たる）の上に�
 | 今の状態 | ボタン | 前提・確認 | 理由 |
 | --- | --- | --- | --- |
 | preparing | 受付開始 | 締切が未来で入っていること。入っていなければボタンを無効にし、「先に受付期間を入れてください」と /settings?tab=years へのリンク | 任意 |
-| requesting | 締切（振り分けを始める） | 締切前なら「締切の前ですが、団体代表は申請を変えられなくなります」と確かめる | 任意 |
+| requesting | 締切（振り分けを始める） | 締切前なら「締切の前ですが、店長・副店長は申請を変えられなくなります」と確かめる | 任意 |
 | allocating | 確定 | 下の「確定の流れ」 | 必須 |
 | confirmed | 確定を解除 | 「団体への公開も止まります」と確かめる | 必須 |
 | confirmed | 終了 | 「終了すると読み取り専用になり、戻せません。先に年度データと振り分け表を書き出してください」と書き出しのボタンを並べる | 任意 |
@@ -511,12 +517,14 @@ admin だけ（RequireAudience）。タブ（`?tab=years|rooms|items|groups|dist
 - 場所ごとの追加コストは場所のタブで直す（ここでは一覧だけ出し、場所のタブへのリンク）。
 - 「距離を変えると、次の自動振り分けから効きます」と書く。
 
-**ユーザー（users）**
+**ユーザー（users）**（T15b で段ごとにした。04「マスタ設定」のユーザーの表・D-50）
 
-- メンバーの表：表示名（profiles。読めなければ「名前を表示できません」）・ロール・代表する団体。ロールの変更（set_role。closed では出さない）、ロールを外す（remove_role。closed でも出す。最後の admin は invalid_state の last_admin）、団体代表を外す（remove_group_member。closed でも出す）。理由は任意。
-- 招待の表：メール・ロールか団体・状態（未使用／使用済み）。未使用の招待の取り消し（revoke_invitation。closed でも出す）。
-- 招待する：メール（前後の空白を除き小文字にして送る。254 字まで。形が違えば invalid_input の email）・立場（総務管理者・総務部員・閲覧のみ・団体代表）・団体（団体代表のとき）。invite の返り値 applied で文言を分ける：true は「この人はすでにアカウントがあるので、その場でロールを付けました」、false は「招待しました。この人が学校の Google アカウントでログインしたときに付きます」。false は、まだアカウントがないときのほか、アカウントはあるが今のメールを本人のものと確かめられないとき（DB の `private.verified_email`。メールの変更の途中、Google の identity の email_verified が偽など。D-17a）にも返るので、「アカウントがありません」とは言わない。conflict（field: role）は「すでに別のロールがあります」。closed では招待を出さない。
-- メールは admin の画面にしか出さず、ログ・toast の文言に入れない。
+- 操作の段：招待の立場は、管理者が管理者・総務部門長・総務副部門長・総務部門員・閲覧のみ・店長・副店長の7つ、総務部門長・総務副部門長が総務部門員・店長・副店長の3つ（1回に1つ。部門長・副部門長には立場の欄に「管理者・総務部門長・総務副部門長・閲覧のみの招待と、ロールの変更は管理者が行います」と添える）。ロールの変更（set_role）は管理者だけ。ロールを外す（remove_role）は、管理者はどのロールも、部門長・副部門長は総務部門員だけ。店長⇄副店長（set_group_member_role）と代表を外す（remove_group_member）は部門長以上。招待の取り消しは canRevokeInvitation（部門長・副部門長には RLS が総務部門員と団体の招待だけを返す）。
+- メンバーの表：表示名（profiles。読めなければ「名前を表示できません」）・ロール（表示名）・店長・副店長（団体ごとに「{団体} の店長」「{団体} の副店長」と、「副店長にする」〔副店長なら「店長にする」〕・「代表を外す」）。ロールの変更（closed では出さない）、ロールを外す（closed でも出す。最後の admin は invalid_state の last_admin）、店長⇄副店長（closed では出さない。確かめのダイアログに「店長と副店長は、できることが同じです（表示だけが変わります）。」）、代表を外す（closed でも出す）。理由は任意。
+- 招待の表：メール・立場（ロールの表示名か「{団体} の店長」「{団体} の副店長」）・状態（未使用／使用済み）・招待した日時。未使用の招待の取り消し（revoke_invitation。closed でも出す）。
+- 招待する：メール（前後の空白を除き小文字にして送る。254 字まで。形が違えば invalid_input の email）・立場（上の段）・団体（店長・副店長のとき）。送るのは p_role か、p_group_id と p_group_role。invite の返り値 applied で文言を分ける：true はロールなら「この人はすでにアカウントがあるので、その場でロールを付けました」、店長・副店長なら「この人はすでにアカウントがあるので、その場で「{団体} の副店長」にしました」、false は「招待しました。この人が学校の Google アカウントでログインしたときに付きます」。false は、まだアカウントがないときのほか、アカウントはあるが今のメールを本人のものと確かめられないとき（DB の `private.verified_email`。メールの変更の途中、Google の identity の email_verified が偽など。D-17a）にも返るので、「アカウントがありません」とは言わない。closed では招待を出さない。
+- エラーの置き場所：兼任の禁止（role_overlap。D-49）と conflict（field: role は「この人はすでに「{ロール}」です。」に、管理者は「ロールの変更はメンバーの一覧から」、部門長・副部門長は「ロールの変更は管理者に頼んでください」を続ける。field: group_role は「この人はすでにこの団体の{立場}です。店長・副店長の切り替えはメンバーの一覧から」）は立場の欄の下に出し、入力は残す（メールを変えたら消す）。ロールの変更の role_overlap はダイアログの中に出して閉じない。部門長・副部門長の招待の forbidden（管理者の未使用の招待があるメール。DB は理由を返さない）は「権限がありません。このメールアドレスに管理者が出した招待があるか、立場が変わった可能性があります（管理者に頼んでください）」。
+- メールは、管理者・総務部門長・総務副部門長のこの画面（招待の一覧）にだけ出し（部門長・副部門長に見えるのは RLS が返す招待だけ）、ログ・toast の文言に入れない。
 
 **書き出し（export）**
 
@@ -528,7 +536,7 @@ admin だけ（RequireAudience）。タブ（`?tab=years|rooms|items|groups|dist
 
 admin・staff。スマホ（390px）で使う。
 
-- **room がないとき（場所を選ぶ）**：保管場所（is_storage）の一覧を並び順で。建物ごとに見出し、名前で絞る入力欄、各行に「数えた（10/5 18:01・山田）」か「まだ」、使用不可の印。行を押すと `/stock?room=<id>`。部屋に貼った QR を読んでも同じ URL に来る。保管場所がなければ EmptyState（admin には「マスタ設定の場所で『保管場所』にしてください」とリンク）。
+- **room がないとき（場所を選ぶ）**：保管場所（is_storage）の一覧を並び順で。建物ごとに見出し、名前で絞る入力欄、各行に「数えた（10/5 18:01・山田）」か「まだ」、使用不可の印。行を押すと `/stock?room=<id>`。部屋に貼った QR を読んでも同じ URL に来る。保管場所がなければ EmptyState（admin には「マスタ設定の場所で『保管場所』にしてください」とリンク、ほかの人には「管理者に、保管場所の登録を頼んでください」。D-50）。
 - **room があるとき（入力）**：
   - 表示：場所名、使用不可なら先頭に「今年は使用不可」（その理由のメモも）、前回入力した人と日時（その部屋の stocks の counted_at が最も新しい行の counted_by の表示名と日時。読めなければ「名前を表示できません」）、品目ごとの行（品目名、CountStepper、前年の数）。前年の数は previous_year_stocks（年度ごとに1回読み、部屋で絞る）。前年度がなければ列を出さない。
   - 操作：＋－と数字の入力、「保存」（画面の下に固定）。保存は部屋の全品目（0 を含む）を1回の upsert（`onConflict: year_id,room_id,item_id`、送るのは year_id・room_id・item_id・count だけ）。全品目を書くので、同じ数でも「数え直した」記録（counted_by・counted_at）が残る（F1-5）。
@@ -539,10 +547,10 @@ admin・staff。スマホ（390px）で使う。
   - room の id が保管場所の一覧にない（別の年度・消した部屋・形が違う）ときは「この場所は見つかりません」と一覧へのリンク。
 - **状態**：
 
-| 年度 | staff | admin |
+| 年度 | staff | 部門長以上（admin・head・deputy_head。T15b） |
 | --- | --- | --- |
 | preparing・requesting | 入力できる | 入力できる |
-| allocating | 読み取り専用（「振り分けが始まったので、在庫は総務管理者だけが直せます」） | 入力できる。保存の前に、振り分けの合計（v_remaining の allocated）より少なくなる品目があれば「振り分けの合計（n台）より少なくなります。保存すると振り分けに在庫超過（E001）が出ます。振り分け画面で直してください」と確かめる |
+| allocating | 読み取り専用（「振り分けが始まったので、在庫は管理者・総務部門長・総務副部門長だけが直せます」。T15b で文言を直した） | 入力できる。保存の前に、振り分けの合計（v_remaining の allocated）より少なくなる品目があれば「振り分けの合計（n台）より少なくなります。保存すると振り分けに在庫超過（E001）が出ます。振り分け画面で直してください」と確かめる |
 | confirmed | 読み取り専用 | 入力できるが、振り分けの合計より少なくなる品目があれば保存できない（「確定中は振り分けの合計より少なくできません。確定を解除してから」。DB の守りと同じ条件を先に確かめる） |
 | closed | 読み取り専用 | 読み取り専用 |
 
@@ -636,11 +644,11 @@ admin は読み書き（振り分け中）。staff・viewer は Q1 の推奨で�
 
 | ボタン | 押せるとき |
 | --- | --- |
-| 自動振り分け | admin・allocating・未保存の変更がない・入力の problems がない・計算エンジンの読み込みが終わった（読み込み中は「計算エンジンを読み込み中」と出して待つ） |
+| 自動振り分け | 部門長以上（T15b）・allocating・未保存の変更がない・入力の problems がない・計算エンジンの読み込みが終わった（読み込み中は「計算エンジンを読み込み中」と出して待つ） |
 | 最小変更で再実行 | 同上、かつ自動の行が1行以上ある |
 | 確定 | 3.1 の確定の流れと同じ（YearStatusActions） |
-| 確定を解除 | admin・confirmed。理由必須 |
-| Excel出力 | admin（Q1 で staff も）・未保存の変更がない。Q3 |
+| 確定を解除 | 部門長以上・confirmed。理由必須（終了は admin だけ） |
+| Excel出力 | 部門長以上（Q1 で staff も）・未保存の変更がない。Q3 |
 
 **左：品目別（`?view=item&tab=<品目コード>`、既定）**
 

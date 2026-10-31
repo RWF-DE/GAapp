@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { YearStatus } from '@/lib/auth/membership';
 import type { AllocationDbRow, ConsentDbRow } from '@/lib/db/types';
 import { FIXTURE_UPDATED_AT, fixtureSnapshot } from '@/lib/testing/fixture-rows';
-import { DASHBOARD_LIST_LIMIT, repGroupCards, requestWindowOpen, summarizeDashboard, topIssueCodes } from './dashboard';
+import { DASHBOARD_LIST_LIMIT, masterTabOf, repGroupCards, requestWindowOpen, summarizeDashboard, topIssueCodes } from './dashboard';
 import type { Snapshot } from './snapshot';
 import { runValidation, type ValidationResult } from './validation';
 import { toStoredRows, toYearData } from './year-data';
@@ -217,6 +217,57 @@ describe('summarizeDashboard：部員に開けない画面へのリンクを出�
     // 団体・保管場所がないときの「マスタ設定の団体へ」「マスタ設定の場所へ」
     expect(sum.submissions.emptyHref).toBe('/settings?tab=groups');
     expect(sum.stocks.emptyHref).toBe('/settings?tab=rooms');
+  });
+
+  it('総務部門長・総務副部門長：キャスター机交換・ルールへのリンクは出し、マスタを直す案内のリンク（入力の誤り・団体・保管場所）は出さない（D-50）', () => {
+    const problems = [
+      { path: 'rules.S05', message: 'x', ruleCode: 'S05' },
+      { path: 'distance', message: 'y' },
+      // 部門長・副部門長が開ける場所のタブでも、場所のマスタの誤りは直せないのでリンクにしない
+      { path: 'rooms.0', message: 'z' },
+    ];
+    for (const role of ['head', 'deputy_head'] as const) {
+      const sum = summarizeDashboard(snap('allocating'), { status: 'unavailable', issues: [], problems }, { audiences: [role] });
+      expect(sum.consents.href).toBe('/swaps');
+      expect(sum.problems.map((p) => p.href)).toEqual(['/rules?code=S05', null, null]);
+      expect(sum.submissions.emptyHref).toBeNull();
+      expect(sum.stocks.emptyHref).toBeNull();
+      expect(sum.validation.href).toBe('/allocation');
+      expect(sum.problemsNote).toBe('直すまで確定できません。ルールを確かめるか、管理者にマスタの修正を頼んでください。');
+    }
+  });
+
+  it('入力の誤りの説明は段で変わる（ルールは部門長以上、マスタは管理者が直す）', () => {
+    const v = { status: 'unavailable' as const, issues: [], problems: [{ path: 'items.0', message: 'x' }] };
+    expect(summarizeDashboard(snap('allocating'), v, ADMIN).problemsNote).toBe(
+      '直すまで確定できません。ルールの設定やマスタ設定を確かめてください。',
+    );
+    expect(summarizeDashboard(snap('allocating'), v, STAFF).problemsNote).toBe(
+      '直すまで確定できません。ルールは管理者・総務部門長・総務副部門長が、マスタは管理者が直します。',
+    );
+    // 管理者で店長も務める人は管理者と同じ
+    expect(summarizeDashboard(snap('allocating'), v, { audiences: ['admin', 'rep'] }).problems[0]!.href).toBe('/settings?tab=items');
+  });
+
+  it('管理者：マスタの誤りのリンクは、path から直すタブへ（決まらなければタブのない /settings）', () => {
+    const problems = [
+      { path: 'items.0', message: 'a' },
+      { path: 'rooms.2', message: 'b' },
+      { path: 'groups.1.locationRoomId', message: 'c' },
+      { path: 'distanceOverrides.0', message: 'd' },
+      { path: 'stocks.0.roomId', message: 'e' },
+    ];
+    const sum = summarizeDashboard(snap('allocating'), { status: 'unavailable', issues: [], problems }, ADMIN);
+    expect(sum.problems.map((p) => p.href)).toEqual([
+      '/settings?tab=items',
+      '/settings?tab=rooms',
+      '/settings?tab=groups',
+      '/settings?tab=distance',
+      '/settings',
+    ]);
+    expect(masterTabOf('distanceOverrides.3')).toBe('distance');
+    expect(masterTabOf('consents.0')).toBeNull();
+    expect(masterTabOf('constructor')).toBeNull();
   });
 });
 

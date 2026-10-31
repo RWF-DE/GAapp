@@ -43,6 +43,10 @@ import { MAX_DISTANCE_COST } from '@gaapp/shared';
 import { DeleteWithRefsDialog } from './rule-refs';
 import { Field, FormSheet, GlobalReadOnlyNote, selectClass, settingsKeys, TabHeading, useLockedSave, useSettings, useWriteErrorHandler, type LockedSaveRun } from './shared';
 
+/** 開いている年度の管理者でない人（総務部門長・総務副部門長）の場所のタブの説明（04「マスタ設定」の場所。D-50） */
+const ROOMS_YEAR_ONLY_NOTE =
+  '場所の追加・編集・削除は管理者が行います（すべての年度で共有の表のため）。今年の使用（使用不可と理由のメモ）は年度ごとで、各行の「変える」から変えられます。';
+
 interface RoomView extends RoomRow {
   usable: boolean;
   usableNote: string | null;
@@ -159,9 +163,11 @@ export function RoomsTab() {
       <TabHeading
         title="場所"
         description={
+          // 場所を直せない総務部門長・総務副部門長（終了していない年度）には、できること〔今年の使用〕だけを書く。建物の入れ方は直せる人に
           <>
-            場所の変更はすべての年度に効きます（今年の使用だけは年度ごと）。建物の中の部屋は建物を入れてください（空欄の部屋は、距離の計算で別の建物として扱われます）。
-            <GlobalReadOnlyNote what="場所" />
+            {globalWritable || !yearWritable ? '場所の変更はすべての年度に効きます（今年の使用だけは年度ごと）。' : null}
+            {globalWritable ? '建物の中の部屋は建物を入れてください（空欄の部屋は、距離の計算で別の建物として扱われます）。' : null}
+            <GlobalReadOnlyNote what="場所" yearWritableNote={ROOMS_YEAR_ONLY_NOTE} />
           </>
         }
         actions={

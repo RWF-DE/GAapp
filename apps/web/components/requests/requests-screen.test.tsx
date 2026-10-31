@@ -11,7 +11,7 @@ const OTHER_USER = vi.hoisted(() => '00000000-0000-4000-8000-000000000002');
 const state = vi.hoisted(() => ({
   handler: null as null | ((call: FakeCall) => FakeResult | PromiseLike<FakeResult>),
   calls: [] as FakeCall[],
-  role: 'admin' as 'admin' | 'staff',
+  role: 'admin' as 'admin' | 'head' | 'deputy_head' | 'staff',
   /** 申請の行（null なら REQUESTS。ほかの人の変更をまねるときに差し替える） */
   requests: null as null | { group_id: string; item_id: string; count: number; updated_at: string }[],
   /** 提出の記録の備考（ほかの人の変更をまねるときに差し替える） */
@@ -216,7 +216,7 @@ describe('申請一覧 /requests', () => {
     expect(screen.getByRole('button', { name: 'Googleフォームの回答を取り込む' })).toBeTruthy();
   });
 
-  it('部員は読み取りだけ（入力欄・保存がない）', async () => {
+  it('総務部門員は読み取りだけ（入力欄・保存がない）', async () => {
     state.role = 'staff';
     state.handler = makeHandler();
     renderScreen();
@@ -224,7 +224,36 @@ describe('申請一覧 /requests', () => {
     expect(within(table).queryByLabelText('模擬店Aの机(木)')).toBeNull();
     expect(screen.queryByRole('button', { name: /保存/ })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Googleフォームの回答を取り込む' })).toBeNull();
-    expect(screen.getByTestId('read-only-notice').textContent).toContain('部員は申請一覧を見るだけです');
+    expect(screen.queryByRole('button', { name: '代理入力' })).toBeNull();
+    expect(screen.getByTestId('read-only-notice').textContent).toBe('総務部門員は申請一覧を見るだけです');
+  });
+
+  it.each(['head', 'deputy_head'] as const)('部門長以上（%s）は管理者と同じく、セル・代理入力・提出済みにする・取り込みを使える（T15b・D-50）', async (role) => {
+    state.role = role;
+    state.handler = makeHandler();
+    renderScreen();
+    const table = await screen.findByTestId('requests-table');
+    expect(within(table).getByLabelText('模擬店Aの机(木)')).toHaveProperty('value', '3');
+    expect(within(table).getAllByRole('button', { name: '代理入力' }).length).toBeGreaterThan(0);
+    expect(within(table).getAllByRole('button', { name: '提出済みにする' }).length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Googleフォームの回答を取り込む' })).toBeTruthy();
+    expect(screen.queryByTestId('read-only-notice')).toBeNull();
+  });
+
+  it('団体が1つもないとき：管理者にはマスタ設定の団体へのリンク、ほかの人には管理者に頼む文（団体はマスタ。D-50）', async () => {
+    const noGroups = () => makeHandler((call) => (call.table === 'groups' ? { data: [] } : undefined));
+    state.handler = noGroups();
+    renderScreen();
+    expect(await screen.findByText('マスタ設定で団体を登録すると、ここに申請が並びます。')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'マスタ設定へ' }).getAttribute('href')).toBe('/settings?tab=groups');
+    for (const role of ['head', 'deputy_head', 'staff'] as const) {
+      cleanup();
+      state.role = role;
+      state.handler = noGroups();
+      renderScreen();
+      expect(await screen.findByText('管理者に団体の登録を頼んでください（登録されると、ここに申請が並びます）。')).toBeTruthy();
+      expect(screen.queryByText('マスタ設定へ')).toBeNull();
+    }
   });
 
   it('締切前の直接の更新が RLS で拒否され、年度が受付中のままなら、締切後の書き方に切り替えて入力を残し、直接の更新を繰り返さない', async () => {

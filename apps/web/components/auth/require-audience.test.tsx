@@ -40,7 +40,7 @@ describe('RequireAudience', () => {
     expect(html).not.toContain('中身');
   });
   it('団体代表は rep で判定する（ロールがなくても団体があれば通る）', () => {
-    auth.membership = member({ groups: [{ id: 'g1', name: 'テスト団体', year_id: 'y1' }] });
+    auth.membership = member({ groups: [{ id: 'g1', name: 'テスト団体', year_id: 'y1', role: 'manager' }] });
     expect(render(['rep'])).toBe('<p>中身</p>');
     expect(render(['admin', 'staff'])).toContain('権限がありません');
   });
@@ -72,6 +72,48 @@ describe('RequireAudience', () => {
     expect(byHref('/swaps')).toContain('権限がありません');
     expect(byHref('/no-such-page')).toContain('権限がありません');
   });
+  it('href の段（D-50）：部門長・副部門長はマスタ設定・ルール・キャスター机交換・履歴を開ける。総務部門員は開けない', () => {
+    const byHref = (href: string) =>
+      renderToStaticMarkup(
+        <RequireAudience href={href}>
+          <p>中身</p>
+        </RequireAudience>,
+      );
+    for (const role of ['head', 'deputy_head'] as const) {
+      auth.membership = member({ role });
+      for (const href of ['/settings', '/settings/?tab=groups', '/rules', '/swaps', '/history', '/stock', '/requests', '/allocation']) {
+        expect(byHref(href)).toBe('<p>中身</p>');
+      }
+      expect(byHref('/request')).toContain('権限がありません');
+    }
+    auth.membership = member({ role: 'staff' });
+    for (const href of ['/settings', '/rules', '/swaps', '/history']) {
+      const html = byHref(href);
+      expect(html).toContain('権限がありません');
+      expect(html).toContain('必要なら管理者に確認してください');
+    }
+  });
+  it('閲覧のみが確定前に振り分けを開くと、「権限がありません」に「振り分けは確定後に表示されます。」を添える（T13-1）', () => {
+    const byHref = (href: string) =>
+      renderToStaticMarkup(
+        <RequireAudience href={href}>
+          <p>中身</p>
+        </RequireAudience>,
+      );
+    for (const status of ['preparing', 'requesting', 'allocating'] as const) {
+      auth.membership = member({ role: 'viewer', year: { ...year, status } });
+      const html = byHref('/allocation/');
+      expect(html).toContain('権限がありません');
+      expect(html).toContain('振り分けは確定後に表示されます。');
+      expect(html).not.toContain('中身');
+    }
+    auth.membership = member({ role: 'viewer', year: { ...year, status: 'closed' } });
+    expect(byHref('/allocation/')).toBe('<p>中身</p>');
+    // 閲覧のみがほかの画面を開いたときは、いつもの説明
+    auth.membership = member({ role: 'viewer' });
+    expect(byHref('/stocks')).toContain('必要なら管理者に確認してください');
+    expect(byHref('/stocks')).not.toContain('確定後に表示されます');
+  });
   it('立場を読めなかったら中身を出さない', () => {
     auth.membership = { status: 'error', message: '利用者の情報を読み込めませんでした。' };
     expect(render(['admin'])).not.toContain('中身');
@@ -97,7 +139,7 @@ describe('3状態の部品', () => {
   it('ForbiddenState は role="alert" で「権限がありません」と説明を出す', () => {
     const html = renderToStaticMarkup(<ForbiddenState />);
     expect(html).toContain('権限がありません');
-    expect(html).toContain('総務の管理者に確認してください');
+    expect(html).toContain('必要なら管理者に確認してください');
     expect(html).toContain('role="alert"');
   });
   it('ErrorState は再試行があるときだけボタンを出す', () => {

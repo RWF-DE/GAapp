@@ -42,7 +42,7 @@ import { RemoteChangeNotice, RequestFields } from './request-fields';
 export type ProxyMode = 'direct' | 'deadline';
 
 /**
- * 代理入力のシート（企業・休憩所など。admin。画面の設計 3.6。T11）。/request と同じ入力欄（RequestFields）を使う。
+ * 代理入力のシート（企業・休憩所など。部門長以上。画面の設計 3.6。T11）。/request と同じ入力欄（RequestFields）を使う。
  * 休憩所で今年の申請がまだないときは「前年の数を入れる」（previous_year_requests を団体名で引く）。
  * 締切前の「提出」は submit_requests（申請と提出を1回で）、締切後は update_requests_after_deadline に提出を付ける（理由は必須）。
  * 入力の元（base）は最初に触ったとき（数・備考を変えた・前年の数を入れた・送った）の表の行。触る前は裏で届いた表の行をそのまま出し、
@@ -407,7 +407,7 @@ function ProxyForm({
             setNoteEdit(v);
           }}
           disabled={busy}
-          audience="admin"
+          audience="lead"
         />
       </div>
       <SheetFooter>

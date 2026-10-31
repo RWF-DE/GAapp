@@ -10,6 +10,7 @@ import {
   type GroupCategory,
 } from '@gaapp/shared';
 import { z } from 'zod';
+import { APP_ROLES, GROUP_ROLES, isGroupRole, type AppRole, type GroupRole, type InviteKind } from '@/lib/auth/roles';
 import { fromDateTimeLocal } from '@/lib/datetime';
 import { CATEGORY_LABELS } from '@/lib/labels';
 import {
@@ -194,23 +195,58 @@ export type DistanceFormOutput = z.output<typeof distanceFormSchema>;
 
 // ---- 招待 ----
 
-export const INVITE_KINDS = ['admin', 'staff', 'viewer', 'rep'] as const;
-export type InviteKind = (typeof INVITE_KINDS)[number];
+export type { InviteKind };
 
-export const inviteFormSchema = z
-  .object({ email: emailSchema, kind: z.enum(INVITE_KINDS), group_id: z.string() })
-  .transform((v, ctx) => {
-    if (v.kind !== 'rep') return { email: v.email, role: v.kind, group_id: null };
-    const g = uuidSchema.safeParse(v.group_id);
-    if (!g.success) {
-      ctx.addIssue({ code: 'custom', path: ['group_id'], message: '団体を選んでください' });
-      return z.NEVER;
-    }
-    return { email: v.email, role: null, group_id: g.data };
-  });
-export type InviteFormInput = z.input<typeof inviteFormSchema>;
-/** 送る値（role は INVITE_KINDS のロールだけ。app_role の head・deputy_head は T15b まで選べない） */
-export type InviteFormOutput = z.output<typeof inviteFormSchema>;
+/**
+ * 招待の立場のすべて（1回に1つ。D-50）：ロール（app_role）と、団体代表の立場（group_role。団体を一緒に選ぶ）。値は DB の列挙の値の
+ * まま（送る引数〔p_role・p_group_role〕と表示名の表〔ROLE_LABELS・GROUP_ROLE_LABELS〕を同じ値で引く）。並びは選択肢の並び。
+ * その人が選べるのはこのうち段で決まるもの（lib/auth/roles.ts の inviteKindsFor。部門長・副部門長は総務部門員・店長・副店長）。
+ */
+export const INVITE_KINDS: readonly InviteKind[] = [...APP_ROLES, ...GROUP_ROLES];
+
+/** 招待のフォームの入力（立場は選択肢の値。団体は店長・副店長のときだけ使う。空は未選択） */
+export interface InviteFormInput {
+  email: string;
+  kind: string;
+  group_id: string;
+}
+
+/**
+ * 送る値：ロールの招待（role。団体なし）か、団体の招待（group_id と group_role。ロールなし）のどちらか1つ
+ * （部門のロールと団体を一度に頼まない。D-49・D-50）。
+ */
+export type InviteFormOutput = { email: string } & (
+  | { role: AppRole; group_id: null; group_role: null }
+  | { role: null; group_id: string; group_role: GroupRole }
+);
+
+/**
+ * 招待のフォーム（kinds はその人が選べる立場。inviteKindsFor）。kinds の外の立場は立場の欄に「立場を選び直してください」
+ * （段が変わった後の古い選択など。DB の invite も段を守る）。店長・副店長は団体が要る。
+ *
+ * @example
+ * inviteFormSchema(inviteKindsFor('head')).parse({ email: 'a@example.test', kind: 'deputy_manager', group_id: G })
+ * // { email: 'a@example.test', role: null, group_id: G, group_role: 'deputy_manager' }
+ */
+export function inviteFormSchema(kinds: readonly InviteKind[]) {
+  const allowed: readonly string[] = kinds;
+  return z
+    .object({
+      email: emailSchema,
+      kind: z.string().refine((k) => allowed.includes(k), { message: '立場を選び直してください' }),
+      group_id: z.string(),
+    })
+    .transform((v, ctx): InviteFormOutput => {
+      const kind = v.kind as InviteKind;
+      if (!isGroupRole(kind)) return { email: v.email, role: kind, group_id: null, group_role: null };
+      const g = uuidSchema.safeParse(v.group_id);
+      if (!g.success) {
+        ctx.addIssue({ code: 'custom', path: ['group_id'], message: '団体を選んでください' });
+        return z.NEVER;
+      }
+      return { email: v.email, role: null, group_id: g.data, group_role: kind };
+    });
+}
 
 // ---- 団体の CSV（3.2）----
 

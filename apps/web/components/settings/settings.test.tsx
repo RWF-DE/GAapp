@@ -358,6 +358,31 @@ describe('今年の使用のダイアログ（setRoomUsable。2.6 の (B1)）', 
   });
 });
 
+describe('場所のタブの段（T15b。D-50）', () => {
+  it('総務部門長・総務副部門長（開いている年度の管理者でない）：場所の一覧は読み取りで、今年の使用だけを変えられる', async () => {
+    data.fetchRoomYears.mockResolvedValue([]);
+    roomYearsApi.setRoomUsable.mockResolvedValue(ry(false, null, T1));
+    const user = userEvent.setup();
+    renderWith(<RoomsTab />, {
+      membership: { role: 'head', years: [], adminOfOpenYear: false } as unknown as Membership,
+      globalWritable: false,
+    });
+    expect(await screen.findByRole('button', { name: '1-1の今年の使用を変える' })).toBeTruthy();
+    expect(screen.queryByTestId('room-add')).toBeNull();
+    expect(screen.queryByRole('button', { name: '編集' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '削除' })).toBeNull();
+    // できること（今年の使用）だけを書き、建物の入れ方（直せる人向け）は出さない
+    expect(screen.getByTestId('global-read-only').textContent).toBe(
+      '場所の追加・編集・削除は管理者が行います（すべての年度で共有の表のため）。今年の使用（使用不可と理由のメモ）は年度ごとで、各行の「変える」から変えられます。',
+    );
+    expect(screen.queryByText(/建物の中の部屋は建物を入れてください/)).toBeNull();
+    const dialog = await openUsable(user);
+    await user.click(within(dialog).getByLabelText('今年は使用する'));
+    await user.click(within(dialog).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(roomYearsApi.setRoomUsable).toHaveBeenCalledWith('y9', ROOM, null, false, null));
+  });
+});
+
 describe('場所・団体・品目のフォーム（updateWithLock・一意のキーの insert。2.6 の (B1)）', () => {
   it('場所の更新：応答が届かなかったが通っていた → id で読み直して「保存されていました」で閉じる', async () => {
     data.fetchRoomYears.mockResolvedValue([]);

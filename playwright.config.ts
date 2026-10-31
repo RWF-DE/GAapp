@@ -26,7 +26,7 @@ const NOT_PARALLEL = ['**/serial/**', '**/manual/**', '**/perf.spec.ts', '**/set
 const projects: Project[] = [
   // 年度をまたぐ表の準備（前の実行の残り物を消してから1回だけ入れる）
   { name: 'db-setup', testMatch: /setup\/global\.setup\.ts$/ },
-  // seed の admin・staff・viewer・rep の storageState
+  // seed の admin・head・staff・viewer・rep の storageState
   { name: 'auth-setup', testMatch: /setup\/auth\.setup\.ts$/, dependencies: ['db-setup'], use: { ...desktop } },
   // シナリオの年度で閉じたテスト（並行）
   {

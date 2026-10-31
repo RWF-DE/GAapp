@@ -13,6 +13,7 @@ import { uuidSchema } from '@/lib/schemas/common';
 import type { StockBaseStamps, StockCounts } from '@/lib/schemas/stock';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import type { AppRole } from '@/lib/auth/membership';
+import { isLead } from '@/lib/auth/roles';
 import { roomStocksOptions, sortByOrder, stockMasterOptions, yearStocksOptions } from './screen-queries';
 
 // ---- 並べ方・場所 ----
@@ -153,16 +154,17 @@ export interface StockAccess {
   shortfall: ShortfallMode;
 }
 
-/** 部員が振り分け中に開いたときの文言（04「在庫入力」） */
-export const STAFF_ALLOCATING_MESSAGE = '振り分けが始まったので、在庫は総務管理者だけが直せます';
+/** 総務部門員が振り分け中に開いたときの文言（04「在庫入力」） */
+export const STAFF_ALLOCATING_MESSAGE = '振り分けが始まったので、在庫は管理者・総務部門長・総務副部門長だけが直せます';
 
 /**
- * 年度の状態とロールで、在庫を書けるか（RLS の can_write_stocks と同じ：admin は closed 以外、staff は preparing・requesting）。
- * 管理者は振り分け中なら振り分けの合計より少なくなるときに確かめ、確定中なら止める（DB の確定中の守りと同じ条件）。
+ * 年度の状態とロールで、在庫を書けるか（RLS の can_write_stocks と同じ：部門長以上〔admin・head・deputy_head〕は closed 以外、
+ * staff は preparing・requesting。D-48）。部門長以上は振り分け中なら振り分けの合計より少なくなるときに確かめ、確定中なら止める
+ * （DB の確定中の守りと同じ条件）。
  */
 export function stockAccess(status: YearStatus, role: AppRole | null): StockAccess {
   const ro = (readOnlyMessage: string | null): StockAccess => ({ writable: false, readOnlyMessage, shortfall: 'none' });
-  if (role === 'admin') {
+  if (isLead(role)) {
     switch (status) {
       case 'preparing':
       case 'requesting':

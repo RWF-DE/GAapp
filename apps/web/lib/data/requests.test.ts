@@ -4,7 +4,6 @@ import type { GroupRow, ItemRow, RequestDbRow, SubmissionRow, YearRow } from '@/
 import { AppError, appError } from '@/lib/errors';
 import { createFakeSupabase, opArgs, type FakeCall } from '@/lib/testing/fake-supabase';
 import {
-  adminWriteMode,
   buildRequestForm,
   buildRequestMatrix,
   cellKey,
@@ -23,6 +22,7 @@ import {
   markSubmittedDirect,
   judgeDirectFailure,
   judgeSubmitFailure,
+  leadWriteMode,
   nonZeroSummary,
   outsideFlagOf,
   pendingChanges,
@@ -117,7 +117,7 @@ describe('buildRequestForm（申請の入力欄）', () => {
     ]);
     expect(extraRowNote(m.extras[1]!)).toBe('長机(2人掛)として扱います。変えるときは総務へ');
     expect(extraRowNote(m.extras[0]!)).toBe('この区分では申請できない品目です。総務へ');
-    expect(extraRowNote(m.extras[1]!, 'admin')).toBe('長机(2人掛)として扱います');
+    expect(extraRowNote(m.extras[1]!, 'lead')).toBe('長机(2人掛)として扱います');
   });
 
   it('提出の rows は表示した入力欄の品目すべて。締切後の rows は変えた品目だけで、行があれば updatedAt を付ける', () => {
@@ -151,15 +151,15 @@ describe('受付期間（端末の時計）と DB が判断した印', () => {
     for (const s of ['allocating', 'confirmed', 'closed'] as const) expect(requestWindowOf(year({ status: s }), NOW)).toBe('closed');
   });
 
-  it('adminWriteMode：締切前は直接、締切後と振り分け中は理由と RPC、確定中・終了は読み取り。印があれば締切後の書き方', () => {
-    expect(adminWriteMode(year({ status: 'preparing', request_close_at: null }), NOW, false)).toBe('direct');
-    expect(adminWriteMode(year({}), NOW, false)).toBe('direct');
-    expect(adminWriteMode(year({ request_open_at: '2026-10-06T00:00:00+09:00' }), NOW, false)).toBe('direct');
-    expect(adminWriteMode(year({}), NOW, true)).toBe('deadline');
-    expect(adminWriteMode(year({ request_close_at: '2026-10-01T00:00:00+09:00' }), NOW, false)).toBe('deadline');
-    expect(adminWriteMode(year({ status: 'allocating' }), NOW, false)).toBe('deadline');
-    expect(adminWriteMode(year({ status: 'confirmed' }), NOW, true)).toBe('readonly');
-    expect(adminWriteMode(year({ status: 'closed' }), NOW, false)).toBe('readonly');
+  it('leadWriteMode：締切前は直接、締切後と振り分け中は理由と RPC、確定中・終了は読み取り。印があれば締切後の書き方', () => {
+    expect(leadWriteMode(year({ status: 'preparing', request_close_at: null }), NOW, false)).toBe('direct');
+    expect(leadWriteMode(year({}), NOW, false)).toBe('direct');
+    expect(leadWriteMode(year({ request_open_at: '2026-10-06T00:00:00+09:00' }), NOW, false)).toBe('direct');
+    expect(leadWriteMode(year({}), NOW, true)).toBe('deadline');
+    expect(leadWriteMode(year({ request_close_at: '2026-10-01T00:00:00+09:00' }), NOW, false)).toBe('deadline');
+    expect(leadWriteMode(year({ status: 'allocating' }), NOW, false)).toBe('deadline');
+    expect(leadWriteMode(year({ status: 'confirmed' }), NOW, true)).toBe('readonly');
+    expect(leadWriteMode(year({ status: 'closed' }), NOW, false)).toBe('readonly');
     expect(isPastDeadline(year({ status: 'preparing' }), NOW)).toBe(false);
   });
 

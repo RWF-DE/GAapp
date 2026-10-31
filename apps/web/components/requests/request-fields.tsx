@@ -32,7 +32,7 @@ export function RequestFields({
   onNoteChange: (value: string) => void;
   disabled: boolean;
   /** 読み取り専用の行の説明の言い方（団体代表には「総務へ」） */
-  audience?: 'rep' | 'admin';
+  audience?: 'rep' | 'lead';
   idPrefix: string;
 }) {
   const noteTooLong = note.length > NOTE_MAX;

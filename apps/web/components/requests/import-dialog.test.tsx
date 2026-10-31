@@ -69,12 +69,14 @@ const csvText = readFileSync(path.join(repoRoot(), 'fixtures', 'importer-samples
 /** 画面の HTML（属性も含む）に出てはいけない、メールアドレスの形の文字列 */
 const EMAIL = /[\w.+-]+@[\w-]+(\.[\w-]+)+/;
 
-function renderDialog(t: Partial<RequestsTables> = {}) {
+function renderDialog(t: Partial<RequestsTables> = {}, canCreateGroups = true) {
   const onImported = vi.fn();
   const onError = vi.fn(async () => 'エラー');
   const tables: RequestsTables = { groups: [KOU, OTSU, HEI], items: ITEMS, requests: [], submissions: [], ...t };
   dbSubmissions.rows = tables.submissions;
-  render(<ImportDialog open onOpenChange={vi.fn()} tables={tables} onImported={onImported} onError={onError} />);
+  render(
+    <ImportDialog open onOpenChange={vi.fn()} tables={tables} canCreateGroups={canCreateGroups} onImported={onImported} onError={onError} />,
+  );
   return { onImported, onError };
 }
 
@@ -105,6 +107,22 @@ describe('取り込みのダイアログ（stall.csv）', () => {
     // CSV には予約ドメインのメールが団体名・数・備考・見出しのない列に入っている
     expect(csvText).toMatch(EMAIL);
     expect(document.body.innerHTML).not.toMatch(EMAIL);
+  });
+
+  it('マスタにない団体：管理者にはマスタ設定の団体へのリンク、部門長・副部門長には管理者に頼む文（団体はマスタ。T15b・D-50）', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await upload(user);
+    const note = screen.getByTestId('import-missing-group-note');
+    expect(note.textContent).toBe('マスタにない団体は、先にマスタ設定で団体を作ってください（マスタ設定へ）。');
+    expect(within(note).getByRole('link', { name: 'マスタ設定へ' }).getAttribute('href')).toBe('/settings?tab=groups');
+    cleanup();
+
+    renderDialog({}, false);
+    await upload(user);
+    const lead = screen.getByTestId('import-missing-group-note');
+    expect(lead.textContent).toBe('マスタにない団体は、管理者に団体の登録を頼んでください。');
+    expect(within(lead).queryByRole('link')).toBeNull();
   });
 
   it('手で団体を選ぶと取り込む団体に入り、CSV にない品目は 0、申請できない品目は送らず、提出日時はフォームのタイムスタンプ', async () => {
