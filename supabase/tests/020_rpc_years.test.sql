@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(109);
+select plan(111);
 
 -- エラーの message と detail（invalid_input の field を確かめる）。成功したら 'ok'
 create function tests.error_of(p_sql text) returns text language plpgsql as $$
@@ -290,6 +290,9 @@ select ok((select not enabled and memo like '%見つからなかった%' from pu
   '付け替えられないルールは無効にして memo に理由を書く');
 select is((select count(*)::int from public.room_years where year_id = tests.id('Y3') and not usable), 1, '使用不可を複製');
 select is((select count(*)::int from public.stocks where year_id = tests.id('Y3')), 0, '在庫は複製しない');
+select is((select count(*)::int from public.events where year_id = tests.id('Y1')), 3,
+  '複製元の Y1 には予定と締切が3件ある（fixture。次の「複製しない」が空振りでない）');
+select is((select count(*)::int from public.events where year_id = tests.id('Y3')), 0, '予定と締切は複製しない（T18。D-54）');
 select is((select reason from public.audit_logs where table_name = 'years' and row_pk ->> 'id' = tests.id('Y3')::text), 'T-Y1改 から複製',
   '複製の理由が監査に残る');
 

@@ -2,7 +2,7 @@
 -- anon と PUBLIC に何もないことは 001_schema が確かめる。ここでは authenticated と supabase_auth_admin を一覧で比べる（supabase_auth_admin は T04 でフックを足した）。
 begin;
 \ir _helpers/personas.psql
-select plan(28);
+select plan(30);
 
 -- 一覧（T15 から版〔引数の型〕まで比べる。同じ名前の古い版〔4引数の invite など〕が残れば落ちる）
 create table tests.expected_fn (kind text not null, sig text primary key);
@@ -58,7 +58,9 @@ insert into tests.expected_fn values
   -- お知らせのトリガー関数（0014。T17。誰も実行できない）
   ('notice_trigger', 'private.tg_notices_set_actor()'),
   ('notice_trigger', 'private.tg_notice_groups_check_audience()'),
-  ('notice_trigger', 'private.tg_notices_check_groups()');
+  ('notice_trigger', 'private.tg_notices_check_groups()'),
+  -- 予定と締切のトリガー関数（0015。T18。誰も実行できない。判定関数と RPC は足していない）
+  ('event_trigger', 'private.tg_events_set_actor()');
 
 -- ---------------------------------------------------------------- 関数
 select is_empty($$ select sig from tests.expected_fn where to_regprocedure(sig) is null $$,
@@ -121,6 +123,14 @@ select is_empty($$ select f.sig from tests.expected_fn f
                           or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
                                      where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
   'お知らせのトリガー関数（set_actor・check_audience・check_groups）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない');
+select is_empty($$ select f.sig from tests.expected_fn f
+                   where f.kind = 'event_trigger'
+                     and (has_function_privilege('authenticated', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('anon', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('supabase_auth_admin', to_regprocedure(f.sig), 'execute')
+                          or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                                     where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
+  '予定と締切のトリガー関数（set_actor）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T18）');
 select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace = 'public'::regnamespace
                      and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
@@ -169,11 +179,11 @@ select set_eq($$ select format('%s %s', c.relname, p.p) from pg_class c
                    and has_table_privilege('authenticated', c.oid, p.p) $$,
   array(select format('%s %s', t, p) from unnest(array['years','rooms','room_years','items','stocks','groups','year_roles',
           'group_members','invitations','request_submissions','requests','rules','substitution_consents','allocations',
-          'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','v_remaining']) t, unnest(array['select']) p
+          'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events','v_remaining']) t, unnest(array['select']) p
         union all
         select format('%s %s', t, p) from unnest(array['rooms','items','room_years','distance_overrides','stocks','groups',
-          'request_submissions','requests','rules','slots','deliveries']) t, unnest(array['insert','update','delete']) p),
-  'authenticated の表の権限：全表の select と、W の 11 表の insert・update・delete だけ（RPC だけで書く表〔お知らせの2表を含む〕には書き込みの権限がない）');
+          'request_submissions','requests','rules','slots','deliveries','events']) t, unnest(array['insert','update','delete']) p),
+  'authenticated の表の権限：全表の select と、W の 12 表（T18 の予定と締切を含む）の insert・update・delete だけ（RPC だけで書く表〔お知らせの2表を含む〕には書き込みの権限がない）');
 select is_empty($$ select c.relname::text from pg_class c
                    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
                      and (has_any_column_privilege('anon', c.oid, 'select') or has_any_column_privilege('anon', c.oid, 'insert')
@@ -197,11 +207,17 @@ select ok((select 'security_invoker=true' = any (reloptions) from pg_class where
   'v_remaining は security_invoker（RLS を素通りしない）');
 select set_eq($$ select format('%s %s', tablename, cmd) from pg_policies where schemaname = 'public' $$,
   array(select format('%s %s', t, c) from unnest(array['rooms','items','distance_overrides','room_years','slots','stocks','groups',
-          'request_submissions','requests','rules','deliveries']) t, unnest(array['SELECT','INSERT','UPDATE','DELETE']) c
+          'request_submissions','requests','rules','deliveries','events']) t, unnest(array['SELECT','INSERT','UPDATE','DELETE']) c
         union all
         select format('%s SELECT', t) from unnest(array['years','year_roles','group_members','invitations','substitution_consents',
           'allocations','profiles','audit_logs','notices','notice_groups']) t),
-  'ポリシーは 54 個（W の 11 表は4操作、RPC だけで書く 10 表は select だけ。T17 でお知らせの2表を足した）');
+  'ポリシーは 58 個（W の 12 表は4操作、RPC だけで書く 10 表は select だけ。T17 でお知らせの2表、T18 で予定と締切の4つを足した）');
+-- 予定と締切（T18）の書き込みは、その年度の部門長以上で年度が終了でないとき（can_lead。room_years・slots・deliveries と同じ）
+select is((select string_agg(format('%s %s using=%s check=%s', policyname, cmd, coalesce(qual, '-'), coalesce(with_check, '-')), ' / ' order by policyname)
+           from pg_policies where schemaname = 'public' and tablename = 'events' and cmd <> 'SELECT'),
+  'events_delete DELETE using=private.can_lead(year_id) check=- / events_insert INSERT using=- check=private.can_lead(year_id) / '
+  || 'events_update UPDATE using=private.can_lead(year_id) check=private.can_lead(year_id)',
+  'events の書き込みのポリシーは3つとも can_lead(year_id)（部門長以上・終了でない年度）');
 select is_empty($$ select policyname::text from pg_policies where schemaname = 'public' and roles <> '{authenticated}' $$,
   'ポリシーはすべて to authenticated');
 select is_empty($$ select policyname::text from pg_policies

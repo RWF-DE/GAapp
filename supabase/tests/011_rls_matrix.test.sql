@@ -1,4 +1,5 @@
--- 011_rls_matrix：権限表の全セル（表 × 操作 × 年度の状態 × ペルソナ）（T03。T15 で総務部門長・副部門長を、T17 でお知らせの notices・notice_groups を足した）
+-- 011_rls_matrix：権限表の全セル（表 × 操作 × 年度の状態 × ペルソナ）（T03。T15 で総務部門長・副部門長を、T17 でお知らせの notices・notice_groups を、
+-- T18 で予定と締切の events を足した）
 -- 期待値の表（tests.expect）から、試す SQL（tests.cell_sql）と、Y1 の6つの状態（preparing、requesting、requesting:after＝締切後、
 -- allocating、confirmed、closed）と、8人のペルソナ（admin staff rep viewer outsider admin2 head deputy）を掛け合わせてセルを作る。
 -- yn は期待値の列の順（admin staff rep viewer outsider admin2 head）に Y（allowed）/N（denied）を並べた7文字。どのペルソナがどの列で
@@ -150,7 +151,26 @@ insert into tests.cell_sql values
  ('notice_groups(Y2 G3)','select','select count(*) from public.notice_groups where group_id = :G3'),
  ('notice_groups','insert','insert into public.notice_groups(notice_id, year_id, group_id) values (:N_G1, :Y1, :G2)'),
  ('notice_groups','update','update public.notice_groups set group_id = group_id where year_id = :Y1'),
- ('notice_groups','delete','delete from public.notice_groups where year_id = :Y1');
+ ('notice_groups','delete','delete from public.notice_groups where year_id = :Y1'),
+ -- 予定と締切（T18）：対象ごとの項目（fixture）を1件ずつ読み、書く。E_* は Y1、E_Y2_* は Y2（準備中のまま）。書き込みは RLS（can_lead）
+ ('events','select','select count(*) from public.events where id = :E_SOUMU'),
+ ('events(groups)','select','select count(*) from public.events where id = :E_GROUPS'),
+ ('events(all)','select','select count(*) from public.events where id = :E_ALL'),
+ ('events(Y2 soumu)','select','select count(*) from public.events where id = :E_Y2_SOUMU'),
+ ('events(Y2 groups)','select','select count(*) from public.events where id = :E_Y2_GROUPS'),
+ ('events(Y2 all)','select','select count(*) from public.events where id = :E_Y2_ALL'),
+ ('events','insert','insert into public.events(year_id, kind, audience, title, starts_at) values (:Y1, ''event'', ''soumu'', ''x'', now())'),
+ ('events(groups)','insert','insert into public.events(year_id, kind, audience, title, starts_at) values (:Y1, ''deadline'', ''groups'', ''x'', now())'),
+ ('events(all)','insert','insert into public.events(year_id, kind, audience, title, starts_at, all_day) values (:Y1, ''event'', ''all'', ''x'', ''2027-10-16 00:00+09'', true)'),
+ ('events(Y2)','insert','insert into public.events(year_id, kind, audience, title, starts_at) values (:Y2, ''event'', ''all'', ''x'', now())'),
+ ('events','update','update public.events set title = title where id = :E_SOUMU'),
+ ('events(groups)','update','update public.events set title = title where id = :E_GROUPS'),
+ ('events(all)','update','update public.events set note = ''x'' where id = :E_ALL'),
+ ('events(Y2)','update','update public.events set title = title where id = :E_Y2_GROUPS'),
+ ('events','delete','delete from public.events where id = :E_SOUMU'),
+ ('events(groups)','delete','delete from public.events where id = :E_GROUPS'),
+ ('events(all)','delete','delete from public.events where id = :E_ALL'),
+ ('events(Y2)','delete','delete from public.events where id = :E_Y2_SOUMU');
 
 -- 期待値（列の順：admin staff rep viewer outsider admin2 head。deputy は head の列）
 insert into tests.expect values
@@ -273,7 +293,27 @@ insert into tests.expect values
  ('notice_groups(G2)','select','*','YYNYNNY'),
  ('notice_groups(G4)','select','*','YYNYNNY'),
  ('notice_groups(Y2 G3)','select','*','NYYNNYN'),
- ('notice_groups','insert','*','NNNNNNN'), ('notice_groups','update','*','NNNNNNN'), ('notice_groups','delete','*','NNNNNNN');
+ ('notice_groups','insert','*','NNNNNNN'), ('notice_groups','update','*','NNNNNNN'), ('notice_groups','delete','*','NNNNNNN'),
+ -- events（T18。02「予定と締切の権限」）：総務（admin・head・deputy_head・staff）はその年度の全部。閲覧のみと団体代表は、その年度（代表で
+ -- ある年度）の対象が団体・全員の項目。読み取りは年度の状態によらない。staff は Y2 では G3 の店長（総務でない）なので、Y2 の団体・全員だけ。
+ -- rep は Y1 の G1 の店長で Y2 の閲覧のみ。書き込みはその年度の部門長以上で、終了でない年度（can_lead）。確定中も書ける（守りがない）。
+ -- Y2 は準備中のまま（admin2 だけが書ける。Y1 の部門長以上は書けない）
+ ('events','select','*','YYNNNNY'),
+ ('events(groups)','select','*','YYYYNNY'),
+ ('events(all)','select','*','YYYYNNY'),
+ ('events(Y2 soumu)','select','*','NNNNNYN'),
+ ('events(Y2 groups)','select','*','NYYNNYN'),
+ ('events(Y2 all)','select','*','NYYNNYN'),
+ ('events','insert','*','YNNNNNY'), ('events','insert','closed','NNNNNNN'),
+ ('events(groups)','insert','*','YNNNNNY'), ('events(groups)','insert','closed','NNNNNNN'),
+ ('events(all)','insert','*','YNNNNNY'), ('events(all)','insert','closed','NNNNNNN'),
+ ('events','update','*','YNNNNNY'), ('events','update','closed','NNNNNNN'),
+ ('events(groups)','update','*','YNNNNNY'), ('events(groups)','update','closed','NNNNNNN'),
+ ('events(all)','update','*','YNNNNNY'), ('events(all)','update','closed','NNNNNNN'),
+ ('events','delete','*','YNNNNNY'), ('events','delete','closed','NNNNNNN'),
+ ('events(groups)','delete','*','YNNNNNY'), ('events(groups)','delete','closed','NNNNNNN'),
+ ('events(all)','delete','*','YNNNNNY'), ('events(all)','delete','closed','NNNNNNN'),
+ ('events(Y2)','insert','*','NNNNNYN'), ('events(Y2)','update','*','NNNNNYN'), ('events(Y2)','delete','*','NNNNNYN');
 
 -- ペルソナと期待値の列。deputy は head の列で確かめる（総務副部門長の権限は総務部門長と同じ。D-48）
 create table tests.persona_col (persona text primary key, col int not null, ord int not null unique);
@@ -298,13 +338,14 @@ begin
   return tests.try_cell(p_sql, p_persona, p_op);
 end $$;
 
-select plan((select count(*)::int from tests.cells) + 6 + 24);
+select plan((select count(*)::int from tests.cells) + 6 + 31);
 
 -- 期待値の表の形
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
 select is_empty($$ select e.tbl, e.op from tests.expect e left join tests.cell_sql c using (tbl, op) where c.tbl is null $$,
   '期待値の表に、試す SQL のない行がない');
-select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 22, '21 表（T17 のお知らせの2表を含む）と v_remaining をすべて試す');
+select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 23,
+  '22 表（T17 のお知らせの2表と T18 の予定と締切を含む）と v_remaining をすべて試す');
 select is_empty($$ select tbl, op, scenario, yn from tests.expect where yn !~ '^[YN]{7}$' $$,
   '期待値はどの行も7列（admin staff rep viewer outsider admin2 head）');
 select is((select string_agg(persona || '=' || col, ' ' order by ord) from tests.persona_col),
@@ -432,10 +473,51 @@ select tests.login_as('viewer');
 select is((select count(*)::int from public.invitations), 1, 'メールを戻せば、自分あての招待だけを読める');
 select tests.logout();
 
+-- 予定と締切（T18）：直接の書き込みの中身（権限表の外）。部門長以上の直接の insert で created_by・updated_by を送っても自分になり
+-- （set_actor）、返り値も読める（returning は select のポリシーも通る）。画面が作った id で送り直すと主キーの重複で止まる（04 の (B1)）
+select tests.set_scenario('requesting');
+select tests.login_as('head');
+with e as (
+  insert into public.events (id, year_id, kind, audience, title, starts_at, created_by, updated_by)
+  values ('00000000-0000-4000-8000-0000000e0001', tests.id('Y1'), 'deadline', 'groups', 'T-E_DIRECT', '2027-09-01 17:00+09',
+          tests.id('admin'), tests.id('admin'))
+  returning created_by, updated_by)
+select is((select format('%s %s', (created_by = tests.id('head'))::text, (updated_by = tests.id('head'))::text) from e), 'true true',
+  '部門長の直接の insert：送った created_by・updated_by は使われず自分になり、返り値も読める');
+select throws_ok($q$ insert into public.events (id, year_id, kind, audience, title, starts_at)
+                    values ('00000000-0000-4000-8000-0000000e0001', (select id from tests.ids where name = 'Y1'), 'deadline', 'groups',
+                            'T-E_DIRECT', '2027-09-01 17:00+09') $q$,
+  '23505', null, '画面が作った id で送り直すと、主キーの重複で止まる（二重にならない）');
+select tests.logout();
+insert into tests.ids values ('E_DIRECT', '00000000-0000-4000-8000-0000000e0001');
+-- 楽観ロック（画面が updated_at を条件に入れる）：テスト全体が1つのトランザクションで now() が変わらないので、set_timestamps を止めて
+-- 過去の updated_at を入れてから確かめる。合う版なら 1 行、同じ版でもう一度なら 0 行（画面は読み直して conflict にする）
+alter table public.events disable trigger set_timestamps;
+update public.events set updated_at = '2027-01-01 00:00:00.123456+00' where id = tests.id('E_DIRECT');
+alter table public.events enable trigger set_timestamps;
+select tests.login_as('deputy');
+with u as (update public.events set title = 'T-E_DIRECT2'
+           where id = tests.id('E_DIRECT') and updated_at = '2027-01-01 00:00:00.123456+00' returning 1)
+select is((select count(*)::int from u), 1, '予定と締切の楽観ロック：updated_at が合えば直せる（1 行）');
+with u as (update public.events set title = 'T-E_DIRECT3'
+           where id = tests.id('E_DIRECT') and updated_at = '2027-01-01 00:00:00.123456+00' returning 1)
+select is((select count(*)::int from u), 0, '予定と締切の楽観ロック：同じ版でもう一度は 0 行（直した後の updated_at は進んでいる）');
+select tests.logout();
+select is((select format('%s %s %s', (created_by = tests.id('head'))::text, (updated_by = tests.id('deputy'))::text, title)
+           from public.events where id = tests.id('E_DIRECT')),
+  'true true T-E_DIRECT2', '直した後も created_by は書いた人（head）、updated_by は直した人（副部門長）');
+-- 両方の年度の管理者（admin は上のルールの確かめで Y2 の管理者も兼ねた）でも、予定と締切を別の年度へ移せない（BEFORE ROW の
+-- check_immutable が、ポリシーの with check より先に invalid_input で止める）
+select tests.login_as('admin');
+select throws_ok(format($q$ update public.events set year_id = %L where id = %L $q$, tests.id('Y2'), tests.id('E_DIRECT')),
+  'P0001', 'invalid_input', '両方の年度の管理者でも、予定と締切を別の年度へ移せない（check_immutable）');
+select tests.logout();
+
 -- anon は表もビューも読めない
 select tests.login_anon();
 select throws_ok($q$ select count(*) from public.years $q$, '42501', null, 'anon は表を読めない');
 select throws_ok($q$ select count(*) from public.v_remaining $q$, '42501', null, 'anon はビューを読めない');
+select throws_ok($q$ select count(*) from public.events $q$, '42501', null, 'anon は予定と締切を読めない（T18）');
 select tests.logout();
 
 select * from finish();

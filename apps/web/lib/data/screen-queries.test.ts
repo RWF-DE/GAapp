@@ -1,10 +1,12 @@
 // 画面を開くときに最初に読むもの（D-45）：先読みの決め方・使用場所の名前の埋め込み・年度の行のキャッシュを使う /my の読み込み。
 // T16：ダッシュボード（/）の先読み（planHomePrefetch。欄が読むクエリと同じキー。版・スナップショットを読まない）と、
 // ルートのレイアウトの JS に机椅子の数え方・スナップショット・検証を入れないこと
+// T18：/ の先読みに予定と締切の項目（締切と予定の欄と同じキー。4G の計測で団体代表の / が 2 秒以内のままと確かめて足した）
 import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
 import type { AppRole, GroupSummary, Membership } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
+import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
@@ -106,7 +108,7 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     return { displayName: null, year, role, groups, years: [year], latestYear: year, adminOfOpenYear: role === 'admin' };
   };
   const yearRow = { id: Y, label: 'R8', status: 'requesting', allocation_version: 3, festival_start: '2026-10-17' } as unknown as YearRow;
-  /** その立場のダッシュボードの欄（要対応・締切と予定・カード）が並べるクエリのキー（重なりを除く） */
+  /** その立場のダッシュボードの欄（要対応・締切と予定・カード・お知らせ）が並べるクエリのキー（重なりを除く） */
   const widgetKeys = (m: Membership) => {
     const out = new Map<string, readonly unknown[]>();
     for (const c of portalContextsOf(m, yearRow, 0)) {
@@ -123,27 +125,41 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
   const home = (m: Membership) => planHomePrefetch(ctx('', m.groups.map((g) => g.id), m.role));
 
   it.each(['admin', 'head', 'deputy_head', 'staff'] as const)(
-    '総務（%s）：机椅子の軽い読み取り（要対応とカードと同じキー）と、T17 総務内のお知らせの新着（総務内のお知らせの欄と同じキー）',
+    '総務（%s）：机椅子の軽い読み取り（要対応とカードと同じキー）と、T17 総務内のお知らせの新着（総務内のお知らせの欄と同じキー）と、T18 予定と締切の項目（締切と予定の欄と同じキー）',
     (role) => {
-      expect(keys(home(member(role)))).toEqual([furnitureSoumuOptions(Y).queryKey, noticesLatestOptions(Y, 'soumu').queryKey]);
+      expect(keys(home(member(role)))).toEqual([
+        furnitureSoumuOptions(Y).queryKey,
+        noticesLatestOptions(Y, 'soumu').queryKey,
+        calendarDatedOptions(Y, 'soumu').queryKey,
+      ]);
     },
   );
 
-  it('T17 閲覧のみ：団体あてのお知らせの新着だけ（年度の行のほかに。お知らせの欄と同じキー）。ロールも団体もなければ読まない', () => {
-    expect(keys(home(member('viewer')))).toEqual([noticesLatestOptions(Y, 'viewer').queryKey]);
+  it('T17 閲覧のみ：団体あてのお知らせの新着と、T18 予定と締切の項目だけ（年度の行のほかに。欄と同じキー）。ロールも団体もなければ読まない', () => {
+    expect(keys(home(member('viewer')))).toEqual([noticesLatestOptions(Y, 'viewer').queryKey, calendarDatedOptions(Y, 'viewer').queryKey]);
     expect(home(member(null))).toEqual([]);
   });
 
-  it('店長・副店長：自団体の提出と了承（代表する団体の欄と要対応と同じキー。団体は立場の一覧の順）と、T17 団体あてのお知らせの新着。兼ねた人は両方', () => {
-    expect(keys(home(member(null, [G1g, G2g])))).toEqual([furnitureRepOptions(Y, [G1, G2]).queryKey, noticesLatestOptions(Y, 'rep', [G1, G2]).queryKey]);
+  it('店長・副店長：自団体の提出と了承（代表する団体の欄と要対応と同じキー。団体は立場の一覧の順）と、T17 団体あてのお知らせの新着と、T18 予定と締切の項目。兼ねた人は両方（予定と締切は1回だけ）', () => {
+    expect(keys(home(member(null, [G1g, G2g])))).toEqual([
+      furnitureRepOptions(Y, [G1, G2]).queryKey,
+      noticesLatestOptions(Y, 'rep', [G1, G2]).queryKey,
+      calendarDatedOptions(Y, 'rep').queryKey,
+    ]);
+    // 店長・副店長も務める管理者：予定と締切は総務として1回だけ（店長・副店長として読む分と同じ結果。RLS は人ごと）
     expect(keys(home(member('admin', [G1g])))).toEqual([
       furnitureSoumuOptions(Y).queryKey,
       noticesLatestOptions(Y, 'soumu').queryKey,
+      calendarDatedOptions(Y, 'soumu').queryKey,
       furnitureRepOptions(Y, [G1]).queryKey,
       noticesLatestOptions(Y, 'rep', [G1]).queryKey,
     ]);
-    // 閲覧のみで店長も務める人は、お知らせを閲覧のみとして1回だけ読む（団体あてで、読める範囲も同じ）
-    expect(keys(home(member('viewer', [G1g])))).toEqual([noticesLatestOptions(Y, 'viewer').queryKey, furnitureRepOptions(Y, [G1]).queryKey]);
+    // 閲覧のみで店長も務める人は、お知らせと予定と締切を閲覧のみとして1回だけ読む（団体あてで、読める範囲も同じ）
+    expect(keys(home(member('viewer', [G1g])))).toEqual([
+      noticesLatestOptions(Y, 'viewer').queryKey,
+      calendarDatedOptions(Y, 'viewer').queryKey,
+      furnitureRepOptions(Y, [G1]).queryKey,
+    ]);
   });
 
   it('先読みするキーは、同じ立場のダッシュボードの欄が並べるクエリのキーと同じ（同じキャッシュを読み、余分に読まない）', () => {
@@ -153,11 +169,45 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     }
   });
 
-  it('版・振り分けの行・ルール・スナップショットのキーは先読みしない（キーはどれも ["year", 年度, "portal", "furniture" か "notices", …]）', () => {
+  it('T18 予定と締切の項目は1人1回だけ先読みし、ダッシュボードの欄の締切と予定の機能の読み取りと同じキー（どの立場も1つ）', () => {
+    for (const m of [member('admin', [G1g]), member('staff'), member('viewer', [G2g]), member(null, [G1g, G2g])]) {
+      const prefetched = keys(home(m)).filter((key) => key[3] === 'calendar');
+      const calendarKeys = portalContextsOf(m, yearRow, 0).flatMap((c) => {
+        const p = PORTAL_PROVIDERS.find((x) => x.moduleId === 'calendar')!;
+        const q = portalWidgetQuery(p, c, 'dated');
+        return q ? [q.queryKey] : [];
+      });
+      expect(calendarKeys).toHaveLength(1);
+      expect(prefetched, `${m.role}・${m.groups.length}`).toEqual(calendarKeys);
+    }
+  });
+
+  it('T18 予定と締切の項目の usable：総務は総務のまま、閲覧のみは閲覧のみのまま、団体代表はロールがなく団体があるまま（団体の並びは問わない）', () => {
+    const [, , soumu] = home(member('staff'));
+    expect(soumu!.options.queryKey).toEqual(calendarDatedOptions(Y, 'soumu').queryKey);
+    expect(soumu!.usable!(member('head'))).toBe(true);
+    expect(soumu!.usable!(member('viewer'))).toBe(false);
+    expect(soumu!.usable!(member(null, [G1g]))).toBe(false);
+    const [, viewer] = home(member('viewer'));
+    expect(viewer!.options.queryKey).toEqual(calendarDatedOptions(Y, 'viewer').queryKey);
+    expect(viewer!.usable!(member('viewer', [G1g]))).toBe(true);
+    expect(viewer!.usable!(member('staff'))).toBe(false);
+    expect(viewer!.usable!(member(null, [G1g]))).toBe(false);
+    const [, , rep] = home(member(null, [G1g, G2g]));
+    expect(rep!.options.queryKey).toEqual(calendarDatedOptions(Y, 'rep').queryKey);
+    expect(rep!.usable!(member(null, [G2g, G1g]))).toBe(true);
+    expect(rep!.usable!(member(null, [G1g]))).toBe(true);
+    expect(rep!.usable!(member(null, []))).toBe(false);
+    // ロールがついた人は総務・閲覧のみとして読む（店長・副店長の分は使わない）
+    expect(rep!.usable!(member('admin', [G1g, G2g]))).toBe(false);
+    expect(rep!.usable!(member('viewer', [G1g, G2g]))).toBe(false);
+  });
+
+  it('版・振り分けの行・ルール・スナップショットのキーは先読みしない（キーはどれも ["year", 年度, "portal", "furniture" か "notices" か "calendar", …]）', () => {
     for (const m of [member('admin', [G1g]), member('staff'), member('viewer', [G2g]), member(null, [G1g, G2g])]) {
       for (const key of keys(home(m))) {
         expect(key.slice(0, 3)).toEqual(['year', Y, 'portal']);
-        expect(['furniture', 'notices']).toContain(key[3]);
+        expect(['furniture', 'notices', 'calendar']).toContain(key[3]);
       }
     }
   });
@@ -220,6 +270,11 @@ describe('T16 ルートのレイアウトの JS（Providers が先読みの表�
     ];
     expect(g.files.filter((f) => heavy.includes(f))).toEqual([]);
     expect(g.packages.filter((p) => /^(@gaapp\/|highs|exceljs)/.test(p))).toEqual([]);
+    // T18：予定と締切の項目の読み取り（dated.ts。読み取りとキーだけ）だけ。欄の組み立て（portal.ts）・一覧の組み立て・表示名・段・
+    // 一覧の読み取りと書き込み・入力の zod・画面の部品と、曜日つきの日付（lib/datetime-weekday.ts）は入れない
+    expect(g.files).toContain('lib/modules/calendar/dated.ts');
+    expect(g.files.filter((f) => f.includes('calendar') && f !== 'lib/modules/calendar/dated.ts')).toEqual([]);
+    expect(g.files).not.toContain('lib/datetime-weekday.ts');
   });
 });
 

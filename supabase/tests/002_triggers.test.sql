@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(188);
+select plan(202);
 
 -- ---------------------------------------------------------------- 時刻（created_at・updated_at）
 select lives_ok($$ insert into public.rooms (name, created_at, updated_at) values ('pgtap-T', '2000-01-01', '2000-01-01') $$, '時刻を指定した insert');
@@ -387,6 +387,53 @@ select is((select string_agg(a.table_name || ' ' || a.action || ' ' || coalesce(
   'notice_groups delete G1 お知らせの片付け, notices delete - お知らせの片付け',
   '理由（app.reason）は、消したお知らせと、連鎖で消えた宛先の団体の監査の両方に残る');
 
+-- ---------------------------------------------------------------- 予定と締切（T18）：書いた人・日時・監査・変えられない列
+-- set_actor：ログインしている人の書き込みでは、created_by・updated_by は DB が auth.uid() を入れる（created_by は最初に書いた人のまま）
+select tests.act_as('head');
+insert into public.events (year_id, kind, audience, title, starts_at, created_by, updated_by, created_at, updated_at)
+values (tests.id('Y1'), 'deadline', 'groups', 'T-E_TRG', '2027-09-15 17:00+09', tests.id('admin'), tests.id('admin'), '2000-01-01', '2000-01-01');
+select tests.act_clear();
+insert into tests.ids select 'E_TRG', id from public.events where title = 'T-E_TRG';
+select is((select created_by || ' ' || updated_by from public.events where id = tests.id('E_TRG')),
+  tests.id('head') || ' ' || tests.id('head'), '予定と締切の insert：created_by・updated_by は書いた人（クライアントの値は使わない）');
+select ok((select created_at = now() and updated_at = now() from public.events where id = tests.id('E_TRG')),
+  '予定と締切の insert：created_at・updated_at は DB が入れる');
+select tests.act_as('deputy');
+update public.events set title = 'T-E_TRG2', created_by = tests.id('rep'), updated_by = tests.id('rep') where id = tests.id('E_TRG');
+select tests.act_clear();
+select is((select created_by || ' ' || updated_by from public.events where id = tests.id('E_TRG')),
+  tests.id('head') || ' ' || tests.id('deputy'), '予定と締切の update：created_by は最初に書いた人のまま、updated_by は直した人');
+update public.events set created_by = tests.id('admin'), updated_by = tests.id('rep') where id = tests.id('E_TRG');
+select is((select created_by || ' ' || updated_by from public.events where id = tests.id('E_TRG')),
+  tests.id('admin') || ' ' || tests.id('rep'), '予定と締切も、auth.uid() がない書き込み（seed・SQL Editor）は入れた値のまま（D-10）');
+-- 監査：row_pk は id、year_id は行から、group_id は null。直接の書き込みなので理由は置かれない（null）
+select is((select format('%s %s %s %s %s %s', action, (row_pk = jsonb_build_object('id', tests.id('E_TRG')))::text, (year_id = tests.id('Y1'))::text,
+                         (group_id is null)::text, (user_id = tests.id('head'))::text, (reason is null)::text)
+           from public.audit_logs where table_name = 'events' and action = 'insert' and row_pk ->> 'id' = tests.id('E_TRG')::text),
+  'insert true true true true true', '予定と締切の監査：row_pk は id、year_id は行から、group_id と理由は null、user_id は書いた人');
+select is((select (before ->> 'title') || '>' || (after ->> 'title') || ' ' || (user_id = tests.id('deputy'))::text
+           from public.audit_logs where table_name = 'events' and action = 'update' and row_pk ->> 'id' = tests.id('E_TRG')::text
+           order by id limit 1),
+  'T-E_TRG>T-E_TRG2 true', '予定と締切の更新の監査に、前後の行と直した人が残る');
+-- 中身を変えない保存：同じ人なら updated_at だけの変更なので監査に書かない
+select tests.act_as('deputy');
+update public.events set title = title where id = tests.id('E_TRG');
+select coalesce(max(id), 0) as e0 from public.audit_logs \gset
+update public.events set title = title where id = tests.id('E_TRG');
+select tests.act_clear();
+select is((select count(*)::int from public.audit_logs where id > :e0 and table_name = 'events'), 0,
+  '同じ人が中身を変えずに予定と締切を直す（updated_at だけの変更）は監査に書かない');
+-- 年度の付け替えを止める（check_immutable。invalid_input の detail は列と immutable）
+select is(tests.error_json(format($$ update public.events set year_id = %L where id = %L $$, tests.id('Y2'), tests.id('E_TRG'))),
+  '{"code": "invalid_input", "detail": {"column": "year_id", "reason": "immutable"}}'::jsonb, 'events.year_id は変えられない');
+-- 消す：監査に前の行と消した人が残る
+select tests.act_as('head');
+delete from public.events where id = tests.id('E_TRG');
+select tests.act_clear();
+select is((select format('%s %s %s %s', action, before ->> 'title', (after is null)::text, (user_id = tests.id('head'))::text)
+           from public.audit_logs where table_name = 'events' and action = 'delete' and row_pk ->> 'id' = tests.id('E_TRG')::text),
+  'delete T-E_TRG2 true true', '予定と締切の削除の監査に、前の行と消した人が残る');
+
 -- ---------------------------------------------------------------- lock_year_guard
 select is(private.lock_year_guard(tests.id('Y1')), 'requesting'::public.year_status, 'lock_year_guard は状態を返す');
 select is(private.lock_year_guard(gen_random_uuid()), null, 'lock_year_guard は年度がなければ null');
@@ -434,6 +481,10 @@ insert into public.notices (year_id, audience, title) values (tests.id('Y1'), 's
 update public.notices set title = 'T-版2' where title = 'T-版';
 delete from public.notice_groups where notice_id = tests.id('N_G1') and group_id = tests.id('G4');
 select is(tests.ver(), :v1 + 13, 'お知らせ（notices・notice_groups）の書き込みでは増えない（振り分けの入力でない。T17）');
+insert into public.events (year_id, kind, audience, title, starts_at) values (tests.id('Y1'), 'event', 'soumu', 'T-版', now());
+update public.events set title = 'T-版2' where title = 'T-版';
+delete from public.events where title = 'T-版2';
+select is(tests.ver(), :v1 + 13, '予定と締切（events）の書き込みでは増えない（振り分けの入力でない。T18）');
 update public.rooms set sort_order = sort_order where id = tests.id('R4');
 select is(tests.ver(), :v1 + 14, '値が同じ update でも、文が行に当たれば増える（監査は書かない）');
 select is((select count(*)::int from public.audit_logs where table_name = 'years' and (after ->> 'allocation_version')::int > :v0), 0,
@@ -473,6 +524,8 @@ select throws_ok(format($$ insert into public.allocations (year_id, source_room_
 select lives_ok($$ update public.rules set enabled = false where id = tests.id('RULE1') $$, '確定中のルールは直せる（解除してからの運用は画面側）');
 select lives_ok($$ update public.notices set title = 'T-確定中' where id = tests.id('N_TRG') $$,
   '確定中もお知らせは直せる（お知らせに確定中の守りはない。T17）');
+select lives_ok($$ update public.events set note = '確定中' where id = tests.id('E_ALL') $$,
+  '確定中も予定と締切は直せる（予定と締切に確定中の守りはない。T18）');
 
 -- closed
 update public.years set status = 'closed' where id = tests.id('Y1');
@@ -485,6 +538,8 @@ select throws_ok($$ update public.rules set year_id = tests.id('Y2') where id = 
 select lives_ok($$ update public.deliveries set returned = true where id = tests.id('D_G1') $$, 'closed でも返却のチェックは書ける（受け渡しは守りの対象外）');
 select lives_ok($$ update public.notices set title = 'T-終了' where id = tests.id('N_TRG') $$,
   'closed の年度のお知らせも SQL Editor からは直せる（トリガーの守りはない。終了の年度の読み取り専用は RPC が守る。T17）');
+select lives_ok($$ update public.events set note = '終了' where id = tests.id('E_ALL') $$,
+  'closed の年度の予定と締切も SQL Editor からは直せる（トリガーの守りはない。終了の年度の読み取り専用は RLS〔can_lead〕が守る。T18）');
 
 -- ---------------------------------------------------------------- 年度ごと消す（連鎖）は守りに止められない
 select coalesce(max(id), 0) as a0 from public.audit_logs \gset
@@ -500,6 +555,10 @@ select is((select count(*)::int from public.notices where year_id = tests.id('Y1
 select ok((select count(*) > 0 from public.audit_logs where id > :a0 and table_name = 'notices' and action = 'delete' and year_id = tests.id('Y1'))
           and (select count(*) > 0 from public.audit_logs where id > :a0 and table_name = 'notice_groups' and action = 'delete' and year_id = tests.id('Y1')),
   '年度の連鎖削除で消えたお知らせと宛先の団体の監査にも年度が入る');
+select is((select count(*)::int from public.events where year_id = tests.id('Y1')), 0,
+  '年度を消すと、その年度の予定と締切も消える（T18）');
+select is((select count(*)::int from public.audit_logs where id > :a0 and table_name = 'events' and action = 'delete' and year_id = tests.id('Y1')), 3,
+  '年度の連鎖削除で消えた予定と締切（fixture の3件）の監査にも年度が入る');
 select lives_ok($$ delete from public.groups where id = tests.id('G3') $$, '受付前の年度（Y2）の団体は消せる');
 select is((select count(*)::int from public.notice_groups where group_id = tests.id('G3')), 0,
   'Y2 の団体を消すと、その団体の宛先の団体の行も消える');

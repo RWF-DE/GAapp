@@ -7,14 +7,16 @@
 // 3. 欄に出すのは portalSectionOf(provider, ctx, data)：query の data（select の後。fromYear の分を含む）があればそれ、
 //    なければ fromYear(ctx)（リクエストを送らない）。読み込み中・失敗は、並べた query の分だけ欄がプロバイダ × 種類ごとに出す
 //    （query.widgets にない欄には出さない。年度の行だけで決まる欄に、使わない読み取りの読み込み中・失敗を出さない）。
-// 4. mergePortalSections で機能ごとにまとめ（兼ねた人の重なりを消す）、要対応は sortTodos、締切と予定は upcomingDated、
-//    お知らせの欄（T17）は latestNotices で並べる。
-// React・Supabase・lib/data を import しない（型と、membership・roles・datetime・registry の小さな関数だけ）。
+// 4. mergePortalSections で機能ごとにまとめ（兼ねた人の重なりを消す）、要対応は sortTodos、締切と予定は upcomingDated
+//    （T18 で、これからの 30 日と過ぎた締切にした）、お知らせの欄（T17）は latestNotices で並べる。締切と予定の1件の日付と相対の
+//    言い方は datedWhen・datedRelative（T18。/calendar も同じ決め方）。
+// React・Supabase・lib/data を import しない（型と、membership・roles・datetime・datetime-weekday・registry の小さな関数だけ）。
 import type { Database } from '@gaapp/shared';
 import type { UseQueryOptions } from '@tanstack/react-query';
 import { audiencesOf, type Audience, type GroupSummary, type Membership } from '@/lib/auth/membership';
 import { isSoumu, type AppRole } from '@/lib/auth/roles';
-import { tokyoStartOfDay, tokyoToday } from '@/lib/datetime';
+import { formatTime, tokyoDate, tokyoStartOfDay, tokyoToday } from '@/lib/datetime';
+import { daysBetween, formatShortDateTimeWeekday, formatShortDateWeekday } from '@/lib/datetime-weekday';
 import type { YearRow } from '@/lib/db/types';
 import type { PortalQueryKey } from './query-key';
 import { MODULES, type ModuleId } from './registry';
@@ -62,8 +64,13 @@ export interface DatedItem {
   id: string;
   moduleId: ModuleId;
   title: string;
-  /** ISO 8601。時刻のあるものは timestamptz の文字列、日付だけのものは YYYY-MM-DD（Asia/Tokyo の日付） */
+  /** 開始（ISO 8601）。時刻のあるものは timestamptz の文字列、日付だけのものは YYYY-MM-DD（Asia/Tokyo の日付） */
   at: string;
+  /**
+   * 終わり（at と同じ形。終わりのある項目だけ。日付だけのものは最後の日〔その日を含む〕で、開始の日と違うときだけ。T18）。
+   * 締切は終わりがあれば終わりが期限（datedDue）
+   */
+  end?: string;
   kind: DatedKind;
   /** 行き先（開けるときだけ） */
   href?: string;
@@ -187,8 +194,8 @@ export function moduleLabel(id: ModuleId): string {
   return MODULES.find((m) => m.id === id)?.label ?? id;
 }
 
-/** 機能の登録の順（登録にない id は最後） */
-function moduleIndex(id: ModuleId): number {
+/** 機能の登録の順（登録にない id は最後。締切と予定の同じ時刻の並び。T18 で /calendar の一覧も使う） */
+export function moduleIndex(id: ModuleId): number {
   const k = MODULES.findIndex((m) => m.id === id);
   return k < 0 ? MODULES.length : k;
 }
@@ -256,6 +263,9 @@ export function sortTodos(todos: readonly TodoItem[]): TodoItem[] {
 /** 締切と予定に出す数（続きは「ほか N 件」） */
 export const PORTAL_DATED_LIMIT = 8;
 
+/** 締切と予定の欄の「これから」の日数（開始の日が今日から 30 日後まで。今日＋30 日の日を含む。T18） */
+export const PORTAL_DATED_DAYS = 30;
+
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** 日付だけの項目か（at が YYYY-MM-DD。表示では時刻を出さない） */
@@ -269,20 +279,126 @@ export function datedTime(at: string): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
+/** 開始の日（Asia/Tokyo の YYYY-MM-DD。日付だけのものはそのまま）。読めなければ空文字（T18） */
+export function datedStartDay(d: Pick<DatedItem, 'at'>): string {
+  return tokyoDate(d.at);
+}
+
+/** 最後の日（Asia/Tokyo の YYYY-MM-DD）：終わりがあれば終わりの日、なければ開始の日。読めなければ空文字（T18） */
+export function datedLastDay(d: Pick<DatedItem, 'at' | 'end'>): string {
+  return d.end ? tokyoDate(d.end) : datedStartDay(d);
+}
+
+/** 締切の期限（終わりがあれば終わり、なければ開始。at と同じ形。T18） */
+export function datedDue(d: Pick<DatedItem, 'at' | 'end'>): string {
+  return d.end || d.at;
+}
+
 /**
- * これからの締切と予定（04「ダッシュボード」）：時刻のあるものは now より後、日付だけのものは日付が今日（Asia/Tokyo）以降の
- * ものを、早い順（日付だけは Asia/Tokyo の 0 時として比べる。同じ時刻は機能の登録の順、元の順）に limit 件まで。
- * 残りの数を more に返す（「ほか N 件」）。読めない日時の項目は出さない。
+ * 終わったか（T18。04「ダッシュボード」の締切と予定）：日付だけのものは最後の日が今日（Asia/Tokyo）より前、時刻のあるものは
+ * 終わり（なければ開始）が now 以前（締切は期限の時刻ちょうどから過ぎた側）。読めない日時は偽。
  */
-export function upcomingDated(items: readonly DatedItem[], now: number, limit = PORTAL_DATED_LIMIT): { items: DatedItem[]; more: number } {
+export function isDatedPast(d: Pick<DatedItem, 'at' | 'end'>, now: number): boolean {
+  if (isDateOnly(d.at)) {
+    const last = datedLastDay(d);
+    return last !== '' && last < tokyoToday(new Date(now));
+  }
+  const t = datedTime(datedDue(d));
+  return t !== null && t <= now;
+}
+
+/**
+ * 開始も終わり（あれば）も読める項目か（読めない日時の項目は欄と /calendar の一覧に出さない）。開始の日・最後の日が暦にある日付か
+ * まで見る（Date.parse は 2027-02-30 を 3/2 と読むので、日付だけのものは daysBetween で確かめる）
+ */
+export function isDatedReadable(d: Pick<DatedItem, 'at' | 'end'>): boolean {
+  return datedTime(d.at) !== null && (!d.end || datedTime(d.end) !== null) && daysBetween(datedStartDay(d), datedLastDay(d)) !== null;
+}
+
+/**
+ * 締切と予定の欄に出すもの（04「ダッシュボード」の締切と予定。T18 で改めた）。
+ * - これから：終わっていない（isDatedPast でない）もので、開始の日が今日から days 日後まで（daysBetween(今日, 開始の日) ≤ days。
+ *   始まって続いているものも入る）。
+ * - 過ぎた締切：kind が deadline で isDatedPast のもの（開いている年度の分。どの機能もその年度の分しか出さない）。
+ * これからを早い順（datedTime(at)、同じなら機能の登録の順、元の順）に limit 件まで選び、余った枠に過ぎた締切を期限の新しい順
+ * （datedTime(datedDue(d)) の大きい順、同じなら機能の登録の順、元の順）に足して、選んだものを早い順に返す。
+ * more はこれからと過ぎた締切のうち選ばなかった数（「ほか N 件」）。読めない日時の項目は出さない。元の配列は変えない。
+ */
+export function upcomingDated(
+  items: readonly DatedItem[],
+  now: number,
+  limit = PORTAL_DATED_LIMIT,
+  days = PORTAL_DATED_DAYS,
+): { items: DatedItem[]; more: number } {
   const today = tokyoToday(new Date(now));
-  const upcoming = items
-    .map((d, k) => ({ d, k, t: datedTime(d.at) }))
-    .filter((x): x is { d: DatedItem; k: number; t: number } => x.t !== null && (isDateOnly(x.d.at) ? x.d.at >= today : x.t > now))
-    .sort((a, b) => a.t - b.t || moduleIndex(a.d.moduleId) - moduleIndex(b.d.moduleId) || a.k - b.k)
-    .map((x) => x.d);
+  type Entry = { d: DatedItem; k: number; t: number };
+  const entries: Entry[] = items.flatMap((d, k) => (isDatedReadable(d) ? [{ d, k, t: datedTime(d.at)! }] : []));
+  const tie = (a: Entry, b: Entry) => moduleIndex(a.d.moduleId) - moduleIndex(b.d.moduleId) || a.k - b.k;
+  const upcoming = entries
+    .filter((x) => !isDatedPast(x.d, now) && (daysBetween(today, datedStartDay(x.d)) ?? Number.POSITIVE_INFINITY) <= days)
+    .sort((a, b) => a.t - b.t || tie(a, b));
+  const due = (x: Entry) => datedTime(datedDue(x.d)) ?? x.t;
+  const overdue = entries.filter((x) => x.d.kind === 'deadline' && isDatedPast(x.d, now)).sort((a, b) => due(b) - due(a) || tie(a, b));
   const n = Math.max(0, Math.floor(limit));
-  return { items: upcoming.slice(0, n), more: Math.max(0, upcoming.length - n) };
+  const pickedUpcoming = upcoming.slice(0, n);
+  const pickedOverdue = overdue.slice(0, n - pickedUpcoming.length);
+  const picked = [...pickedUpcoming, ...pickedOverdue].sort((a, b) => a.t - b.t || tie(a, b)).map((x) => x.d);
+  return { items: picked, more: upcoming.length - pickedUpcoming.length + (overdue.length - pickedOverdue.length) };
+}
+
+/** 締切を過ぎたときの言い方（datedRelative。欄と /calendar は注意の色で出す） */
+export const DATED_OVERDUE = '締切を過ぎました';
+
+/** 日付の差の言い方（0：今日、1：明日、2 以上：あと N 日、負：N 日前） */
+function relativeDays(n: number): string {
+  if (n === 0) return '今日';
+  if (n === 1) return '明日';
+  return n > 1 ? `あと ${n} 日` : `${-n} 日前`;
+}
+
+/**
+ * 相対の言い方（T18。04「締切と予定」の日付の出し方。Asia/Tokyo の暦の日付の差で決める）：
+ * - 締切：isDatedPast なら「締切を過ぎました」。でなければ期限の日（datedDue の Asia/Tokyo の日付）が今日なら「今日」、明日なら「明日」、
+ *   それより後なら「あと N 日」。
+ * - 予定：開始の日が明日なら「明日」、それより後なら「あと N 日」、開始の日から最後の日までの間（今日のうちに終わったものも）なら
+ *   「今日」、最後の日を過ぎていれば「N 日前」（最後の日から今日までの日数）。
+ * 読めない日時は空文字。
+ */
+export function datedRelative(d: Pick<DatedItem, 'at' | 'end' | 'kind'>, now: number): string {
+  const today = tokyoToday(new Date(now));
+  if (d.kind === 'deadline') {
+    if (isDatedPast(d, now)) return DATED_OVERDUE;
+    const n = daysBetween(today, tokyoDate(datedDue(d)));
+    return n === null ? '' : relativeDays(Math.max(0, n));
+  }
+  const s = daysBetween(today, datedStartDay(d));
+  const e = daysBetween(today, datedLastDay(d));
+  if (s === null || e === null) return '';
+  if (s >= 1) return relativeDays(s);
+  return e >= 0 ? '今日' : relativeDays(e);
+}
+
+/** now の Asia/Tokyo の年（日付に年を付けるか決める） */
+export function tokyoYearOf(now: number): number {
+  return Number(tokyoToday(new Date(now)).slice(0, 4));
+}
+
+/**
+ * 日付の文（T18。曜日つき。終わりがあれば「〜」で終わりも。年は now の Asia/Tokyo の年と違うときだけ）：
+ * 「10/16（土）〜10/17（日）」「10/14（木）13:00〜15:00」「10/14（木）13:00〜10/15（金）12:00」「9/30（木）17:00」。
+ * 終日（日付だけ）は時刻を出さない。読めなければ空文字。
+ */
+export function datedWhen(d: Pick<DatedItem, 'at' | 'end'>, now: number): string {
+  const year = tokyoYearOf(now);
+  if (isDateOnly(d.at)) {
+    const start = formatShortDateWeekday(d.at, year);
+    const last = d.end ? tokyoDate(d.end) : '';
+    return start && last && last !== d.at ? `${start}〜${formatShortDateWeekday(last, year)}` : start;
+  }
+  const start = formatShortDateTimeWeekday(d.at, year);
+  if (!start || !d.end) return start;
+  const end = tokyoDate(d.end) === tokyoDate(d.at) ? formatTime(d.end) : formatShortDateTimeWeekday(d.end, year);
+  return end ? `${start}〜${end}` : start;
 }
 
 /** お知らせの欄に出す数（04「ダッシュボード」。lib/modules/notices/latest.ts の NOTICES_LATEST_LIMIT と同じ） */

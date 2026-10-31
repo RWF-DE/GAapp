@@ -21,6 +21,7 @@ import {
   YEAR_STATUS_LABELS,
   labelOf,
 } from '@/lib/labels';
+import { EVENT_AUDIENCE_LABELS, EVENT_KIND_LABELS } from '@/lib/modules/calendar/labels';
 import { queryKeys } from '@/lib/query';
 import { uuidSchema } from '@/lib/schemas/common';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
@@ -46,6 +47,8 @@ export const AUDIT_TABLES = [
   // お知らせ（T17。足すだけ）
   'notices',
   'notice_groups',
+  // 締切と予定（T18。足すだけ）
+  'events',
 ] as const;
 export type AuditTable = (typeof AUDIT_TABLES)[number];
 
@@ -507,7 +510,12 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     if (key === 'kind') {
       if (table === 'rules') return labelOf(RULE_KIND_LABELS, v, v);
       if (table === 'rooms') return labelOf(ROOM_KIND_LABELS, v, v);
+      // 締切と予定の種類（events.kind。T18）
+      if (table === 'events') return labelOf(EVENT_KIND_LABELS, v, v);
     }
+    // 締切と予定の対象（events.audience。T18）。下の ENUM_LABELS の audience（お知らせの宛先）より先に表で分ける
+    // （groups を「指定の団体」と出さない）
+    if (key === 'audience' && table === 'events') return labelOf(EVENT_AUDIENCE_LABELS, v, v);
     // 団体代表の行の role は店長・副店長（group_role）。ほかの表（year_roles）の role はロールの表示名（下の ENUM_LABELS）
     if (key === 'role' && table === 'group_members') return labelOf(GROUP_ROLE_LABELS, v, v);
     const labels = ENUM_LABELS[key];
@@ -585,6 +593,9 @@ export function auditTarget(row: Pick<AuditLogRow, 'table_name' | 'row_pk' | 'be
         return [str('title')];
       case 'notice_groups':
         return [groupName(str('group_id'))];
+      // 締切と予定（T18）：題名
+      case 'events':
+        return [str('title')];
       default:
         return [];
     }

@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(210);
+select plan(265);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -20,11 +20,14 @@ select enum_has_labels('public', 'delivery_kind', array['furniture','tent','weig
 select enum_has_labels('public', 'delivery_status', array['pending','done','problem']);
 -- notice_audience：お知らせの宛先（総務内・全団体・指定の団体。T17）
 select enum_has_labels('public', 'notice_audience', array['soumu','all_groups','groups']);
+-- event_kind・event_audience：予定と締切の種類（締切・予定）と対象（総務・団体・全員。T18）
+select enum_has_labels('public', 'event_kind', array['deadline','event']);
+select enum_has_labels('public', 'event_audience', array['soumu','groups','all']);
 
--- 表が 21 個（T17 でお知らせの notices・notice_groups を足した）、ビューが v_remaining
+-- 表が 22 個（T17 でお知らせの notices・notice_groups を、T18 で予定と締切の events を足した）、ビューが v_remaining
 select tables_are('public', array['years','rooms','room_years','items','stocks','groups','year_roles','group_members',
   'invitations','request_submissions','requests','rules','substitution_consents','allocations',
-  'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups'], 'public の表は 21 個');
+  'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events'], 'public の表は 22 個');
 select views_are('public', array['v_remaining'], 'public のビューは v_remaining だけ');
 
 -- 列（表ごとに列の集合が一致する）
@@ -49,6 +52,7 @@ select columns_are('public', 'profiles', array['user_id','display_name','created
 select columns_are('public', 'audit_logs', array['id','table_name','row_pk','action','year_id','group_id','before','after','reason','user_id','at']);
 select columns_are('public', 'notices', array['id','year_id','audience','title','body','pinned','created_by','updated_by','created_at','updated_at']);
 select columns_are('public', 'notice_groups', array['notice_id','year_id','group_id','created_at','updated_at']);
+select columns_are('public', 'events', array['id','year_id','kind','audience','title','starts_at','ends_at','all_day','note','created_by','updated_by','created_at','updated_at']);
 select columns_are('public', 'v_remaining', array['year_id','room_id','item_id','stock','allocated','remaining']);
 
 -- 主な列の型・既定値
@@ -93,6 +97,30 @@ select ok((select bool_and(data_type = 'uuid' and is_nullable = 'YES' and column
 select ok((select bool_and(is_nullable = 'NO' and data_type = 'uuid') from information_schema.columns
            where table_schema = 'public' and table_name = 'notice_groups' and column_name in ('notice_id', 'year_id', 'group_id')),
   'notice_groups の notice_id・year_id・group_id は uuid・not null');
+-- 予定と締切（T18）：種類・対象・題名・開始・終日は not null（終日の既定は false）。種類・対象・開始には既定値がない（画面が決めて送る）。
+-- 終わり・メモは任意。書いた人・直した人は null 可・既定なし（トリガー set_actor が入れる。アカウントが消えると set null）
+select col_type_is('events', 'kind', 'event_kind');
+select col_type_is('events', 'audience', 'event_audience');
+select col_type_is('events', 'title', 'text');
+select col_type_is('events', 'starts_at', 'timestamp with time zone');
+select col_type_is('events', 'ends_at', 'timestamp with time zone');
+select col_type_is('events', 'all_day', 'boolean');
+select col_type_is('events', 'note', 'text');
+select ok((select bool_and(is_nullable = 'NO') from information_schema.columns
+           where table_schema = 'public' and table_name = 'events' and column_name in ('year_id', 'kind', 'audience', 'title', 'starts_at', 'all_day')),
+  'events の year_id・kind・audience・title・starts_at・all_day は not null');
+select ok((select bool_and(column_default is null) from information_schema.columns
+           where table_schema = 'public' and table_name = 'events' and column_name in ('year_id', 'kind', 'audience', 'title', 'starts_at', 'ends_at', 'note')),
+  'events の year_id・kind・audience・title・starts_at・ends_at・note には既定値がない');
+select col_default_is('events', 'all_day', 'false');
+select col_is_null('events', 'ends_at');
+select col_is_null('events', 'note');
+select ok((select bool_and(data_type = 'uuid' and is_nullable = 'YES' and column_default is null)
+           from information_schema.columns
+           where table_schema = 'public' and table_name = 'events' and column_name in ('created_by', 'updated_by'))
+          and (select count(*) = 2 from information_schema.columns
+               where table_schema = 'public' and table_name = 'events' and column_name in ('created_by', 'updated_by')),
+  'events.created_by・updated_by は uuid・null 可・既定なし');
 select ok((select bool_and(is_nullable = 'NO' and column_default is not null)
            from information_schema.columns
            where table_schema = 'public' and column_name in ('created_at', 'updated_at')
@@ -113,6 +141,7 @@ select col_is_pk('profiles', 'user_id');
 select col_is_pk('audit_logs', 'id');
 select col_is_pk('notices', 'id');
 select col_is_pk('notice_groups', array['notice_id','group_id']);
+select col_is_pk('events', 'id');
 
 -- 一意制約
 select col_is_unique('years', 'label');
@@ -146,6 +175,10 @@ select is((select string_agg(conname || ': ' || pg_get_constraintdef(oid), ' / '
   'notice_groups_group_fkey: FOREIGN KEY (group_id, year_id) REFERENCES groups(id, year_id) ON DELETE CASCADE / '
   || 'notice_groups_notice_fkey: FOREIGN KEY (notice_id, year_id) REFERENCES notices(id, year_id) ON DELETE CASCADE',
   'notice_groups の外部キーは2本とも名前つきの複合外部キーで cascade（お知らせを消す・団体を消すと行も消える）');
+-- 予定と締切（T18）：年度へは cascade、書いた人・直した人へは set null（団体への参照はない）
+select fk_ok('public', 'events', 'year_id', 'public', 'years', 'id');
+select fk_ok('public', 'events', 'created_by', 'auth', 'users', 'id');
+select fk_ok('public', 'events', 'updated_by', 'auth', 'users', 'id');
 
 -- on delete の動作（c＝cascade、r＝restrict、n＝set null）
 with fk as (
@@ -162,12 +195,12 @@ with fk as (
            where a.attrelid = c.conrelid and a.attnum = any (c.conkey)) as cols
   from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace)
 select is((select string_agg(tbl || '.' || cols, ' ' order by tbl, cols) from fk where del = 'n'),
-  'deliveries.checked_by deliveries.year_id,slot_id notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by years.prev_year_id',
-  '記録のためのユーザー参照（お知らせの書いた人・直した人を含む）・時間枠・複製元は set null');
--- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー
+  'deliveries.checked_by deliveries.year_id,slot_id events.created_by events.updated_by notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by years.prev_year_id',
+  '記録のためのユーザー参照（お知らせ・予定と締切の書いた人・直した人を含む）・時間枠・複製元は set null');
+-- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー。T18 で events.year_id を足した
 select is((select count(*)::int from pg_constraint c
-           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 22,
-  '年度・団体・ユーザー・お知らせへの参照は cascade（22 本）');
+           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 23,
+  '年度・団体・ユーザー・お知らせへの参照は cascade（23 本）');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'deliveries_slot_id_year_id_fkey'),
   'FOREIGN KEY (slot_id, year_id) REFERENCES slots(id, year_id) ON DELETE SET NULL (slot_id)',
   '時間枠を消しても受け渡しの year_id は残す（列を指定した set null）');
@@ -285,6 +318,67 @@ select lives_ok(format($$ insert into public.notices (year_id, audience, title, 
   '本文は null でよい');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_body_check'), 'CHECK ((length(body) <= 4000))',
   'notices_body_check は 4000 字まで');
+-- 予定と締切（T18）：題名はお知らせと同じ式（同じ 25 文字の空白を除いた形で 1〜100 字。DB では除かず、前後の空白は拒む）。
+-- メモは 1000 字まで。終わりは開始より前にできない。終日は Asia/Tokyo の 00:00（開始の日と最後の日）だけ。
+-- 開始・終了の日付は 2000-01-01〜2200-12-31（Asia/Tokyo。infinity などを入れさせない）
+select is((select string_agg(conname, ' ' order by conname) from pg_constraint where conrelid = 'public.events'::regclass and contype = 'c'),
+  'events_all_day_check events_date_range_check events_ends_at_check events_note_check events_title_check', 'events の CHECK は5つ');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'events_title_check'),
+  (select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_title_check'),
+  'events_title_check は notices_title_check と同じ式（同じ 25 文字の空白・100 字まで）');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'events_note_check'), 'CHECK ((length(note) <= 1000))',
+  'events_note_check はメモ 1000 字まで');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'events_ends_at_check'), 'CHECK ((ends_at >= starts_at))',
+  'events_ends_at_check は終わりが開始より前でないこと');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', '', now()) $$, tests.id('Y1')),
+  '23514', null, 'events.title が空');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', %L, now()) $$,
+  tests.id('Y1'), chr(12288) || chr(9)), '23514', null, '予定と締切の題名が空白だけ（全角の空白とタブ）');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', ' 題名', now()) $$, tests.id('Y1')),
+  '23514', null, '予定と締切の題名の前に半角の空白（DB は除かずに拒む）');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', %L, now()) $$,
+  tests.id('Y1'), '題名' || chr(160)), '23514', null, '予定と締切の題名の後ろに U+00A0');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', repeat('あ', 101), now()) $$, tests.id('Y1')),
+  '23514', null, '予定と締切の題名は 100 字まで');
+select lives_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', repeat('あ', 100), now()) $$, tests.id('Y1')),
+  '予定と締切の 100 字の題名は入る');
+select lives_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', %L, now()) $$,
+  tests.id('Y1'), '題 名' || chr(12288) || 'の中'), '予定と締切の題名の中の空白はそのまま入る');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, note) values (%L, 'event', 'soumu', 'メモ', now(), repeat('あ', 1001)) $$, tests.id('Y1')),
+  '23514', null, 'events.note は 1000 字まで');
+select lives_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, note) values (%L, 'event', 'soumu', 'メモ', now(), repeat('あ', 1000)) $$, tests.id('Y1')),
+  '1000 字のメモは入る');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at) values (%L, 'event', 'soumu', '終わり', '2027-10-14 10:00+09', '2027-10-14 09:59:59.999999+09') $$, tests.id('Y1')),
+  '23514', null, '終わりは開始より前にできない（1 マイクロ秒でも）');
+select lives_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at) values (%L, 'event', 'soumu', '終わり', '2027-10-14 10:00+09', '2027-10-14 10:00+09') $$, tests.id('Y1')),
+  '終わりが開始と同じ日時は入る');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, all_day) values (%L, 'event', 'soumu', '終日', '2027-10-16 09:00+09', true) $$, tests.id('Y1')),
+  '23514', null, '終日の開始が Asia/Tokyo の 00:00 でない（09:00）');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, all_day) values (%L, 'event', 'soumu', '終日', '2027-10-16 00:00+00', true) $$, tests.id('Y1')),
+  '23514', null, '終日の開始が UTC の 00:00（Asia/Tokyo の 09:00）');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at, all_day) values (%L, 'event', 'soumu', '終日', '2027-10-16 00:00+09', '2027-10-17 23:59+09', true) $$, tests.id('Y1')),
+  '23514', null, '終日の終わりが Asia/Tokyo の 00:00 でない（最後の日の 00:00 で表す）');
+select lives_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at, all_day) values (%L, 'event', 'soumu', '終日', '2027-10-15 15:00+00', '2027-10-16 15:00+00', true) $$, tests.id('Y1')),
+  '終日は Asia/Tokyo の 00:00（UTC の前の日の 15:00）で始まり、最後の日の 00:00 で終わる');
+select lives_ok(format($$ do $d$ begin perform set_config('timezone', 'UTC', true);
+  insert into public.events (year_id, kind, audience, title, starts_at, all_day) values (%L, 'event', 'soumu', '終日', '2027-10-16 00:00+09', true); end $d$ $$, tests.id('Y1')),
+  '終日の判定はセッションの TimeZone によらない（UTC でも Asia/Tokyo の 00:00 を受け付ける）');
+select lives_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, all_day) values (%L, 'event', 'soumu', '時刻', '2027-10-16 09:00+09', false) $$, tests.id('Y1')),
+  '終日でなければ時刻の決まりはない');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', '無限', 'infinity') $$, tests.id('Y1')),
+  '23514', null, '開始は infinity にできない');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', '無限', '-infinity') $$, tests.id('Y1')),
+  '23514', null, '開始は -infinity にできない');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at) values (%L, 'event', 'soumu', '無限', now(), 'infinity') $$, tests.id('Y1')),
+  '23514', null, '終わりは infinity にできない');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', '範囲', '1999-12-31 23:59+09') $$, tests.id('Y1')),
+  '23514', null, '開始の日付は 2000-01-01（Asia/Tokyo）から');
+select lives_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at) values (%L, 'event', 'soumu', '範囲', '2000-01-01 00:00+09') $$, tests.id('Y1')),
+  '2000-01-01 00:00（Asia/Tokyo）の開始は入る');
+select lives_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at) values (%L, 'event', 'soumu', '範囲', now(), '2200-12-31 23:59+09') $$, tests.id('Y1')),
+  '2200-12-31 23:59（Asia/Tokyo）の終わりは入る');
+select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at) values (%L, 'event', 'soumu', '範囲', now(), '2201-01-01 00:00+09') $$, tests.id('Y1')),
+  '23514', null, '終わりの日付は 2200-12-31（Asia/Tokyo）まで');
 
 -- 部分一意 index：未使用の招待は二重にできない
 select throws_ok(format($$ insert into public.invitations (year_id, email, role) values (%L, 'someone@pgtap.test', 'viewer') $$,
@@ -309,6 +403,9 @@ select is((select pg_get_indexdef('public.notices_year_id_idx'::regclass)),
   'CREATE INDEX notices_year_id_idx ON public.notices USING btree (year_id, created_at DESC)', 'notices_year_id_idx は (year_id, created_at desc)');
 select is((select pg_get_indexdef('public.notice_groups_group_id_idx'::regclass)),
   'CREATE INDEX notice_groups_group_id_idx ON public.notice_groups USING btree (group_id)', 'notice_groups_group_id_idx は (group_id)');
+-- 予定と締切（T18）：年度ごとの一覧（早い順）とポリシーの year_id in (…) 用
+select is((select pg_get_indexdef('public.events_year_id_idx'::regclass)),
+  'CREATE INDEX events_year_id_idx ON public.events USING btree (year_id, starts_at)', 'events_year_id_idx は (year_id, starts_at)');
 
 -- ビュー：security_invoker（RLS を素通りしない）
 select ok((select 'security_invoker=true' = any (reloptions) from pg_class where oid = 'public.v_remaining'::regclass),
@@ -352,11 +449,14 @@ select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schem
           and not has_schema_privilege('anon', 'private', 'create') and not has_schema_privilege('authenticated', 'private', 'create'),
   'private スキーマは anon・PUBLIC から使えず、だれも create できない（authenticated の usage は T03 の 010）');
 
--- 年度・団体の付け替えを止めるトリガーが 14 表にある（T17 で notices の year_id と notice_groups の鍵の列を足した）
+-- 年度・団体の付け替えを止めるトリガーが 15 表にある（T17 で notices の year_id と notice_groups の鍵の列を、T18 で events の year_id を足した）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'check_immutable' and c.relnamespace = 'public'::regnamespace),
-  'allocations deliveries group_members groups invitations notice_groups notices request_submissions requests room_years slots stocks substitution_consents year_roles',
-  'check_immutable が 14 表にある');
+  'allocations deliveries events group_members groups invitations notice_groups notices request_submissions requests room_years slots stocks substitution_consents year_roles',
+  'check_immutable が 15 表にある');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'check_immutable' and t.tgrelid = 'public.events'::regclass),
+  'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.events FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'')',
+  'events は year_id を変えられない');
 select is((select string_agg(c.relname || ': ' || pg_get_triggerdef(t.oid), ' / ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'check_immutable' and c.relname in ('notices', 'notice_groups') and c.relnamespace = 'public'::regnamespace),
   'notice_groups: CREATE TRIGGER check_immutable BEFORE UPDATE OF notice_id, year_id, group_id ON public.notice_groups FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''notice_id'', ''year_id'', ''group_id'') / '
@@ -396,6 +496,24 @@ select is((select string_agg(p.proname || '=' || case when p.prosecdef then 'def
   'tg_notice_groups_check_audience=definer tg_notices_check_groups=definer tg_notices_set_actor=invoker',
   'お知らせのトリガー関数の SECURITY');
 
+-- 予定と締切（T18）のトリガー：版の増分（bump_version_*）と確定中・終了の守りはない（振り分けの入力でない。終了の年度の読み取り専用は
+-- RLS の can_lead）。書いた人・直した人は set_actor（お知らせと同じ中身の、表ごとの関数）。BEFORE ROW のトリガーは名前の順に動く
+select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.events'::regclass and not t.tgisinternal),
+  'audit check_immutable set_actor set_timestamps', 'events のトリガーは4つ（版の増分・確定中の守りはない）');
+select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.events'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
+  'check_immutable set_actor set_timestamps', 'events の BEFORE ROW のトリガーの順');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'set_actor' and t.tgrelid = 'public.events'::regclass),
+  'CREATE TRIGGER set_actor BEFORE INSERT OR UPDATE ON public.events FOR EACH ROW EXECUTE FUNCTION private.tg_events_set_actor()',
+  'events の set_actor：BEFORE INSERT OR UPDATE・行ごと');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'audit' and t.tgrelid = 'public.events'::regclass),
+  'CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.events FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''id'')',
+  '予定と締切の監査の row_pk は id');
+select is((select case when p.prosecdef then 'definer' else 'invoker' end from pg_proc p
+           where p.oid = 'private.tg_events_set_actor()'::regprocedure),
+  'invoker', 'tg_events_set_actor は INVOKER（auth.uid() を読むだけ。直接の書き込みでは authenticated で動く）');
+
 -- 兼任の禁止（T15。0013）：check_role_overlap が year_roles・group_members にだけあり、BEFORE・ROW・列が約束どおり。
 -- 店長⇄副店長（group_members の role だけの更新）では動かない（列に role がない）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
@@ -415,16 +533,16 @@ select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
            where t.tgrelid = 'public.group_members'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
   'check_immutable check_role_overlap set_timestamps', 'group_members の BEFORE ROW のトリガーの順');
 
--- 時刻のトリガーが audit_logs 以外の 20 表にある（T17 で notices・notice_groups を足した）
+-- 時刻のトリガーが audit_logs 以外の 21 表にある（T17 で notices・notice_groups を、T18 で events を足した）
 select is((select count(distinct c.relname)::int from pg_trigger t join pg_class c on c.oid = t.tgrelid
-           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 20,
-  'set_timestamps が 20 表にある');
+           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 21,
+  'set_timestamps が 21 表にある');
 
 -- トリガーの一覧（表ごとの名前の集合）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'audit' and c.relnamespace = 'public'::regnamespace),
-  'allocations distance_overrides group_members groups items notice_groups notices request_submissions requests room_years rooms rules stocks substitution_consents year_roles years',
-  'audit が 16 表にある（invitations・profiles は個人情報のため記録しない。T17 でお知らせの2表を足した）');
+  'allocations distance_overrides events group_members groups items notice_groups notices request_submissions requests room_years rooms rules stocks substitution_consents year_roles years',
+  'audit が 17 表にある（invitations・profiles は個人情報のため記録しない。T17 でお知らせの2表を、T18 で予定と締切を足した）');
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'bump_version_upd' and c.relnamespace = 'public'::regnamespace),
   'allocations distance_overrides groups items request_submissions requests room_years rooms rules stocks substitution_consents',

@@ -67,6 +67,8 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   // お知らせ（T17）
   notices: 'お知らせ',
   notice_groups: '宛先の団体',
+  // 締切と予定（T18。表 events。種類・対象の表示名は lib/modules/calendar/labels.ts）
+  events: '締切と予定',
 };
 
 /** 監査ログの操作（audit_logs.action） */

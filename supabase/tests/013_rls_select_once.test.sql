@@ -7,6 +7,8 @@
 -- ④ 7 表の select のポリシーが、行の列を判定関数に渡していないこと（書き方の決まり。02 の「権限とRLS」）。
 -- T17：お知らせの notices・notice_groups（0014）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「お知らせの権限」
 -- から書いた）、②に集合の関数 my_group_year_ids・my_group_notice_ids、④に2表のポリシーの形と実行計画を足した。
+-- T18：予定と締切の events（0015）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「予定と締切の権限」から書いた）、
+-- ④にポリシーの形と実行計画を足した（集合の関数は足していない）。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
@@ -16,7 +18,7 @@ begin;
 insert into public.audit_logs (table_name, row_pk, action, year_id, before, after)
 values ('years', '{}', 'update', null, '{"a":1}', '{"a":2}'), ('profiles', '{}', 'update', null, '{"a":1}', '{"a":2}');
 
-select plan(67);
+select plan(71);
 
 -- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
 -- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
@@ -42,7 +44,12 @@ insert into tests.old_pred values
                   or (audience = 'groups'
                       and exists (select 1 from public.notice_groups ng where ng.notice_id = t.id and private.is_group_member(ng.group_id))) $p$),
   -- 宛先の団体：総務と閲覧のみはその年度の全部、団体の代表は自団体の行だけ
-  ('notice_groups', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff,viewer}') or private.is_group_member(group_id) $p$);
+  ('notice_groups', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff,viewer}') or private.is_group_member(group_id) $p$),
+  -- 予定と締切（T18）：総務はその年度の全部。閲覧のみはその年度の、団体の代表は代表である年度の、対象が団体・全員の項目
+  ('events', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}')
+                 or (audience in ('groups', 'all')
+                     and (private.has_role(year_id, 'viewer')
+                          or exists (select 1 from public.groups g where g.year_id = t.year_id and private.is_group_member(g.id)))) $p$);
 
 -- 行の中身をまとめた指紋（件数と、行の文字列を並べた md5）
 create function tests.visible_old(p_tbl text, p_persona text) returns text language plpgsql as $$
@@ -86,11 +93,11 @@ select tests.compare_all();
 select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
   format('%s：0010 の形（0013 の段）のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態）', t))
 from unnest(array['audit_logs', 'allocations', 'requests', 'request_submissions', 'substitution_consents', 'stocks', 'groups',
-                   'notices', 'notice_groups']) t;
+                   'notices', 'notice_groups', 'events']) t;
 -- 比べたものに中身がある（全員 0 行や全員同じでは比べたことにならない）
 select is_empty($q$ select tbl from tests.compared group by tbl
                     having count(distinct new) < 2 or not bool_or(new !~ '^0:') $q$,
-  '9 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
+  '10 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
 
 -- ---------------------------------------------------------------- ② 新しい関数は呼んだ人についてだけ答える
 select tests.login_as('admin');
@@ -300,6 +307,23 @@ select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('
 select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.notice_groups')) x(l))
           !~ '(?n)Filter: .*private\.',
   'notice_groups の読みの計画の Filter に、行ごとの判定関数が出ない');
+select tests.logout();
+
+-- 予定と締切（T18）：events の select のポリシーも集合を1回作る形。対象で分ける枝は対象を名前で並べる（groups・all。総務〔soumu〕を
+-- 否定で除く形〔<> 'soumu'〕で書くと、対象の種類を足したときに閲覧のみ・団体の代表へ黙って広がる）
+select is_empty($q$ select tablename::text || ': ' || qual from pg_policies
+                   where schemaname = 'public' and cmd = 'SELECT' and tablename = 'events'
+                     and qual ~ '(?<!SELECT )private\.[a-z_]+\((year_id|group_id|id|user_id|audience|private\.)' $q$,
+  '予定と締切の select のポリシーは、行の列を判定関数に渡さない（集合を1回作る形）');
+select ok((select qual ~ 'SELECT private\.my_role_year_ids' and qual ~ 'SELECT private\.my_group_year_ids\(\)'
+                  and qual ~ '''groups''::event_audience' and qual ~ '''all''::event_audience'
+                  and qual !~ '''soumu''' and qual !~ '<>' and qual !~ '\mNOT\M'
+           from pg_policies where schemaname = 'public' and policyname = 'events_select'),
+  'events_select は my_role_year_ids・my_group_year_ids の集合を使い、対象を名前（groups・all）で並べ、否定で書かない');
+select tests.login_as('outsider');
+select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.events')) x(l))
+          !~ '(?n)Filter: .*private\.',
+  'events の読みの計画の Filter に、行ごとの判定関数が出ない（hashed SubPlan だけ）');
 select tests.logout();
 
 select * from finish();
