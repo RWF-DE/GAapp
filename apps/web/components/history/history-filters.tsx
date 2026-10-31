@@ -11,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import {
   AUDIT_TABLES,
+  crossYearNote,
   EMPTY_FILTER,
   hasFilter,
   isDateParam,
@@ -28,9 +29,11 @@ import { CATEGORY_LABELS, labelOf } from '@/lib/labels';
 function TableSelect({
   value,
   onChange,
+  adminOfOpenYear,
 }: {
   value: readonly AuditTable[];
   onChange: (update: (tables: readonly AuditTable[]) => AuditTable[]) => void;
+  adminOfOpenYear: boolean;
 }) {
   const picked = new Set(value);
   // 続けて押したときに前の選びを落とさないよう、今の選び（親が持つ最新）から作る
@@ -58,7 +61,9 @@ function TableSelect({
               <TableCheck key={t} table={t} checked={picked.has(t)} onChange={(on) => toggle(t, on)} />
             ))}
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">場所・品目・距離は年度をまたぐ表です（年度のない記録も出します）。</p>
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="history-cross-year-note">
+            {crossYearNote(adminOfOpenYear)}
+          </p>
           {value.length > 0 ? (
             <Button variant="ghost" size="sm" className="mt-2" onClick={() => onChange(() => [])}>
               表の選びを消す
@@ -85,10 +90,13 @@ function TableCheck({ table, checked, onChange }: { table: AuditTable; checked: 
 export function HistoryFilters({
   filter,
   options,
+  adminOfOpenYear,
   onChange,
 }: {
   filter: HistoryFilter;
   options: HistoryOptions;
+  /** 開いている年度のどれかの管理者か（年度のない記録〔場所・品目・距離〕を読める。表の選びの注を変える） */
+  adminOfOpenYear: boolean;
   /** 絞り込みを変える（URL の反映を待たずに続けて変えても前の変更を落とさないよう、最新の絞り込みから作る関数を渡す） */
   onChange: (update: (f: HistoryFilter) => HistoryFilter) => void;
 }) {
@@ -119,7 +127,11 @@ export function HistoryFilters({
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <div className="min-w-0 space-y-1">
           <span className="text-sm font-medium">表</span>
-          <TableSelect value={filter.tables} onChange={(update) => onChange((f) => ({ ...f, tables: update(f.tables) }))} />
+          <TableSelect
+            value={filter.tables}
+            adminOfOpenYear={adminOfOpenYear}
+            onChange={(update) => onChange((f) => ({ ...f, tables: update(f.tables) }))}
+          />
         </div>
         <div className="min-w-0 space-y-1">
           <span className="text-sm font-medium">団体</span>

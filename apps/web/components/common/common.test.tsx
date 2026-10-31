@@ -258,11 +258,32 @@ describe('ConfirmDialog', () => {
 describe('YearStatusActions の純粋な部分', () => {
   const ok = { status: 'ok' as const, issues: [], problems: [], version: 7 };
 
-  it('状態ごとのボタン', () => {
-    expect(statusActionsFor('preparing').map((a) => a.label)).toEqual(['受付開始']);
-    expect(statusActionsFor('allocating')[0]).toMatchObject({ to: 'confirmed', reasonRequired: true });
-    expect(statusActionsFor('confirmed').map((a) => a.label)).toEqual(['確定を解除', '終了']);
-    expect(statusActionsFor('closed')).toEqual([]);
+  it('状態ごとのボタン（管理者）', () => {
+    expect(statusActionsFor('preparing', 'admin').map((a) => a.label)).toEqual(['受付開始']);
+    expect(statusActionsFor('requesting', 'admin').map((a) => a.label)).toEqual(['締切（振り分けを始める）']);
+    expect(statusActionsFor('allocating', 'admin')[0]).toMatchObject({ to: 'confirmed', reasonRequired: true });
+    expect(statusActionsFor('confirmed', 'admin').map((a) => a.label)).toEqual(['確定を解除', '終了']);
+    expect(statusActionsFor('closed', 'admin')).toEqual([]);
+  });
+
+  it('部門長・副部門長は終了のほかは管理者と同じ（確定中は「確定を解除」だけ。D-48・D-50）', () => {
+    for (const role of ['head', 'deputy_head'] as const) {
+      expect(statusActionsFor('preparing', role).map((a) => a.label)).toEqual(['受付開始']);
+      expect(statusActionsFor('requesting', role).map((a) => a.label)).toEqual(['締切（振り分けを始める）']);
+      expect(statusActionsFor('allocating', role).map((a) => a.label)).toEqual(['確定']);
+      expect(statusActionsFor('confirmed', role)).toEqual([
+        { to: 'allocating', label: '確定を解除', reasonRequired: true, destructive: true },
+      ]);
+      expect(statusActionsFor('closed', role)).toEqual([]);
+    }
+  });
+
+  it('総務部門員・閲覧のみ・ロールなしには遷移がない', () => {
+    for (const role of ['staff', 'viewer', null] as const) {
+      for (const status of ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'] as const) {
+        expect(statusActionsFor(status, role)).toEqual([]);
+      }
+    }
   });
 
   it('受付開始は締切が未来のときだけ', () => {

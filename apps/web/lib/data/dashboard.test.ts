@@ -218,6 +218,21 @@ describe('summarizeDashboard：部員に開けない画面へのリンクを出�
     expect(sum.submissions.emptyHref).toBe('/settings?tab=groups');
     expect(sum.stocks.emptyHref).toBe('/settings?tab=rooms');
   });
+
+  it('総務部門長・総務副部門長：キャスター机交換・ルール・マスタ設定（場所）へのリンクは出し、団体のタブ（管理者だけ）へは出さない（D-50）', () => {
+    const problems = [
+      { path: 'rules.S05', message: 'x', ruleCode: 'S05' },
+      { path: 'distance', message: 'y' },
+    ];
+    for (const role of ['head', 'deputy_head'] as const) {
+      const sum = summarizeDashboard(snap('allocating'), { status: 'unavailable', issues: [], problems }, { audiences: [role] });
+      expect(sum.consents.href).toBe('/swaps');
+      expect(sum.problems.map((p) => p.href)).toEqual(['/rules?code=S05', '/settings']);
+      expect(sum.submissions.emptyHref).toBeNull();
+      expect(sum.stocks.emptyHref).toBe('/settings?tab=rooms');
+      expect(sum.validation.href).toBe('/allocation');
+    }
+  });
 });
 
 describe('repGroupCards', () => {

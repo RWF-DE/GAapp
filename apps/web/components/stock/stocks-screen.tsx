@@ -22,6 +22,7 @@ import {
   type MatrixCell,
   type MatrixTotals,
 } from '@/lib/data/stocks';
+import { isAdmin } from '@/lib/auth/roles';
 import { useYearRow } from '@/lib/data/year';
 import { classifyError, messageFor } from '@/lib/errors';
 import { cn } from '@/lib/utils';
@@ -123,9 +124,9 @@ export function StocksScreen() {
         {header}
         <EmptyState
           title="保管場所がありません"
-          description={open.role === 'admin' ? 'マスタ設定の場所で「保管場所」にしてください。' : '総務の管理者に、保管場所の登録を頼んでください。'}
+          description={isAdmin(open.role) ? 'マスタ設定の場所で「保管場所」にしてください。' : '総務の管理者に、保管場所の登録を頼んでください。'}
           action={
-            open.role === 'admin' ? (
+            isAdmin(open.role) ? (
               <AppLink href="/settings?tab=rooms" className="text-sm underline underline-offset-4">
                 マスタ設定（場所）へ
               </AppLink>

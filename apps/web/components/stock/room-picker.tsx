@@ -10,6 +10,7 @@ import { LatestYearSwitch } from '@/components/common/latest-year';
 import { PageHeader } from '@/components/common/page-header';
 import { Input } from '@/components/ui/input';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
+import { isAdmin } from '@/lib/auth/roles';
 import type { YearRow } from '@/lib/db/types';
 import {
   countedByRoom,
@@ -40,9 +41,9 @@ export function RoomPicker({ open, year, storage }: { open: OpenYear; year: Year
     body = (
       <EmptyState
         title="保管場所がありません"
-        description={open.role === 'admin' ? 'マスタ設定の場所で「保管場所」にしてください。' : '総務の管理者に、保管場所の登録を頼んでください。'}
+        description={isAdmin(open.role) ? 'マスタ設定の場所で「保管場所」にしてください。' : '総務の管理者に、保管場所の登録を頼んでください。'}
         action={
-          open.role === 'admin' ? (
+          isAdmin(open.role) ? (
             <AppLink href="/settings?tab=rooms" className="text-sm underline underline-offset-4">
               マスタ設定（場所）へ
             </AppLink>

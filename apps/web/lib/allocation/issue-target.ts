@@ -1,8 +1,8 @@
 // 検証の一覧の1件を押したときの行き先（画面の設計 3.9 の「右：検証の一覧」。T13）。純粋関数。
 // - 行き先：refs.rowIds があればその行（品目タブ）、roomId と itemId があればそのタブの部屋のまとまり、groupId があれば
 //   団体別のその団体、roomId だけなら部屋のまとまり（今のタブ）、itemId だけならそのタブ。
-// - ルール（ruleCode）：ルール画面を開ける立場（admin）には /rules?code=…（同じタブで移動）、開けない立場（Q1 の staff）には
-//   リンクにせず、ルールのコードと内容の文を項目の下に開いて見せる（/rules は admin だけ。canOpen）。
+// - ルール（ruleCode）：ルール画面を開ける立場（部門長以上）には /rules?code=…（同じタブで移動）、開けない立場（Q1 の staff）には
+//   リンクにせず、ルールのコードと内容の文を項目の下に開いて見せる（/rules は部門長以上だけ。canOpen）。
 import type { Issue } from '@gaapp/shared';
 import type { Audience, YearStatus } from '@/lib/auth/membership';
 import { canOpen } from '@/lib/navigation';

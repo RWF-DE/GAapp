@@ -1,7 +1,7 @@
 'use client';
 
 // 検証の一覧（画面の設計 3.9 の「右：検証の一覧」。T13）。error → warning → info の順（validate の並びのまま）、
-// 種類ごとの件数、コードで絞る。押すと issueTarget で行き先へ。ルールは、ルール画面を開ける立場（admin）にはリンク、
+// 種類ごとの件数、コードで絞る。押すと issueTarget で行き先へ。ルールは、ルール画面を開ける立場（部門長以上）にはリンク、
 // 開けない立場（Q1 の staff）にはコードと内容の文を項目の下に開いて見せる。
 import type { InputError, Issue } from '@gaapp/shared';
 import { useMemo, useState } from 'react';

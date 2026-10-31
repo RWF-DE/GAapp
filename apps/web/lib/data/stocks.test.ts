@@ -137,7 +137,8 @@ describe('数と数えた記録', () => {
 });
 
 describe('stockAccess（設計 3.3 の表。RLS の can_write_stocks と同じ）', () => {
-  it('部員は preparing・requesting だけ書け、振り分け中は「総務管理者だけが直せます」、確定・終了は読み取り', () => {
+  it('総務部門員は preparing・requesting だけ書け、振り分け中は「管理者・総務部門長・総務副部門長だけが直せます」、確定・終了は読み取り', () => {
+    expect(STAFF_ALLOCATING_MESSAGE).toBe('振り分けが始まったので、在庫は管理者・総務部門長・総務副部門長だけが直せます');
     expect(stockAccess('preparing', 'staff')).toEqual({ writable: true, readOnlyMessage: null, shortfall: 'none' });
     expect(stockAccess('requesting', 'staff').writable).toBe(true);
     expect(stockAccess('allocating', 'staff')).toEqual({ writable: false, readOnlyMessage: STAFF_ALLOCATING_MESSAGE, shortfall: 'none' });
@@ -150,6 +151,14 @@ describe('stockAccess（設計 3.3 の表。RLS の can_write_stocks と同じ�
     expect(stockAccess('allocating', 'admin')).toEqual({ writable: true, readOnlyMessage: null, shortfall: 'confirm' });
     expect(stockAccess('confirmed', 'admin')).toEqual({ writable: true, readOnlyMessage: null, shortfall: 'block' });
     expect(stockAccess('closed', 'admin').writable).toBe(false);
+  });
+
+  it('総務部門長・総務副部門長は管理者と同じ（D-48。4つの状態）', () => {
+    for (const role of ['head', 'deputy_head'] as const) {
+      for (const status of ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'] as const) {
+        expect(stockAccess(status, role)).toEqual(stockAccess(status, 'admin'));
+      }
+    }
   });
 
   it('ロールがなければ書けない', () => {

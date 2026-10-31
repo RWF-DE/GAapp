@@ -1,6 +1,7 @@
 // ダッシュボードの集計とホームのカード（画面の設計 3.1・6。T09）。summarizeDashboard は純粋関数で、3.1 の数をすべて返す。
 // 了承の集計は /swaps（T13）と同じ swapRows を使う（同じ数え方を2か所に書かない）。リンクは今の立場で開ける画面だけを返す
-// （開けなければ href を null にする。部員にキャスター机交換・ルール・マスタ設定へのリンクを出さない。1.1 の canOpen）。
+// （開けなければ href を null にする。総務部門員にキャスター机交換・ルール・マスタ設定へのリンクを、部門長・副部門長に管理者だけの
+// マスタ設定のタブ〔団体など〕へのリンクを出さない。1.1 の canOpen。D-50）。
 import { compareBySortOrder, type GroupCategory, type InputError, type Issue } from '@gaapp/shared';
 import type { Audience, YearStatus } from '@/lib/auth/membership';
 import { fetchAll } from '@/lib/db/fetch-all';
@@ -106,7 +107,7 @@ export interface DashboardSummary {
     reask: number;
     /** 拒否したので最小変更での再実行が要る団体 */
     rerun: number;
-    /** キャスター机交換の画面（admin だけ。開けなければ null） */
+    /** キャスター机交換の画面（部門長以上だけ。開けなければ null） */
     href: string | null;
   };
 }
@@ -135,7 +136,7 @@ export interface SummarizeOptions {
 type DashboardSource = Pick<Snapshot, 'year'> & Pick<YearTables, 'items' | 'rooms' | 'roomYears' | 'groups' | 'submissions' | 'stocks' | 'rules' | 'consents' | 'allocations'>;
 
 /**
- * ダッシュボードの数（3.1）。snapshot は part = full（admin・staff）。validation は useValidation の結果。
+ * ダッシュボードの数（3.1）。snapshot は part = full（総務）。validation は useValidation の結果。
  *
  * @example
  * const v = useValidation(snap.data);

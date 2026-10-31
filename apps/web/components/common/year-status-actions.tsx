@@ -8,7 +8,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/lib/auth/auth-provider';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
-import type { YearStatus } from '@/lib/auth/membership';
+import type { AppRole, YearStatus } from '@/lib/auth/membership';
+import { isAdmin, isLead } from '@/lib/auth/roles';
 import type { ValidationResult } from '@/lib/data/validation';
 import type { YearRow } from '@/lib/db/types';
 import { classifyError, effectOf, messageFor, type NameLookup } from '@/lib/errors';
@@ -27,8 +28,17 @@ export interface StatusAction {
   destructive: boolean;
 }
 
-/** 今の状態から押せる遷移（closed は何もない） */
-export function statusActionsFor(status: YearStatus): StatusAction[] {
+/**
+ * そのロールが今の状態から押せる遷移（closed は何もない）。遷移は部門長以上、終了（closed へ）は管理者だけ
+ * （set_year_status の段。D-48・D-50。部門長・副部門長は確定中に「確定を解除」だけ）。部門長以上でなければ何もない。
+ */
+export function statusActionsFor(status: YearStatus, role: AppRole | null | undefined): StatusAction[] {
+  if (!isLead(role)) return [];
+  const actions = allStatusActions(status);
+  return isAdmin(role) ? actions : actions.filter((a) => a.to !== 'closed');
+}
+
+function allStatusActions(status: YearStatus): StatusAction[] {
   switch (status) {
     case 'preparing':
       return [{ to: 'requesting', label: '受付開始', reasonRequired: false, destructive: false }];
@@ -118,7 +128,8 @@ export interface YearStatusActionsProps {
 
 /**
  * 年度の状態の遷移のボタンと理由のダイアログ、確定の流れ（画面の設計 3.1。ダッシュボード〔T09〕と振り分け画面〔T13〕。T09a）。
- * admin にだけ出す。送信中は押せない。成功したら年度の下のクエリと立場を読み直す。
+ * 部門長以上にだけ出し、「終了」と、その確認に並べる書き出し（closeExtras）は管理者だけ（statusActionsFor。T15b・D-50）。
+ * 送信中は押せない。成功したら年度の下のクエリと立場を読み直す。
  *
  * @example
  * const snap = useSnapshot(yearId, 'full');
@@ -157,9 +168,8 @@ export function YearStatusActions({
       }),
   });
 
-  const isAdmin = membership.status === 'ready' && membership.membership.role === 'admin';
-  if (!isAdmin) return null;
-  const actions = statusActionsFor(year.status);
+  const role = membership.status === 'ready' ? membership.membership.role : null;
+  const actions = statusActionsFor(year.status, role);
   if (actions.length === 0) return null;
 
   const blockers = confirmBlockers({ status: year.status, snapshotVersion, validation, stale, unsaved });

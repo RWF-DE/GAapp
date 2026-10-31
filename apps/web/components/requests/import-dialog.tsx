@@ -36,7 +36,7 @@ import { cn } from '@/lib/utils';
 export type ImportErrorHandler = (e: unknown, groupId: string) => Promise<string>;
 
 /**
- * 「Googleフォームの回答を取り込む」のダイアログ（申請一覧から。admin。画面の設計 5 章。T11）。
+ * 「Googleフォームの回答を取り込む」のダイアログ（申請一覧から。部門長以上。画面の設計 5 章。T11）。
  * 種類とファイルを選ぶ → 読み取り（parseFormCsv）→ その種類の区分の団体に対応（resolveResponses）→ プレビュー → 理由を確かめて
  * 団体ごとに update_requests_after_deadline（p_submission にフォームのタイムスタンプ）。
  * ファイルの中身と結果はこの部品の状態にだけ持つ。閉じると部品が外れて消える（ログにも出さず、どこにも保存しない）。
@@ -45,12 +45,15 @@ export function ImportDialog({
   open,
   onOpenChange,
   tables,
+  canCreateGroups,
   onImported,
   onError,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   tables: RequestsTables;
+  /** 団体を作れる（管理者。マスタにない団体の案内を、マスタ設定の団体へのリンクにする。ほかの人には管理者に頼む文。04「申請一覧」） */
+  canCreateGroups: boolean;
   /** 1団体でも送ったら、成否によらず呼ぶ（申請一覧を読み直す） */
   onImported: () => void | Promise<void>;
   onError: ImportErrorHandler;
@@ -60,7 +63,14 @@ export function ImportDialog({
     <Dialog open={open} onOpenChange={(o) => (busy ? undefined : onOpenChange(o))}>
       <DialogContent showCloseButton={!busy} className="max-h-[92vh] overflow-y-auto sm:max-w-6xl" data-testid="import-dialog">
         {open ? (
-          <ImportForm tables={tables} onClose={() => onOpenChange(false)} onImported={onImported} onError={onError} setBusy={setBusy} />
+          <ImportForm
+            tables={tables}
+            canCreateGroups={canCreateGroups}
+            onClose={() => onOpenChange(false)}
+            onImported={onImported}
+            onError={onError}
+            setBusy={setBusy}
+          />
         ) : null}
       </DialogContent>
     </Dialog>
@@ -72,12 +82,14 @@ type Outcome = { plan: ImportPlan; ok: boolean; message: string };
 
 function ImportForm({
   tables,
+  canCreateGroups,
   onClose,
   onImported,
   onError,
   setBusy,
 }: {
   tables: RequestsTables;
+  canCreateGroups: boolean;
   onClose: () => void;
   onImported: () => void | Promise<void>;
   onError: ImportErrorHandler;
@@ -236,6 +248,7 @@ function ImportForm({
           overwrite={overwrite}
           setOverwrite={setOverwrite}
           disabled={saving}
+          canCreateGroups={canCreateGroups}
         />
       ) : null}
 
@@ -296,6 +309,7 @@ function PreviewBody({
   overwrite,
   setOverwrite,
   disabled,
+  canCreateGroups,
 }: {
   preview: ImportPreview;
   kind: FormKind;
@@ -305,6 +319,7 @@ function PreviewBody({
   overwrite: Record<string, boolean>;
   setOverwrite: (o: Record<string, boolean>) => void;
   disabled: boolean;
+  canCreateGroups: boolean;
 }) {
   const options = useMemo(
     () => groupsForKind(tables.groups, kind).map((g) => ({ id: g.id, name: g.name, keywords: g.aliases })),
@@ -368,8 +383,14 @@ function PreviewBody({
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-muted-foreground">
-            マスタにない団体は、先にマスタ設定で団体を作ってください（<AppLink href="/settings?tab=groups">マスタ設定へ</AppLink>）。
+          <p className="text-xs text-muted-foreground" data-testid="import-missing-group-note">
+            {canCreateGroups ? (
+              <>
+                マスタにない団体は、先にマスタ設定で団体を作ってください（<AppLink href="/settings?tab=groups">マスタ設定へ</AppLink>）。
+              </>
+            ) : (
+              'マスタにない団体は、管理者に団体の登録を頼んでください。'
+            )}
           </p>
         </Section>
       ) : null}

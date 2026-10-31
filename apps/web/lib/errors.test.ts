@@ -74,7 +74,7 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     expect(msg(p0001('conflict'))).toBe('他の人が先に変更しました。読み直しました');
     expect(msg(p0001('conflict', { field: 'label' }))).toBe('同じ年度名があります');
     expect(msg(p0001('conflict', { field: 'role', current: 'staff' }))).toBe(
-      'この人はすでに「総務部員」です。ロールの変更はメンバーの一覧から',
+      'この人はすでに「総務部門員」です。ロールの変更はメンバーの一覧から',
     );
     expect(msg(p0001('conflict', { asked: 6, current: 8 }))).toBe(
       '依頼した台数（6）より置き換えが増えています（8）。依頼し直してください',

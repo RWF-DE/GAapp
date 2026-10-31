@@ -46,9 +46,9 @@ const sources: Record<string, MembershipSource> = {
     years: [year(Y9, 'R9', '2027-10-16'), year(Y8, 'R8', '2026-10-17')],
     roles: [],
     groups: [
-      { id: G2, name: '模擬店02', year_id: Y9 },
-      { id: G1, name: '模擬店01', year_id: Y9 },
-      { id: G1.replace('b1', 'c1'), name: '模擬店01', year_id: Y8 },
+      { id: G2, name: '模擬店02', year_id: Y9, role: 'manager' },
+      { id: G1, name: '模擬店01', year_id: Y9, role: 'deputy_manager' },
+      { id: G1.replace('b1', 'c1'), name: '模擬店01', year_id: Y8, role: 'manager' },
     ],
   },
   [U2]: { displayName: '部員', years: [year(Y9, 'R9', '2027-10-16')], roles: [{ year_id: Y9, role: 'staff' }], groups: [] },
@@ -196,7 +196,7 @@ describe('ページを開いたときの読み込み', () => {
     writeHint(U1, hintFromSource(sources[U1]!));
     const qc = start(U1);
     await flush();
-    const m = buildMembership({ ...sources[U1]!, groups: [{ id: G2, name: '模擬店02', year_id: Y9 }] }, null);
+    const m = buildMembership({ ...sources[U1]!, groups: [{ id: G2, name: '模擬店02', year_id: Y9, role: 'manager' }] }, null);
     expect(settleEarlyLoad(U1, m)).toEqual({ kept: 0, removed: 1 });
     expect(qc.getQueryData(['year', Y9, 'my', G1])).toBeUndefined();
   });

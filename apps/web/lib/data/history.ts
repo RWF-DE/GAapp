@@ -1,7 +1,8 @@
 // 履歴（/history）のデータの読み書き（画面の設計 3.12、04「履歴」。T14）。
 // - 絞り込み（表〔複数〕・団体・期間〔Asia/Tokyo の日付〕・した人）は URL のクエリ（table・group・from・to・user）に入れる。
 // - audit_logs を at desc・id desc で 50 件ずつ読み、続きは最後の行の at と id より前（キーセット）。件数は数えない。
-// - 年度をまたぐ表（場所・品目・距離）を選んだときは、year_id が null の行も含める（RLS で開いている年度の admin だけに返る）。
+// - 年度をまたぐ表（場所・品目・距離）を選んだときは、year_id が null の行も含める（RLS で開いている年度の admin だけに返る。
+//   部門長・副部門長には年度の記録だけが返る。D-48）。
 // - 変更の列は純粋関数 diffAudit（created_at・updated_at は除く）。純粋な関数は lib/data/history.test.ts で確かめる。
 import { useInfiniteQuery, useQuery, type InfiniteData } from '@tanstack/react-query';
 import { fetchAll } from '@/lib/db/fetch-all';
@@ -11,6 +12,7 @@ import {
   AUDIT_TABLE_LABELS,
   CATEGORY_LABELS,
   CONSENT_STATUS_LABELS,
+  GROUP_ROLE_LABELS,
   ORIGIN_LABELS,
   ROLE_LABELS,
   ROOM_KIND_LABELS,
@@ -45,6 +47,16 @@ export type AuditTable = (typeof AUDIT_TABLES)[number];
 
 /** 年度をまたぐ表（year_id が null の行がある。02「audit_logs」） */
 export const CROSS_YEAR_TABLES: readonly AuditTable[] = ['rooms', 'items', 'distance_overrides'];
+
+/**
+ * 表の選びの注（04「履歴」）。年度のない記録（場所・品目・距離）は、開いている年度の管理者にだけ RLS が返す（部門長・副部門長が
+ * 選ぶと 0 件になるので、理由を出す。選択肢は残し、URL の table も読み替えない）。
+ */
+export function crossYearNote(adminOfOpenYear: boolean): string {
+  return adminOfOpenYear
+    ? '場所・品目・距離は年度をまたぐ表です（年度のない記録も出します）。'
+    : '場所・品目・距離の記録（年度のない記録）は、開いている年度の管理者だけが見られます。';
+}
 
 /** 1回に読む件数 */
 export const HISTORY_PAGE_SIZE = 50;
@@ -453,7 +465,10 @@ const UUID_REF_KEYS: Readonly<Record<string, 'groups' | 'rooms' | 'items'>> = {
 
 const ENUM_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   category: CATEGORY_LABELS,
+  // ロール（year_roles.role）。団体代表の立場（group_members.role）は formatAuditValue で GROUP_ROLE_LABELS にする
   role: ROLE_LABELS,
+  // 招待の立場（invitations.group_role。invitations は監査しないので今は出ない。T15b の守り）
+  group_role: GROUP_ROLE_LABELS,
   origin: ORIGIN_LABELS,
 };
 
@@ -476,6 +491,8 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
       if (table === 'rules') return labelOf(RULE_KIND_LABELS, v, v);
       if (table === 'rooms') return labelOf(ROOM_KIND_LABELS, v, v);
     }
+    // 団体代表の行の role は店長・副店長（group_role）。ほかの表（year_roles）の role はロールの表示名（下の ENUM_LABELS）
+    if (key === 'role' && table === 'group_members') return labelOf(GROUP_ROLE_LABELS, v, v);
     const labels = ENUM_LABELS[key];
     if (labels) return labelOf(labels, v, v);
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v)) return formatDateTime(v) || v;

@@ -251,6 +251,19 @@ describe('場所の削除の前：終了していない年度のルール（場�
   const R7 = y('y7', 'R7', 'closed', '2025-10-18');
   const R10 = y('y10', 'R10', 'requesting', '2028-10-14');
 
+  it('openYearsForRoomRefs：総務部門長・総務副部門長の年度もルールを読める（rules_select は総務。D-48）', () => {
+    const scope = openYearsForRoomRefs(
+      [R8, R9, R10],
+      [
+        { year_id: 'y8', role: 'head' },
+        { year_id: 'y9', role: 'deputy_head' },
+        { year_id: 'y10', role: 'viewer' },
+      ],
+    );
+    expect(scope.readable.map((x) => x.label)).toEqual(['R9', 'R8']);
+    expect(scope.unreadable.map((x) => x.label)).toEqual(['R10']);
+  });
+
   it('openYearsForRoomRefs：終了した年度は見ない。admin・staff の年度は読め、団体代表・閲覧のみ・ロールのない年度は読めない', () => {
     const scope = openYearsForRoomRefs(
       [R7, R8, R9, R10],

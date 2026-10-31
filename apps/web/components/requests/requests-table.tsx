@@ -22,7 +22,7 @@ const MARK_TEXT: Record<CellMark, string> = {
 
 /**
  * 申請一覧の表（団体 × 品目。画面の設計 3.6。T11）。団体名の列を固定し、表の中だけを横にスクロールする。
- * 区分で申請できない品目のセルは「—」。0 でない申請が残っていれば灰色で出して印をつける（管理者は 0 にできる）。
+ * 区分で申請できない品目のセルは「—」。0 でない申請が残っていれば灰色で出して印をつける（部門長以上は 0 にできる）。
  */
 export function RequestsTable({
   matrix,
@@ -31,7 +31,7 @@ export function RequestsTable({
   totals,
   editable,
   busy = false,
-  admin,
+  lead,
   onCellChange,
   onProxy,
   onMarkSubmitted,
@@ -40,11 +40,12 @@ export function RequestsTable({
   pending: PendingCells;
   marks: Readonly<Record<string, CellMark>>;
   totals: Readonly<Record<string, number>>;
-  /** セルを編集できる（管理者で、確定中・終了でない） */
+  /** セルを編集できる（部門長以上で、確定中・終了でない） */
   editable: boolean;
   /** 保存中（セルを読み取り専用にし、代理入力・提出済みにする・0にするを押せなくする。列は隠さない） */
   busy?: boolean;
-  admin: boolean;
+  /** 部門長以上（代理入力・提出済みにするの列を出す） */
+  lead: boolean;
   onCellChange: (row: MatrixRow, itemId: string, value: number) => void;
   onProxy: (row: MatrixRow) => void;
   onMarkSubmitted: (row: MatrixRow) => void;
@@ -69,7 +70,7 @@ export function RequestsTable({
             <th scope="col" className="border-b px-2 py-2 text-left font-medium">
               備考
             </th>
-            {admin && editable ? (
+            {lead && editable ? (
               <th scope="col" className="border-b px-2 py-2 text-left font-medium">
                 <span className="sr-only">操作</span>
               </th>
@@ -150,7 +151,7 @@ export function RequestsTable({
                   </Popover>
                 ) : null}
               </td>
-              {admin && editable ? (
+              {lead && editable ? (
                 <td className="border-b px-2 py-1 whitespace-nowrap">
                   <div className="flex gap-1">
                     <Button size="xs" variant="outline" disabled={busy} onClick={() => onProxy(row)}>
@@ -177,7 +178,7 @@ export function RequestsTable({
                 {totals[item.id] ?? 0}
               </td>
             ))}
-            <td className="border-t" colSpan={admin && editable ? 3 : 2} />
+            <td className="border-t" colSpan={lead && editable ? 3 : 2} />
           </tr>
         </tfoot>
       </table>
@@ -185,7 +186,7 @@ export function RequestsTable({
   );
 }
 
-/** 申請できない品目に残っている数（灰色と印。印の説明は title と読み上げに。管理者は 0 にできる） */
+/** 申請できない品目に残っている数（灰色と印。印の説明は title と読み上げに。部門長以上は 0 にできる） */
 function NotRequestableCell({
   value,
   note,

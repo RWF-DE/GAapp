@@ -16,8 +16,9 @@ import { EmptyState, ErrorState, LoadingState, ReadOnlyNotice } from '@/componen
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth/auth-provider';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
+import type { AppRole } from '@/lib/auth/membership';
+import { isAdmin, isLead } from '@/lib/auth/roles';
 import {
-  adminWriteMode,
   buildRequestMatrix,
   cellKey,
   columnTotals,
@@ -26,6 +27,7 @@ import {
   judgeDirectFailure,
   judgePendingCells,
   judgeSubmitFailure,
+  leadWriteMode,
   markSubmittedAfterDeadline,
   markSubmittedDirect,
   normalizePending,
@@ -40,9 +42,9 @@ import {
   saveSummary,
   setPendingCell,
   useRequestsTables,
-  type AdminWriteMode,
   type CellChange,
   type CellConflict,
+  type LeadWriteMode,
   type MatrixRow,
   type OutsideFlag,
   type PendingCell,
@@ -63,7 +65,7 @@ import { RequestsTable, type CellMark } from './requests-table';
 import { useNow } from './use-now';
 
 /**
- * 申請一覧 /requests（admin は読み書き、staff は読み取り。PC。画面の設計 3.6。T11）。
+ * 申請一覧 /requests（部門長以上は読み書き、総務部門員は読み取り。PC。画面の設計 3.6。T11・T15b）。
  * 年度を変えると作り直す（未保存のセルは年度ごとの下書きに残る）。
  */
 export function RequestsScreen() {
@@ -72,7 +74,7 @@ export function RequestsScreen() {
   const yearId = m?.year?.id ?? null;
   const userId = session.status === 'signedIn' ? session.session.user.id : null;
   if (!m || !yearId || !userId) return <LoadingState />;
-  return <RequestsBoard key={yearId} yearId={yearId} userId={userId} admin={m.role === 'admin'} />;
+  return <RequestsBoard key={yearId} yearId={yearId} userId={userId} role={m.role} />;
 }
 
 const FILTER_LABELS: Record<RequestsFilter, string> = { unsubmitted: '未提出だけ', noted: '備考ありだけ' };
@@ -92,8 +94,8 @@ function queryString(category: GroupCategory | null, filter: RequestsFilter | nu
   return s ? `/requests?${s}` : '/requests';
 }
 
-function modeNotice(mode: AdminWriteMode, year: YearRow, admin: boolean, outside: boolean): React.ReactNode {
-  if (!admin) return <ReadOnlyNotice>部員は申請一覧を見るだけです</ReadOnlyNotice>;
+function modeNotice(mode: LeadWriteMode, year: YearRow, lead: boolean, outside: boolean): React.ReactNode {
+  if (!lead) return <ReadOnlyNotice>総務部門員は申請一覧を見るだけです</ReadOnlyNotice>;
   if (mode === 'readonly') {
     return <ReadOnlyNotice>{year.status === 'closed' ? '終了した年度のため編集できません' : '年度が確定中のため編集できません（確定を解除してから）'}</ReadOnlyNotice>;
   }
@@ -107,7 +109,9 @@ function modeNotice(mode: AdminWriteMode, year: YearRow, admin: boolean, outside
   return null;
 }
 
-function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: string; admin: boolean }) {
+function RequestsBoard({ yearId, userId, role }: { yearId: string; userId: string; role: AppRole | null }) {
+  // 書けるのは部門長以上（セル・代理入力・提出済みにする・取り込み。D-50）。団体を作れる（マスタ）のは管理者だけ
+  const lead = isLead(role);
   const params = useSearchParams();
   const category = parseCategoryParam(params.get('category'));
   const filter = parseFilterParam(params.get('filter'));
@@ -142,7 +146,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   const writer = useMemo(() => createDraftWriter<PendingCells>(draftKeyValue), [draftKeyValue]);
   const [draft, setDraft] = useState(() => {
     // 下書きは未保存のセル（入れた数と、編集したときの行）。形の違う値（古い形の下書きなど）は捨てる
-    const d = admin ? loadDraft<unknown>(draftKeyValue) : null;
+    const d = lead ? loadDraft<unknown>(draftKeyValue) : null;
     const value = d ? normalizePending(d.value) : {};
     return d && Object.keys(value).length > 0 ? { value, savedAt: d.savedAt } : null;
   });
@@ -271,8 +275,8 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
   }
 
   const flagged = isOutsideFlagActive(outside, year);
-  const mode: AdminWriteMode = admin ? adminWriteMode(year, now, flagged) : 'readonly';
-  const editable = admin && mode !== 'readonly';
+  const mode: LeadWriteMode = lead ? leadWriteMode(year, now, flagged) : 'readonly';
+  const editable = lead && mode !== 'readonly';
   const left = remainingText(year.request_close_at, now);
   const proxyRow = proxyGroupId ? (allRows.rows.find((r) => r.group.id === proxyGroupId) ?? null) : null;
 
@@ -570,7 +574,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           )
         }
       />
-      {modeNotice(mode, year, admin, flagged)}
+      {modeNotice(mode, year, lead, flagged)}
       {draft && editable && Object.keys(rebasePending(draft.value, tables)).length > 0 ? (
         <DraftNotice
           savedAt={draft.savedAt}
@@ -654,7 +658,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
               totals={totals}
               editable={editable}
               busy={saving}
-              admin={admin}
+              lead={lead}
               onCellChange={(row, itemId, value) => {
                 if (saving) return;
                 const cell = row.cells[itemId];
@@ -744,6 +748,7 @@ function RequestsBoard({ yearId, userId, admin }: { yearId: string; userId: stri
           open={importOpen}
           onOpenChange={setImportOpen}
           tables={tables}
+          canCreateGroups={isAdmin(role)}
           onImported={async () => {
             await queryClient.invalidateQueries({ queryKey: queryKeys.yearPart(yearId, 'requests') });
           }}

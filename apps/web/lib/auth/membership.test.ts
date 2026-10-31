@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   audiencesOf,
   buildMembership,
+  GROUP_ROLE_LABELS,
+  groupPositionLabel,
   hasAudience,
   isInvited,
   isLatestYear,
   latestWritableYear,
   pickCurrentYear,
+  positionLabels,
+  ROLE_LABELS,
   yearOptionLabel,
   type MembershipSource,
 } from './membership';
@@ -28,7 +32,7 @@ describe('pickCurrentYear・buildMembership', () => {
   });
 
   it('ロールか団体代表のある年度のうち、1日目が最も遅い年度を開く', () => {
-    const src = { ...base, roles: [{ year_id: 'y8', role: 'admin' as const }], groups: [{ id: 'g', name: '2年2組', year_id: 'y7' }] };
+    const src = { ...base, roles: [{ year_id: 'y8', role: 'admin' as const }], groups: [{ id: 'g', name: '2年2組', year_id: 'y7', role: 'manager' as const }] };
     expect(pickCurrentYear(src)?.label).toBe('R8');
   });
 
@@ -37,31 +41,45 @@ describe('pickCurrentYear・buildMembership', () => {
     expect(pickCurrentYear(src)?.label).toBe('R7');
   });
 
-  it('今の年度のロールと団体だけを持つ（ロールと団体代表は兼ねられる）', () => {
+  it('今の年度のロールと団体だけを持つ（管理者・閲覧のみは店長・副店長を兼ねられる）。団体ごとの立場（店長・副店長）を残す', () => {
     const m = buildMembership({
       ...base,
       roles: [
-        { year_id: 'y9', role: 'staff' },
+        { year_id: 'y9', role: 'viewer' },
         { year_id: 'y8', role: 'admin' },
       ],
       groups: [
-        { id: 'g2', name: '電子研究部', year_id: 'y9' },
-        { id: 'g1', name: '2年2組', year_id: 'y9' },
-        { id: 'g0', name: '旧団体', year_id: 'y8' },
+        { id: 'g2', name: '電子研究部', year_id: 'y9', role: 'deputy_manager' },
+        { id: 'g1', name: '2年2組', year_id: 'y9', role: 'manager' },
+        { id: 'g0', name: '旧団体', year_id: 'y8', role: 'manager' },
       ],
     });
     expect(m.year?.label).toBe('R9');
-    expect(m.role).toBe('staff');
-    expect(m.groups.map((g) => g.id)).toEqual(['g1', 'g2']);
-    expect(audiencesOf(m)).toEqual(['staff', 'rep']);
+    expect(m.role).toBe('viewer');
+    expect(m.groups.map((g) => [g.id, g.role])).toEqual([
+      ['g1', 'manager'],
+      ['g2', 'deputy_manager'],
+    ]);
+    expect(audiencesOf(m)).toEqual(['viewer', 'rep']);
     expect(hasAudience(m, ['admin'])).toBe(false);
     expect(hasAudience(m, ['rep'])).toBe(true);
+    expect(positionLabels(m)).toEqual(['閲覧のみ', '2年2組 の店長', '電子研究部 の副店長']);
   });
 
-  it('団体代表だけの人', () => {
-    const m = buildMembership({ ...base, groups: [{ id: 'g', name: 'テスト団体', year_id: 'y8' }] });
+  it('団体代表だけの人（店長も副店長も立場は rep）', () => {
+    const m = buildMembership({ ...base, groups: [{ id: 'g', name: 'テスト団体', year_id: 'y8', role: 'deputy_manager' }] });
     expect(m.role).toBeNull();
     expect(audiencesOf(m)).toEqual(['rep']);
+    expect(positionLabels(m)).toEqual(['テスト団体 の副店長']);
+  });
+
+  it('総務部門長・総務副部門長は、ロールの立場（団体代表の立場はない）', () => {
+    for (const role of ['head', 'deputy_head'] as const) {
+      const m = buildMembership({ ...base, roles: [{ year_id: 'y8', role }] });
+      expect(audiencesOf(m)).toEqual([role]);
+      expect(m.adminOfOpenYear).toBe(false); // 年度をまたぐ表（場所・品目・距離）は管理者だけ（D-01）
+    }
+    expect(positionLabels(buildMembership({ ...base, roles: [{ year_id: 'y8', role: 'head' }] }))).toEqual(['総務部門長']);
   });
 });
 
@@ -113,5 +131,31 @@ describe('選んだ年度（D-31）', () => {
 
   it('年度の選択肢の文字', () => {
     expect(yearOptionLabel({ label: 'R9', status: 'preparing' })).toBe('R9（準備中）');
+  });
+});
+
+describe('表示名（02「列挙型」。T15b）', () => {
+  it('ロールの表示名', () => {
+    expect(ROLE_LABELS).toEqual({
+      admin: '管理者',
+      head: '総務部門長',
+      deputy_head: '総務副部門長',
+      staff: '総務部門員',
+      viewer: '閲覧のみ',
+    });
+  });
+
+  it('団体代表の立場の表示名と「{団体名} の店長・副店長」', () => {
+    expect(GROUP_ROLE_LABELS).toEqual({ manager: '店長', deputy_manager: '副店長' });
+    expect(groupPositionLabel({ name: '2年2組', role: 'manager' })).toBe('2年2組 の店長');
+    expect(groupPositionLabel({ name: '電子研究部', role: 'deputy_manager' })).toBe('電子研究部 の副店長');
+  });
+
+  it('立場の表示：ロール → 団体の順。どちらもなければ空', () => {
+    expect(positionLabels({ role: 'admin', groups: [{ id: 'g', name: '模擬店01', year_id: 'y8', role: 'manager' }] })).toEqual([
+      '管理者',
+      '模擬店01 の店長',
+    ]);
+    expect(positionLabels({ role: null, groups: [] })).toEqual([]);
   });
 });

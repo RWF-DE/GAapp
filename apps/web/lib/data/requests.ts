@@ -98,7 +98,7 @@ export function buildRequestForm(
 }
 
 /** 読み取り専用の行の説明（「長机(2人掛)として扱います。変えるときは総務へ」など） */
-export function extraRowNote(extra: Pick<ExtraRequestRow, 'treatedAs'>, audience: 'rep' | 'admin' = 'rep'): string {
+export function extraRowNote(extra: Pick<ExtraRequestRow, 'treatedAs'>, audience: 'rep' | 'lead' = 'rep'): string {
   if (extra.treatedAs) {
     return audience === 'rep'
       ? `${extra.treatedAs.name}として扱います。変えるときは総務へ`
@@ -229,10 +229,10 @@ export function judgeDirectFailure(error: unknown, reloaded: YearWindow | null):
   return { outside: reloaded?.status === 'requesting' };
 }
 
-/** 申請一覧での管理者の書き方：direct（締切前。直接）・deadline（締切後。理由と RPC）・readonly（確定中・終了） */
-export type AdminWriteMode = 'direct' | 'deadline' | 'readonly';
+/** 申請一覧での部門長以上の書き方：direct（締切前。直接）・deadline（締切後。理由と RPC）・readonly（確定中・終了） */
+export type LeadWriteMode = 'direct' | 'deadline' | 'readonly';
 
-export function adminWriteMode(year: YearWindow, now: Date | number, outside: boolean): AdminWriteMode {
+export function leadWriteMode(year: YearWindow, now: Date | number, outside: boolean): LeadWriteMode {
   if (year.status === 'confirmed' || year.status === 'closed') return 'readonly';
   if (year.status === 'allocating') return 'deadline';
   if (year.status === 'requesting' && outside) return 'deadline';
@@ -884,7 +884,7 @@ export function useRequestsTables(yearId: string | null | undefined) {
   });
 }
 
-/** 前年度の申請（admin。休憩所の代理入力の「前年の数を入れる」） */
+/** 前年度の申請（部門長以上。休憩所の代理入力の「前年の数を入れる」） */
 export async function fetchPreviousYearRequests(yearId: string): Promise<PreviousYearRequest[]> {
   const rows = await callRpc('previous_year_requests', { p_year_id: yearId });
   return (rows ?? []) as PreviousYearRequest[];

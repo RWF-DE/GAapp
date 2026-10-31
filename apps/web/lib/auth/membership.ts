@@ -1,10 +1,15 @@
 import type { Database } from '@gaapp/shared';
 import type { YearRow } from '../db/types';
+import { isAdmin, type AppRole, type GroupRole } from './roles';
 
-export type AppRole = Database['public']['Enums']['app_role'];
+// ロールの一覧と段（管理者だけ・部門長以上・総務）は roles.ts。ここは開いている年度の立場と、その表示名
+export type { AppRole, GroupRole } from './roles';
 export type YearStatus = Database['public']['Enums']['year_status'];
 
-/** 画面の出し分けに使う立場。ロール（admin・staff・viewer）と団体代表（rep） */
+/**
+ * 画面の出し分けに使う立場。ロール（admin・head・deputy_head・staff・viewer）と団体代表（rep。店長・副店長のどちらでも。
+ * 権限は同じなので立場は1つ）
+ */
 export type Audience = AppRole | 'rep';
 
 export interface YearSummary {
@@ -18,6 +23,8 @@ export interface GroupSummary {
   id: string;
   name: string;
   year_id: string;
+  /** その団体での立場（店長・副店長。group_members.role） */
+  role: GroupRole;
 }
 
 /** ログインしている人の、今の年度（開いている年度）での立場 */
@@ -68,7 +75,7 @@ export function buildMembership(source: MembershipSource, selectedYearId?: strin
   const years = myYears(source);
   const latestYear = years[0] ?? null;
   const adminOfOpenYear = source.roles.some(
-    (r) => r.role === 'admin' && source.years.some((y) => y.id === r.year_id && y.status !== 'closed'),
+    (r) => isAdmin(r.role) && source.years.some((y) => y.id === r.year_id && y.status !== 'closed'),
   );
   const year = (selectedYearId ? years.find((y) => y.id === selectedYearId) : undefined) ?? latestYear;
   if (!year) return { displayName: source.displayName, year: null, role: null, groups: [], years, latestYear, adminOfOpenYear };
@@ -103,7 +110,7 @@ export function latestWritableYear(m: Membership): YearSummary | null {
   return m.latestYear && m.latestYear.status !== 'closed' ? m.latestYear : null;
 }
 
-/** 今の年度での立場の一覧（ロールと団体代表は兼ねられる） */
+/** 今の年度での立場の一覧（管理者・閲覧のみは店長・副店長を兼ねられる。部門のロールは同じ年度の団体代表を兼ねられない。D-49） */
 export function audiencesOf(m: Membership): Audience[] {
   const a: Audience[] = [];
   if (m.role) a.push(m.role);
@@ -115,15 +122,35 @@ export function hasAudience(m: Membership, allowed: readonly Audience[]): boolea
   return audiencesOf(m).some((a) => allowed.includes(a));
 }
 
-// head・deputy_head は T15 で DB に足した（D-48）。admin・staff の表示名を 02 の名前（管理者・総務部門員）にそろえ、
-// 段ごとの出し分けを入れるのは T15b（それまでは head・deputy_head を付けない。README の 5）
+/** ロールの表示名（02「列挙型」の表示名。ヘッダー・ホームの立場・メンバーの一覧・履歴で同じ言い方にする） */
 export const ROLE_LABELS: Record<AppRole, string> = {
-  admin: '総務管理者',
+  admin: '管理者',
   head: '総務部門長',
   deputy_head: '総務副部門長',
-  staff: '総務部員',
+  staff: '総務部門員',
   viewer: '閲覧のみ',
 };
+
+/** 団体代表の立場の表示名（02「列挙型」。店長と副店長の権限は同じで、表示だけが違う） */
+export const GROUP_ROLE_LABELS: Record<GroupRole, string> = {
+  manager: '店長',
+  deputy_manager: '副店長',
+};
+
+/**
+ * 団体代表の立場の表示（「{団体名} の店長」「{団体名} の副店長」。04「共通レイアウト」。ヘッダー・ホームの立場・メンバーの一覧）
+ *
+ * @example
+ * groupPositionLabel({ name: '2年2組', role: 'deputy_manager' }) // '2年2組 の副店長'
+ */
+export function groupPositionLabel(g: Pick<GroupSummary, 'name' | 'role'>): string {
+  return `${g.name} の${GROUP_ROLE_LABELS[g.role]}`;
+}
+
+/** 今の年度の立場の表示（ロールの表示名と、代表する団体ごとの groupPositionLabel。ヘッダー。ホームの立場の一覧も同じ並びと言い方） */
+export function positionLabels(m: Pick<Membership, 'role' | 'groups'>): string[] {
+  return [...(m.role ? [ROLE_LABELS[m.role]] : []), ...m.groups.map(groupPositionLabel)];
+}
 
 export const YEAR_STATUS_LABELS: Record<YearStatus, string> = {
   preparing: '準備中',

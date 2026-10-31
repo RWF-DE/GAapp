@@ -1,9 +1,10 @@
 'use client';
 
 // 立場の一覧（画面の設計 3.1。T09）。ダッシュボードとホームの両方に出す。T04 のホームと同じ要素と文字を保つ：
-// `home-year` は「R8（申請受付中）」、`home-roles` は開いている年度のロールの日本語名と「{団体名} の団体代表」を1行ずつ（ほかの文字を入れない）。
+// `home-year` は「R8（申請受付中）」、`home-roles` は開いている年度のロールの表示名と、代表する団体ごとの「{団体名} の店長」
+// 「{団体名} の副店長」（T15b。ヘッダーと同じ言い方）を1行ずつ（ほかの文字を入れない）。
 // T04 の e2e/auth.spec.ts と T09a の foundation.spec が toHaveText で確かめている。
-import { ROLE_LABELS, YEAR_STATUS_LABELS, type Membership } from '@/lib/auth/membership';
+import { groupPositionLabel, ROLE_LABELS, YEAR_STATUS_LABELS, type Membership } from '@/lib/auth/membership';
 import { cn } from '@/lib/utils';
 
 export function RoleSummary({ membership: m, className }: { membership: Membership; className?: string }) {
@@ -26,7 +27,7 @@ export function RoleSummary({ membership: m, className }: { membership: Membersh
           <ul className="flex min-w-0 flex-wrap gap-x-3" data-testid="home-roles">
             {m.role ? <li>{ROLE_LABELS[m.role]}</li> : null}
             {m.groups.map((g) => (
-              <li key={g.id}>{g.name} の団体代表</li>
+              <li key={g.id}>{groupPositionLabel(g)}</li>
             ))}
           </ul>
         </div>

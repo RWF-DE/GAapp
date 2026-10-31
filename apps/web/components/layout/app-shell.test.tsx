@@ -229,3 +229,58 @@ describe('AppShell：年度の選択と最新でない年度の帯（D-31）', (
     expect(window.sessionStorage.getItem('gaapp:year:u1')).toBeNull();
   });
 });
+
+describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイアウト」）', () => {
+  const navLabels = () => [...document.querySelectorAll('aside nav a')].map((a) => a.textContent);
+
+  it('店長・副店長は「{団体名} の店長」「{団体名} の副店長」と出す（団体代表の立場）', async () => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = sourceOf({
+      displayName: '代表',
+      roles: [],
+      groups: [
+        { id: 'g2', name: '模擬店02', year_id: 'y8', role: 'deputy_manager' },
+        { id: 'g1', name: '模擬店01', year_id: 'y8', role: 'manager' },
+      ],
+    });
+    const user = userEvent.setup();
+    renderShell();
+    await screen.findByLabelText('メモ');
+    expect(screen.getByText('模擬店01 の店長・模擬店02 の副店長')).toBeTruthy();
+    expect(navLabels()).toEqual(['ホーム', '申請', '自団体の振り分け']);
+    // スマホのメニュー（開いた形）にも同じ言い方
+    await user.click(screen.getByRole('button', { name: 'メニューを開く' }));
+    expect(document.getElementById('app-mobile-nav')?.textContent).toContain('代表（模擬店01 の店長・模擬店02 の副店長）');
+  });
+
+  it('管理者で店長も務める人は、ロールと団体の両方', async () => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = sourceOf({ groups: [{ id: 'g1', name: '模擬店01', year_id: 'y8', role: 'manager' }] });
+    renderShell();
+    await screen.findByLabelText('メモ');
+    expect(screen.getByText('管理者・模擬店01 の店長')).toBeTruthy();
+    expect(navLabels()).toContain('自団体の振り分け');
+    expect(navLabels()).toContain('マスタ設定');
+  });
+
+  it.each([
+    ['head', '総務部門長'],
+    ['deputy_head', '総務副部門長'],
+  ] as const)('%s は表示名「%s」で、ナビは管理者と同じ（総務の画面すべて）', async (role, label) => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = sourceOf({ roles: [{ year_id: 'y8', role }] });
+    renderShell();
+    await screen.findByLabelText('メモ');
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(navLabels()).toEqual(['ホーム', 'マスタ設定', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', '履歴']);
+  });
+
+  it('総務部門員は「総務部門員」で、在庫・申請一覧・振り分けだけ', async () => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = sourceOf({ roles: [{ year_id: 'y8', role: 'staff' }] });
+    renderShell();
+    await screen.findByLabelText('メモ');
+    expect(screen.getByText('総務部門員')).toBeTruthy();
+    expect(navLabels()).toEqual(['ホーム', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
+  });
+});

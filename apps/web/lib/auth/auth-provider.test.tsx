@@ -292,7 +292,7 @@ describe('AuthProvider：画面を開くまでの読み込み（D-45）', () => 
     const row = { id: Y, label: 'R8', status: 'requesting', allocation_version: 2 };
     fakeAuth.session = { user: { id: 'u1' } };
     fakeAuth.sources.u1 = {
-      ...sourceOf({ groups: [{ id: 'g1', name: '模擬店01', year_id: Y }] }),
+      ...sourceOf({ groups: [{ id: 'g1', name: '模擬店01', year_id: Y, role: 'manager' }] }),
       years: [{ id: Y, label: 'R8', status: 'requesting', festival_start: '2026-10-17' }],
       roles: [],
       yearRows: { rows: [row as never], readStartedAt: Date.now() },

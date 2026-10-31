@@ -154,7 +154,7 @@ const READ_ONLY_MESSAGES: Partial<Record<YearStatus, string>> = {
  *
  * @example
  * {!writable ? <ReadOnlyNotice status={year.status} /> : null}
- * <ReadOnlyNotice>部員は振り分けを見るだけです</ReadOnlyNotice>
+ * <ReadOnlyNotice>総務部門員は振り分けを見るだけです</ReadOnlyNotice>
  */
 export function ReadOnlyNotice({
   status,

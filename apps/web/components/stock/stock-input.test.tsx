@@ -108,7 +108,7 @@ function yearRow(status: YearStatus, prev = false): YearRow {
   };
 }
 
-function membership(role: 'admin' | 'staff', status: YearStatus, latest: boolean): Membership {
+function membership(role: 'admin' | 'head' | 'staff', status: YearStatus, latest: boolean): Membership {
   const year: YearSummary = { id: Y, label: 'E2E-年度', status, festival_start: '2001-10-13' };
   const newer: YearSummary = { id: LATEST, label: 'R8', status: 'requesting', festival_start: '2026-10-17' };
   return {
@@ -167,7 +167,7 @@ function serve(db: Db) {
 }
 
 /** qc を渡すと、その QueryClient（キャッシュ）で開く（画面を離れて同じタブで開き直す） */
-function renderInput(o: { role: 'admin' | 'staff'; status: YearStatus; latest?: boolean; prev?: boolean; qc?: QueryClient }) {
+function renderInput(o: { role: 'admin' | 'head' | 'staff'; status: YearStatus; latest?: boolean; prev?: boolean; qc?: QueryClient }) {
   auth.membership = membership(o.role, o.status, o.latest ?? true);
   const open: OpenYear = { membership: auth.membership as Membership, year: (auth.membership as Membership).year!, role: o.role, userId: USER };
   const storage = storageRooms([ROOM, ROOM2], []);
@@ -181,7 +181,7 @@ function renderInput(o: { role: 'admin' | 'staff'; status: YearStatus; latest?: 
 }
 
 /** 開いたままの画面で、年度の状態を変える（年度の行を読み直したら振り分け中になっていた、など） */
-function rerenderStatus(r: ReturnType<typeof renderInput>, o: { role: 'admin' | 'staff'; status: YearStatus }) {
+function rerenderStatus(r: ReturnType<typeof renderInput>, o: { role: 'admin' | 'head' | 'staff'; status: YearStatus }) {
   auth.membership = membership(o.role, o.status, true);
   const open: OpenYear = { membership: auth.membership as Membership, year: (auth.membership as Membership).year!, role: o.role, userId: USER };
   const storage = storageRooms([ROOM, ROOM2], []);
@@ -211,10 +211,10 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('StockInput：書けるか（設計 3.3 の表）', () => {
-  it('部員は振り分け中に読み取り専用（「総務管理者だけが直せます」、入力できず保存のボタンがない）', async () => {
+  it('総務部門員は振り分け中に読み取り専用（「管理者・総務部門長・総務副部門長だけが直せます」、入力できず保存のボタンがない）', async () => {
     serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)] });
     renderInput({ role: 'staff', status: 'allocating' });
-    expect(await screen.findByText('振り分けが始まったので、在庫は総務管理者だけが直せます')).toBeTruthy();
+    expect(await screen.findByText('振り分けが始まったので、在庫は管理者・総務部門長・総務副部門長だけが直せます')).toBeTruthy();
     await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
     expect((deskInput() as HTMLInputElement).disabled).toBe(true);
     expect(screen.queryByRole('button', { name: '保存' })).toBeNull();
@@ -271,7 +271,24 @@ describe('StockInput：最新でない年度', () => {
   });
 });
 
-describe('StockInput：管理者と振り分けの合計', () => {
+describe('StockInput：部門長以上と振り分けの合計', () => {
+  it('総務部門長は振り分け中も書け、振り分けの合計より少なくすると保存の前に確かめる（管理者と同じ。D-48）', async () => {
+    serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], allocated: [{ id: 'a', item_id: DESK.id, count: 6 }] });
+    const user = userEvent.setup();
+    renderInput({ role: 'head', status: 'allocating' });
+    await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
+    expect((deskInput() as HTMLInputElement).disabled).toBe(false);
+    expect(screen.queryByTestId('read-only-notice')).toBeNull();
+    await user.clear(deskInput());
+    await user.type(deskInput(), '5{Enter}');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toContain('保存すると振り分けに在庫超過（E001）が出ます。振り分け画面で直してください');
+    await user.click(within(dialog).getByRole('button', { name: 'やめる' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(upserts()).toHaveLength(0);
+  });
+
   it('確定中に振り分けの合計より少なくすると、保存の前に止まる（送らない）', async () => {
     serve({ stocks: [stock(DESK, 10), stock(CHAIR, 20)], allocated: [{ id: 'a', item_id: DESK.id, count: 6 }] });
     const user = userEvent.setup();
@@ -632,7 +649,7 @@ describe('StockInput：読み直し（設計 2.6）', () => {
     await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
     await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
     rerenderStatus(r, { role: 'staff', status: 'allocating' });
-    expect(await screen.findByText('振り分けが始まったので、在庫は総務管理者だけが直せます')).toBeTruthy();
+    expect(await screen.findByText('振り分けが始まったので、在庫は管理者・総務部門長・総務副部門長だけが直せます')).toBeTruthy();
     // 読み取り専用の画面には DB の数を出す
     await waitFor(() => expect((deskInput() as HTMLInputElement).value).toBe('10'));
     db.stocks = theirs();

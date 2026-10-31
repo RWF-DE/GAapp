@@ -4,6 +4,7 @@ import {
   actionLabel,
   actorLabel,
   auditTarget,
+  crossYearNote,
   diffAudit,
   EMPTY_FILTER,
   fetchDeletedGroupNames,
@@ -91,6 +92,27 @@ describe('差の表示', () => {
     expect(formatAuditValue('groups', 'aliases', ['a', 'b'])).toBe('a、b');
     expect(formatAuditValue('rules', 'params', { group: 'x' })).toBe('{"group":"x"}');
     expect(formatAuditValue('groups', 'year_id', Y, { years: new Map([[Y, 'R8']]) })).toBe('R8');
+  });
+
+  it('ロールは表示名、団体代表の立場（group_members の role）は店長・副店長（T15b。04「履歴」）', () => {
+    expect(formatAuditValue('year_roles', 'role', 'admin')).toBe('管理者');
+    expect(formatAuditValue('year_roles', 'role', 'head')).toBe('総務部門長');
+    expect(formatAuditValue('year_roles', 'role', 'deputy_head')).toBe('総務副部門長');
+    expect(formatAuditValue('year_roles', 'role', 'staff')).toBe('総務部門員');
+    expect(formatAuditValue('year_roles', 'role', 'viewer')).toBe('閲覧のみ');
+    expect(formatAuditValue('group_members', 'role', 'manager')).toBe('店長');
+    expect(formatAuditValue('group_members', 'role', 'deputy_manager')).toBe('副店長');
+    // 招待の立場（invitations は監査しないが、出ても日本語にする）
+    expect(formatAuditValue('invitations', 'group_role', 'deputy_manager')).toBe('副店長');
+    expect(formatAuditValue('invitations', 'role', 'staff')).toBe('総務部門員');
+    // 表にない値はそのまま
+    expect(formatAuditValue('group_members', 'role', 'owner')).toBe('owner');
+    expect(formatDiffEntry('group_members', { key: 'role', before: 'manager', after: 'deputy_manager' })).toBe('role：店長 → 副店長');
+  });
+
+  it('表の選びの注：開いている年度の管理者には年度をまたぐ表の説明、ほか（部門長・副部門長）には見られない理由', () => {
+    expect(crossYearNote(true)).toBe('場所・品目・距離は年度をまたぐ表です（年度のない記録も出します）。');
+    expect(crossYearNote(false)).toBe('場所・品目・距離の記録（年度のない記録）は、開いている年度の管理者だけが見られます。');
   });
 
   it('操作・した人', () => {

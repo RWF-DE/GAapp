@@ -1,7 +1,8 @@
 'use client';
 
 // 品目別の表示（画面の設計 3.9 の「左：品目別」。T13）。運び元ごとのまとまりと余り。
-// 管理者が振り分け中のときは、行の操作（row-edit.tsx）と部屋の見出しのメニュー（今年は使用不可にする・使用可に戻す）を出す（段 2）。
+// 部門長以上が振り分け中のときは、行の操作（row-edit.tsx）と部屋の見出しのメニュー（今年は使用不可にする・使用可に戻す。room_years は
+// 部門長以上が書ける。D-48）を出す（段 2）。
 import type { StoredAllocationRow } from '@gaapp/shared';
 import { MoreHorizontal, Pin } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -200,7 +201,7 @@ function EditCells({ api, row, label }: { api: RowEditApi; row: StoredAllocation
   );
 }
 
-/** 部屋の見出しのメニュー（今年は使用不可にする・使用可に戻す。管理者・振り分け中） */
+/** 部屋の見出しのメニュー（今年は使用不可にする・使用可に戻す。部門長以上・振り分け中） */
 function RoomMenu({ api, roomId, roomName, usable }: { api: RowEditApi; roomId: string; roomName: string; usable: boolean }) {
   return (
     <DropdownMenu>

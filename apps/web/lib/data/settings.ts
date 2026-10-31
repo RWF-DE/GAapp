@@ -21,14 +21,16 @@ import { isLockRejection, settleLockedWrite, type LockedWriteOutcome } from '@/l
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { callRpc } from '@/lib/rpc';
 import type { AppRole, YearSummary } from '@/lib/auth/membership';
+import { APP_ROLES, isAdmin, isSoumu } from '@/lib/auth/roles';
+import { SETTINGS_TABS, type SettingsTab } from '@/lib/navigation';
 import type { GroupCsvRow } from '@/lib/schemas/settings';
 import { nameKey } from '@/lib/schemas/settings';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 
 // ---- タブ ----
 
-export const SETTINGS_TABS = ['years', 'rooms', 'items', 'groups', 'distance', 'users', 'export'] as const;
-export type SettingsTab = (typeof SETTINGS_TABS)[number];
+// タブの一覧と、ロールごとに開けるタブ（settingsTabsFor）は lib/navigation.ts（canOpen が `/settings?tab=…` を見るため。D-50）
+export { SETTINGS_TABS, settingsTabsFor, type SettingsTab } from '@/lib/navigation';
 
 export const SETTINGS_TAB_LABELS: Record<SettingsTab, string> = {
   years: '年度',
@@ -129,15 +131,16 @@ export function rulesReferencing(
 // ---- 場所の削除の前：終了していない年度のルール（2.7・3.2） ----
 
 /**
- * 場所（全年度で共有）を参照するルールを探す年度。終了していない年度のうち、ルールを読める年度（その年度の admin・staff。
- * rules の RLS）と、読めない年度（団体代表・閲覧のみ）に分ける。1日目の新しい順。ロールも団体代表もない年度は years を読めないので
- * ここに出てこない（画面では確かめられない。DB での強制は notes/T09.md の申し送り）。純粋関数。
+ * 場所（全年度で共有）を参照するルールを探す年度。終了していない年度のうち、ルールを読める年度（その年度の総務：管理者・
+ * 総務部門長・総務副部門長・総務部門員。rules の RLS。D-48）と、読めない年度（団体代表・閲覧のみ）に分ける。1日目の新しい順。
+ * ロールも団体代表もない年度は years を読めないのでここに出てこない（画面では確かめられない。DB での強制は notes/T09.md の申し送り）。
+ * 純粋関数。
  */
 export function openYearsForRoomRefs(
   years: readonly YearSummary[],
   roles: readonly { year_id: string; role: AppRole }[],
 ): { readable: YearSummary[]; unreadable: YearSummary[] } {
-  const canRead = new Set(roles.filter((r) => r.role === 'admin' || r.role === 'staff').map((r) => r.year_id));
+  const canRead = new Set(roles.filter((r) => isSoumu(r.role)).map((r) => r.year_id));
   const open = years
     .filter((y) => y.status !== 'closed')
     .sort((a, b) => cmp(b.festival_start, a.festival_start) || cmp(b.label, a.label) || cmp(b.id, a.id));
@@ -225,7 +228,7 @@ export function latestAdminOpenYear(
   years: readonly YearSummary[],
   roles: readonly { year_id: string; role: AppRole }[],
 ): YearSummary | null {
-  const admin = new Set(roles.filter((r) => r.role === 'admin').map((r) => r.year_id));
+  const admin = new Set(roles.filter((r) => isAdmin(r.role)).map((r) => r.year_id));
   const open = years
     .filter((y) => y.status !== 'closed' && admin.has(y.id))
     .sort((a, b) => cmp(b.festival_start, a.festival_start) || cmp(b.label, a.label) || cmp(b.id, a.id));
@@ -369,8 +372,9 @@ export interface Members {
   repCount: Map<string, number>;
 }
 
-// 列挙の並び（admin, head, deputy_head, staff, viewer。02）
-const ROLE_ORDER: Record<AppRole, number> = { admin: 0, head: 1, deputy_head: 2, staff: 3, viewer: 4 };
+// 列挙の並び（admin, head, deputy_head, staff, viewer。02。roles.ts の APP_ROLES）
+const ROLE_ORDER = new Map<AppRole, number>(APP_ROLES.map((r, i) => [r, i]));
+const roleOrder = (role: AppRole | null) => (role ? (ROLE_ORDER.get(role) ?? 9) : 9);
 
 /** 年度のメンバー（ロールと団体代表）と招待を読む（admin だけが全部を読める） */
 export async function fetchMembers(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<Members> {
@@ -419,7 +423,7 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
   }
   const members = [...byUser.values()].sort(
     (a, b) =>
-      (a.role ? ROLE_ORDER[a.role] : 9) - (b.role ? ROLE_ORDER[b.role] : 9) ||
+      roleOrder(a.role) - roleOrder(b.role) ||
       (a.displayName ?? '￿').localeCompare(b.displayName ?? '￿', 'ja') ||
       cmp(a.userId, b.userId),
   );

@@ -76,6 +76,22 @@ describe('loadMembershipSource', () => {
     expect(src.yearRows!.readStartedAt).toBeGreaterThanOrEqual(before);
   });
 
+  it('団体代表の行は、団体とその団体での立場（店長・副店長。group_members.role）を1つにする（T15b）', async () => {
+    const members = [
+      { group_id: 'g1', role: 'deputy_manager', groups: { id: 'g1', name: '模擬店01', year_id: 'y1' } },
+      { group_id: 'g2', role: 'manager', groups: { id: 'g2', name: '2年2組', year_id: 'y1' } },
+      // 団体を読めなかった行（RLS）は立場に入れない
+      { group_id: 'g3', role: 'manager', groups: null },
+    ];
+    const { client, selects } = fakeClient({ accepted: ok(0), tables: { ...tables([ok([])]), group_members: [ok(members)] } });
+    const src = await loadMembershipSource(client, 'u1');
+    expect(selects.group_members).toBe('group_id, role, groups (id, name, year_id)');
+    expect(src.groups).toEqual([
+      { id: 'g1', name: '模擬店01', year_id: 'y1', role: 'deputy_manager' },
+      { id: 'g2', name: '2年2組', year_id: 'y1', role: 'manager' },
+    ]);
+  });
+
   it('招待を受け入れたら（返り値 > 0）、受け入れた後の立場を読み直す', async () => {
     const { client, reads } = fakeClient({
       accepted: ok(1),

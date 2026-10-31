@@ -26,7 +26,7 @@ beforeEach(() => {
       displayName: null,
       year,
       role: null,
-      groups: [{ id: 'g1', name: '模擬店10', year_id: 'y1' }],
+      groups: [{ id: 'g1', name: '模擬店10', year_id: 'y1', role: 'manager' }],
       years: [year],
       latestYear: year,
       adminOfOpenYear: false,
