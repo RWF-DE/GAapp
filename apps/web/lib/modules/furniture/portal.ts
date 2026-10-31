@@ -138,6 +138,19 @@ function soumuTodos(counts: FurnitureSoumuCounts | null, ctx: PortalContext): To
         href: '/settings?tab=years',
       });
     }
+    // 受付期間が入った準備中：次は「受付開始」（01「年間の業務の流れ」の 3。押せるか〔未来の締切〕は年度の行で分かる）。受付開始の
+    // 日時を過ぎたら急ぎ（店長・副店長は受付開始を押すまで申請を書けない）。期日は付けない（期日は「締切 …」と出すので、受付開始の
+    // 日時を申請の締切と読み違えないように。これからの受付開始は締切と予定に出る）
+    if (y.status === 'preparing' && close !== null && close > ctx.now) {
+      const openAt = timeOf(y.request_open_at);
+      const late = openAt !== null && openAt <= ctx.now;
+      add({
+        id: 'furniture:lead:open-requests',
+        title: late ? '受付開始の日時を過ぎました。「受付開始」を押してください' : '受付期間が入りました。準備ができたら「受付開始」を押してください',
+        severity: late ? 'urgent' : 'normal',
+        href: '/furniture',
+      });
+    }
     if (y.status === 'requesting' && close !== null && ctx.now >= close) {
       add({
         id: 'furniture:lead:close-requests',
@@ -159,6 +172,11 @@ function soumuTodos(counts: FurnitureSoumuCounts | null, ctx: PortalContext): To
         severity: 'normal',
         href: '/swaps',
       });
+    }
+    // 自動振り分けを保存し、了承の依頼中の団体がない振り分け中：次は「確定」（流れの 6）。押せるか〔検証の error 0〕はダッシュボードでは
+    // 読まない（検証は振り分けの画面で見る）。了承の数は読み取りの結果で分かるので、読み込みの後（counts があるとき）だけ作る
+    if (y.status === 'allocating' && y.auto_allocated_at && counts && counts.consents.asked === 0) {
+      add({ id: 'furniture:lead:confirm', title: '検証の error を 0 件にして「確定」を押してください', severity: 'normal', href: '/allocation' });
     }
   }
 
@@ -197,14 +215,24 @@ function soumuTodos(counts: FurnitureSoumuCounts | null, ctx: PortalContext): To
   return todos;
 }
 
+/**
+ * 年度の状態の行（受付中で締切があれば締切つき）。締切 ≤ now（締切ちょうどは「締切を過ぎた」側）なら「申請受付中（締切を過ぎました）」
+ * （過ぎた締切の日時は要対応の期日に出る。カードの1行に収める）
+ */
+function statusLine(ctx: PortalContext): string {
+  const y = ctx.year;
+  if (y.status !== 'requesting' || !y.request_close_at) return YEAR_STATUS_LABELS[y.status];
+  const close = timeOf(y.request_close_at);
+  if (close !== null && close <= ctx.now) return `${YEAR_STATUS_LABELS.requesting}（締切を過ぎました）`;
+  return `${YEAR_STATUS_LABELS.requesting}（締切 ${formatShortDateTime(y.request_close_at)}）`;
+}
+
 /** 総務のカード（年度の状態・提出・在庫・了承の依頼中） */
 function soumuCard(counts: FurnitureSoumuCounts, ctx: PortalContext): ModuleCardModel {
   const y = ctx.year;
   const { submissions: s, storages: st, consents: c } = counts;
   const lines = [
-    y.status === 'requesting' && y.request_close_at
-      ? `${YEAR_STATUS_LABELS.requesting}（締切 ${formatShortDateTime(y.request_close_at)}）`
-      : YEAR_STATUS_LABELS[y.status],
+    statusLine(ctx),
     `申請 ${s.submitted}／${s.total} 団体が提出`,
     `在庫 ${st.counted}／${st.total} か所を数えた`,
   ];
@@ -218,7 +246,7 @@ function viewerCard(ctx: PortalContext): ModuleCardModel {
   return {
     moduleId: MODULE_ID,
     title: moduleLabel(MODULE_ID),
-    lines: [final ? '振り分けが決まりました' : '振り分けが確定すると、ここから見られます。'],
+    lines: [final ? '振り分けが決まりました' : '振り分けが確定すると、ここから見られます'],
     href: final ? linkFor(ctx, '/allocation') : null,
     linkLabel: '振り分け表を見る',
   };

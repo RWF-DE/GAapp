@@ -13,7 +13,7 @@ import type { AppRole, GroupSummary, Membership, YearStatus } from '@/lib/auth/m
 import type { YearRow } from '@/lib/db/types';
 import { portalQueryKey, portalQueryOptions, type PortalProvider } from '@/lib/modules/portal';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
-import { queryKeys } from '@/lib/query';
+import { createQueryClient, queryKeys } from '@/lib/query';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 import { staticImportGraph } from '@/lib/testing/import-graph';
 import { PortalScreen } from './portal-screen';
@@ -185,13 +185,18 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(datedIds()).toEqual(['furniture:day-minus2', 'furniture:day-minus1', 'furniture:day1', 'furniture:day2']);
     const card = screen.getByTestId('module-card');
     expect(card.getAttribute('data-module')).toBe('furniture');
+    // 開いた時刻（10/6）は締切（10/5 17:00）の後なので、締切を過ぎたことも出す（レビューの T16-UX-04）
     expect([...card.querySelectorAll('li')].map((li) => li.textContent)).toEqual([
-      '申請受付中（締切 10/5 17:00）',
+      '申請受付中（締切を過ぎました）',
       '申請 1／2 団体が提出',
       '在庫 1／2 か所を数えた',
     ]);
     expect(within(card).getByRole('link', { name: '机椅子の状況へ' }).getAttribute('href')).toBe('/furniture');
     expect(screen.queryByTestId('rep-home')).toBeNull();
+    // 要対応の期日（締切を過ぎた・未提出）も「を過ぎました」
+    expect(screen.getAllByTestId('portal-todo-due').map((x) => x.textContent)).toEqual(['締切 10/5 17:00 を過ぎました', '締切 10/5 17:00 を過ぎました']);
+    // 今の年度と状態は立場の一覧にあるので、見出し（h1）の横には出さない（レビューの T16-UX-11）
+    expect(screen.getByRole('heading', { level: 1 }).parentElement?.textContent).toBe('ダッシュボード');
     // 見出し（h2）と DOM の並び
     expect(screen.getAllByRole('heading', { level: 2 }).map((x) => x.textContent)).toEqual(['あなたの立場', '要対応', '締切と予定', '機能ごとの状況']);
   });
@@ -208,7 +213,7 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     expect(h1()).toBe('ホーム');
     expect(screen.queryByTestId('portal-todos')).toBeNull();
     const card = within(screen.getByTestId('portal-cards')).getByTestId('module-card');
-    expect(card.textContent).toContain('振り分けが確定すると、ここから見られます。');
+    expect(card.textContent).toBe('机椅子振り分けが確定すると、ここから見られます');
     expect(within(card).queryByRole('link')).toBeNull();
     expect(datedIds()).toHaveLength(4);
     // 締切と予定は閲覧のみにはリンクにしない（申請一覧・申請を開けない）
@@ -234,7 +239,7 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
     await waitFor(() => expect(todoIds()).toEqual(['furniture:rep:g1:unsubmitted', 'furniture:rep:g1:consent']));
     const unsubmitted = screen.getAllByTestId('portal-todo')[0]!;
     expect(unsubmitted.textContent).toContain('模擬店01：申請が未提出です');
-    expect(unsubmitted.textContent).toContain('締切 10/5 17:00');
+    expect(within(unsubmitted).getByTestId('portal-todo-due').textContent).toBe('締切 10/5 17:00');
     expect(within(unsubmitted).getByRole('link').getAttribute('href')).toBe('/request?group=g1');
     // 締切と予定は申請（/request）へのリンク
     const close = screen.getAllByTestId('portal-dated-item').find((x) => x.getAttribute('data-id') === 'furniture:request-close')!;
@@ -292,6 +297,64 @@ describe('T16 ダッシュボード：読むもの（版・振り分けの行・
   });
 });
 
+// ---------------------------------------------------------------- 最後に読み込んだ日時と読み直し（レビューの T16-R2）
+
+describe('T16 ダッシュボード：最後に読み込んだ日時と「読み直す」は出さず、戻ったときに 30 秒より前に読んだものを読み直す（04「ダッシュボード」の読むもの）', () => {
+  it.each([
+    { who: '総務（管理者）', m: () => member('admin', [], 'requesting'), ready: 'module-card' },
+    { who: '閲覧のみ', m: () => member('viewer', [], 'requesting'), ready: 'module-card' },
+    { who: '店長', m: () => member(null, [G1], 'requesting'), ready: 'rep-card' },
+  ])('$who：最終読み込みの日時と「読み直す」のボタンがない', async ({ m, ready }) => {
+    renderPortal(m());
+    await screen.findByTestId(ready);
+    expect(screen.queryByText(/最終読み込み/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /読み直/ })).toBeNull();
+  });
+
+  it.each([
+    {
+      who: '総務（管理者）',
+      m: () => member('admin', [], 'requesting'),
+      ready: 'module-card',
+      tables: ['groups', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents'],
+    },
+    { who: '店長', m: () => member(null, [G1], 'requesting'), ready: 'rep-card', tables: ['request_submissions', 'substitution_consents'] },
+  ])('$who：アプリの QueryClient の既定のまま、30 秒以内に戻れば読み直さず、30 秒を過ぎて戻れば読み直す', async ({ m, ready, tables }) => {
+    const t0 = Date.parse(IN_WINDOW);
+    vi.setSystemTime(new Date(t0));
+    // 30 秒を過ぎると年度の行（立場の読み込みが入れたもの）も読み直すので、years にも答える
+    override = (call) => (call.table === 'years' ? { data: yearRow('requesting') } : undefined);
+    h.membership = { status: 'ready', membership: m() };
+    // app/layout.tsx と同じ QueryClient（staleTime などの既定値）。テストの QueryClient の既定値で隠さない
+    const qc = createQueryClient();
+    qc.setQueryData(queryKeys.yearRow(Y), yearRow('requesting'));
+    const open = () =>
+      render(
+        <QueryClientProvider client={qc}>
+          <PortalScreen />
+        </QueryClientProvider>,
+      );
+    const first = open();
+    await screen.findByTestId(ready);
+    await waitFor(() => expect(tablesRead()).toEqual(tables));
+    first.unmount();
+
+    // ほかの画面から 29 秒後に戻る：読んだものはまだ新しいので読み直さない
+    vi.setSystemTime(new Date(t0 + 29_000));
+    const second = open();
+    await screen.findByTestId(ready);
+    await act(() => new Promise((r) => setTimeout(r, 20)));
+    expect(tablesRead()).toEqual(tables);
+    second.unmount();
+
+    // 31 秒後に戻る：机椅子の読み取り（と年度の行）を読み直す
+    vi.setSystemTime(new Date(t0 + 31_000));
+    open();
+    await waitFor(() => expect(tablesRead()).toEqual([...tables, ...tables, 'years'].sort()));
+    await screen.findByTestId(ready);
+  });
+});
+
 // ---------------------------------------------------------------- 読み込み中・失敗・エラーの境界
 
 describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04「ダッシュボード」の読み込みと失敗）', () => {
@@ -331,6 +394,11 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
     const cards = screen.getByTestId('portal-cards');
     const cardErr = within(cards).getByTestId('portal-module-error');
     expect(within(cardErr).getByRole('link', { name: '机椅子の状況へ' }).getAttribute('href')).toBe('/furniture');
+    // カードの欄は、すぐ上の見出し（机椅子）と重ねないよう「机椅子：」を sr-only に（読み上げでは読む）。要対応の欄では見せる（レビューの T16-UX-08）
+    expect(within(cards).getByRole('heading', { level: 3 }).textContent).toBe('机椅子');
+    expect(cardErr.textContent).toContain('机椅子：通信できませんでした');
+    expect(within(cardErr).getByTestId('portal-module-error-label').className).toContain('sr-only');
+    expect(within(err).getByTestId('portal-module-error-label').className).not.toContain('sr-only');
     expect(within(cards).queryByTestId('module-card')).toBeNull();
     // ほかの欄は出したまま。締切と予定は年度の行だけで決まるので、机椅子の失敗を出さない（決定 7。失敗は要対応とカードの2か所）
     expect(datedIds()).toHaveLength(4);
@@ -451,6 +519,29 @@ describe('T16 ダッシュボード：機能の読み取りは、その結果を
     await user.click(within(err).getByRole('button', { name: 'もう一度' }));
     await waitFor(() => expect(datedIds()).toContain('test:event'));
     expect(screen.queryByTestId('portal-module-error')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------- 急ぎの度合いの印
+
+describe('T16 ダッシュボード：急ぎの度合いの印（急ぎ・参考）', () => {
+  it('確定中の団体代表の「振り分けが決まりました」は「参考」の印（機能の「お知らせ」と取り違えないよう「お知らせ」と書かない）', async () => {
+    vi.setSystemTime(new Date('2026-10-10T00:00:00Z'));
+    renderPortal(member(null, [G1], 'confirmed'));
+    await waitFor(() => expect(todoIds()).toEqual(['furniture:rep:g1:final']));
+    const final = screen.getByTestId('portal-todo');
+    expect(final.getAttribute('data-severity')).toBe('info');
+    expect(final.textContent).toContain('参考');
+    expect(final.textContent).not.toContain('お知らせ');
+    expect(final.textContent).toContain('模擬店01：振り分けが決まりました');
+  });
+
+  it('締切を過ぎた（急ぎ）の要対応は「急ぎ」の印', async () => {
+    renderPortal(member('head', [], 'requesting'));
+    await screen.findByTestId('module-card');
+    const urgent = screen.getAllByTestId('portal-todo').find((x) => x.getAttribute('data-id') === 'furniture:lead:close-requests')!;
+    expect(urgent.getAttribute('data-severity')).toBe('urgent');
+    expect(urgent.textContent).toContain('急ぎ');
   });
 });
 

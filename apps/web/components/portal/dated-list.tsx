@@ -66,6 +66,7 @@ function DatedRow({ item: d }: { item: DatedItem }) {
       >
         {KIND_LABEL[d.kind]}
       </Badge>
+      {/* 文は文節で折り返す（ダッシュボードの外枠の word-break: auto-phrase。「前々日（机椅子の仕分け・配布）」が「配布」の中で折れない） */}
       <span className="min-w-[10rem] flex-1 text-sm">{d.title}</span>
     </>
   );

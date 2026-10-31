@@ -193,19 +193,38 @@ test.describe('T16 閲覧のみ', () => {
 test.describe('T16 団体代表（スマホ）', () => {
   test.use({ storageState: storageStateFor('rep'), viewport: MOBILE });
 
-  test('T16 団体代表のホーム（受付中：要対応・締切と予定・代表する団体）', async ({ page }) => {
+  // 交換の依頼は振り分け中にだけ来る（受付中には来ない）ので、受付中（未提出）と振り分け中（交換の依頼）を別々に撮る（レビューの T16-UX-14）
+  test('T16 団体代表のホーム（受付中：未提出の要対応・締切と予定・代表する団体）', async ({ page }) => {
     const s = await createScenario({ status: 'requesting', dataset: 'small', repGroup: SMALL.groups.stall });
     try {
       const gid = s.ids.groups[SMALL.groups.stall]!;
       await sql('delete from public.request_submissions where group_id = $1', [gid]);
-      await askConsent(gid);
       await festivalIn(s, 40);
       await pinYear(page, SEED_USER_IDS.rep, s.yearId);
       await openPortal(page, 'ホーム');
-      await expect(page.getByTestId('portal-todo')).toHaveCount(2);
-      await expect(page.getByTestId('rep-card')).toBeVisible();
+      await expect(page.locator(`[data-testid="portal-todo"][data-id="furniture:rep:${gid}:unsubmitted"]`)).toBeVisible();
+      await expect(page.getByTestId('portal-todo')).toHaveCount(1);
+      await expect(page.getByTestId('rep-card').getByTestId('rep-consent-asked')).toHaveCount(0);
       await expectNoOverflow(page);
       await shoot(page, 'T16', 'portal-rep-mobile', { fullPage: true });
+    } finally {
+      await s.cleanup();
+    }
+  });
+
+  test('T16 団体代表のホーム（振り分け中：交換の依頼の要対応と、代表する団体の「依頼に答える」）', async ({ page }) => {
+    const s = await createScenario({ status: 'allocating', requestWindow: 'closed', dataset: 'small', repGroup: SMALL.groups.stall });
+    try {
+      const gid = s.ids.groups[SMALL.groups.stall]!;
+      await askConsent(gid);
+      await festivalIn(s, 14);
+      await pinYear(page, SEED_USER_IDS.rep, s.yearId);
+      await openPortal(page, 'ホーム');
+      await expect(page.locator(`[data-testid="portal-todo"][data-id="furniture:rep:${gid}:consent"]`)).toBeVisible();
+      await expect(page.getByTestId('portal-todo')).toHaveCount(1);
+      await expect(page.getByTestId('rep-card').getByTestId('rep-consent-asked')).toBeVisible();
+      await expectNoOverflow(page);
+      await shoot(page, 'T16', 'portal-rep-allocating-mobile', { fullPage: true });
     } finally {
       await s.cleanup();
     }

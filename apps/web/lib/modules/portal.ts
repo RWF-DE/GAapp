@@ -29,7 +29,7 @@ export const PORTAL_WIDGETS: readonly PortalWidgetId[] = ['todos', 'dated', 'car
 /** 種類の順（兼ねた人の欄の中の並びと、カードを選ぶ順） */
 export const PORTAL_KINDS: readonly PortalKind[] = ['soumu', 'viewer', 'rep'];
 
-/** 急ぎの度合い：急ぎ・ふつう・お知らせ */
+/** 急ぎの度合い：急ぎ・ふつう・参考（画面の印。機能の「お知らせ」〔T17〕と取り違えないよう、info を「お知らせ」と呼ばない） */
 export type TodoSeverity = 'urgent' | 'normal' | 'info';
 
 /** 要対応の1件（01 の用語集の todo） */
@@ -215,7 +215,7 @@ const timeOf = (iso: string | undefined): number | null => {
 const compareDue = (a: number | null, b: number | null): number => (a === null ? (b === null ? 0 : 1) : b === null ? -1 : a - b);
 
 /**
- * 要対応の並び（04「ダッシュボード」）：急ぎ → ふつう → お知らせ、同じなら期日の早い順（期日のないものは後）、
+ * 要対応の並び（04「ダッシュボード」）：急ぎ → ふつう → 参考、同じなら期日の早い順（期日のないものは後）、
  * 機能の登録の順、元の順（機能が作った順）。元の配列は変えない。
  */
 export function sortTodos(todos: readonly TodoItem[]): TodoItem[] {

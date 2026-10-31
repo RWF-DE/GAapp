@@ -65,17 +65,21 @@ export function PortalLoading({ moduleId, rows = 2, className }: { moduleId?: Mo
 /**
  * 1つの機能の読み込みの失敗（portal-module-error。「{機能の名前}：{文言}」と「もう一度」＝その機能の query の読み直し）。
  * ほかの機能・ほかの欄・年度の行だけで決まる項目は出したまま。children（機能の入口へのリンクなど）を並べられる。
+ * hideModuleLabel は、すぐ上に機能の名前の見出しがあるとき（カードの欄の失敗）に「{機能の名前}：」を見た目では出さない
+ * （読み上げでは読む。sr-only。要対応のように機能が並ぶ欄では出す）。
  */
 export function ModuleError({
   moduleId,
   error,
   onRetry,
+  hideModuleLabel = false,
   className,
   children,
 }: {
   moduleId: ModuleId;
   error: unknown;
   onRetry: () => void;
+  hideModuleLabel?: boolean;
   className?: string;
   children?: React.ReactNode;
 }) {
@@ -89,7 +93,10 @@ export function ModuleError({
       <AlertTriangle aria-hidden className="size-4 shrink-0 text-destructive" />
       {/* 文は 12rem を基準に伸ばす（狭い欄では「もう一度」とリンクを次の行に送る。flex-1〔基準 0〕だと文が1字ずつに折り返す） */}
       <p className="min-w-0 grow basis-48 text-destructive">
-        {moduleLabel(moduleId)}：{messageFor(classifyError(error))}
+        <span data-testid="portal-module-error-label" className={cn(hideModuleLabel && 'sr-only')}>
+          {moduleLabel(moduleId)}：
+        </span>
+        {messageFor(classifyError(error))}
       </p>
       <Button type="button" size="sm" variant="outline" onClick={onRetry}>
         もう一度

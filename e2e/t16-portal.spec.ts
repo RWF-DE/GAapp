@@ -169,7 +169,7 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       await expect(unsubmitted).toHaveAttribute('data-module', 'furniture');
       await expect(unsubmitted).toContainText('机椅子');
       await expect(unsubmitted).toContainText('未提出 1 団体');
-      await expect(unsubmitted).toContainText(`締切 ${close}`);
+      await expect(unsubmitted.getByTestId('portal-todo-due')).toHaveText(`締切 ${close}`);
       await expect(unsubmitted.getByRole('link')).toHaveAttribute('href', /\/requests\/?\?filter=unsubmitted$/);
       const uncounted = todo(page, 'furniture:soumu:uncounted');
       await expect(uncounted).toContainText('在庫を数えていない保管場所 1 か所');
@@ -303,8 +303,12 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       await expect(todoError).toContainText('机椅子：通信できませんでした。電波の良い所でもう一度');
       await expect(todoError.getByRole('button', { name: 'もう一度' })).toBeVisible();
       const cardError = cardsWidget(page).getByTestId('portal-module-error');
-      await expect(cardError).toContainText('机椅子：通信できませんでした');
+      await expect(cardError).toContainText('通信できませんでした');
       await expect(cardError.getByRole('button', { name: 'もう一度' })).toBeVisible();
+      // カードの欄は、すぐ上の見出し「机椅子」と重ねないよう「机椅子：」を見た目では出さない（読み上げでは読む）。要対応の欄では出す
+      await expect(cardsWidget(page).getByRole('heading', { level: 3, name: '机椅子' })).toBeVisible();
+      await expect(cardError.getByTestId('portal-module-error-label')).toHaveClass(/\bsr-only\b/);
+      await expect(todoError.getByTestId('portal-module-error-label')).toBeVisible();
       await expect(cardError.getByRole('link', { name: '机椅子の状況へ' })).toHaveAttribute('href', /\/furniture\/?$/);
       await expect(furnitureCard(page)).toHaveCount(0);
 
@@ -318,6 +322,8 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       await expect(page.getByTestId('portal-module-error')).toHaveCount(2);
       expect(await todoIds(page)).toEqual(['furniture:lead:close-requests']);
       await expect(todo(page, 'furniture:lead:close-requests')).toHaveAttribute('data-severity', 'urgent');
+      const close = await closeLabel(s.yearId);
+      await expect(todo(page, 'furniture:lead:close-requests').getByTestId('portal-todo-due')).toHaveText(`締切 ${close} を過ぎました`);
       await expect(page.getByTestId('portal-widget-error')).toHaveCount(0);
 
       // 通信が戻って要対応の「もう一度」を押すと、未提出の要対応とカードが出る（2つの欄は同じ読み込みなので、どちらの失敗も消える）
@@ -327,11 +333,7 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       await expect(furnitureCard(page)).toBeVisible();
       await expect(page.getByTestId('portal-module-error')).toHaveCount(0);
       expect(await todoIds(page)).toEqual(['furniture:lead:close-requests', 'furniture:soumu:unsubmitted']);
-      await expect(furnitureCard(page).getByRole('listitem')).toHaveText([
-        `申請受付中（締切 ${await closeLabel(s.yearId)}）`,
-        '申請 2／3 団体が提出',
-        '在庫 3／3 か所を数えた',
-      ]);
+      await expect(furnitureCard(page).getByRole('listitem')).toHaveText(['申請受付中（締切を過ぎました）', '申請 2／3 団体が提出', '在庫 3／3 か所を数えた']);
     } finally {
       await page.unroute(route).catch(() => undefined);
       await s.cleanup();
@@ -339,7 +341,7 @@ test.describe('T16 ダッシュボード（管理者）', () => {
   });
 });
 
-test('T16 部門長以上の要対応：受付期間が空・締切を過ぎた（急ぎ）・自動振り分けをしていない・了承の依頼中が総務部門長に出て、総務部門員には出ない', async ({
+test('T16 部門長以上の要対応：受付期間が空・受付開始（過ぎたら急ぎ）・締切を過ぎた（急ぎ）・自動振り分けをしていない・了承の依頼中・確定が総務部門長に出て、総務部門員には出ない', async ({
   browser,
 }) => {
   const s = await createScenario({ status: 'preparing', dataset: 'small', roles: { head: true, staff: true } });
@@ -356,6 +358,31 @@ test('T16 部門長以上の要対応：受付期間が空・締切を過ぎた�
     await openPortal(staff, 'ダッシュボード');
     await expect(staff.getByTestId('portal-todos-empty')).toHaveText('今やることはありません');
 
+    // 準備中で受付期間が入った（受付開始の前）→ 受付開始（ふつう。期日なし）。机椅子の状況の「受付開始」へ（レビューの T16-UX-01）
+    await sql(
+      `update public.years set request_open_at = now() + interval '1 day', request_close_at = now() + interval '30 days' where id = $1`,
+      [s.yearId],
+    );
+    await openPortal(head, 'ダッシュボード');
+    expect(await todoIds(head)).toEqual(['furniture:lead:open-requests']);
+    const openTodo = todo(head, 'furniture:lead:open-requests');
+    await expect(openTodo).toHaveAttribute('data-severity', 'normal');
+    await expect(openTodo).toContainText('受付期間が入りました。準備ができたら「受付開始」を押してください');
+    await expect(openTodo.getByTestId('portal-todo-due')).toHaveCount(0);
+    await expect(openTodo.getByRole('link')).toHaveAttribute('href', /\/furniture\/?$/);
+    // 受付開始の日時を過ぎた → 急ぎ。押すと机椅子の状況で「受付開始」を押せる
+    await sql(`update public.years set request_open_at = now() - interval '1 hour' where id = $1`, [s.yearId]);
+    await openPortal(head, 'ダッシュボード');
+    expect(await todoIds(head)).toEqual(['furniture:lead:open-requests']);
+    await expect(openTodo).toHaveAttribute('data-severity', 'urgent');
+    await expect(openTodo).toContainText('受付開始の日時を過ぎました。「受付開始」を押してください');
+    await openTodo.getByRole('link').click();
+    await expect(head).toHaveURL(/\/furniture\/$/);
+    await expect(head.getByRole('heading', { level: 1, name: '机椅子の状況' })).toBeVisible();
+    await expect(head.getByTestId('year-status-actions').getByRole('button', { name: '受付開始' })).toBeEnabled({ timeout: 15_000 });
+    await openPortal(staff, 'ダッシュボード');
+    await expect(staff.getByTestId('portal-todos-empty')).toBeVisible();
+
     // 受付中で締切を過ぎた → 急ぎ（期日は締切）。机椅子の状況の「締切（振り分けを始める）」へ
     await sql(
       `update public.years set status = 'requesting', request_open_at = now() - interval '30 days', request_close_at = now() - interval '1 day'
@@ -369,7 +396,7 @@ test('T16 部門長以上の要対応：受付期間が空・締切を過ぎた�
     await expect(closeTodo).toHaveAttribute('data-severity', 'urgent');
     await expect(closeTodo).toContainText('急ぎ');
     await expect(closeTodo).toContainText('申請の締切を過ぎました。「締切（振り分けを始める）」を押してください');
-    await expect(closeTodo).toContainText(`締切 ${close}`);
+    await expect(closeTodo.getByTestId('portal-todo-due')).toHaveText(`締切 ${close} を過ぎました`);
     await expect(closeTodo.getByRole('link')).toHaveAttribute('href', /\/furniture\/?$/);
     await openPortal(staff, 'ダッシュボード');
     await expect(staff.getByTestId('portal-todos-empty')).toBeVisible();
@@ -389,6 +416,18 @@ test('T16 部門長以上の要対応：受付期間が空・締切を過ぎた�
     await expect(staff.getByTestId('portal-todos-empty')).toBeVisible();
     // 総務部門員のカードにも了承の数は出る（キャスター机交換は開けないので、要対応にはしない）
     await expect(furnitureCard(staff).getByRole('listitem').last()).toHaveText('了承の依頼中 1 団体');
+
+    // 自動振り分けを保存し、了承の依頼に答えが来た（依頼中がない）→ 確定（振り分けへ。レビューの T16-UX-01）
+    await sql(`update public.years set auto_allocated_at = now() where id = $1`, [s.yearId]);
+    await insertConsent(s.ids.groups[SMALL.groups.stall]!, 'accepted');
+    await openPortal(head, 'ダッシュボード');
+    expect(await todoIds(head)).toEqual(['furniture:lead:confirm']);
+    const confirmTodo = todo(head, 'furniture:lead:confirm');
+    await expect(confirmTodo).toHaveAttribute('data-severity', 'normal');
+    await expect(confirmTodo).toContainText('検証の error を 0 件にして「確定」を押してください');
+    await expect(confirmTodo.getByRole('link')).toHaveAttribute('href', /\/allocation\/?$/);
+    await openPortal(staff, 'ダッシュボード');
+    await expect(staff.getByTestId('portal-todos-empty')).toBeVisible();
   } finally {
     await head.context().close();
     await staff.context().close();
@@ -413,7 +452,7 @@ test.describe('T16 ホーム（閲覧のみ）', () => {
       await expect(todosWidget(page)).toHaveCount(0);
       await expect(page.getByTestId('rep-card')).toHaveCount(0);
       const card = furnitureCard(page);
-      await expect(card.getByRole('listitem')).toHaveText(['振り分けが確定すると、ここから見られます。']);
+      await expect(card.getByRole('listitem')).toHaveText(['振り分けが確定すると、ここから見られます']);
       await expect(card.getByRole('link')).toHaveCount(0);
       // 締切と予定（申請一覧も申請も開けないのでリンクにしない）
       const closeItem = datedItem(page, 'furniture:request-close');
@@ -463,7 +502,7 @@ test.describe('T16 ホーム（団体代表）', () => {
       const unsubmitted = todo(page, `furniture:rep:${gid}:unsubmitted`);
       await expect(unsubmitted).toHaveAttribute('data-severity', 'normal');
       await expect(unsubmitted).toContainText(`${SMALL.groups.stall}：申請が未提出です`);
-      await expect(unsubmitted).toContainText(`締切 ${close}`);
+      await expect(unsubmitted.getByTestId('portal-todo-due')).toHaveText(`締切 ${close}`);
       await expect(unsubmitted.getByRole('link')).toHaveAttribute('href', new RegExp(`/request/?\\?group=${gid}$`));
       const consent = todo(page, `furniture:rep:${gid}:consent`);
       await expect(consent).toContainText(`${SMALL.groups.stall}：キャスター机への交換の依頼に答えてください`);
@@ -488,13 +527,14 @@ test.describe('T16 ホーム（団体代表）', () => {
       await expect(unsubmitted).toContainText('急ぎ');
       expect(await todoIds(page)).toEqual([`furniture:rep:${gid}:unsubmitted`, `furniture:rep:${gid}:consent`]);
 
-      // 確定：振り分けが決まりました（お知らせ）。未提出と交換の依頼は出ない
+      // 確定：振り分けが決まりました（参考。機能の「お知らせ」と取り違えないよう「お知らせ」と書かない）。未提出と交換の依頼は出ない
       await sql("update public.years set status = 'confirmed' where id = $1", [s.yearId]);
       await openPortal(page, 'ホーム');
       expect(await todoIds(page)).toEqual([`furniture:rep:${gid}:final`]);
       const final = todo(page, `furniture:rep:${gid}:final`);
       await expect(final).toHaveAttribute('data-severity', 'info');
-      await expect(final).toContainText('お知らせ');
+      await expect(final).toContainText('参考');
+      await expect(final).not.toContainText('お知らせ');
       await expect(final).toContainText(`${SMALL.groups.stall}：振り分けが決まりました`);
       await expect(final.getByRole('link')).toHaveAttribute('href', new RegExp(`/my/?\\?group=${gid}$`));
       await expect(card.getByTestId('rep-final')).toContainText('振り分けが決まりました');

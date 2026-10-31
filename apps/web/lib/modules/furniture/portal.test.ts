@@ -255,6 +255,24 @@ const CASES: { status: YearStatus; y: YearRow; now: number; lead: string[]; soum
     admin: ['furniture:admin:close-year'],
   },
   { status: 'closed', y: year('closed'), now: at('2026-11-01T00:00:00Z'), lead: [], soumu: [], admin: [] },
+  // 受付期間が入った準備中（受付開始の前）：次は受付開始（レビューの T16-UX-01）
+  {
+    status: 'preparing',
+    y: year('preparing'),
+    now: at('2026-09-01T00:00:00Z'),
+    lead: ['furniture:lead:open-requests'],
+    soumu: ['furniture:soumu:uncounted'],
+    admin: [],
+  },
+  // 自動振り分けの後で了承の依頼中（RAW の模擬店01）がある：確定ではなく了承の要対応だけ（レビューの T16-UX-01）
+  {
+    status: 'allocating',
+    y: year('allocating', { auto_allocated_at: '2026-10-07T00:00:00Z' }),
+    now: at('2026-10-08T00:00:00Z'),
+    lead: ['furniture:lead:consents-asked'],
+    soumu: [],
+    admin: [],
+  },
 ];
 
 describe('T16 机椅子の総務の要対応（段ごと）', () => {
@@ -325,10 +343,12 @@ describe('T16 机椅子の総務の要対応（段ごと）', () => {
   it('境目：受付期間が空か締切 ≤ 今の準備中、締切ちょうどの受付中、自動振り分けの有無、祭が終わる 0 時の前後', () => {
     const lead = (y: YearRow, now: number) => ids(furniturePortal(soumu(), ctx('soumu', y, { role: 'head', now })));
     const close = at(CLOSE);
-    // 準備中：締切が空・締切 ≤ 今は受付期間を入れる。未来の締切なら出さない
+    // 準備中：締切が空・締切 ≤ 今は受付期間を入れる。未来の締切なら出さず、受付開始を出す（どちらか1つ）
     expect(lead(year('preparing', { request_close_at: null }), close)).toContain('furniture:lead:request-window');
     expect(lead(year('preparing'), close)).toContain('furniture:lead:request-window');
+    expect(lead(year('preparing'), close)).not.toContain('furniture:lead:open-requests');
     expect(lead(year('preparing'), close - 1)).not.toContain('furniture:lead:request-window');
+    expect(lead(year('preparing'), close - 1)).toContain('furniture:lead:open-requests');
     // 受付中：締切ちょうどから。締切の前・締切が空なら出さない
     expect(lead(year('requesting'), close)).toContain('furniture:lead:close-requests');
     expect(lead(year('requesting'), close - 1)).not.toContain('furniture:lead:close-requests');
@@ -343,6 +363,54 @@ describe('T16 机椅子の総務の要対応（段ごと）', () => {
     // 了承の依頼中がなければ出さない
     const noAsked = { ...RAW, consents: RAW.consents.filter((c) => c.status !== 'asked') };
     expect(ids(furniturePortal(soumu(noAsked), ctx('soumu', year('allocating'), { role: 'admin' })))).toEqual(['furniture:lead:auto-allocate']);
+  });
+
+  it('受付開始（レビューの T16-UX-01）：受付期間が入った準備中に、机椅子の状況へ。受付開始の日時からは急ぎ。期日は付けない。年度の行だけで決まる', () => {
+    const y = year('preparing');
+    const open = at(OPEN);
+    const todo = (now: number, yy: YearRow = y, raw: ReturnType<typeof soumu> | null = soumu()) =>
+      furniturePortal(raw, ctx('soumu', yy, { role: 'deputy_head', now })).todos.find((t) => t.id === 'furniture:lead:open-requests');
+    expect(todo(open - 1)).toEqual({
+      id: 'furniture:lead:open-requests',
+      moduleId: 'furniture',
+      title: '受付期間が入りました。準備ができたら「受付開始」を押してください',
+      severity: 'normal',
+      href: '/furniture',
+    });
+    // 受付開始の日時ちょうどから急ぎ（店長・副店長は受付開始を押すまで申請を書けない）
+    expect(todo(open)).toEqual({
+      id: 'furniture:lead:open-requests',
+      moduleId: 'furniture',
+      title: '受付開始の日時を過ぎました。「受付開始」を押してください',
+      severity: 'urgent',
+      href: '/furniture',
+    });
+    // 受付開始の日時が空なら、締切の前は急ぎにしない
+    expect(todo(at(CLOSE) - 1, year('preparing', { request_open_at: null }))?.severity).toBe('normal');
+    // 年度の行だけ（読み込み前）でも出る。総務部門員には出さない
+    expect(todo(open - 1, y, null)?.severity).toBe('normal');
+    expect(ids(furniturePortal(soumu(), ctx('soumu', y, { role: 'staff', now: open - 1 })))).toEqual(['furniture:soumu:uncounted']);
+    // 受付中・振り分け中には出さない
+    for (const status of ['requesting', 'allocating', 'confirmed', 'closed'] as const) expect(todo(open - 1, year(status))).toBeUndefined();
+  });
+
+  it('確定（レビューの T16-UX-01）：自動振り分けの後で了承の依頼中の団体がなければ、振り分けへ。読み取りの後だけ（了承の数で決める）', () => {
+    const y = year('allocating', { auto_allocated_at: '2026-10-07T00:00:00Z' });
+    const now = at('2026-10-08T00:00:00Z');
+    const answered: FurnitureSoumuRaw = { ...RAW, consents: [{ group_id: 'g1', status: 'accepted' }, { group_id: 'g2', status: 'declined' }] };
+    const lead = (raw: ReturnType<typeof soumu> | null, yy: YearRow = y, role: AppRole = 'head') => furniturePortal(raw, ctx('soumu', yy, { role, now })).todos;
+    expect(lead(soumu(answered))).toEqual([
+      { id: 'furniture:lead:confirm', moduleId: 'furniture', title: '検証の error を 0 件にして「確定」を押してください', severity: 'normal', href: '/allocation' },
+    ]);
+    // 了承の行がない（交換の依頼をしない年）も確定へ
+    expect(ids(furniturePortal(soumu({ ...RAW, consents: [] }), ctx('soumu', y, { role: 'admin', now })))).toEqual(['furniture:lead:confirm']);
+    // 了承の依頼中があるうちは了承の要対応だけ。自動振り分けの前は自動振り分けだけ
+    expect(lead(soumu()).map((t) => t.id)).toEqual(['furniture:lead:consents-asked']);
+    expect(lead(soumu(answered), year('allocating')).map((t) => t.id)).toEqual(['furniture:lead:auto-allocate']);
+    // 年度の行だけ（読み込み前）では了承の数が分からないので出さない。総務部門員には出さない。確定中には出さない
+    expect(lead(null)).toEqual([]);
+    expect(lead(soumu(answered), y, 'staff')).toEqual([]);
+    expect(lead(soumu(answered), year('confirmed', { auto_allocated_at: '2026-10-07T00:00:00Z' }))).toEqual([]);
   });
 
   it('行き先を開けない立場には、段が合っても作らない（canOpen）', () => {
@@ -366,6 +434,10 @@ describe('T16 机椅子の総務の要対応（段ごと）', () => {
       linkLabel: '机椅子の状況へ',
     });
     expect(card(year('requesting', { request_close_at: null }))?.lines[0]).toBe('申請受付中');
+    // 締切を過ぎた受付中（締切ちょうどから。レビューの T16-UX-04）
+    const statusLine = (now: number) => furniturePortal(soumu(), ctx('soumu', year('requesting'), { role: 'staff', now })).card?.lines[0];
+    expect(statusLine(at(CLOSE) - 1)).toBe('申請受付中（締切 10/5 17:00）');
+    expect(statusLine(at(CLOSE))).toBe('申請受付中（締切を過ぎました）');
     expect(card(year('preparing'))?.lines[0]).toBe('準備中');
     expect(card(year('allocating'))?.lines).toEqual(['振り分け中', '申請 1／2 団体が提出', '在庫 1／2 か所を数えた', '了承の依頼中 1 団体']);
     expect(card(year('confirmed'))?.lines[0]).toBe('確定');
@@ -431,7 +503,7 @@ describe('T16 机椅子の団体代表の要対応', () => {
     expect(unsubmitted(year('allocating'), close + DAY)).toEqual([]);
   });
 
-  it('確定中は団体ごとに「振り分けが決まりました」（お知らせ）で、交換の依頼は出さない。終了は何も出さない', () => {
+  it('確定中は団体ごとに「振り分けが決まりました」（参考。info）で、交換の依頼は出さない。終了は何も出さない', () => {
     expect(furniturePortal(rep(), repCtx(year('confirmed'), close + 3 * DAY)).todos).toEqual([
       { id: 'furniture:rep:g1:final', moduleId: 'furniture', title: '模擬店01：振り分けが決まりました', severity: 'info', href: '/my?group=g1' },
       { id: 'furniture:rep:g2:final', moduleId: 'furniture', title: '模擬店02：振り分けが決まりました', severity: 'info', href: '/my?group=g2' },
@@ -440,7 +512,7 @@ describe('T16 机椅子の団体代表の要対応', () => {
     expect(ids(furniturePortal(rep(), repCtx(year('allocating'), close + DAY)))).toEqual(['furniture:rep:g2:consent']);
   });
 
-  it('年度の行だけ（読み込み前）は確定中のお知らせだけ。代表する団体がなければ何も出さない', () => {
+  it('年度の行だけ（読み込み前）は確定中の「振り分けが決まりました」（参考）だけ。代表する団体がなければ何も出さない', () => {
     expect(ids(furniturePortal(null, repCtx(year('confirmed'), close + DAY)))).toEqual(['furniture:rep:g1:final', 'furniture:rep:g2:final']);
     expect(furniturePortal(null, repCtx(year('requesting'), close - DAY)).todos).toEqual([]);
     expect(furniturePortal(rep(), repCtx(year('requesting'), close - 2 * DAY, [])).todos).toEqual([]);
@@ -462,7 +534,7 @@ describe('T16 机椅子の閲覧のみ', () => {
     expect(out.card).toEqual({
       moduleId: 'furniture',
       title: '机椅子',
-      lines: [final ? '振り分けが決まりました' : '振り分けが確定すると、ここから見られます。'],
+      lines: [final ? '振り分けが決まりました' : '振り分けが確定すると、ここから見られます'],
       href: final ? '/allocation' : null,
       linkLabel: '振り分け表を見る',
     });

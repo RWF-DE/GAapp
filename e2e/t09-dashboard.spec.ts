@@ -381,7 +381,8 @@ test.describe('T09 ホーム（団体代表）', () => {
 test.describe('T09 ホーム（閲覧のみ）', () => {
   test.use({ storageState: storageStateFor('viewer') });
 
-  // 閲覧のみのホームの案内は、T16 でダッシュボードの机椅子のカード（module-card）になった（文言は同じ）
+  // 閲覧のみのホームの案内は、T16 でダッシュボードの机椅子のカード（module-card）になった（文言は T09a の画面の設計のとおり句点なし。
+  // T16 のレビューで、カードの行に合わせて句点を外した）
   test('T09 閲覧のみ：確定前は案内だけ、確定後は振り分け表へのリンク', async ({ page }) => {
     const s = await createScenario({ status: 'allocating', dataset: 'small', roles: { viewer: true } });
     try {
@@ -389,7 +390,7 @@ test.describe('T09 ホーム（閲覧のみ）', () => {
       await page.goto('/');
       await expect(page.getByTestId('home-roles')).toHaveText('閲覧のみ');
       const card = page.locator('[data-testid="module-card"][data-module="furniture"]');
-      await expect(card).toContainText('振り分けが確定すると、ここから見られます。');
+      await expect(card.getByRole('listitem')).toHaveText(['振り分けが確定すると、ここから見られます']);
       await expect(page.getByRole('main').locator('a[href*="/allocation"]')).toHaveCount(0);
       await expect(page.getByTestId('dashboard-year')).toHaveCount(0);
 

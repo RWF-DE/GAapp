@@ -135,7 +135,7 @@ describe('T16 moduleLabel', () => {
 });
 
 describe('T16 sortTodos（要対応の並び）', () => {
-  it('急ぎ → ふつう → お知らせ、同じなら期日の早い順（期日のないものは後）、機能の登録の順、元の順', () => {
+  it('急ぎ → ふつう → 参考（info）、同じなら期日の早い順（期日のないものは後）、機能の登録の順、元の順', () => {
     const input = [
       todo('info', 'info', { due: '2026-10-01T00:00:00Z' }),
       todo('n-furniture-1', 'normal'),

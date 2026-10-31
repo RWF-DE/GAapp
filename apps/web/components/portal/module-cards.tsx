@@ -64,7 +64,10 @@ function ModuleCard({ card: c }: { card: ModuleCardModel }) {
   );
 }
 
-/** カードを作れなかった機能（読み込みの失敗）。入口を開けるなら、その画面へのリンクも出す */
+/**
+ * カードを作れなかった機能（読み込みの失敗）。入口を開けるなら、その画面へのリンクも出す。失敗の文言の頭の「{機能の名前}：」は、
+ * すぐ上の見出しと重なるので見た目では出さない（読み上げでは読む）
+ */
 function ModuleFailureCard({ moduleId, error, onRetry }: { moduleId: ModuleId; error: unknown; onRetry: () => void }) {
   const canOpen = useCanOpen();
   const def = MODULES.find((d) => d.id === moduleId);
@@ -72,7 +75,7 @@ function ModuleFailureCard({ moduleId, error, onRetry }: { moduleId: ModuleId; e
   return (
     <div className={CARD}>
       <h3 className="font-semibold">{def?.label ?? moduleId}</h3>
-      <ModuleError moduleId={moduleId} error={error} onRetry={onRetry}>
+      <ModuleError moduleId={moduleId} error={error} onRetry={onRetry} hideModuleLabel>
         {home ? (
           <AppLink href={home} className="text-sm underline underline-offset-2">
             {routeFor(home)?.label ?? def?.label}へ

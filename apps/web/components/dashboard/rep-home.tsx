@@ -91,7 +91,8 @@ function RepCard({ card: c, year, now }: { card: RepGroupCard; year: YearRow; no
           <dd>
             <span className="inline-flex items-center gap-1">
               <CalendarClock aria-hidden className="size-4 text-muted-foreground" />
-              <TokyoTime value={closeAt} empty="未定" />
+              {/* 要対応・締切と予定と同じ短い形（「10/5 17:00」） */}
+              <TokyoTime value={closeAt} format="short" empty="未定" />
             </span>
           </dd>
         </dl>

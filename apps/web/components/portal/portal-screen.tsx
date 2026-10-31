@@ -1,7 +1,8 @@
 'use client';
 
 // ダッシュボード /（総務アプリのトップ。04「ダッシュボード」、D-51・D-52、notes/T16.md「固めた約束」2・5。T16）。
-// 並び：立場の一覧（home-year・home-roles）→ 見出し（総務は「ダッシュボード」、ほかは「ホーム」）→ 要対応と締切と予定
+// 並び：立場の一覧（home-year・home-roles）→ 見出し（総務は「ダッシュボード」、ほかは「ホーム」。今の年度と状態は立場の一覧に
+// あるので、見出しの横に出さない）→ 要対応と締切と予定
 // （広い PC〔lg 以上〕は横に 3:2、それより狭ければ縦）→ 代表する団体（店長・副店長を務める人）→ 機能ごとの状況（総務・閲覧のみ）。
 //   総務（soumu）：要対応・締切と予定・機能ごとのカード（店長・副店長も務める管理者は代表する団体も）
 //   閲覧のみ（viewer）：締切と予定・機能ごとのカード（読み取り）（店長・副店長も務める人は要対応と代表する団体も）
@@ -68,9 +69,13 @@ function Portal({ membership: m, yearId }: { membership: Membership; yearId: str
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
+    // 日本語は文節で折り返す（word-break: auto-phrase は受け継がれるので、立場の一覧・要対応・締切と予定・カードの文が単語の途中で
+    // 折れない。<html lang="ja">。対応しないブラウザは今までどおり。レビューの T16-UX-12）
+    <div className="mx-auto max-w-6xl space-y-4 [word-break:auto-phrase]">
       <RoleSummary membership={m} />
-      <PageHeader title={soumu ? 'ダッシュボード' : 'ホーム'} />
+      {/* 最後に読み込んだ日時と「読み直す」は出さない（04「ダッシュボード」の読むもの。ほかの画面から戻ったときに、既定の staleTime
+          〔30 秒〕より前に読んだものを読み直す。portal.test.tsx で確かめる） */}
+      <PageHeader title={soumu ? 'ダッシュボード' : 'ホーム'} showYear={false} />
       {/* 要対応と締切と予定は、広い PC（lg 以上）で横に 3:2（要対応を広く）。md では左のナビの分だけ狭く、締切と予定が 130px ほどに
           なるので縦に。2:1 では幅 1280px でも締切と予定の文が 130px ほどで折り返したので 3:2 にした（T16 の段 8 のスクリーンショット） */}
       <div className={cn('grid gap-4', showTodos && 'lg:grid-cols-5')}>
@@ -82,7 +87,7 @@ function Portal({ membership: m, yearId }: { membership: Membership; yearId: str
                 refetchYear();
               }}
             >
-              <TodoList ctxs={ctxs} gate={gate} />
+              <TodoList ctxs={ctxs} gate={gate} now={now} />
             </WidgetBoundary>
           </PortalWidget>
         ) : null}
