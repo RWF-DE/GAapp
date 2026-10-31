@@ -396,6 +396,29 @@ describe('T18 締切と予定：総務部門長', () => {
     expect(h.replace).toHaveBeenLastCalledWith('/calendar?past=1');
   });
 
+  it('対象の「全員」（all）で絞れる。「すべて」と取り違えず、開いたときは「すべて」だけが押されている（撮影で見つけた。パート B）', async () => {
+    const user = setUser();
+    renderScreen('head');
+    await loaded();
+    const checked = (testId: string) =>
+      within(screen.getByTestId(testId))
+        .getAllByRole('radio')
+        .filter((x) => x.getAttribute('aria-checked') === 'true')
+        .map((x) => x.textContent);
+    expect(checked('calendar-kind-filter')).toEqual(['すべて']);
+    expect(checked('calendar-audience-filter')).toEqual(['すべて']);
+    await user.click(within(screen.getByTestId('calendar-audience-filter')).getByRole('radio', { name: '全員' }));
+    expect(h.replace).toHaveBeenLastCalledWith('/calendar?audience=all');
+    cleanup();
+    renderScreen('head', { search: 'audience=all' });
+    await loaded();
+    expect(checked('calendar-audience-filter')).toEqual(['全員']);
+    expect(itemIds()).toEqual([c(E_ALL)]);
+    // 「すべて」に戻す
+    await user.click(within(screen.getByTestId('calendar-audience-filter')).getByRole('radio', { name: 'すべて' }));
+    expect(h.replace).toHaveBeenLastCalledWith('/calendar');
+  });
+
   it('?kind=deadline は締切だけ（機能の日付にも効く）、?audience=groups は団体の項目だけ（機能の日付は出さない）', async () => {
     renderScreen('head', { search: 'kind=deadline' });
     await loaded();
@@ -548,6 +571,12 @@ describe('T18 締切と予定：総務部門員・閲覧のみ・店長', () => 
     expect(within(itemOf('furniture:request-close')).queryByRole('link')).toBeNull();
     expect(within(itemOf('furniture:day1')).queryByRole('link')).toBeNull();
     expect(within(itemOf('furniture:day1')).getByTestId('calendar-item-module').textContent).toBe('机椅子');
+    // リンクにしない題名は、リンクに見える下線も付けない（撮影で見つけた。パート B）
+    for (const id of ['furniture:request-close', 'furniture:day1']) {
+      const title = within(itemOf(id)).getByTestId('calendar-item-title');
+      expect(title.textContent).not.toBe('');
+      expect(title.querySelector('.underline')).toBeNull();
+    }
   });
 
   it('店長：団体・全員の項目だけ。申請の締切は申請（/request）へのリンク。終了した年度でも帯を出さない', async () => {

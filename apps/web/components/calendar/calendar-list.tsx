@@ -7,7 +7,7 @@
 // メモは書いたとおりの文字で出す（改行を残し、長い語も折り返す。テキストとして出し、リンクにしない・HTML として読まない）。
 // 機能の日付（机椅子の受付開始など）は読むだけ（編集・削除なし）で、題名を機能が決めた行き先（なければ機能の入口）へのリンクにする
 // （開けなければ文字だけ。AppLink）。
-import { useEffect, useRef } from 'react';
+import { Fragment, useEffect, useRef } from 'react';
 import { AppLink } from '@/components/common/app-link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,21 @@ export const KIND_BADGE_CLASS = {
   deadline: 'border-amber-300 bg-amber-50 text-amber-900',
   event: 'border-transparent bg-muted text-muted-foreground',
 } as const;
+
+/**
+ * 時刻の文（entryTimeLabel）を「〜」の後でだけ折り返す（「09:00〜」と「11/13（金）17:00」のように、日付と時刻の組の途中で割らない。
+ * 文字は変えない〔textContent は entryTimeLabel のまま〕。広い PC の時刻の列〔11rem〕で「09:00〜11/13（金）」と「17:00」に割れていた。
+ * パート B の撮影で見つけた）
+ */
+function TimeText({ text }: { text: string }) {
+  const parts = text.split('〜');
+  return parts.map((part, k) => (
+    <Fragment key={k}>
+      {k > 0 ? <wbr /> : null}
+      <span className="whitespace-nowrap">{k < parts.length - 1 ? `${part}〜` : part}</span>
+    </Fragment>
+  ));
+}
 
 /** 機能の日付の行き先：機能が決めた行き先、なければ機能の入口（開けるかは AppLink が確かめる） */
 function moduleHref(entry: CalendarEntry): string | null {
@@ -131,7 +146,9 @@ function CalendarItem({
       {/* 狭い幅では時刻と印を1行に（lg では contents にして、時刻と印がそれぞれ grid の列になる） */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 lg:contents">
         <p className="text-sm tabular-nums">
-          <span data-testid="calendar-item-time">{entryTimeLabel(item, day, now)}</span>
+          <span data-testid="calendar-item-time">
+            <TimeText text={entryTimeLabel(item, day, now)} />
+          </span>
           {relative ? (
             <span
               data-testid="calendar-item-relative"
@@ -159,8 +176,10 @@ function CalendarItem({
       </div>
       <div className="min-w-0 space-y-1">
         <h3 data-testid="calendar-item-title" className="font-semibold [overflow-wrap:anywhere]">
+          {/* 開けない立場では文字だけ（下線も付けない。AppLink の既定は className のまま文字を出すので、リンクに見えてしまう。
+              パート B の撮影で見つけた） */}
           {href ? (
-            <AppLink href={href} className="underline underline-offset-2 hover:text-primary">
+            <AppLink href={href} className="underline underline-offset-2 hover:text-primary" fallback={item.title}>
               {item.title}
             </AppLink>
           ) : (

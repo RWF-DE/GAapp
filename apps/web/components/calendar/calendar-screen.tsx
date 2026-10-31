@@ -82,6 +82,12 @@ export function moduleDateProviders(providers: readonly PortalProvider[] = PORTA
 
 const TOGGLE_ON = 'data-[state=on]:bg-primary data-[state=on]:text-primary-foreground';
 
+/**
+ * 絞り込みの「すべて」の値。種類・対象の列挙の値と重ならないものにする（対象の「全員」は all なので、「すべて」に all を使うと
+ * 2つが同じ値になり、両方が押された形に見えて「全員」で絞れなくなる。パート B の撮影で見つけた）
+ */
+const FILTER_ANY = 'any';
+
 export function CalendarScreen() {
   const { membership, session } = useAuth();
   if (membership.status !== 'ready') return null; // AppShell が読み込み中・未招待を出す
@@ -284,15 +290,15 @@ function CalendarFilters({ soumu, filter, onChange }: { soumu: boolean; filter: 
             variant="outline"
             size="sm"
             spacing={2}
-            value={filter.kind ?? 'all'}
+            value={filter.kind ?? FILTER_ANY}
             onValueChange={(v) => {
-              if (v) onChange({ ...filter, kind: v === 'all' ? null : (v as EventKind) });
+              if (v) onChange({ ...filter, kind: v === FILTER_ANY ? null : (v as EventKind) });
             }}
             aria-label="種類で絞り込む"
             data-testid="calendar-kind-filter"
             className="flex-wrap"
           >
-            <ToggleGroupItem value="all" className={TOGGLE_ON}>
+            <ToggleGroupItem value={FILTER_ANY} className={TOGGLE_ON}>
               すべて
             </ToggleGroupItem>
             {EVENT_KINDS.map((k) => (
@@ -306,15 +312,15 @@ function CalendarFilters({ soumu, filter, onChange }: { soumu: boolean; filter: 
             variant="outline"
             size="sm"
             spacing={2}
-            value={filter.audience ?? 'all'}
+            value={filter.audience ?? FILTER_ANY}
             onValueChange={(v) => {
-              if (v) onChange({ ...filter, audience: v === 'all' ? null : (v as EventAudience) });
+              if (v) onChange({ ...filter, audience: v === FILTER_ANY ? null : (v as EventAudience) });
             }}
             aria-label="対象で絞り込む"
             data-testid="calendar-audience-filter"
             className="flex-wrap"
           >
-            <ToggleGroupItem value="all" className={TOGGLE_ON}>
+            <ToggleGroupItem value={FILTER_ANY} className={TOGGLE_ON}>
               すべて
             </ToggleGroupItem>
             {EVENT_AUDIENCES.map((a) => (

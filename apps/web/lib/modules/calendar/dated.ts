@@ -34,7 +34,7 @@ export async function loadCalendarDated(yearId: string, client: AppSupabaseClien
 }
 
 /**
- * 欄のクエリ（lib/modules/calendar/portal.ts の calendarPortalProvider が select を足す。/ の先読みに足すときも同じキャッシュ）。
+ * 欄のクエリ（lib/modules/calendar/portal.ts の calendarPortalProvider が select を足す。/ の先読み〔planHomePrefetch〕も同じキャッシュ）。
  * キー：`portalQueryKey(yearId, 'calendar', kind)`（soumu・viewer・rep）。rep に団体の id を入れない（読める範囲は代表である年度で
  * 決まり、どの団体かによらない）。
  *

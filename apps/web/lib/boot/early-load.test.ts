@@ -2,6 +2,7 @@
 // ページを開いたときの先読み（D-45）：覚える id・立場の読み込みの使い回し・先読みを使う／捨てる条件・ユーザーが変わったら消す。
 // T16：覚える id に年度ごとのロールを足し（/ の先読みで立場の種類を決める）、先読みに「立場に合うか（usable）」を足した
 // T17：覚えたロールが閲覧のみなら、/ の先読みはお知らせの新着（団体あて）だけを読む（本物の planHomePrefetch で確かめる）
+// T18：閲覧のみの / の先読みに、予定と締切の項目（締切と予定の欄と同じキー）も足した
 import { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildMembership, type MembershipSource } from '@/lib/auth/membership';
@@ -315,7 +316,7 @@ describe('ページを開いたときの読み込み', () => {
     expect(prefetchOpenedScreen(buildMembership(sources[U1]!, null), window.location)).toBe(0); // 先読みのない画面
   });
 
-  it('T17 覚えたロールが閲覧のみなら、/ の先読み（本物の planHomePrefetch）はお知らせの新着（団体あて）だけを読む。閲覧のみのままなら残す', async () => {
+  it('T17 覚えたロールが閲覧のみなら、/ の先読み（本物の planHomePrefetch）はお知らせの新着（団体あて）と T18 の予定と締切の項目だけを読む。閲覧のみのままなら残す', async () => {
     const fake = createFakeSupabase(() => ({ data: [] }));
     db.client = fake.client;
     writeHint(U3, hintFromSource(sources[U3]!));
@@ -323,22 +324,29 @@ describe('ページを開いたときの読み込み', () => {
     const qc = new QueryClient();
     startEarlyLoad(qc, { supabase: fakeSupabase(U3), routes: { '/': planHomePrefetch } });
     await vi.waitFor(() => expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toEqual([]));
-    expect(fake.issued.map((c) => c.table)).toEqual(['notices']);
+    await vi.waitFor(() => expect(qc.getQueryData(['year', Y9, 'portal', 'calendar', 'viewer'])).toEqual([]));
+    expect(fake.issued.map((c) => c.table)).toEqual(['notices', 'events']);
     expect(opArgs(fake.issued[0]!, 'in')).toEqual([['audience', ['all_groups', 'groups']]]);
     expect(opArgs(fake.issued[0]!, 'select')).toEqual([['id, audience, title, pinned, created_at']]);
-    expect(settleEarlyLoad(U3, buildMembership(sources[U3]!, null))).toEqual({ kept: 1, removed: 0 });
+    // 予定と締切は対象で絞らない（RLS が団体・全員だけを返す）。対象・メモ・書いた人は読まない
+    expect(opArgs(fake.issued[1]!, 'select')).toEqual([['id, kind, title, starts_at, ends_at, all_day']]);
+    expect(opArgs(fake.issued[1]!, 'eq')).toEqual([['year_id', Y9]]);
+    expect(opArgs(fake.issued[1]!, 'in')).toEqual([]);
+    expect(settleEarlyLoad(U3, buildMembership(sources[U3]!, null))).toEqual({ kept: 2, removed: 0 });
   });
 
-  it('T17 閲覧のみと覚えていたが、立場が届くと総務部門員だった：お知らせの新着（団体あて）の先読みは捨てる', async () => {
+  it('T17 閲覧のみと覚えていたが、立場が届くと総務部門員だった：お知らせの新着（団体あて）と T18 の予定と締切の項目の先読みは捨てる', async () => {
     db.client = createFakeSupabase(() => ({ data: [] })).client;
     writeHint(U3, hintFromSource(sources[U3]!));
     window.history.replaceState(null, '', '/');
     const qc = new QueryClient();
     startEarlyLoad(qc, { supabase: fakeSupabase(U3), routes: { '/': planHomePrefetch } });
     await vi.waitFor(() => expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toEqual([]));
+    await vi.waitFor(() => expect(qc.getQueryData(['year', Y9, 'portal', 'calendar', 'viewer'])).toEqual([]));
     const staff = buildMembership({ ...sources[U3]!, roles: [{ year_id: Y9, role: 'staff' }] }, null);
-    expect(settleEarlyLoad(U3, staff)).toEqual({ kept: 0, removed: 1 });
+    expect(settleEarlyLoad(U3, staff)).toEqual({ kept: 0, removed: 2 });
     expect(qc.getQueryData(['year', Y9, 'portal', 'notices', 'viewer'])).toBeUndefined();
+    expect(qc.getQueryData(['year', Y9, 'portal', 'calendar', 'viewer'])).toBeUndefined();
   });
 
   it('T16 立場が届いたときの先読みには、立場のロールを渡す（/ の総務の読み取り）', async () => {

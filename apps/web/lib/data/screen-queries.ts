@@ -24,6 +24,7 @@ import {
   type YearRow,
 } from '@/lib/db/types';
 import { appError, toAppError } from '@/lib/errors';
+import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
@@ -325,23 +326,33 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
 /**
  * / の先読み（D-45・D-51。04「ダッシュボード」の読むもの）：立場の種類ごとに、ダッシュボードの欄が読むクエリと同じもの。
  * - 総務（ロールが総務）：机椅子の軽い読み取り（6つの表。furnitureSoumuOptions。要対応とカードが同じキーを読む）と、
- *   総務内のお知らせの新着（noticesLatestOptions の soumu。総務内のお知らせの欄と同じキー。T17）
- * - 閲覧のみ（ロールが閲覧のみ）：団体あてのお知らせの新着（noticesLatestOptions の viewer。お知らせの欄と同じキー。T17）
+ *   総務内のお知らせの新着（noticesLatestOptions の soumu。総務内のお知らせの欄と同じキー。T17）と、予定と締切の項目
+ *   （calendarDatedOptions の soumu。締切と予定の欄と同じキー。T18）
+ * - 閲覧のみ（ロールが閲覧のみ）：団体あてのお知らせの新着（noticesLatestOptions の viewer。お知らせの欄と同じキー。T17）と、
+ *   予定と締切の項目（calendarDatedOptions の viewer。T18）
  * - 団体代表（その年度で代表を務める団体がある）：自団体の提出と了承（furnitureRepOptions。代表する団体の欄と要対応が同じキーを読む）と、
- *   ロールが閲覧のみでなければ団体あてのお知らせの新着（noticesLatestOptions の rep。閲覧のみも務める人は閲覧のみとして1回だけ読む）
+ *   ロールが閲覧のみでなければ団体あてのお知らせの新着（noticesLatestOptions の rep。閲覧のみも務める人は閲覧のみとして1回だけ読む）と、
+ *   ロールがなければ予定と締切の項目（calendarDatedOptions の rep。T18。店長・副店長も務める管理者・閲覧のみは、総務・閲覧のみとして
+ *   1回だけ読む。キーに団体の id を入れない）
  * 版・振り分けの行・ルール・スナップショットは読まない（/ は版を使わないので、記録・先送りもしてよい。D-33）。
- * 立場が届いて、総務・閲覧のみでなくなった・代表する団体が変わったときは使わない（usable。settleEarlyLoad が消す）。
+ * 立場が届いて、総務・閲覧のみでなくなった・代表する団体が変わった（予定と締切は、ロールがついた・団体がなくなった）ときは使わない
+ * （usable。settleEarlyLoad が消す）。予定と締切（T18）は、団体代表の / が 4G で 2 秒以内のままであることを `pnpm e2e:perf` で
+ * 確かめて足した（notes/T18.md「実行したコマンドと結果（パート B）」、D-45 の T18 の直し）。
  *
  * @example
- * planHomePrefetch({ yearId, groupIds: [], role: 'staff', params }) // 机椅子の総務の読み取りと、総務内のお知らせの新着
+ * planHomePrefetch({ yearId, groupIds: [], role: 'staff', params }) // 机椅子の総務の読み取り、総務内のお知らせの新着、予定と締切の項目
  */
 export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
   const list: PrefetchEntry[] = [];
   if (isSoumu(ctx.role)) {
     list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
     list.push({ options: noticesLatestOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
+    list.push({ options: calendarDatedOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
   }
-  if (ctx.role === 'viewer') list.push({ options: noticesLatestOptions(ctx.yearId, 'viewer'), usable: (m) => m.role === 'viewer' });
+  if (ctx.role === 'viewer') {
+    list.push({ options: noticesLatestOptions(ctx.yearId, 'viewer'), usable: (m) => m.role === 'viewer' });
+    list.push({ options: calendarDatedOptions(ctx.yearId, 'viewer'), usable: (m) => m.role === 'viewer' });
+  }
   if (ctx.groupIds.length > 0) {
     const ids = [...ctx.groupIds];
     list.push({ options: furnitureRepOptions(ctx.yearId, ids), usable: (m) => sameIds(m.groups.map((g) => g.id), ids) });
@@ -350,6 +361,9 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
         options: noticesLatestOptions(ctx.yearId, 'rep', ids),
         usable: (m) => m.role !== 'viewer' && sameIds(m.groups.map((g) => g.id), ids),
       });
+    }
+    if (ctx.role === null) {
+      list.push({ options: calendarDatedOptions(ctx.yearId, 'rep'), usable: (m) => m.role === null && m.groups.length > 0 });
     }
   }
   return list;
