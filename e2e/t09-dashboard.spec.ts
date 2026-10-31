@@ -80,14 +80,14 @@ test.describe('T09 ダッシュボード（管理者）', () => {
       await page.reload();
       await expect(start).toBeEnabled();
       await start.click();
-      await expect(dialog(page)).toContainText('団体代表が申請を書けるようになります。');
+      await expect(dialog(page)).toContainText('店長・副店長が申請を書けるようになります。');
       await dialog(page).getByRole('button', { name: '受付開始' }).click();
       await expect(page.getByText(`${s.label} を「受付開始」にしました`)).toBeVisible();
       await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（申請受付中）`);
       expect(await statusOf(s.yearId)).toBe('requesting');
 
       await actions(page).getByRole('button', { name: '締切（振り分けを始める）' }).click();
-      await expect(dialog(page)).toContainText('締切の前ですが、団体代表は申請を変えられなくなります。');
+      await expect(dialog(page)).toContainText('締切の前ですが、店長・副店長は申請を変えられなくなります。');
       await dialog(page).getByRole('button', { name: '締切（振り分けを始める）' }).click();
       await expect(page.getByTestId('home-year')).toHaveText(`${s.label}（振り分け中）`);
       expect(await statusOf(s.yearId)).toBe('allocating');

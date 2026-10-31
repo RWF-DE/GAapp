@@ -261,7 +261,8 @@ export interface MessageContext {
   /**
    * 招待の conflict（field: role。この人はすでに別のロールを持つ）の後ろの文を選ぶ（04「マスタ設定」のユーザー。D-50）：
    * ロールを変えられる人（管理者）は「ロールの変更はメンバーの一覧から」、変えられない人（総務部門長・総務副部門長）は
-   * 「ロールの変更は管理者に頼んでください」。省くと真（管理者の文）
+   * 「ロールの変更は管理者に頼んでください」。省くと真（管理者の文）。偽のときは、招待の forbidden も、管理者の未使用の
+   * 招待があるメールかもしれないと添える（部門長・副部門長にはその招待が見えず、DB は理由を返さない。D-48）
    */
   canChangeRoles?: boolean;
 }
@@ -440,9 +441,13 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
 export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string {
   switch (e.kind) {
     case 'forbidden':
-      return ctx.rpc === 'revoke_invitation'
-        ? '取り消せませんでした。読み直しました'
-        : '権限がありません。立場が変わった可能性があります';
+      if (ctx.rpc === 'revoke_invitation') return '取り消せませんでした。読み直しました';
+      // 部門長・副部門長の招待：管理者が出した未使用の招待（管理者・総務部門長・総務副部門長・閲覧のみ）のあるメールは DB が止める
+      // （上書きさせない。D-48）。その招待は部門長・副部門長に見えず、DB は理由を返さないので、立場の変化と並べて出す
+      if (ctx.rpc === 'invite' && ctx.canChangeRoles === false) {
+        return '権限がありません。このメールアドレスに管理者が出した招待があるか、立場が変わった可能性があります（管理者に頼んでください）';
+      }
+      return '権限がありません。立場が変わった可能性があります';
     case 'not_found':
       if (e.reason === 'lock_missing') return 'すでに消えていました（ほかの人が消した可能性があります）。読み直しました';
       return isRecord(e.details) && e.details.field === 'user_id'

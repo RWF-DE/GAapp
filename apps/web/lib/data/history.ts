@@ -141,6 +141,17 @@ export function hasFilter(f: HistoryFilter): boolean {
   return f.tables.length > 0 || !!f.groupId || !!f.from || !!f.to || !!f.user;
 }
 
+/**
+ * 変更が 0 件のときの説明（04「履歴」）。年度をまたぐ表（場所・品目・距離）だけを選んでいて、開いている年度の管理者でなければ
+ * （総務部門長・総務副部門長）、年度のない記録を RLS が返さないので、見られない理由（crossYearNote）を先に出す。
+ * ほかは、絞り込みがあれば変えるか消すよう促す（なければ undefined）。
+ */
+export function historyEmptyNote(f: HistoryFilter, adminOfOpenYear: boolean): string | undefined {
+  const onlyCrossYear = f.tables.length > 0 && f.tables.every((t) => CROSS_YEAR_TABLES.includes(t));
+  if (onlyCrossYear && !adminOfOpenYear) return `${crossYearNote(false)}絞り込みを変えるか、消してください。`;
+  return hasFilter(f) ? '絞り込みを変えるか、消してください。' : undefined;
+}
+
 // ---- 問い合わせ ----
 
 /** 続きの読み始め（最後の行の at と id） */

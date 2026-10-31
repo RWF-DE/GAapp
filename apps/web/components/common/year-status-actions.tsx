@@ -220,15 +220,15 @@ export function YearStatusActions({
   const description = (a: StatusAction): React.ReactNode => {
     switch (a.to) {
       case 'requesting':
-        return '団体代表が申請を書けるようになります。';
+        return '店長・副店長が申請を書けるようになります。';
       case 'allocating':
         return a.label === '確定を解除'
           ? '確定を解除すると、団体への公開も止まります。'
           : closeAt && closeAt.getTime() > openedAt
-            ? '締切の前ですが、団体代表は申請を変えられなくなります。'
-            : '団体代表は申請を変えられなくなります。';
+            ? '締切の前ですが、店長・副店長は申請を変えられなくなります。'
+            : '店長・副店長は申請を変えられなくなります。';
       case 'confirmed':
-        return '確定すると、団体代表と閲覧のみの人に振り分けが公開されます。';
+        return '確定すると、店長・副店長と閲覧のみの人に振り分けが公開されます。';
       case 'closed':
         return '終了すると読み取り専用になり、戻せません。先に年度データと振り分け表を書き出してください。';
       default:
@@ -259,6 +259,12 @@ export function YearStatusActions({
           );
         })}
       </div>
+      {year.status === 'confirmed' && !isAdmin(role) ? (
+        // 部門長・副部門長には「終了」を出さない（D-48）。ないことの理由を添える
+        <p className="text-sm text-muted-foreground" data-testid="close-admin-only">
+          年度の終了は管理者が行います。
+        </p>
+      ) : null}
       {startBlocked ? (
         <p className="text-sm text-muted-foreground">
           先に受付期間（締切は未来の日時）を入れてください。

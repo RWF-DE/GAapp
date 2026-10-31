@@ -266,12 +266,15 @@ test.describe('T15b 兼任の禁止と立場のエラー（本物の DB）', () 
       expectMessage(other, 'conflict', { ...ctx, canChangeRoles: false }, 'この人はすでに「閲覧のみ」です。ロールの変更は管理者に頼んでください');
       expectMessage(other, 'conflict', { ...ctx, canChangeRoles: true }, 'この人はすでに「閲覧のみ」です。ロールの変更はメンバーの一覧から');
 
-      // 段：総務部門長は管理者を招待できず、総務部門員は店長⇄副店長を切り替えられない
+      // 段：総務部門長は管理者を招待できず、総務部門員は店長⇄副店長を切り替えられない。部門長・副部門長の画面（canChangeRoles: false）
+      // では、招待の forbidden に管理者の未使用の招待があるかもしれないと添える（DB は理由を返さない）
+      const headAdmin = await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: fresh('admin'), p_role: 'admin' });
+      expectMessage(headAdmin, 'forbidden', ctx, '権限がありません。立場が変わった可能性があります');
       expectMessage(
-        await rpc(request, head, 'invite', { p_year_id: s.yearId, p_email: fresh('admin'), p_role: 'admin' }),
+        headAdmin,
         'forbidden',
-        ctx,
-        '権限がありません。立場が変わった可能性があります',
+        { ...ctx, canChangeRoles: false },
+        '権限がありません。このメールアドレスに管理者が出した招待があるか、立場が変わった可能性があります（管理者に頼んでください）',
       );
       expectMessage(
         await rpc(request, staff, 'set_group_member_role', { p_group_id: stall, p_user_id: mgr.id, p_group_role: 'deputy_manager' }),

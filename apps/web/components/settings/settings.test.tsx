@@ -371,7 +371,11 @@ describe('場所のタブの段（T15b。D-50）', () => {
     expect(screen.queryByTestId('room-add')).toBeNull();
     expect(screen.queryByRole('button', { name: '編集' })).toBeNull();
     expect(screen.queryByRole('button', { name: '削除' })).toBeNull();
-    expect(screen.getByTestId('global-read-only').textContent).toContain('開いている年度の管理者でないため、場所は編集できません。');
+    // できること（今年の使用）だけを書き、建物の入れ方（直せる人向け）は出さない
+    expect(screen.getByTestId('global-read-only').textContent).toBe(
+      '場所の追加・編集・削除は管理者が行います（すべての年度で共有の表のため）。今年の使用（使用不可と理由のメモ）は年度ごとで、各行の「変える」から変えられます。',
+    );
+    expect(screen.queryByText(/建物の中の部屋は建物を入れてください/)).toBeNull();
     const dialog = await openUsable(user);
     await user.click(within(dialog).getByLabelText('今年は使用する'));
     await user.click(within(dialog).getByRole('button', { name: '保存' }));

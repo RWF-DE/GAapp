@@ -240,6 +240,22 @@ describe('申請一覧 /requests', () => {
     expect(screen.queryByTestId('read-only-notice')).toBeNull();
   });
 
+  it('団体が1つもないとき：管理者にはマスタ設定の団体へのリンク、ほかの人には管理者に頼む文（団体はマスタ。D-50）', async () => {
+    const noGroups = () => makeHandler((call) => (call.table === 'groups' ? { data: [] } : undefined));
+    state.handler = noGroups();
+    renderScreen();
+    expect(await screen.findByText('マスタ設定で団体を登録すると、ここに申請が並びます。')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'マスタ設定へ' }).getAttribute('href')).toBe('/settings?tab=groups');
+    for (const role of ['head', 'deputy_head', 'staff'] as const) {
+      cleanup();
+      state.role = role;
+      state.handler = noGroups();
+      renderScreen();
+      expect(await screen.findByText('管理者に団体の登録を頼んでください（登録されると、ここに申請が並びます）。')).toBeTruthy();
+      expect(screen.queryByText('マスタ設定へ')).toBeNull();
+    }
+  });
+
   it('締切前の直接の更新が RLS で拒否され、年度が受付中のままなら、締切後の書き方に切り替えて入力を残し、直接の更新を繰り返さない', async () => {
     const user = userEvent.setup();
     state.handler = makeHandler();

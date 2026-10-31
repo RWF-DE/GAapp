@@ -58,7 +58,7 @@ const switchedGroupRole = (r: GroupRole): GroupRole => (r === 'manager' ? 'deput
 /** 兼任の禁止（role_overlap。D-49）か。招待は立場の欄の下、ロールの変更はダイアログの中に出す（04） */
 const isRoleOverlap = (c: ClassifiedError) => c.kind === 'conflict' && c.reason === 'role_overlap';
 
-/** 招待の「ロール・団体」の列：ロールの招待はロールの表示名、団体の招待は「{団体} の店長」「{団体} の副店長」 */
+/** 招待の「立場」の列：ロールの招待はロールの表示名、団体の招待は「{団体} の店長」「{団体} の副店長」 */
 function invitationTarget(inv: InvitationRow, groupName: ReadonlyMap<string, string>): string {
   if (inv.role) return ROLE_LABELS[inv.role];
   // 団体の招待の立場は 0013 から必ず入る（CHECK）。入っていなければ invite の既定の店長として出す
@@ -214,7 +214,7 @@ export function UsersTab() {
   const invitationCols = useMemo<ColumnDef<InvitationRow>[]>(
     () => [
       { accessorKey: 'email', header: 'メール' },
-      { id: 'target', header: 'ロール・団体', cell: ({ row }) => invitationTarget(row.original, groupName) },
+      { id: 'target', header: '立場', cell: ({ row }) => invitationTarget(row.original, groupName) },
       { id: 'state', header: '状態', cell: ({ row }) => (row.original.usedAt ? '使用済み' : '未使用') },
       { id: 'created', header: '招待した日時', cell: ({ row }) => <TokyoTime value={row.original.createdAt} /> },
       {
@@ -243,7 +243,7 @@ export function UsersTab() {
         ) : null
       ) : (
         <p className="text-sm text-muted-foreground" data-testid="users-closed-note">
-          終了した年度では招待・ロールの変更・店長と副店長の切り替えはできません（外す・取り消しはできます）。
+          終了した年度では、招待、ロールの変更、店長・副店長の切り替えはできません（外す・取り消しはできます）。
         </p>
       )}
 
@@ -482,7 +482,7 @@ function InviteCard({
     // 既定は総務部門員（どちらの段でも選べる）
     defaultValues: { email: '', kind: kinds.includes('staff') ? 'staff' : (kinds[0] ?? ''), group_id: '' },
   });
-  const { register, handleSubmit, formState, setValue, setError, reset, control } = form;
+  const { register, handleSubmit, formState, setValue, setError, clearErrors, reset, control } = form;
   useUnsavedChanges(formState.isDirty);
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -499,10 +499,16 @@ function InviteCard({
         p_email: v.email,
         ...(v.role !== null ? { p_role: v.role } : { p_group_id: v.group_id, p_group_role: v.group_role }),
       });
-      // applied が偽でも「アカウントがない」とは言わない（今のメールを本人のものと確かめられないときも偽。D-17a）
-      const message = r.applied
-        ? 'この人はすでにアカウントがあるので、その場でロールを付けました'
-        : '招待しました。この人が学校の Google アカウントでログインしたときに付きます';
+      // applied が偽でも「アカウントがない」とは言わない（今のメールを本人のものと確かめられないときも偽。D-17a）。
+      // 店長・副店長の招待はロールでないので、付いた立場（「{団体} の副店長」）で言う
+      const message = !r.applied
+        ? '招待しました。この人が学校の Google アカウントでログインしたときに付きます'
+        : v.role !== null
+          ? 'この人はすでにアカウントがあるので、その場でロールを付けました'
+          : `この人はすでにアカウントがあるので、その場で「${groupPositionLabel({
+              name: groups.find((g) => g.id === v.group_id)?.name ?? '（団体）',
+              role: v.group_role,
+            })}」にしました`;
       setResult(message);
       toast.success(message);
       reset({ email: '', kind: sentKind(v), group_id: v.group_id ?? '' });
@@ -517,7 +523,10 @@ function InviteCard({
         // 別の立場。04・D-50）。一覧は、ほかの人が先に付けた立場も見せるために読み直す
         setError('kind', { message: messageFor(c, { rpc: 'invite', canChangeRoles }) });
         await onRejected();
-      } else await onError(e, { context: { rpc: 'invite' }, dataKeys: [settingsKeys.members(year.id)], unknownMessage: null });
+      } else {
+        // forbidden は toast と立場の読み直し（部門長・副部門長には、管理者の未使用の招待があるメールかもしれないと添える。lib/errors.ts）
+        await onError(e, { context: { rpc: 'invite', canChangeRoles }, dataKeys: [settingsKeys.members(year.id)], unknownMessage: null });
+      }
     } finally {
       setSaving(false);
     }
@@ -529,16 +538,32 @@ function InviteCard({
         <CardTitle>招待する</CardTitle>
         {/* applied が偽を「アカウントがない」と読ませない（アカウントがあっても今のメールを本人のものと確かめられなければ偽。D-17a） */}
         <CardDescription data-testid="invite-description">
-          学校の Google アカウントのメールアドレスを入れます。すでにアカウントがあり、今のメールを本人のものと確かめられれば、その場でロールが付きます。
-          それ以外（まだアカウントがない、メールを確かめられないなど）は、その人が学校の Google アカウントでログインしたときに付きます。
+          {
+            '学校の Google アカウントのメールアドレスを入れます。すでにアカウントがあり、今のメールを本人のものと確かめられれば、その場で付きます。それ以外（まだアカウントがない、メールを確かめられないなど）は、その人が学校の Google アカウントでログインしたときに付きます。'
+          }
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="grid gap-4 md:grid-cols-3" noValidate data-testid="invite-form">
           <Field label="メールアドレス" error={formState.errors.email?.message}>
-            {(p) => <Input {...p} type="email" autoComplete="off" {...register('email')} maxLength={EMAIL_MAX} />}
+            {(p) => (
+              <Input
+                {...p}
+                type="email"
+                autoComplete="off"
+                // 立場の欄の下の誤り（兼任の禁止・別の立場）は前に送ったメールのものなので、メールを変えたら消す
+                {...register('email', { onChange: () => clearErrors('kind') })}
+                maxLength={EMAIL_MAX}
+              />
+            )}
           </Field>
-          <Field label="立場" error={formState.errors.kind?.message} errorTestId="invite-kind-error">
+          <Field
+            label="立場"
+            error={formState.errors.kind?.message}
+            errorTestId="invite-kind-error"
+            // 部門長・副部門長には、選べない立場とロールの変更をだれが行うかを添える（D-50）
+            hint={canChangeRoles ? undefined : '管理者・総務部門長・総務副部門長・閲覧のみの招待と、ロールの変更は管理者が行います'}
+          >
             {(p) => (
               <select {...p} {...register('kind')} className={selectClass}>
                 {kinds.map((k) => (
@@ -556,7 +581,10 @@ function InviteCard({
                 label="団体"
                 options={groups.map((g) => ({ id: g.id, name: g.name, group: CATEGORY_LABELS[g.category] }))}
                 value={groupId === '' ? null : groupId}
-                onChange={(id) => setValue('group_id', id ?? '', { shouldDirty: true, shouldValidate: true })}
+                onChange={(id) => {
+                  clearErrors('kind');
+                  setValue('group_id', id ?? '', { shouldDirty: true, shouldValidate: true });
+                }}
               />
               {formState.errors.group_id?.message ? <p className="text-xs text-destructive">{formState.errors.group_id.message}</p> : null}
             </div>

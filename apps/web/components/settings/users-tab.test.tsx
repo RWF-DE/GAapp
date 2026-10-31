@@ -182,13 +182,30 @@ describe('招待の立場（段ごと。D-50）', () => {
   });
 
   for (const role of ['head', 'deputy_head'] as const) {
-    it(`${role} は総務部門員・店長・副店長の3つ`, async () => {
+    it(`${role} は総務部門員・店長・副店長の3つ（ほかの立場とロールの変更は管理者が行うと添える）`, async () => {
       renderTab(role);
       await screen.findByTestId('invite-form');
       expect(optionLabels(kindSelect())).toEqual(['総務部門員', '店長', '副店長']);
       expect(kindSelect().value).toBe('staff');
+      const hint = document.getElementById(kindSelect().getAttribute('aria-describedby') ?? '');
+      expect(hint?.textContent).toBe('管理者・総務部門長・総務副部門長・閲覧のみの招待と、ロールの変更は管理者が行います');
     });
   }
+
+  it('管理者には立場の欄の注を出さない', async () => {
+    renderTab('admin');
+    await screen.findByTestId('invite-form');
+    expect(kindSelect().getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('店長・副店長の招待がその場で付いたら、付いた立場（「{団体} の副店長」）で知らせる', async () => {
+    rpcState.handler = () => ({ data: { invitation_ids: [INV.group], applied: true } });
+    const user = userEvent.setup();
+    renderTab('head');
+    await screen.findByTestId('invite-form');
+    await invite(user, 'rep-now@example.test', 'deputy_manager', '模擬店A');
+    expect((await screen.findByTestId('invite-result')).textContent).toBe('この人はすでにアカウントがあるので、その場で「模擬店A の副店長」にしました');
+  });
 
   it('店長・副店長を選ぶと団体の欄が出て、送るのは団体と立場（ロールは送らない）。送った後も同じ立場と団体を残す', async () => {
     rpcState.handler = () => ({ data: { invitation_ids: [INV.group], applied: false } });
@@ -251,6 +268,11 @@ describe('招待のエラーは立場の欄の下（入力は残す。04）', ()
     expect(toasts.error).not.toHaveBeenCalled();
     expect(screen.queryByTestId('invite-result')).toBeNull();
     await waitFor(() => expect(data.fetchMembers).toHaveBeenCalledTimes(2));
+
+    // 別のメールを入れ始めたら、前のメールの誤りは消す（立場はそのまま）
+    await user.type(within(screen.getByTestId('invite-form')).getByLabelText('メールアドレス'), 'x');
+    expect(screen.queryByTestId('invite-kind-error')).toBeNull();
+    expect(kindSelect().value).toBe('staff');
   });
 
   it('兼任の禁止（団体の招待。未使用の総務部門員の招待がある）も同じ', async () => {
@@ -293,14 +315,25 @@ describe('招待のエラーは立場の欄の下（入力は残す。04）', ()
     expect(toasts.error).not.toHaveBeenCalled();
   });
 
-  it('権限なし（forbidden。管理者の未使用の招待があるメールなど）は今までどおり toast', async () => {
+  it('権限なし（forbidden）は今までどおり toast。部門長・副部門長には、管理者の未使用の招待があるメールかもしれないと添える', async () => {
     rpcState.handler = () => ({ error: { code: 'P0001', message: 'forbidden', details: '', hint: null } });
     const user = userEvent.setup();
     renderTab('head');
     await screen.findByTestId('invite-form');
     await invite(user, 'pending-admin@example.test', 'staff');
-    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('権限がありません。立場が変わった可能性があります'));
+    await waitFor(() =>
+      expect(toasts.error).toHaveBeenCalledWith(
+        '権限がありません。このメールアドレスに管理者が出した招待があるか、立場が変わった可能性があります（管理者に頼んでください）',
+      ),
+    );
     expect(screen.queryByTestId('invite-kind-error')).toBeNull();
+    cleanup();
+    toasts.error.mockClear();
+
+    renderTab('admin');
+    await screen.findByTestId('invite-form');
+    await invite(user, 'pending-admin@example.test', 'staff');
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('権限がありません。立場が変わった可能性があります'));
   });
 });
 
@@ -423,8 +456,9 @@ describe('メンバーの一覧（段ごとの操作）', () => {
 });
 
 describe('招待の一覧', () => {
-  it('「ロール・団体」はロールの表示名か「{団体} の副店長」。管理者はすべての未使用の招待を取り消せる', async () => {
+  it('「立場」はロールの表示名か「{団体} の副店長」。管理者はすべての未使用の招待を取り消せる', async () => {
     renderTab('admin');
+    expect(within(await screen.findByRole('table', { name: '招待' })).getByRole('columnheader', { name: '立場' })).toBeTruthy();
     expect(within(await invitationRow(INV.staff)).getByText('総務部門員')).toBeTruthy();
     expect(within(await invitationRow(INV.group)).getByText('部門B の副店長')).toBeTruthy();
     for (const id of [INV.staff, INV.group, INV.admin]) {
@@ -447,7 +481,7 @@ describe('終了した年度', () => {
   it('招待・ロールの変更・店長⇄副店長は出さず、ロールを外す・代表を外す・招待の取り消しは出す', async () => {
     renderTab('head', { closed: true });
     expect((await screen.findByTestId('users-closed-note')).textContent).toBe(
-      '終了した年度では招待・ロールの変更・店長と副店長の切り替えはできません（外す・取り消しはできます）。',
+      '終了した年度では、招待、ロールの変更、店長・副店長の切り替えはできません（外す・取り消しはできます）。',
     );
     expect(screen.queryByTestId('invite-form')).toBeNull();
     await memberRow(U.viewer);

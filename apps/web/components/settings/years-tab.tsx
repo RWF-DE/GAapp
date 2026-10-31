@@ -1,8 +1,8 @@
 'use client';
 
 // 年度のタブ（画面の設計 3.2「年度」。T09・T15b）：今の年度の変更（update_year）と、新しい年度の作成（create_year_from）。
-// 年度名・1日目の変更と年度の作成は管理者だけ。総務部門長・総務副部門長は受付期間だけを変えられる（年度名・1日目は読み取り。
-// update_year は管理者でない人のほかのキーを forbidden にする。D-48・D-50）。
+// 年度名・1日目の変更と年度の作成は管理者だけ。総務部門長・総務副部門長は受付期間だけを変えられる（年度名・1日目は入力欄でなく
+// 文字で出す〔書ける欄と見分けられるように〕。update_year は管理者でない人のほかのキーを forbidden にする。D-48・D-50）。
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -60,7 +60,9 @@ export function YearsTab() {
         <YearCreateCard year={year} onCreated={onCreated} />
       ) : (
         <p className="text-sm text-muted-foreground" data-testid="year-create-unavailable">
-          新しい年度は、最新の年度（{membership.latestYear?.label ?? '—'}）を開いて、その年度の管理者が作れます。
+          {isAdmin(membership.role)
+            ? `新しい年度は、最新の年度（${membership.latestYear?.label ?? '—'}）を開いて、その年度の管理者が作れます。`
+            : `新しい年度は、最新の年度（${membership.latestYear?.label ?? '—'}）の管理者が作ります。`}
         </p>
       )}
     </div>
@@ -90,7 +92,6 @@ function YearEditCard({ year }: { year: YearRow }) {
   useUnsavedChanges(formState.isDirty);
   const [saving, setSaving] = useState(false);
   const disabled = !yearWritable || saving;
-  const labelDisabled = disabled || !admin;
 
   const onSubmit = handleSubmit(async (values) => {
     const parsed = schema.safeParse(values);
@@ -142,14 +143,24 @@ function YearEditCard({ year }: { year: YearRow }) {
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="grid gap-4 md:grid-cols-2" noValidate data-testid="year-edit-form">
-          <Field label="年度名" error={err('label')}>
-            {(p) => <Input {...p} {...register('label')} readOnly={labelDisabled} maxLength={50} />}
-          </Field>
-          <Field label="1日目" error={err('festival_start')} hint={admin ? '前の年度より後・次の年度より前の日付にします' : undefined}>
-            {(p) => (
-              <Input {...p} type="date" min={FESTIVAL_START_MIN} max={FESTIVAL_START_MAX} {...register('festival_start')} readOnly={labelDisabled} />
-            )}
-          </Field>
+          {admin ? (
+            <>
+              <Field label="年度名" error={err('label')}>
+                {(p) => <Input {...p} {...register('label')} readOnly={disabled} maxLength={50} />}
+              </Field>
+              <Field label="1日目" error={err('festival_start')} hint="前の年度より後・次の年度より前の日付にします">
+                {(p) => (
+                  <Input {...p} type="date" min={FESTIVAL_START_MIN} max={FESTIVAL_START_MAX} {...register('festival_start')} readOnly={disabled} />
+                )}
+              </Field>
+            </>
+          ) : (
+            // 部門長・副部門長：年度名と1日目は変えられないので、入力欄でなく文字で出す（読み取りの入力欄は書ける欄と同じ見た目のため）
+            <dl className="grid gap-4 md:col-span-2 md:grid-cols-2" data-testid="year-fixed-fields">
+              <FixedField label="年度名" value={year.label} testId="year-fixed-label" />
+              <FixedField label="1日目" value={formatDate(year.festival_start)} testId="year-fixed-festival-start" />
+            </dl>
+          )}
           <Field label="受付開始（日本時間）" error={err('request_open_at')}>
             {(p) => <Input {...p} type="datetime-local" {...register('request_open_at')} readOnly={disabled} />}
           </Field>
@@ -171,6 +182,19 @@ function YearEditCard({ year }: { year: YearRow }) {
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+/** 変えられない項目（部門長・副部門長の年度名と1日目）：見出しと値を文字で出す */
+function FixedField({ label, value, testId }: { label: string; value: string; testId: string }) {
+  return (
+    <div className="space-y-1.5">
+      <dt className="text-sm leading-none font-medium">{label}</dt>
+      <dd className="flex min-h-9 flex-wrap items-center gap-x-2 text-sm">
+        <span data-testid={testId}>{value}</span>
+        <span className="text-xs text-muted-foreground">（管理者が変えます）</span>
+      </dd>
+    </div>
   );
 }
 

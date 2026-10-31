@@ -131,7 +131,7 @@ describe('終了した年度の帯（段で文が違う。04「マスタ設定�
     state.status = 'closed';
     render(<SettingsScreen />);
     expect(screen.getByTestId('read-only-notice').textContent).toBe(
-      '終了した年度のため、読み取り専用です（ロールを外す・店長・副店長を外す・招待の取り消し・新しい年度の作成はできます）',
+      '終了した年度のため、読み取り専用です（ロールを外す、店長・副店長を外す、招待の取り消し、新しい年度の作成はできます）',
     );
   });
 
@@ -141,7 +141,7 @@ describe('終了した年度の帯（段で文が違う。04「マスタ設定�
       state.role = role;
       render(<SettingsScreen />);
       expect(screen.getByTestId('read-only-notice').textContent).toBe(
-        '終了した年度のため、読み取り専用です（総務部門員のロールを外す・店長・副店長を外す・招待の取り消しはできます）',
+        '終了した年度のため、読み取り専用です（総務部門員のロールを外す、店長・副店長を外す、招待の取り消しはできます）',
       );
       cleanup();
     }

@@ -54,17 +54,20 @@ const editS05: RuleSheetTarget = { type: 'edit', ruleId: s05.id, initial: ruleTo
 
 type UpdateMock = ReturnType<typeof vi.fn<RuleFormSheetProps['onUpdate']>>;
 
-function setup(opts: { editMode?: RuleFormSheetProps['editMode']; onUpdate?: UpdateMock } = {}) {
+function setup(
+  opts: { editMode?: RuleFormSheetProps['editMode']; onUpdate?: UpdateMock; target?: RuleSheetTarget; canEditGroups?: boolean } = {},
+) {
   const onUpdate: UpdateMock = opts.onUpdate ?? vi.fn<RuleFormSheetProps['onUpdate']>(async () => ({ ok: true }) satisfies SaveOutcome);
   const onClose = vi.fn();
   const props: RuleFormSheetProps = {
-    target: editS05,
+    target: opts.target ?? editS05,
     onClose,
     data: base,
     editMode: opts.editMode ?? 'full',
     onInsert: vi.fn(async () => ({ ok: true }) satisfies SaveOutcome),
     onUpdate,
     onReload: vi.fn(),
+    canEditGroups: opts.canEditGroups ?? true,
   };
   const view = render(<RuleFormSheet {...props} />);
   return { onUpdate, onClose, view, props };
@@ -455,5 +458,26 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     expect(onUpdate.mock.calls[1]![1].memo).toBe(original === '' ? null : original);
     expect(toast.info).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('RuleFormSheet：「残す」の団体に使用場所がないときの案内（団体はマスタ。T15b・D-50）', () => {
+  const s08 = base.rules.find((r) => r.code === 'S08')!;
+  // 使用場所のない団体（校内に分散）を選んだ「残す」のルール
+  const scattered = base.groups.find((g) => g.location_room_id === null)!;
+  const form = ruleToForm(s08);
+  const target: RuleSheetTarget = { type: 'edit', ruleId: s08.id, initial: { ...form, keep: { ...form.keep, group: scattered.id } }, baseUpdatedAt: s08.updated_at };
+  const notice = () => document.querySelector('[data-field-notice="params.room"]')?.textContent;
+
+  it('管理者：マスタ設定で団体の使用場所を決める', () => {
+    setup({ target, canEditGroups: true });
+    expect(notice()).toBe('この団体には使用場所がありません。「残す」は団体の使用場所にしか使えないので、マスタ設定で団体の使用場所を決めてください');
+  });
+
+  it('総務部門長・総務副部門長（団体を直せない）：管理者に団体の使用場所の登録を頼む', () => {
+    setup({ target, canEditGroups: false });
+    expect(notice()).toBe(
+      'この団体には使用場所がありません。「残す」は団体の使用場所にしか使えないので、管理者に団体の使用場所の登録を頼んでください',
+    );
   });
 });

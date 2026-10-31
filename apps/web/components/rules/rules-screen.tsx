@@ -28,6 +28,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/lib/auth/auth-provider';
+import { isAdmin } from '@/lib/auth/roles';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
 import {
   checkEnable,
@@ -132,9 +133,11 @@ function RulesView({
   onReload: () => void;
 }) {
   const queryClient = useQueryClient();
-  const { reloadMembership } = useAuth();
+  const { membership, reloadMembership } = useAuth();
   const onAuthError = useAuthErrorHandler();
   const yearId = data.year.id;
+  // 団体のマスタ（使用場所）を直せるのは管理者だけ（ルールは部門長以上が変える。D-50）
+  const canEditGroups = membership.status === 'ready' && isAdmin(membership.membership.role);
   const editMode = ruleEditMode(data.year.status);
   const names = useMemo(() => ruleNamesOf(data), [data]);
   const problems = useMemo(() => ruleProblems(data), [data]);
@@ -411,6 +414,7 @@ function RulesView({
         onInsert={onInsert}
         onUpdate={onUpdate}
         onReload={onReload}
+        canEditGroups={canEditGroups}
       />
 
       {disableTarget ? (
