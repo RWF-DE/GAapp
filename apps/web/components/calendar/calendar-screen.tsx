@@ -186,7 +186,7 @@ function CalendarBoard({ membership: m, yearId, userId }: { membership: Membersh
   return (
     <div className="mx-auto max-w-6xl space-y-4">
       <PageHeader
-        title="締切と予定"
+        title="締切と予定の一覧"
         loadedAt={q.dataUpdatedAt ? new Date(q.dataUpdatedAt) : null}
         onReload={reload}
         reloading={q.isFetching || yearQ.isFetching}

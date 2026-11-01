@@ -129,6 +129,41 @@ export async function runNoticeSave(req: NoticeSaveRequest, onAuthError: AuthErr
   return { type: 'missing', error: unknown ? appError('not_found', 'notice_missing', { id: base.id }) : error };
 }
 
+export interface NoticeRereadRequest {
+  /** 止められた保存の入力の元（id と読んだときの updated_at の文字列） */
+  base: { id: string; updatedAt: string };
+  /** 今の入力（読み直した行と sameNoticeWrite で比べる）。確かめを通らなければ null（入力と同じとは見ない） */
+  write: NoticeWrite | null;
+  /** そのお知らせを1行読む（なければ null。失敗したら投げる） */
+  reread: () => Promise<NoticeRow | null>;
+}
+
+/**
+ * 直すのが止められた後に読み直せなかった（unread）ときの「読み直す」（2.6 の (B1) の 3。04「お知らせ一覧」のエラー。締切と予定の
+ * rereadRejectedSave〔T18〕と同じ形。マージの後の直し）：そのお知らせを1回読み直し、runNoticeSave の止められたときの道と同じに決める
+ * （settleLockedWrite）。入力（write）と同じなら saved（before）、行があれば conflict（読み直した行を入力の元にする。次の保存はその版で
+ * 送る）、なければ missing、また読み直せなければ unread（版は進めない）。
+ * 一覧の読み直しでは入力の元の版を進めない（利用者が見ていない版で上書きしない）ので、ダイアログの「読み直す」はここを通す。
+ */
+export async function rereadRejectedNoticeSave(req: NoticeRereadRequest): Promise<NoticeSaveResult> {
+  const read: { row: NoticeRow | null } = { row: null };
+  const outcome = await settleLockedWrite<NoticeRow>({
+    reread: async () => {
+      read.row = await req.reread();
+      return read.row;
+    },
+    matches: (row) => req.write !== null && sameNoticeWrite(row, req.write),
+    baseVersion: req.base.updatedAt,
+    versionOf: (row) => row.updated_at,
+  });
+  const id = req.base.id;
+  if (outcome === 'unread') return { type: 'unread', error: appError('conflict', 'lock_conflict', { id }) };
+  if (outcome === 'saved' && read.row) return { type: 'saved', row: read.row, before: true };
+  return read.row
+    ? { type: 'conflict', row: read.row, error: appError('conflict', 'lock_conflict', { id }) }
+    : { type: 'missing', error: appError('not_found', 'notice_missing', { id }) };
+}
+
 /** 消すの結果 */
 export type NoticeDeleteResult =
   /** 消えた。before は、止められた（forbidden・conflict・not_found）が読み直すともうなかった（すでに削除されていた） */

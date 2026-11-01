@@ -363,9 +363,9 @@ const HEAD_ORDER = [
 // ---------------------------------------------------------------- 一覧
 
 describe('T18 締切と予定：総務部門長', () => {
-  it('h1「締切と予定」・最終読み込みと「読み直す」・「締切・予定を登録」。今日からの日ごとの一覧（日の見出しと曜日・相対の言い方）', async () => {
+  it('h1「締切と予定の一覧」・最終読み込みと「読み直す」・「締切・予定を登録」。今日からの日ごとの一覧（日の見出しと曜日・相対の言い方）', async () => {
     renderScreen('head');
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('締切と予定');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('締切と予定の一覧');
     await loaded();
     expect(screen.getByText(/最終読み込み/)).toBeTruthy();
     expect(screen.getByRole('button', { name: '読み直す' })).toBeTruthy();

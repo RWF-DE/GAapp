@@ -20,6 +20,7 @@ import {
   CONFLICT_NOTICE,
   NOT_EDITABLE_NOTICE,
   PINNED_NOTE,
+  REREAD_AGAIN_FAILED_MESSAGE,
   REREAD_FAILED_NOTICE,
   STAFF_AUDIENCE_TEXT,
   UNCONFIRMED_NOTICE,
@@ -797,20 +798,130 @@ describe('T17 読み直し：編集（(B1)）', () => {
     expect(box.textContent).not.toContain('読み直しました');
   });
 
-  it('止められた（conflict）後に読み直せない：読み直せなかったと出し、「読み直す」で一覧を読み直す', async () => {
+  /** そのお知らせの1行の読み直し（readNotice の maybeSingle）だけを、fail の間は通信の失敗にする */
+  function failRereads(): { fail: boolean } {
+    const state = { fail: true };
+    override = (call) => (state.fail && call.table === 'notices' && call.ops.some((o) => o.op === 'maybeSingle') ? NETWORK : undefined);
+    return state;
+  }
+  const rereadOnes = () => issued.filter((c) => c.table === 'notices' && c.ops.some((o) => o.op === 'maybeSingle')).length;
+  const lists = () => issued.filter((c) => c.table === 'notices' && c.ops.some((o) => o.op === 'range')).length;
+  /** 止められた後に読み直せなかったときの知らせ（「読み直しました」と言わない） */
+  const unreadBox = async () => {
+    const box = await screen.findByTestId('unknown-outcome');
+    expect(box.getAttribute('data-kind')).toBe('unread');
+    expect(box.textContent).toContain(REREAD_FAILED_NOTICE);
+    expect(box.textContent).not.toContain('読み直しました');
+    return box;
+  };
+  const rereadButton = () => within(screen.getByTestId('unknown-outcome')).getByRole('button', { name: /読み直/ });
+
+  it('止められた（conflict）後に読み直せない：読み直せなかったと出す。「読み直す」はそのお知らせを読み直し、まだ読めなければ知らせて版を進めず、読めれば衝突の知らせにして、次の1回の保存で上書きできる（T18 の rereadRejectedSave と同じ決め方）', async () => {
+    const V0 = '2026-10-04T00:00:00.000000+00:00';
+    const V1 = '2026-10-08T00:00:00.000000+00:00';
+    const user = userEvent.setup();
+    renderScreen('head');
+    await openEdit(user, '総務の集合');
+    rows = rows.map((r) => (r.id === N_SOUMU_OTHER ? { ...r, title: 'ほかの人の題名', updated_at: V1 } : r));
+    const reads = failRereads();
+    const title = screen.getByLabelText('題名') as HTMLInputElement;
+    await user.type(title, '！');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await unreadBox();
+    expect(argsOf(saveCalls()[0]!)).toMatchObject({ p_base_updated_at: V0 });
+    // まだ読めない：知らせて、知らせと「読み直す」を残す。版は進めない（次の保存も読んだときの版 V0 で送り、また止められる）
+    let before = rereadOnes();
+    await user.click(rereadButton());
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(REREAD_AGAIN_FAILED_MESSAGE));
+    expect(rereadOnes()).toBe(before + 1);
+    await unreadBox();
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(saveCalls()).toHaveLength(2));
+    expect(argsOf(saveCalls()[1]!)).toMatchObject({ p_base_updated_at: V0 });
+    await unreadBox();
+    // 読めた：今の行で衝突の知らせにし（入力は残す）、一覧も読み直す。「読み直す」は送り直さない
+    reads.fail = false;
+    before = lists();
+    await user.click(rereadButton());
+    const conflict = await screen.findByTestId('notice-conflict');
+    expect(conflict.textContent).toContain(CONFLICT_NOTICE);
+    expect(conflict.textContent).toContain('今の題名：ほかの人の題名');
+    expect(screen.queryByTestId('unknown-outcome')).toBeNull();
+    expect(title.value).toBe('総務の集合！');
+    await waitFor(() => expect(lists()).toBe(before + 1));
+    expect(saveCalls()).toHaveLength(2);
+    // 次の1回の保存は、読み直した版で送って上書きする
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(screen.queryByTestId('notice-form')).toBeNull());
+    expect(argsOf(saveCalls()[2]!)).toMatchObject({ p_title: '総務の集合！', p_base_updated_at: V1 });
+    expect(rows.find((r) => r.id === N_SOUMU_OTHER)!.title).toBe('総務の集合！');
+    expect(toast.success).toHaveBeenCalledWith('「総務の集合！」を保存しました');
+  });
+
+  it('読み直せなかった後の「読み直す」：お知らせが消えていたら「このお知らせは見つかりません」で「保存」を押せなくし、今の行が入力と同じなら「保存されていました」で閉じる（送り直さない）', async () => {
     const user = userEvent.setup();
     renderScreen('head');
     await openEdit(user, '総務の集合');
     rows = rows.map((r) => (r.id === N_SOUMU_OTHER ? { ...r, updated_at: '2026-10-08T00:00:00.000000+00:00' } : r));
-    override = (call) => (call.table === 'notices' && call.ops.some((o) => o.op === 'maybeSingle') ? NETWORK : undefined);
+    const reads = failRereads();
     await user.type(screen.getByLabelText('題名'), '！');
     await user.click(screen.getByRole('button', { name: '保存' }));
-    const box = await screen.findByTestId('unknown-outcome');
-    expect(box.textContent).toContain(REREAD_FAILED_NOTICE);
-    const lists = () => issued.filter((c) => c.table === 'notices' && c.ops.some((o) => o.op === 'range')).length;
-    const before = lists();
-    await user.click(within(box).getByRole('button', { name: '読み直す' }));
-    await waitFor(() => expect(lists()).toBe(before + 1));
+    await unreadBox();
+    rows = rows.filter((r) => r.id !== N_SOUMU_OTHER);
+    reads.fail = false;
+    await user.click(rereadButton());
+    expect((await screen.findByTestId('notice-missing')).textContent).toContain('このお知らせは見つかりません（ほかの人が削除した可能性があります）');
+    expect(screen.getByRole('button', { name: '保存' }).hasAttribute('disabled')).toBe(true);
+    expect((screen.getByLabelText('題名') as HTMLInputElement).value).toBe('総務の集合！');
+    cleanup();
+
+    // ほかの人が（または前の送信が）同じ中身にしていた
+    rows = seedRows();
+    renderScreen('head');
+    await openEdit(user, '総務の集合');
+    rows = rows.map((r) => (r.id === N_SOUMU_OTHER ? { ...r, title: '総務の集合！', updated_at: '2026-10-08T00:00:00.000000+00:00' } : r));
+    const again = failRereads();
+    await user.type(screen.getByLabelText('題名'), '！');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await unreadBox();
+    const sent = saveCalls().length;
+    again.fail = false;
+    await user.click(rereadButton());
+    await waitFor(() => expect(screen.queryByTestId('notice-form')).toBeNull());
+    expect(toast.success).toHaveBeenCalledWith('「総務の集合！」は保存されていました');
+    expect(saveCalls()).toHaveLength(sent);
+  });
+
+  it('「読み直す」で読んでいる間は、欄・「保存」「やめる」・「読み直す」を押せない（届いた行を、押したときの入力と比べる）', async () => {
+    const user = userEvent.setup();
+    renderScreen('head');
+    await openEdit(user, '総務の集合');
+    rows = rows.map((r) => (r.id === N_SOUMU_OTHER ? { ...r, title: 'ほかの人の題名', updated_at: '2026-10-08T00:00:00.000000+00:00' } : r));
+    const reads = failRereads();
+    await user.type(screen.getByLabelText('題名'), '！');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await unreadBox();
+    // 読み直しの応答を止めておく
+    reads.fail = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    override = (call) =>
+      call.table === 'notices' && call.ops.some((o) => o.op === 'maybeSingle')
+        ? gate.then(() => ({ data: rows.find((r) => r.id === N_SOUMU_OTHER) ?? null }))
+        : undefined;
+    await user.click(rereadButton());
+    await waitFor(() => expect(rereadButton().hasAttribute('disabled')).toBe(true));
+    expect(rereadButton().textContent).toBe('読み直しています…');
+    expect((screen.getByLabelText('題名') as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText('本文（任意）') as HTMLTextAreaElement).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '保存' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'やめる' }).hasAttribute('disabled')).toBe(true);
+    release();
+    expect(await screen.findByTestId('notice-conflict')).toBeTruthy();
+    expect((screen.getByLabelText('題名') as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: '保存' }).hasAttribute('disabled')).toBe(false);
   });
 });
 
@@ -885,6 +996,27 @@ describe('T17 読み直し：総務部門員の編集（宛先とピン留めは
     await user.click(save);
     expect(saveCalls()).toHaveLength(1);
     expect(mine()).toMatchObject({ audience: 'all_groups', title: '全団体への連絡に変えた', body: null, updated_by: HEAD });
+    expect((screen.getByLabelText('本文（任意）') as HTMLTextAreaElement).value).toBe('本文を足した');
+  });
+
+  it('止められた後に読み直せなかった後の「読み直す」で、部門長が宛先を全団体に変えていた：総務部門員の編集できないお知らせになったので「保存」を押せなくする（読み直した行を入力の元にする）', async () => {
+    const user = userEvent.setup();
+    renderScreen('staff');
+    await openEdit(user, '在庫の数え方');
+    leadChanged({ audience: 'all_groups', title: '全団体への連絡に変えた' });
+    let fail = true;
+    override = (call) => (fail && call.table === 'notices' && call.ops.some((o) => o.op === 'maybeSingle') ? NETWORK : undefined);
+    await user.type(screen.getByLabelText('本文（任意）'), '本文を足した');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    const box = await screen.findByTestId('unknown-outcome');
+    expect(box.textContent).toContain(REREAD_FAILED_NOTICE);
+    fail = false;
+    await user.click(within(box).getByRole('button', { name: '読み直す' }));
+    const notEditable = await screen.findByTestId('notice-not-editable');
+    expect(notEditable.textContent).toContain(NOT_EDITABLE_NOTICE);
+    expect(notEditable.textContent).toContain('今の宛先：全団体');
+    expect(screen.getByRole('button', { name: '保存' }).hasAttribute('disabled')).toBe(true);
+    expect(saveCalls()).toHaveLength(1);
     expect((screen.getByLabelText('本文（任意）') as HTMLTextAreaElement).value).toBe('本文を足した');
   });
 

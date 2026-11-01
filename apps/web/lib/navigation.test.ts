@@ -23,8 +23,8 @@ const labels = (a: Parameters<typeof navItemsFor>[0], s?: Parameters<typeof navI
 const FURNITURE_LEAD = ['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換'];
 /** お知らせの見出しの項目（T17。招待されている全員） */
 const NOTICES = 'お知らせ一覧';
-/** 締切と予定の見出しの項目（T18。招待されている全員。見出しと項目が同じ名前） */
-const CALENDAR = '締切と予定';
+/** 締切と予定の見出しの項目（T18。招待されている全員。見出しと同じ言葉を縦に並べないよう「の一覧」を付ける） */
+const CALENDAR = '締切と予定の一覧';
 const SOUMU_SCREENS = ['ホーム', ...FURNITURE_LEAD, NOTICES, CALENDAR, 'マスタ設定', '履歴'];
 
 describe('navItemsFor', () => {
@@ -121,7 +121,7 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
     expect(canOpen('/furniture', ['admin', 'rep'])).toBe(true);
   });
 
-  it('管理者・総務部門長・総務副部門長：ホーム／机椅子の状況〜キャスター机交換／お知らせ一覧／締切と予定／マスタ設定・履歴', () => {
+  it('管理者・総務部門長・総務副部門長：ホーム／机椅子の状況〜キャスター机交換／お知らせ一覧／締切と予定の一覧／マスタ設定・履歴', () => {
     for (const role of ['admin', 'head', 'deputy_head'] as const) {
       expect(headings([role])).toEqual(['ホーム', '机椅子', 'お知らせ', '締切と予定', '共通']);
       expect(itemsOf([role])).toEqual({
@@ -134,7 +134,7 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
     }
   });
 
-  it('総務部門員：共通の見出しがない（マスタ設定・履歴は部門長以上）。お知らせ一覧と締切と予定はある', () => {
+  it('総務部門員：共通の見出しがない（マスタ設定・履歴は部門長以上）。お知らせ一覧と締切と予定の一覧はある', () => {
     expect(headings(['staff'])).toEqual(['ホーム', '机椅子', 'お知らせ', '締切と予定']);
     expect(itemsOf(['staff'])).toEqual({
       ホーム: ['ホーム'],
@@ -144,7 +144,7 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
     });
   });
 
-  it('閲覧のみ：受付中はホーム・お知らせ一覧・締切と予定、確定・終了で机椅子の見出しに振り分け', () => {
+  it('閲覧のみ：受付中はホーム・お知らせ一覧・締切と予定の一覧、確定・終了で机椅子の見出しに振り分け', () => {
     expect(headings(['viewer'], 'requesting')).toEqual(['ホーム', 'お知らせ', '締切と予定']);
     expect(headings(['viewer'], 'allocating')).toEqual(['ホーム', 'お知らせ', '締切と予定']);
     for (const st of ['confirmed', 'closed'] as const) {
@@ -152,11 +152,11 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
     }
   });
 
-  it('店長・副店長：ホームと、机椅子の見出しに申請・自団体の振り分け、お知らせの見出しにお知らせ一覧、締切と予定の見出しに締切と予定', () => {
+  it('店長・副店長：ホームと、机椅子の見出しに申請・自団体の振り分け、お知らせの見出しにお知らせ一覧、締切と予定の見出しに締切と予定の一覧', () => {
     expect(itemsOf(['rep'])).toEqual({ ホーム: ['ホーム'], 机椅子: ['申請', '自団体の振り分け'], お知らせ: [NOTICES], 締切と予定: [CALENDAR] });
   });
 
-  it('管理者で店長も務める人：管理者の机椅子の見出しの最後に申請・自団体の振り分け。お知らせ一覧・締切と予定は1つずつ', () => {
+  it('管理者で店長も務める人：管理者の机椅子の見出しの最後に申請・自団体の振り分け。お知らせ一覧・締切と予定の一覧は1つずつ', () => {
     expect(itemsOf(['admin', 'rep'])).toEqual({
       ホーム: ['ホーム'],
       机椅子: [...FURNITURE_LEAD, '申請', '自団体の振り分け'],
@@ -187,13 +187,13 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
     expect(canOpen('/notices', [])).toBe(false);
   });
 
-  it('T18 /calendar：「締切と予定」、見出しは calendar、招待されている全員（5つのロールと rep）、ナビに出す、T18', () => {
+  it('T18 /calendar：「締切と予定の一覧」、見出しは calendar、招待されている全員（5つのロールと rep）、ナビに出す、T18', () => {
     const r = routeFor('/calendar/');
-    expect(r).toMatchObject({ href: '/calendar', label: '締切と予定', section: 'calendar', nav: true, ticket: 'T18' });
+    expect(r).toMatchObject({ href: '/calendar', label: '締切と予定の一覧', section: 'calendar', nav: true, ticket: 'T18' });
     expect(audiencesFor('/calendar')).toEqual([...APP_ROLES, 'rep']);
     expect(r?.finalOnly).toBeUndefined();
-    // 締切と予定の見出しの項目は1つ（機能の入口。見出しと同じ名前）
-    expect(NAV_ITEMS.filter((i) => i.section === 'calendar').map((i) => [i.href, i.label])).toEqual([['/calendar', '締切と予定']]);
+    // 締切と予定の見出しの項目は1つ（機能の入口。見出しと同じ言葉を縦に並べないよう「の一覧」。お知らせの「お知らせ一覧」と同じ形）
+    expect(NAV_ITEMS.filter((i) => i.section === 'calendar').map((i) => [i.href, i.label])).toEqual([['/calendar', '締切と予定の一覧']]);
   });
 
   it('T18 canOpen(/calendar)：招待されている全員が、年度の状態によらず開ける（?event=・?past=・?kind= つきも）。立場がなければ開けない', () => {

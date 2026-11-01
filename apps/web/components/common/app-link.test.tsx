@@ -48,6 +48,52 @@ describe('AppLink（canOpen で出し分け）', () => {
     expect(screen.getByText('3 件')).toBeTruthy();
   });
 
+  it('開ける立場なら、className（リンクの見た目）を付けたリンク', () => {
+    auth.membership = as('admin');
+    render(
+      <AppLink href="/swaps" className="underline underline-offset-2 hover:text-primary">
+        キャスター机交換へ
+      </AppLink>,
+    );
+    expect(screen.getByRole('link', { name: 'キャスター机交換へ' }).getAttribute('class')).toBe('underline underline-offset-2 hover:text-primary');
+  });
+
+  it('開けない立場では、リンクの見た目（下線・色。className）を付けずに文字だけを出す（リンクに見えない）', () => {
+    auth.membership = as('staff');
+    const { container } = render(
+      <p>
+        ルール{' '}
+        <AppLink href="/rules?code=S05" className="underline underline-offset-2 hover:text-primary">
+          S05
+        </AppLink>
+      </p>,
+    );
+    expect(screen.queryByRole('link')).toBeNull();
+    const text = screen.getByText('S05');
+    expect(text.tagName).toBe('SPAN');
+    expect(text.hasAttribute('class')).toBe(false);
+    expect(container.querySelector('.underline, [class*="text-primary"]')).toBeNull();
+    expect(container.textContent).toBe('ルール S05');
+  });
+
+  it('開けない立場で fallback を渡せば、既定の文字の代わりにそれを出す（null なら何も出さない）', () => {
+    auth.membership = as('staff');
+    const { container } = render(
+      <div>
+        <AppLink href="/swaps" className="underline" fallback={<span data-testid="own">交換の画面は部門長以上</span>}>
+          交換へ
+        </AppLink>
+        <AppLink href="/history" className="underline" fallback={null}>
+          履歴へ
+        </AppLink>
+      </div>,
+    );
+    expect(screen.getByTestId('own').textContent).toBe('交換の画面は部門長以上');
+    expect(screen.queryByText('交換へ')).toBeNull();
+    expect(screen.queryByText('履歴へ')).toBeNull();
+    expect(container.querySelector('.underline')).toBeNull();
+  });
+
   it('viewer の振り分けは確定後だけリンクになる。fallback を渡せる', () => {
     auth.membership = as('viewer');
     render(

@@ -220,8 +220,8 @@ test.describe('T15b 総務部門長（seed）', () => {
       await expect(pageU.getByTestId('current-year')).toHaveText(`${s.label}・申請受付中`);
       await expect(pageU.getByTestId('home-roles')).toHaveText(`${SMALL.groups.stall} の副店長`);
       await expect(pageU.getByRole('banner')).toContainText(`${SMALL.groups.stall} の副店長`);
-      // 店長と副店長はできることが同じ（ナビも同じ。お知らせ一覧は T17、締切と予定は T18）
-      expect(await navLabels(pageU)).toEqual(['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定']);
+      // 店長と副店長はできることが同じ（ナビも同じ。お知らせ一覧は T17、締切と予定の一覧は T18）
+      expect(await navLabels(pageU)).toEqual(['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定の一覧']);
 
       // 店長に戻す（「店長にする」は「副店長にする」に部分一致するので exact で探す）
       await position.getByRole('button', { name: '店長にする', exact: true }).click();
@@ -437,7 +437,7 @@ test.describe('T15b 閲覧のみ（確定前の振り分け）', () => {
       const alert = page.getByRole('alert').filter({ hasText: '権限がありません' });
       await expect(alert).toBeVisible();
       await expect(alert).toContainText('振り分けは確定後に表示されます。');
-      expect(await navLabels(page)).toEqual(['ホーム', 'お知らせ一覧', '締切と予定']);
+      expect(await navLabels(page)).toEqual(['ホーム', 'お知らせ一覧', '締切と予定の一覧']);
     } finally {
       await s.cleanup();
     }

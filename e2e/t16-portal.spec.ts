@@ -649,10 +649,10 @@ test.describe('T16 ナビの見出し（管理者・PC）', () => {
     const notices = nav.getByRole('group', { name: 'お知らせ' });
     await expect(notices.getByRole('heading', { level: 2, name: 'お知らせ' })).toBeVisible();
     await expect(notices.getByRole('link')).toHaveText(['お知らせ一覧']);
-    // 締切と予定（T18）：お知らせの後・共通の前。見出しと項目が同じ名前（D-54）
+    // 締切と予定（T18）：お知らせの後・共通の前。項目は「締切と予定の一覧」（見出しと同じ言葉を縦に並べない。お知らせと同じ形。D-54）
     const calendar = nav.getByRole('group', { name: '締切と予定' });
     await expect(calendar.getByRole('heading', { level: 2, name: '締切と予定' })).toBeVisible();
-    await expect(calendar.getByRole('link')).toHaveText(['締切と予定']);
+    await expect(calendar.getByRole('link')).toHaveText(['締切と予定の一覧']);
     await expect(nav.getByRole('group')).toHaveCount(5);
     const common = nav.getByRole('group', { name: '共通' });
     await expect(common.getByRole('heading', { level: 2, name: '共通' })).toBeVisible();
@@ -686,7 +686,7 @@ test.describe('T16 ナビの見出し（総務部門員・スマホ）', () => {
     const furniture = nav.getByRole('group', { name: '机椅子' });
     await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
     await expect(nav.getByRole('group', { name: 'お知らせ' }).getByRole('link')).toHaveText(['お知らせ一覧']);
-    await expect(nav.getByRole('group', { name: '締切と予定' }).getByRole('link')).toHaveText(['締切と予定']);
+    await expect(nav.getByRole('group', { name: '締切と予定' }).getByRole('link')).toHaveText(['締切と予定の一覧']);
     await expect(nav.getByRole('group', { name: '共通' })).toHaveCount(0);
     expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(MOBILE.width);
 

@@ -9,7 +9,7 @@ export const MODULES = [
   { id: 'furniture', label: '机椅子', homeHref: '/furniture' },
   // お知らせ（T17。D-53）。入口は「お知らせ一覧」（/notices。招待されている全員）
   { id: 'notices', label: 'お知らせ', homeHref: '/notices' },
-  // 締切と予定（T18。D-54）。入口は「締切と予定」（/calendar。招待されている全員。見出しと項目が同じ名前）
+  // 締切と予定（T18。D-54）。入口は「締切と予定の一覧」（/calendar。招待されている全員。見出しと同じ言葉を縦に並べないよう「の一覧」）
   { id: 'calendar', label: '締切と予定', homeHref: '/calendar' },
 ] as const satisfies readonly {
   id: string;
