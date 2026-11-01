@@ -245,6 +245,21 @@ describe('T19 上げる・消す・署名つき URL', () => {
     expect(await uploadDocumentFile(PATH, blob, 'application/pdf', dup.client)).toBe('already');
   });
 
+  it('送る物は先頭のバイトで決めた形の新しい Blob にする（storage-js は Blob を multipart で送り、part の形は Blob の type・名前は File の name。ブラウザが付けた形と元のファイル名を送らない。Q1・Q16）', async () => {
+    const ok = fake(() => ({ data: null }));
+    const picked = new File(['%PDF-1.7 本文'], '個人名の書類.pdf', { type: '' });
+    expect(await uploadDocumentFile(PATH, picked, 'application/pdf', ok.client)).toBe('uploaded');
+    const sent = ok.storageCalls[0]!.args[1] as Blob;
+    expect(sent).toBeInstanceOf(Blob);
+    expect(sent).not.toBeInstanceOf(File);
+    expect(sent.type).toBe('application/pdf');
+    expect(new Uint8Array(await sent.arrayBuffer())).toEqual(new Uint8Array(await picked.arrayBuffer()));
+    // ブラウザが別の形を付けた PNG も、決めた形で送る
+    await uploadDocumentFile(`${Y}/${G}/${D}/${F}.png`, new File([new Uint8Array([0x89, 0x50])], 'shot.png', { type: 'image/x-png' }), 'image/png', ok.client);
+    const png = ok.storageCalls[1]!.args[1] as Blob;
+    expect([png instanceof File, png.type, png.size]).toEqual([false, 'image/png', 2]);
+  });
+
   it('403（ポリシー・トリガー）・413・415・通信の失敗・投げられた例外は AppError（storage_* と network）', async () => {
     for (const [error, kind, reason] of [
       [storageApiError('403', 'AccessDenied'), 'forbidden', 'storage_denied'],

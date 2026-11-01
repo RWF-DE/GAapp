@@ -325,6 +325,9 @@ export function toStorageAppError(e: unknown): AppError {
 /**
  * 予約した path へ上げる（`upload(objectPath, blob, { contentType, upsert: false })`。上書きしない）。届いたら 'uploaded'、409
  * （もう届いていた。通信が切れた後の送り直し）なら 'already'。ほかの失敗は toStorageAppError の AppError を投げる。
+ * 送る物は contentType（先頭のバイトで決めた形）の新しい Blob にする：storage-js（2.118）は Blob を multipart で送り、contentType を
+ * 使わず、part の形は Blob の type、名前は File の name になる。選んだ File のままだと、ブラウザが付けた形（空・別名の形なら bucket の
+ * 形の制限で 415）と元のファイル名（Q16）が Storage へ届くため（中身は同じ。写しは作らない）。
  */
 export async function uploadDocumentFile(
   objectPath: string,
@@ -332,9 +335,10 @@ export async function uploadDocumentFile(
   contentType: DocumentContentType,
   client: AppSupabaseClient = getSupabase(),
 ): Promise<'uploaded' | 'already'> {
+  const body = new Blob([blob], { type: contentType });
   let res: { data: unknown; error: unknown };
   try {
-    res = await bucket(client).upload(objectPath, blob, { contentType, upsert: false });
+    res = await bucket(client).upload(objectPath, body, { contentType, upsert: false });
   } catch (e) {
     throw toStorageAppError(e);
   }
