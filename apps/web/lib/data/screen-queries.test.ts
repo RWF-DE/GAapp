@@ -118,7 +118,7 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     for (const c of portalContextsOf(m, yearRow, 0)) {
       for (const p of PORTAL_PROVIDERS) {
         if (!p.kinds.includes(c.kind)) continue;
-        // T19：店長・副店長の提出物の分は、団体代表の / の 4G の計測の後に決める（パート C。まだ先読みしない）
+        // T19：店長・副店長の提出物の分は先読みしない（パート C の 4G の計測で決めた。D-45 の T19 の直し）
         if (p.moduleId === 'documents' && c.kind === 'rep') continue;
         for (const w of PORTAL_WIDGETS) {
           const q = portalWidgetQuery(p, c, w);
@@ -439,7 +439,7 @@ describe('T19 /document と / の提出物の先読み（planDocumentPrefetch・
     expect(lead.usable!(member('staff'))).toBe(false);
   });
 
-  it('/ の店長・副店長の提出物はまだ先読みしない（団体代表の / の 4G の計測の後に決める）。閲覧のみは提出物を読まない', () => {
+  it('/ の店長・副店長の提出物は先読みしない（パート C の 4G の計測で、足した形の団体代表の / が 2 秒を下回らなかった）。閲覧のみは提出物を読まない', () => {
     for (const key of keys(planHomePrefetch(ctx('', [G1, G2], null)))) expect(key[3]).not.toBe('documents');
     for (const key of keys(planHomePrefetch(ctx('', [G1], 'viewer')))) expect(key[3]).not.toBe('documents');
     // 店長・副店長も務める管理者は、総務の提出物だけ

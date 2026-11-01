@@ -349,8 +349,9 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
     list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
     list.push({ options: noticesLatestOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
     list.push({ options: calendarDatedOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
-    // 提出物（T19・D-55）：総務の読み取り（部門長以上と総務部門員で別のキー。段が同じときだけ使う）。店長・副店長の分は、団体代表の / が
-    // 4G で 2 秒以内のままか `pnpm e2e:perf` で確かめてから決める（パート C。04「共通レイアウト」の提出物の読み込み、D-45）
+    // 提出物（T19・D-55）：総務の読み取り（部門長以上と総務部門員で別のキー。段が同じときだけ使う）。店長・副店長の分は先読みに入れない
+    // （パート C の `pnpm e2e:perf` で、足した形の団体代表の / が 2 秒を下回らなかった。2回目からは記録・先送りが JS より先に送る。
+    // 04「共通レイアウト」の提出物の読み込み、D-45 の T19 の直し）
     const lead = isLead(ctx.role);
     list.push({
       options: documentsSoumuPortalOptions(ctx.yearId, lead ? 'lead' : 'staff'),

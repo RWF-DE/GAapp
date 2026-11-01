@@ -151,6 +151,16 @@ const NOTICES_LATEST_READ = 'notices?select=id,audience,title,pinned,created_at'
  */
 const EVENTS_DATED_READ = 'events?select=id,kind,title,starts_at,ends_at,all_day';
 
+/**
+ * ダッシュボードの提出物の部門長以上の読み取り（T19。04「ダッシュボードに出すもの（提出物）」：提出物の id・題名・締切と、提出の状況の
+ * document_id・status〔全部の団体の行〕と、使った量〔GET の RPC。select なし〕の3本。版・ファイル・理由は読まない）。閲覧のみは読まない
+ */
+const DOCUMENTS_LEAD_READS = {
+  docs: 'GET documents?select=id,title,deadline',
+  usage: 'GET rpc/document_storage_usage?select=',
+  statuses: 'GET v_document_status?select=document_id,status',
+};
+
 /** 机椅子の申請の締切の、締切と予定の欄の日付（曜日つき。「12/1（火）17:05」。T18）と相対の言い方（「あと 30 日」） */
 async function closeDated(yearId: string): Promise<{ when: string; relative: string }> {
   const today = tokyoToday();
@@ -260,14 +270,17 @@ test.describe('T16 ダッシュボード（管理者）', () => {
     // 机椅子の6つの表と、総務内のお知らせの新着（T17。本文・宛先の団体・書いた人は読まない）と、予定と締切の項目（T18。対象・メモ・
     // 書いた人は読まない）。並びは sort の順
     const FURNITURE_READS = [
+      DOCUMENTS_LEAD_READS.docs,
       `GET ${EVENTS_DATED_READ}`,
       'GET groups?select=id,name,category,sort_order',
       `GET ${NOTICES_LATEST_READ}`,
       'GET request_submissions?select=group_id,submitted_at,groups!inner(year_id)',
       'GET room_years?select=room_id,usable',
       'GET rooms?select=id,name,is_storage,sort_order',
+      DOCUMENTS_LEAD_READS.usage,
       'GET stocks?select=room_id',
       'GET substitution_consents?select=group_id,status,groups!inner(year_id)',
+      DOCUMENTS_LEAD_READS.statuses,
     ];
     try {
       // 前にこの年度を管理者として開いた（覚えたロールで、立場の読み込みと同時に机椅子の読み取りを始める。D-45）
@@ -287,6 +300,8 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       const recorded = await recordedRequests(page, SEED_USER_IDS.admin, '/');
       const recordedTables = recorded.map((r) => /^\/rest\/v1\/([^?]+)/.exec(r.u)?.[1] ?? r.u);
       for (const t of ['events', 'groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']) expect(recordedTables).toContain(t);
+      // 提出物（T19）の部門長以上の読み取りも覚える（使った量は GET の RPC）
+      for (const t of ['documents', 'v_document_status', 'rpc/document_storage_usage']) expect(recordedTables).toContain(t);
       expect(recordedTables.filter((t) => ['allocations', 'rules', 'requests', 'items', 'distance_overrides'].includes(t))).toEqual([]);
       expect(recorded.filter((r) => r.u.includes('select=allocation_version'))).toEqual([]);
 
@@ -559,6 +574,8 @@ test.describe('T16 ホーム（団体代表）', () => {
         'GET notices',
         'GET request_submissions',
         'GET substitution_consents',
+        // 提出物（T19）：代表する団体の提出の状況（題名・締切・理由つき。ファイルは読まない）
+        'GET v_document_status',
       ]);
       expect(readsBeyondMembership(reads)).toContain(`GET ${NOTICES_LATEST_READ}`);
       expect(readsBeyondMembership(reads)).toContain(`GET ${EVENTS_DATED_READ}`);
@@ -653,7 +670,11 @@ test.describe('T16 ナビの見出し（管理者・PC）', () => {
     const calendar = nav.getByRole('group', { name: '締切と予定' });
     await expect(calendar.getByRole('heading', { level: 2, name: '締切と予定' })).toBeVisible();
     await expect(calendar.getByRole('link')).toHaveText(['締切と予定の一覧']);
-    await expect(nav.getByRole('group')).toHaveCount(5);
+    // 提出物（T19）：締切と予定の後・共通の前。項目は「提出状況」（見出しと同じ言葉を縦に並べない）
+    const documents = nav.getByRole('group', { name: '提出物' });
+    await expect(documents.getByRole('heading', { level: 2, name: '提出物' })).toBeVisible();
+    await expect(documents.getByRole('link')).toHaveText(['提出状況']);
+    await expect(nav.getByRole('group')).toHaveCount(6);
     const common = nav.getByRole('group', { name: '共通' });
     await expect(common.getByRole('heading', { level: 2, name: '共通' })).toBeVisible();
     await expect(common.getByRole('link')).toHaveText(['マスタ設定', '履歴']);
@@ -681,12 +702,13 @@ test.describe('T16 ナビの見出し（総務部門員・スマホ）', () => {
     await open.click();
     const menu = page.locator('#app-mobile-nav');
     const nav = menu.getByRole('navigation', { name: 'メインメニュー' });
-    await expect(nav.getByRole('group')).toHaveCount(4);
+    await expect(nav.getByRole('group')).toHaveCount(5);
     await expect(nav.getByRole('group', { name: 'ホーム' }).getByRole('link')).toHaveText(['ホーム']);
     const furniture = nav.getByRole('group', { name: '机椅子' });
     await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
     await expect(nav.getByRole('group', { name: 'お知らせ' }).getByRole('link')).toHaveText(['お知らせ一覧']);
     await expect(nav.getByRole('group', { name: '締切と予定' }).getByRole('link')).toHaveText(['締切と予定の一覧']);
+    await expect(nav.getByRole('group', { name: '提出物' }).getByRole('link')).toHaveText(['提出状況']);
     await expect(nav.getByRole('group', { name: '共通' })).toHaveCount(0);
     expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(MOBILE.width);
 

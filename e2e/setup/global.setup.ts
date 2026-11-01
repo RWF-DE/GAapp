@@ -6,9 +6,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { test as setup } from '@playwright/test';
 import { cleanupLeftovers, ensureGlobalTables } from '../support/db';
+import { removeLeftoverDocumentObjects } from '../support/documents';
 import { GLOBAL_ROOMS_FILE } from '../support/global-rooms';
 
 setup('年度をまたぐ表を入れる', async () => {
+  // 提出物（T19）：前の実行の E2E- の年度のフォルダの Storage の物を、年度を消す前に Storage API で消す（SQL では消さない）
+  const files = await removeLeftoverDocumentObjects();
+  if (files.removed > 0) console.warn(`[db-setup] 前の実行の提出物のファイルを Storage API で消しました：${files.removed}`);
+  if (files.stray > 0) console.warn(`[db-setup] どの年度にも属さない提出物のファイルが ${files.stray} 個あります（Storage API では消せません）`);
   const removed = await cleanupLeftovers();
   if (removed.years + removed.rooms + removed.items + removed.users > 0) {
     console.warn(

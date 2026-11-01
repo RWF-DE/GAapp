@@ -52,7 +52,7 @@ supabase start -x realtime,imgproxy,mailpit,studio,edge-runtime,logflare,vector,
 
 pgTAP（`supabase test db`）だけなら、DB だけを起動すればよい（`supabase db start`。storage-api がなくても、storage のスキーマは DB の中にあり、提出物の Storage のポリシーも SQL で確かめる）。
 
-Storage について（提出物。T19。D-55）：Storage の物（storage.objects の行）は SQL では消せない（`storage.allow_delete_query` を立てない delete は 42501。消すのは Storage API〔画面の remove〕）。DB の行を消すと、その物は「どの提出にも属さないファイル」として残り、画面が消す。年度・団体・提出物を SQL Editor で消さない（残った物を誰も消せなくなることがある）。bucket documents の物を置く・書き換えるのは、ロールによらずトリガー documents_objects_guard が DB の予約と提出の状態で確かめる（SQL Editor の postgres や service_role でも、予約のない path・承認や終了の後・上書きは 42501。テストの準備で予約の外の物を置くときは、pgTAP の tests.put_object のように `set local session_replication_role = replica` の間に置く。これを設定できるのは postgres だけ）。ローカルの Storage のファイルの中身は `supabase stop --no-backup` で消える。
+Storage について（提出物。T19。D-55）：Storage の物（storage.objects の行）は SQL では消せない（`storage.allow_delete_query` を立てない delete は 42501。消すのは Storage API〔画面の remove〕）。DB の行を消すと、その物は「どの提出にも属さないファイル」として残り、画面が消す。年度・団体・提出物を SQL Editor で消さない（残った物を誰も消せなくなることがある）。bucket documents の物を置く・書き換えるのは、ロールによらずトリガー documents_objects_guard が DB の予約と提出の状態で確かめる（SQL Editor の postgres や service_role でも、予約のない path・承認や終了の後・上書きは 42501。テストの準備で予約の外の物を置くときは、pgTAP の tests.put_object のように `set local session_replication_role = replica` の間に置く。これを設定できるのは postgres だけ）。ローカルの Storage のファイルの中身は `supabase stop --no-backup` で消える。E2E の片付けも SQL では消さず、Storage API で消す（e2e/support/documents.ts の removeDocumentObjects：その年度のファイルの行を消してから、その年度の管理者のロールを付けた使い捨てのユーザーで remove し、残れば止まる。年度を消す前に呼ぶ。db-setup の前の実行の掃除も同じ）。
 
 ### ログインとテストユーザー（ローカル）
 
