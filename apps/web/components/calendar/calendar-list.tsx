@@ -176,10 +176,9 @@ function CalendarItem({
       </div>
       <div className="min-w-0 space-y-1">
         <h3 data-testid="calendar-item-title" className="font-semibold [overflow-wrap:anywhere]">
-          {/* 開けない立場では文字だけ（下線も付けない。AppLink の既定は className のまま文字を出すので、リンクに見えてしまう。
-              パート B の撮影で見つけた） */}
+          {/* 開けない立場では、AppLink が下線も色もない文字だけを出す（パート B の撮影で見つけ、マージの後の直しで AppLink の既定にした） */}
           {href ? (
-            <AppLink href={href} className="underline underline-offset-2 hover:text-primary" fallback={item.title}>
+            <AppLink href={href} className="underline underline-offset-2 hover:text-primary">
               {item.title}
             </AppLink>
           ) : (
