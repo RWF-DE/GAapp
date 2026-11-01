@@ -11,7 +11,9 @@
 // - 編集は全部の欄と、読んだときの updated_at の文字列（入力の元の版）を送る。何も変えていなければ送らずに「変更はありません」で閉じる。
 // - 応答が届かなかったとき・止められたときは notice-write.ts（2.6 の (B1)・(B2)）。conflict は読み直した行を入力の元にして入力を残し
 //   （次の保存はその版で送り、入力で上書きする）、消えていたら「保存」を押せなくする。出すの応答が届かず読み直せなければ、確かめるまで
-//   「出す」の代わりに「確かめる」を出す（(B2) だけが持つ状態）。
+//   「出す」の代わりに「確かめる」を出す（(B2) だけが持つ状態）。直すのが止められた後に読み直せなかったときの「読み直す」は、そのお知らせを
+//   読み直して止められた後と同じに決める（rereadRejectedNoticeSave。締切と予定〔T18〕と同じ形。一覧の読み直しでは入力の元の版を
+//   進めない。マージの後の直し）。読み直す間は欄・送る・閉じるを止める（届いた行を、押したときの入力と比べる）。
 // - 入力はブラウザに下書きとして置き（lib/drafts.ts。作るときとお知らせごと。直すときは読んだときの updated_at も）、開き直したときに
 //   戻せる（DraftNotice）。戻した下書きの保存は下書きの updated_at で送るので、間にほかの人が変えていれば conflict になる。
 // - 閉じる前（入力があれば「保存していない入力を捨てますか」）・アプリの中で移る前・年度を切り替える前に確かめる（UnsavedChangesGuard）。
@@ -63,7 +65,7 @@ import {
 } from '@/lib/schemas/notices';
 import { cn } from '@/lib/utils';
 import { NoticeGroupPicker } from './notice-group-picker';
-import { confirmCreated, runNoticeSave, type NoticeSaveResult } from './notice-write';
+import { confirmCreated, rereadRejectedNoticeSave, runNoticeSave, type NoticeSaveResult } from './notice-write';
 
 /** 開いているダイアログ：出す（new）か、一覧のお知らせを直す（edit。notice は開いたときの行） */
 export type NoticeFormTarget = { type: 'new' } | { type: 'edit'; notice: NoticeRow };
@@ -104,8 +106,13 @@ export const CONFLICT_NOTICE = `${NOTICE_CONFLICT_MESSAGE}。入力は残して�
 export const NOT_EDITABLE_NOTICE = `${NOTICE_CONFLICT_MESSAGE}。総務部門員が編集できるのは、自分が書いた総務内のお知らせだけなので、このお知らせは保存できません。入力は残してあります。必要なら写してから閉じてください`;
 /** 送るボタンを押せないとき（書けない・入力の元の行を今の段で直せない）の足もとの文 */
 export const CANNOT_SAVE_TEXT = '今の立場・年度の状態では保存できません';
-/** 止められた後に読み直せなかった（「読み直しました」とは言わない） */
+/**
+ * 止められた後に読み直せなかった（「読み直しました」とは言わない）。「読み直す」はそのお知らせを読み直し、変わっていれば conflict の
+ * 知らせにして入力の元を進める（次の1回の保存で上書きできる）
+ */
 export const REREAD_FAILED_NOTICE = 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度保存してください';
+/** 「読み直す」でもまた読み直せなかった（知らせと「読み直す」は残す。締切と予定〔T18〕と同じ文） */
+export const REREAD_AGAIN_FAILED_MESSAGE = 'まだ読み直せませんでした。通信を確かめてから、もう一度「読み直す」を押してください（入力は残してあります）';
 /** 出すの応答が届かず、読み直せなかった（(B2)） */
 export const UNCONFIRMED_NOTICE = '出せたか確かめられません。通信が戻ったら「確かめる」を押してください';
 
@@ -113,7 +120,9 @@ export const UNCONFIRMED_NOTICE = '出せたか確かめられません。通信
 type SubmitState =
   | { type: 'conflict'; row: NoticeRow }
   | { type: 'missing' }
-  | { type: 'unknown'; message: string; showReload?: boolean }
+  | { type: 'unknown'; message: string }
+  /** 直すのが止められた後に読み直せなかった（「読み直す」つき） */
+  | { type: 'unread' }
   | { type: 'unconfirmed'; write: NoticeWrite; error: unknown }
   | { type: 'error'; error: unknown };
 
@@ -190,6 +199,8 @@ function NoticeFormBody({
   const [errors, setErrors] = useState<NoticeFieldErrors>({});
   const [submit, setSubmit] = useState<SubmitState | null>(null);
   const [pending, setPending] = useState(false);
+  // 止められた後に読み直せなかったときの「読み直す」の最中（その間は送る・閉じる・入力を止める。届いた行を、押したときの入力と比べる）
+  const [rereading, setRereading] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   // 開いたときの一覧の id（(B2) の確かめで、前からあったお知らせを取り違えない）
   const [knownIds] = useState(() => new Set(notices.map((n) => n.id)));
@@ -230,7 +241,8 @@ function NoticeFormBody({
   const order = useMemo(() => groupOrderOf(groups), [groups]);
   const dirty = useMemo(() => JSON.stringify(values) !== JSON.stringify(initial), [values, initial]);
   // 応答が届かなかった後・止められた後に読み直せなかったときは、DB の行が入力の元と同じか分からないので、「変更はありません」で閉じずに送る
-  const mustSend = submit?.type === 'unknown';
+  const mustSend = submit?.type === 'unknown' || submit?.type === 'unread';
+  const busy = pending || rereading;
   const titleCount = charCount(values.title.trim());
   const bodyCount = values.body.trim() === '' ? 0 : charCount(values.body);
 
@@ -254,7 +266,7 @@ function NoticeFormBody({
   };
 
   const requestClose = () => {
-    if (pending) return;
+    if (busy) return;
     if (dirty) setDiscardOpen(true);
     else {
       writer.cancel();
@@ -262,9 +274,12 @@ function NoticeFormBody({
     }
   };
 
-  /** 保存できた（出した・直した・保存されていた）：一覧のキャッシュに入れて読み直し、下書きを消して閉じる */
-  const finish = (row: SavedNotice | NoticeRow, w: NoticeWrite, before: boolean) => {
-    const groupIds = 'groupIds' in row ? row.groupIds : w.audience === 'groups' ? w.groupIds : [];
+  /**
+   * 保存できた（出した・直した・保存されていた）：一覧のキャッシュに入れて読み直し、下書きを消して閉じる。w は送った入力（save_notice の
+   * 返り値には宛先の団体がないので、そこから取る。読み直した行〔NoticeRow〕には宛先の団体があるので使わない）
+   */
+  const finish = (row: SavedNotice | NoticeRow, w: NoticeWrite | null, before: boolean) => {
+    const groupIds = 'groupIds' in row ? row.groupIds : w?.audience === 'groups' ? w.groupIds : [];
     putNoticeInCache(queryClient, yearId, row, groupIds);
     invalidateNotices(queryClient, yearId);
     writer.clear();
@@ -281,8 +296,8 @@ function NoticeFormBody({
     onClose();
   };
 
-  /** 送った結果の出し方 */
-  const settle = (result: NoticeSaveResult, w: NoticeWrite) => {
+  /** 送った結果の出し方（w は送った入力。「読み直す」の結果は、確かめを通らなかった入力なら null） */
+  const settle = (result: NoticeSaveResult, w: NoticeWrite | null) => {
     switch (result.type) {
       case 'saved':
         finish(result.row, w, result.before);
@@ -302,10 +317,11 @@ function NoticeFormBody({
         setSubmit({ type: 'unknown', message: unknownOutcomeMessage() });
         return;
       case 'unread':
-        setSubmit({ type: 'unknown', message: REREAD_FAILED_NOTICE, showReload: true });
+        setSubmit({ type: 'unread' });
         return;
       case 'unconfirmed':
-        setSubmit({ type: 'unconfirmed', write: w, error: result.error });
+        // 出すの (B2) だけ（送った入力がある）
+        if (w) setSubmit({ type: 'unconfirmed', write: w, error: result.error });
         return;
       case 'not-created':
         // 出されていなかった：入力を残し、もう一度「出す」を押せる（通信の失敗の文言）
@@ -332,13 +348,19 @@ function NoticeFormBody({
     }
   };
 
-  const save = async () => {
-    if (pending || !writable || blocked || submit?.type === 'missing' || submit?.type === 'unconfirmed') return;
-    // 総務部門員は宛先・ピン留め・宛先の団体を入力の元の行のまま送る。宛先の団体は、今の一覧にある団体だけを団体の並びで送る
-    // （消えた団体は選べない）
+  /**
+   * 送る入力の確かめ。総務部門員は宛先・ピン留め・宛先の団体を入力の元の行のまま送る。宛先の団体は、今の一覧にある団体だけを団体の
+   * 並びで送る（消えた団体は選べない）
+   */
+  const checkInput = () => {
     const input: NoticeFormValues = fixed ? { ...values, ...fixed } : values;
     const normalized: NoticeFormValues = { ...input, groupIds: orderGroupIds(input.groupIds, order).filter((id) => order.has(id)) };
-    const r = checkNoticeForm(normalized);
+    return checkNoticeForm(normalized);
+  };
+
+  const save = async () => {
+    if (busy || !writable || blocked || submit?.type === 'missing' || submit?.type === 'unconfirmed') return;
+    const r = checkInput();
     setErrors(r.errors);
     if (!r.write) return;
     const w = r.write;
@@ -370,9 +392,28 @@ function NoticeFormBody({
     }
   };
 
+  /**
+   * 直すのが止められた後に読み直せなかった（unread）ときの「読み直す」：そのお知らせを読み直し、止められた後の読み直しと同じに決める
+   * （入力と同じなら「保存されていました」、変わっていれば conflict の知らせにして入力の元を進める、なければ「見つかりません」）。
+   * また読み直せなければ知らせと「読み直す」を残す（版は進めない）。読み直す間は送る・閉じる・入力を止める（届いた行を押したときの入力と比べる）。
+   */
+  const rereadUnread = async () => {
+    if (busy || !editing || !lockUpdatedAt) return;
+    const write = checkInput().write ?? null;
+    const id = editing.id;
+    setRereading(true);
+    try {
+      const result = await rereadRejectedNoticeSave({ base: { id, updatedAt: lockUpdatedAt }, write, reread: () => readNotice(id) });
+      if (result.type === 'unread') toast.error(REREAD_AGAIN_FAILED_MESSAGE);
+      else settle(result, write);
+    } finally {
+      setRereading(false);
+    }
+  };
+
   /** (B2)：出したか確かめる（応答が届かず読み直せなかった後） */
   const check = async () => {
-    if (pending || submit?.type !== 'unconfirmed') return;
+    if (busy || submit?.type !== 'unconfirmed') return;
     const { write: w, error } = submit;
     setPending(true);
     try {
@@ -384,7 +425,8 @@ function NoticeFormBody({
   };
 
   const restoreDraft = () => {
-    if (!draft) return;
+    // 送っている間・読み直している間は入力と版を変えない（届いた結果は、送った・押したときの入力と版で決めるため）
+    if (!draft || busy) return;
     const d = draft.value.values;
     // 総務部門員は宛先とピン留めを変えられないので、戻すのは題名と本文だけ（宛先・ピン留めは入力の元の行のまま。下書きの値は古いことがある）
     setValues(canPin ? d : { ...values, title: d.title, body: d.body });
@@ -423,7 +465,7 @@ function NoticeFormBody({
           </DialogDescription>
         </DialogHeader>
         <div ref={bodyRef} data-testid="notice-form" className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-4">
-          <SubmitNotice submit={submit} blocked={blocked} onReload={onReload} />
+          <SubmitNotice submit={submit} blocked={blocked} onReload={onReload} onReread={() => void rereadUnread()} rereading={rereading} />
           {draft ? <DraftNotice savedAt={draft.savedAt} onRestore={restoreDraft} onDiscard={discardDraft} /> : null}
 
           <div data-field="audience" className="space-y-2">
@@ -435,7 +477,7 @@ function NoticeFormBody({
                 aria-labelledby={ids.audience}
                 value={values.audience}
                 onValueChange={(v) => update({ audience: v as NoticeAudience })}
-                disabled={pending}
+                disabled={busy}
                 className="gap-2"
               >
                 {audiences.map((a) => (
@@ -463,7 +505,7 @@ function NoticeFormBody({
           </div>
 
           {values.audience === 'groups' && audiences.includes('groups') ? (
-            <NoticeGroupPicker groups={groups} value={values.groupIds} onChange={(groupIds) => update({ groupIds })} disabled={pending} error={errors.groupIds} />
+            <NoticeGroupPicker groups={groups} value={values.groupIds} onChange={(groupIds) => update({ groupIds })} disabled={busy} error={errors.groupIds} />
           ) : null}
 
           <div data-field="title" className="space-y-1.5">
@@ -480,7 +522,7 @@ function NoticeFormBody({
               id={ids.title}
               value={values.title}
               onChange={(e) => update({ title: e.target.value })}
-              disabled={pending}
+              disabled={busy}
               aria-invalid={errors.title ? true : undefined}
               autoComplete="off"
             />
@@ -506,7 +548,7 @@ function NoticeFormBody({
               value={values.body}
               rows={8}
               onChange={(e) => update({ body: e.target.value })}
-              disabled={pending}
+              disabled={busy}
               aria-invalid={errors.body ? true : undefined}
             />
             {errors.body ? (
@@ -522,7 +564,7 @@ function NoticeFormBody({
                 id={ids.pin}
                 checked={values.pinned}
                 onCheckedChange={(v) => update({ pinned: v })}
-                disabled={pending}
+                disabled={busy}
                 aria-describedby={ids.pinHelp}
                 className="mt-0.5"
               />
@@ -541,17 +583,17 @@ function NoticeFormBody({
         </div>
         <DialogFooter className="flex-row flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
           {!writable || blocked ? <p className="mr-auto text-sm text-muted-foreground">{CANNOT_SAVE_TEXT}</p> : null}
-          <Button variant="outline" onClick={requestClose} disabled={pending}>
+          <Button variant="outline" onClick={requestClose} disabled={busy}>
             やめる
           </Button>
           {submit?.type === 'unconfirmed' ? (
-            <Button onClick={() => void check()} disabled={pending} aria-busy={pending || undefined}>
+            <Button onClick={() => void check()} disabled={busy} aria-busy={pending || undefined}>
               {pending ? '確かめています…' : '確かめる'}
             </Button>
           ) : (
             <Button
               onClick={() => void save()}
-              disabled={pending || !writable || blocked || submit?.type === 'missing'}
+              disabled={busy || !writable || blocked || submit?.type === 'missing'}
               aria-busy={pending || undefined}
             >
               {sendLabel}
@@ -577,11 +619,25 @@ function NoticeFormBody({
 }
 
 /**
- * 送った後の知らせ（conflict・消えていた・保存できたか分からない・確かめられない・そのほかの失敗）。blocked は、入力の元の行を今の段で
- * 直せない（conflict で読み直したお知らせの宛先が総務内でなくなった総務部門員など）：conflict の知らせの代わりに、保存できない理由と
- * 今の宛先を出す（レビューの T17-R1）
+ * 送った後の知らせ（conflict・消えていた・保存できたか分からない・止められた後に読み直せなかった・確かめられない・そのほかの失敗）。
+ * blocked は、入力の元の行を今の段で直せない（conflict で読み直したお知らせの宛先が総務内でなくなった総務部門員など）：conflict の
+ * 知らせの代わりに、保存できない理由と今の宛先を出す（レビューの T17-R1）
  */
-function SubmitNotice({ submit, blocked, onReload }: { submit: SubmitState | null; blocked: boolean; onReload: () => void }) {
+function SubmitNotice({
+  submit,
+  blocked,
+  onReload,
+  onReread,
+  rereading,
+}: {
+  submit: SubmitState | null;
+  blocked: boolean;
+  /** 一覧を読み直す（そのほかの失敗の帯） */
+  onReload: () => void;
+  /** 止められた後に読み直せなかったときの「読み直す」（そのお知らせを読み直して決める） */
+  onReread: () => void;
+  rereading: boolean;
+}) {
   if (!submit) return null;
   const box = 'space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm';
   switch (submit.type) {
@@ -616,13 +672,17 @@ function SubmitNotice({ submit, blocked, onReload }: { submit: SubmitState | nul
       );
     case 'unknown':
       return (
-        <div role="alert" data-testid="unknown-outcome" data-submit-error className={box}>
+        <div role="alert" data-testid="unknown-outcome" data-kind="unknown" data-submit-error className={box}>
           <p className="font-medium text-destructive">{submit.message}</p>
-          {submit.showReload ? (
-            <Button size="sm" variant="outline" onClick={onReload}>
-              読み直す
-            </Button>
-          ) : null}
+        </div>
+      );
+    case 'unread':
+      return (
+        <div role="alert" data-testid="unknown-outcome" data-kind="unread" data-submit-error className={box}>
+          <p className="font-medium text-destructive">{REREAD_FAILED_NOTICE}</p>
+          <Button size="sm" variant="outline" onClick={onReread} disabled={rereading} aria-busy={rereading || undefined}>
+            {rereading ? '読み直しています…' : '読み直す'}
+          </Button>
         </div>
       );
     case 'unconfirmed':

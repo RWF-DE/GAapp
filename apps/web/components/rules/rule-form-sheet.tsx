@@ -5,9 +5,12 @@
 // 楽観ロックの版（入力の元）は、シートを開いたときの行の updated_at（baseUpdatedAt）。
 // 応答が届かなかったとき・止められたときは 2.6 の (B1)（rule-write.ts の runRuleWrite が対象の行を読み直し、settleLockedWrite で決める）。
 // シートが新しい行を受け取る道（保存の後・止められた後の読み直し、unread の後の「読み直す」、裏の読み直し・invalidate）のうち、
-// 入力の元を付け替えるのは、その判定の結果が changed（SaveOutcome の rebase に読み直した行がある）ときだけ。一覧の読み直し（「読み直す」・裏の読み直し）では
-// 版を進めない（利用者が見ていない版で次の保存が通ると、ほかの人の変更を確かめずに上書きする）。次の保存は同じ道を通り、版が進んでいれば DB が conflict で止め、
-// 読み直して決める。ほかの人の変更の知らせ（ErrorBanner）・「保存されていました」も runRuleWrite の結果からだけ出す。
+// 入力の元を付け替えるのは、その行を読み直した判定の結果が changed（SaveOutcome の rebase に読み直した行がある）ときだけ。一覧の読み直し
+// （エラーの帯の「読み直す」・裏の読み直し）では版を進めない（利用者が見ていない版で次の保存が通ると、ほかの人の変更を確かめずに上書きする）。
+// 止められた後に読み直せなかった（unread）ときの「読み直す」は、その行を読み直して止められた後と同じに決める（SaveOutcome の reread。
+// 締切と予定〔T18〕の rereadRejectedSave と同じ形。マージの後の直し）：入力と同じなら閉じる、変わっていれば conflict の知らせにして版を進める、
+// なくなっていれば「保存」を押せなくする、また読めなければ知らせて版を進めない。読み直す間は欄・保存・閉じるを止める。
+// ほかの人の変更の知らせ（ErrorBanner）・「保存されていました」も、その行を読み直した結果からだけ出す。
 // 確かめるためだけの状態は持たず、保存のボタンは押せるまま。
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -34,7 +37,7 @@ import { classifyError, unknownOutcomeMessage } from '@/lib/errors';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { NOTE_MAX, optionalText } from '@/lib/schemas/common';
 import { CheckOne, FieldErrors, RuleParamsFields } from './rule-fields';
-import type { SaveOutcome } from './rule-write';
+import { REREAD_AGAIN_FAILED_MESSAGE, type RuleReread, type SaveOutcome } from './rule-write';
 
 /**
  * 開いているシート（新規はひな形のコードを持つことがある）。
@@ -87,9 +90,20 @@ function RuleFormSheetBody({
 }: RuleFormSheetProps & { target: RuleSheetTarget }) {
   const [values, setValues] = useState<RuleFormValues>(target.initial);
   const [errors, setErrors] = useState<RuleFieldErrors>({});
-  // 前の保存の失敗（runRuleWrite の結果）。rebased：読み直した行を入力の元にした（changed）
-  const [submitError, setSubmitError] = useState<{ error: unknown; notice?: string; showReload?: boolean; rebased?: boolean } | null>(null);
+  // 前の保存の失敗（runRuleWrite の結果）。rebased：読み直した行を入力の元にした（changed）。reread：止められた後に読み直せなかった
+  // ときの「読み直す」（その行を読み直す）
+  const [submitError, setSubmitError] = useState<{
+    error: unknown;
+    notice?: string;
+    showReload?: boolean;
+    reread?: RuleReread;
+    rebased?: boolean;
+  } | null>(null);
   const [pending, setPending] = useState(false);
+  // 止められた後に読み直せなかったときの「読み直す」の最中（その間は送る・閉じる・入力を止める。届いた行を、押したときの入力と比べる）
+  const [rereading, setRereading] = useState(false);
+  // 編集中のルールがなくなっていた（その行を読み直した結果。一覧の読み直しを待たずに「保存」を押せなくする）
+  const [gone, setGone] = useState(false);
   const [discardOpen, setDiscardOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const codeId = useId();
@@ -119,7 +133,9 @@ function RuleFormSheetBody({
   const lockAdvanced = target.type === 'edit' && lockUpdatedAt !== target.baseUpdatedAt;
   const unchanged = target.type === 'edit' && !dirty && !lockAdvanced && !mustSend;
   const memoOnly = editMode === 'memo';
-  const paramsDisabled = memoOnly || pending;
+  const busy = pending || rereading;
+  const paramsDisabled = memoOnly || busy;
+  const missing = target.type === 'edit' && (!rule || gone);
 
   // エラーが出たら最初のエラーの欄を見える所に出す
   useEffect(() => {
@@ -133,16 +149,46 @@ function RuleFormSheetBody({
   }, [submitError]);
 
   const requestClose = () => {
-    if (pending) return;
+    if (busy) return;
     if (dirty) setDiscardOpen(true);
     else onClose();
   };
 
+  /** 送る値（確かめの結果を欄に出さない形。「読み直す」で読み直した行と比べる）。確かめを通らなければ null */
+  const writeOfInput = (): Partial<RuleWrite> | null => {
+    if (memoOnly) {
+      const m = memoSchema.safeParse(values.memo);
+      return m.success ? { memo: m.data } : null;
+    }
+    const res = checkRuleForm(values, data, rule?.id ?? null);
+    return res.row ? toRuleWrite(res.row) : null;
+  };
+
+  /**
+   * 送った・読み直した結果（失敗）を出す。fieldErrors は欄の下に。ほかは知らせにし、編集で読み直した行（rebase）があれば
+   * 入力の元にする（版を進める）。行がなくなっていた（rebase が null）なら「保存」を押せなくする
+   */
+  const showFailure = (out: Extract<SaveOutcome, { ok: false }>) => {
+    if (out.fieldErrors) {
+      setErrors(out.fieldErrors);
+      return;
+    }
+    const rebase = target.type === 'edit' ? out.rebase : undefined;
+    setSubmitError({ error: out.error, notice: out.notice, showReload: out.showReload, reread: out.reread, rebased: !!rebase });
+    if (rebase) {
+      // 判定の結果が changed：読み直した行を入力の元にする（もう一度の保存は、ほかの人の変更を見た後の、その版での意図した上書き）。
+      // unread・行がなくなっていたとき（rebase がない）は版を進めない（次の保存は同じ道を通り、DB が conflict・not_found で止める）
+      setLockUpdatedAt(rebase.updated_at);
+      setRebasedRow(rebase);
+    }
+    if (rebase === null) setGone(true);
+  };
+
   const save = async () => {
-    if (pending) return;
+    if (busy) return;
     // 前の保存の失敗の知らせ（submitError）は、送ると決まってから消す（下の setPending の前）。欄の確かめで止まって戻るときに消すと、
     // 応答が届かなかった後だという印（afterUnknownOutcome → mustSend）も消え、次に開いたときの値へ戻した保存が送らずに閉じてしまう（2.6 の (B1) の 2）
-    if (target.type === 'edit' && (!rule || !lockUpdatedAt)) return;
+    if (target.type === 'edit' && (!rule || gone || !lockUpdatedAt)) return;
     const locked = rule && lockUpdatedAt ? { ...rule, updated_at: lockUpdatedAt } : null;
     /**
      * 送らずに閉じるか：入力を開いたときのまま（unchanged。版が開いたときのままの間だけ）か、
@@ -189,19 +235,41 @@ function RuleFormSheetBody({
         onClose();
         return;
       }
-      if (out.fieldErrors) setErrors(out.fieldErrors);
-      else {
-        const rebase = target.type === 'edit' ? out.rebase : undefined;
-        setSubmitError({ error: out.error, notice: out.notice, showReload: out.showReload, rebased: !!rebase });
-        if (rebase) {
-          // 判定の結果が changed：読み直した行を入力の元にする（もう一度の保存は、ほかの人の変更を見た後の、その版での意図した上書き）。
-          // unread・行がなくなっていたとき（rebase がない）は版を進めない（次の保存は同じ道を通り、DB が conflict・not_found で止める）
-          setLockUpdatedAt(rebase.updated_at);
-          setRebasedRow(rebase);
-        }
-      }
+      showFailure(out);
     } finally {
       setPending(false);
+    }
+  };
+
+  /**
+   * 止められた後に読み直せなかった（unread）ときの「読み直す」：その行を読み直し、止められた後と同じに決める（SaveOutcome の reread）。
+   * 入力と同じなら（保存されていました）閉じる、変わっていれば conflict の知らせにして入力の元を進める、なければ「保存」を押せなくする。
+   * また読み直せなければ知らせと「読み直す」を残す（版は進めない）。読み直す間は送る・閉じる・入力を止める（届いた行を押したときの入力と比べる）。
+   * reread のない結果（ほかの呼び方）は、一覧を読み直すだけ
+   */
+  const rereadUnread = async () => {
+    const reread = submitError?.reread;
+    if (busy) return;
+    if (!reread) {
+      onReload();
+      return;
+    }
+    const input = writeOfInput();
+    setRereading(true);
+    try {
+      const out = await reread(input);
+      if (out === null) {
+        toast.error(REREAD_AGAIN_FAILED_MESSAGE);
+        return;
+      }
+      if (out.ok) {
+        onClose();
+        return;
+      }
+      setSubmitError(null);
+      showFailure(out);
+    } finally {
+      setRereading(false);
     }
   };
 
@@ -246,8 +314,8 @@ function RuleFormSheetBody({
             <div role="alert" data-testid="unknown-outcome" data-submit-error className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
               <p className="font-medium text-destructive">{submitError.notice}</p>
               {submitError.showReload ? (
-                <Button size="sm" variant="outline" onClick={onReload}>
-                  読み直す
+                <Button size="sm" variant="outline" onClick={() => void rereadUnread()} disabled={rereading} aria-busy={rereading || undefined}>
+                  {rereading ? '読み直しています…' : '読み直す'}
                 </Button>
               ) : null}
             </div>
@@ -256,7 +324,7 @@ function RuleFormSheetBody({
               <ErrorBanner error={submitError.error} onReload={onReload} />
             </div>
           ) : null}
-          {target.type === 'edit' && !rule ? (
+          {missing ? (
             <p className="text-sm text-destructive">このルールは見つかりません（ほかの人が消した可能性があります）。閉じて読み直してください。</p>
           ) : null}
           <div className="grid gap-4 sm:grid-cols-[12rem_1fr]">
@@ -286,21 +354,17 @@ function RuleFormSheetBody({
               value={values.memo}
               rows={3}
               onChange={(e) => setValues({ ...values, memo: e.target.value })}
-              disabled={pending}
+              disabled={busy}
               aria-invalid={errorsUnder(errors, 'memo').length > 0 || undefined}
             />
             <FieldErrors errors={errors} path="memo" />
           </div>
         </div>
         <SheetFooter className="flex-row justify-end border-t">
-          <Button variant="outline" onClick={requestClose} disabled={pending}>
+          <Button variant="outline" onClick={requestClose} disabled={busy}>
             閉じる
           </Button>
-          <Button
-            onClick={() => void save()}
-            disabled={pending || (target.type === 'edit' && !rule)}
-            aria-busy={pending || undefined}
-          >
+          <Button onClick={() => void save()} disabled={busy || missing} aria-busy={pending || undefined}>
             {pending ? '保存中…' : '保存'}
           </Button>
         </SheetFooter>

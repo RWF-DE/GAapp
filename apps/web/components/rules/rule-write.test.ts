@@ -247,6 +247,78 @@ describe('runRuleWrite：conflict・not_found・23505 で止められた（isLoc
   });
 });
 
+describe('runRuleWrite：止められた後に読み直せなかった（unread）ときの「読み直す」（reread。締切と予定〔T18〕の rereadRejectedSave と同じ決め方）', () => {
+  const conflict = () => appError('conflict', 'lock_conflict', { table: 'rules' });
+  /** 止められ（conflict・23505）、その後の読み直しが通信で失敗した結果。reread の2回目からは rereads のとおり */
+  async function unreadOf(req: (reread: () => Promise<RuleDbRow | null>) => RuleWriteRequest, ...rereads: Array<() => Promise<RuleDbRow | null>>) {
+    const d = deps();
+    const reread = vi.fn<() => Promise<RuleDbRow | null>>().mockRejectedValueOnce(network());
+    for (const r of rereads) reread.mockImplementationOnce(r);
+    const out = failed(await runRuleWrite(req(reread), d));
+    expect(out.notice).toBe(REREAD_FAILED_MESSAGE);
+    expect(out.showReload).toBe(true);
+    expect(typeof out.reread).toBe('function');
+    d.onReload.mockClear();
+    return { out, d, reread };
+  }
+  const updateReq = (reread: () => Promise<RuleDbRow | null>) => update(() => Promise.reject(conflict()), reread);
+  const insertReq = (reread: () => Promise<RuleDbRow | null>) => insert(() => Promise.reject(pg('23505', 'duplicate key')), reread);
+
+  it('更新：また読めない → null（一覧を読み直さず、読み直した行を返さない。シートは知らせて版を進めない）', async () => {
+    const { out, d, reread } = await unreadOf(updateReq, () => Promise.reject(network()));
+    expect(await out.reread!(memoPatch)).toBeNull();
+    expect(reread).toHaveBeenCalledTimes(2);
+    expect(d.onReload).not.toHaveBeenCalled();
+    expect(d.afterSaved).not.toHaveBeenCalled();
+  });
+
+  it('更新：押したときの入力と同じ → 「保存されていました」（成功と同じ。関係するクエリを読み直す）', async () => {
+    const { out, d } = await unreadOf(updateReq, async () => row({ memo: 'あとで直したメモ', updated_at: T1 }));
+    expect(await out.reread!({ memo: 'あとで直したメモ' })).toEqual({ ok: true });
+    expect(d.afterSaved).toHaveBeenCalledTimes(1);
+    expect(toast.success).toHaveBeenCalledWith(SAVED_BEFORE_MESSAGE);
+  });
+
+  it('更新：版が進み入力と違う → conflict の文言と読み直した行（rebase。シートはこの版を入力の元にする）。一覧も読み直す', async () => {
+    const other = row({ memo: 'ほかの人のメモ', updated_at: T1 });
+    const { out, d } = await unreadOf(updateReq, async () => other);
+    const again = await out.reread!(memoPatch);
+    expect(again).not.toBeNull();
+    const f = failed(again!);
+    expect(f.rebase).toBe(other);
+    expect(classifyError(f.error).kind).toBe('conflict');
+    expect(f.notice).toBeUndefined();
+    expect(d.onReload).toHaveBeenCalledTimes(1);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('更新：行がなくなっていた → not_found（rebase は null）', async () => {
+    const { out, d } = await unreadOf(updateReq, async () => null);
+    const f = failed((await out.reread!(memoPatch))!);
+    expect(f.rebase).toBeNull();
+    expect(classifyError(f.error).kind).toBe('not_found');
+    expect(d.onReload).toHaveBeenCalledTimes(1);
+  });
+
+  it('入力が確かめを通らない（null）なら、読み直した行が同じ中身でも「保存されていました」にしない', async () => {
+    const same = row({ memo: 'わたしのメモ', updated_at: T1 });
+    const { out } = await unreadOf(updateReq, async () => same);
+    const f = failed((await out.reread!(null))!);
+    expect(f.rebase).toBe(same);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('追加（23505 の後）：同じ値なら「保存されていました」、同じコードのほかの行ならコードの欄に「同じコードのルールがあります」', async () => {
+    const { out } = await unreadOf(insertReq, async () => row({ ...insertInput, updated_at: T1 }));
+    expect(await out.reread!(insertInput)).toEqual({ ok: true });
+    const other = await unreadOf(insertReq, async () => row({ code: 'S09', memo: 'ほかの人', updated_at: T1 }));
+    const f = failed((await other.out.reread!(insertInput))!);
+    expect(f.fieldErrors).toEqual({ code: [DUPLICATE_CODE_MESSAGE] });
+    expect(f.rebase).toBeUndefined();
+    expect(other.d.onReload).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('runRuleWrite：ほかの失敗', () => {
   it('forbidden（lock_unchanged）は読み直さず、年度の行と立場を読み直す', async () => {
     const d = deps();

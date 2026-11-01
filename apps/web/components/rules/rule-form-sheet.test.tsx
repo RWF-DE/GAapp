@@ -9,6 +9,7 @@ import { appError, unknownOutcomeMessage } from '@/lib/errors';
 import { NOTE_MAX } from '@/lib/schemas/common';
 import { FIXTURE_UPDATED_AT, fixtureToTables } from '@/lib/testing/fixture-rows';
 import { RuleFormSheet, type RuleFormSheetProps, type RuleSheetTarget, type SaveOutcome } from './rule-form-sheet';
+import { REREAD_AGAIN_FAILED_MESSAGE, REREAD_FAILED_MESSAGE, type RuleReread } from './rule-write';
 
 // ルールのシートの「変更がなければ送らずに閉じる」分かれ道と、保存の失敗の後（conflict・2.6 の (B1)）の扱い（T12）。保存は onInsert・onUpdate の差し替えで見る。
 const toast = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn(), success: vi.fn() }));
@@ -75,6 +76,14 @@ function setup(
 
 const memoBox = () => screen.getByLabelText(/^メモ/);
 const saveButton = () => screen.getByRole('button', { name: '保存' });
+/** 止められた後に読み直せなかった結果（runRuleWrite の unread）。reread はその後の「読み直す」 */
+const unreadOutcome = (reread: RuleReread): SaveOutcome => ({
+  ok: false,
+  error: appError('conflict', 'lock_conflict', { table: 'rules' }),
+  notice: REREAD_FAILED_MESSAGE,
+  showReload: true,
+  reread,
+});
 
 describe('RuleFormSheet：メモだけ（確定中・終了）', () => {
   it('何も変えずに保存すると update を送らず、「変更はありません」で閉じる', async () => {
@@ -321,31 +330,112 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('止められた後に読み直せなかった：「読み直しました」と言わず、読み直すボタンを出す。開いたときの値に戻しても送る', async () => {
+  it('止められた後に読み直せなかった：「読み直しました」と言わず、読み直すボタンを出す。「読み直す」はその行を読み直し（押したときの入力を渡す）、まだ読めなければ知らせて知らせと「読み直す」を残す（一覧の読み直しではない）。開いたときの値に戻しても送る', async () => {
     const user = userEvent.setup();
+    const reread = vi.fn<RuleReread>(async () => null);
     const onUpdate = vi
       .fn<RuleFormSheetProps['onUpdate']>()
-      .mockResolvedValueOnce({
-        ok: false,
-        error: appError('conflict', 'lock_conflict', { table: 'rules' }),
-        notice: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした',
-        showReload: true,
-      })
+      .mockResolvedValueOnce(unreadOutcome(reread))
       .mockResolvedValue({ ok: true });
     const { props } = setup({ onUpdate });
     const original = (memoBox() as HTMLTextAreaElement).value;
     await user.type(memoBox(), '。');
     await user.click(saveButton());
     const notice = await screen.findByTestId('unknown-outcome');
+    expect(notice.textContent).toContain(REREAD_FAILED_MESSAGE);
     expect(notice.textContent).not.toContain('読み直しました');
     await user.click(screen.getByRole('button', { name: '読み直す' }));
-    expect(props.onReload).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(REREAD_AGAIN_FAILED_MESSAGE));
+    expect(reread).toHaveBeenCalledTimes(1);
+    expect(reread.mock.calls[0]![0]).toMatchObject({ code: s05.code, memo: `${original}。` });
+    expect(props.onReload).not.toHaveBeenCalled();
+    expect(screen.getByTestId('unknown-outcome').textContent).toContain(REREAD_FAILED_MESSAGE);
+    expect(screen.getByRole('button', { name: '読み直す' })).toBeTruthy();
 
     await user.clear(memoBox());
     if (original) await user.type(memoBox(), original);
     await user.click(saveButton());
     await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    expect(onUpdate.mock.calls[1]![0].updated_at).toBe(s05.updated_at);
     expect(toast.info).not.toHaveBeenCalled();
+  });
+
+  it('止められた後に読み直せなかった後の「読み直す」：読めて変わっていれば conflict の知らせにして版を進め（読み直した行を入力の元に）、次の1回の保存で上書きできる', async () => {
+    const user = userEvent.setup();
+    const reloadedAt = '2026-10-29T01:00:00.000000+00:00';
+    const other: RuleDbRow = { ...s05, memo: 'ほかの人のメモ', updated_at: reloadedAt };
+    const reread = vi.fn<RuleReread>(async () => ({ ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }), rebase: other }));
+    const onUpdate = vi
+      .fn<RuleFormSheetProps['onUpdate']>()
+      .mockResolvedValueOnce(unreadOutcome(reread))
+      .mockResolvedValue({ ok: true });
+    const { onClose } = setup({ onUpdate });
+    await user.clear(memoBox());
+    await user.type(memoBox(), 'わたしのメモ');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(screen.getByTestId('error-banner')).toBeTruthy());
+    expect(screen.queryByTestId('unknown-outcome')).toBeNull();
+    expect((memoBox() as HTMLTextAreaElement).value).toBe('わたしのメモ');
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    await user.click(saveButton());
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
+    expect(onUpdate.mock.calls[1]![0].updated_at).toBe(reloadedAt);
+    expect(onUpdate.mock.calls[1]![1].memo).toBe('わたしのメモ');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('止められた後に読み直せなかった後の「読み直す」：行がなくなっていれば「このルールは見つかりません」で「保存」を押せなくし、入力と同じなら（保存されていました）閉じる', async () => {
+    const user = userEvent.setup();
+    const gone = vi.fn<RuleReread>(async () => ({ ok: false, error: appError('not_found', 'lock_missing', { table: 'rules' }), rebase: null }));
+    const onUpdate = vi.fn<RuleFormSheetProps['onUpdate']>().mockResolvedValueOnce(unreadOutcome(gone));
+    const first = setup({ onUpdate });
+    await user.type(memoBox(), '。');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    expect(await screen.findByText('このルールは見つかりません（ほかの人が消した可能性があります）。閉じて読み直してください。')).toBeTruthy();
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(true);
+    await user.click(saveButton());
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    first.view.unmount();
+
+    const saved = vi.fn<RuleReread>(async () => ({ ok: true }));
+    const second = setup({ onUpdate: vi.fn<RuleFormSheetProps['onUpdate']>().mockResolvedValueOnce(unreadOutcome(saved)) });
+    await user.type(memoBox(), '。');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(second.onClose).toHaveBeenCalledTimes(1));
+    expect(second.onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('「読み直す」で読んでいる間は、欄・「保存」「閉じる」・「読み直す」を押せない（届いた行を、押したときの入力と比べる）', async () => {
+    const user = userEvent.setup();
+    let release!: (out: SaveOutcome | null) => void;
+    const reread = vi.fn<RuleReread>(
+      () =>
+        new Promise<SaveOutcome | null>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const onUpdate = vi.fn<RuleFormSheetProps['onUpdate']>().mockResolvedValueOnce(unreadOutcome(reread));
+    setup({ onUpdate });
+    await user.type(memoBox(), '。');
+    await user.click(saveButton());
+    await screen.findByTestId('unknown-outcome');
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    const busyButton = await screen.findByRole('button', { name: '読み直しています…' });
+    expect((busyButton as HTMLButtonElement).disabled).toBe(true);
+    expect((memoBox() as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByLabelText('コード') as HTMLInputElement).disabled).toBe(true);
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '閉じる' }) as HTMLButtonElement).disabled).toBe(true);
+    release(null);
+    expect(await screen.findByRole('button', { name: '読み直す' })).toBeTruthy();
+    expect((memoBox() as HTMLTextAreaElement).disabled).toBe(false);
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('止められた後に読み直せなかった（unread）ときは、一覧が新しい版を持っていても版を進めない。次の保存も開いたときの版で送る（DB が conflict で止め、読み直して決める）', async () => {
@@ -353,12 +443,8 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     const reloadedAt = '2026-10-29T01:00:00.000000+00:00';
     const other: RuleDbRow = { ...s05, memo: 'ほかの人のメモ', updated_at: reloadedAt };
     const reloaded = data(base.rules.map((r) => (r.id === s05.id ? other : r)));
-    const unread: SaveOutcome = {
-      ok: false,
-      error: appError('conflict', 'lock_conflict', { table: 'rules' }),
-      notice: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした',
-      showReload: true,
-    };
+    // 「読み直す」でもまだ読めない（その行の読み直しが通信で失敗する）
+    const unread: SaveOutcome = unreadOutcome(async () => null);
     const onUpdate = vi
       .fn<RuleFormSheetProps['onUpdate']>()
       .mockResolvedValueOnce(unread)
@@ -378,9 +464,10 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
     expect(onUpdate.mock.calls[1]![0].updated_at).toBe(s05.updated_at);
 
-    // 「読み直す」で一覧が来ても同じ（版を進めるのは、保存の結果が changed で読み直した行があるときだけ）
+    // 「読み直す」でまだ読めないときも、一覧が来ても同じ（版を進めるのは、その行を読み直した結果〔保存か「読み直す」〕が changed のときだけ）
     await screen.findByTestId('unknown-outcome');
     await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(REREAD_AGAIN_FAILED_MESSAGE));
     view.rerender(<RuleFormSheet {...props} data={data(base.rules.map((r) => (r.id === s05.id ? other : r)))} />);
     await user.click(saveButton());
     await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(3));
@@ -399,12 +486,7 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     const original = s05.memo ?? '';
     const onUpdate = vi
       .fn<RuleFormSheetProps['onUpdate']>()
-      .mockResolvedValueOnce({
-        ok: false,
-        error: appError('conflict', 'lock_conflict', { table: 'rules' }),
-        notice: 'ほかの人が先に変えた可能性がありますが、読み直せませんでした',
-        showReload: true,
-      })
+      .mockResolvedValueOnce(unreadOutcome(async () => null))
       .mockResolvedValue({ ok: true });
     const { onClose } = setup({ onUpdate });
     await user.clear(memoBox());

@@ -3,6 +3,8 @@
 // 確かめるためだけの状態（「確かめる」のボタン・押せなくした保存のボタン・送った値の控え）は持たず、
 // 応答が届かなかったとき（isUnknownOutcome）と、conflict・not_found・23505 で止められたとき（isLockRejection）に、
 // 対象の行（insert は (year_id, code)、update は id）を1回読み直して settleLockedWrite で決める。
+// 止められた後に読み直せなかった（unread）ときの「読み直す」は、同じ行をもう一度読み直して止められた後と同じに決める
+// （SaveOutcome の reread。締切と予定〔T18〕の rereadRejectedSave と同じ形。マージの後の直し）。
 import { toast } from 'sonner';
 import { isLockRejection, settleLockedWrite } from '@/lib/data/locked-save';
 import { sameRuleWrite, type RuleFieldErrors, type RuleWrite } from '@/lib/data/rules';
@@ -13,12 +15,28 @@ import { appError, classifyError, effectOf, isUnknownOutcome, unknownOutcomeMess
  * 保存の結果。失敗は入力を残す。
  * - fieldErrors：欄の下に出すもの（コードの重複など）。
  * - notice：ErrorBanner の代わりに出す文言（保存できたか分からない・止められた後に読み直せなかった）。showReload なら「読み直す」も出す。
+ * - reread：止められた後に読み直せなかった（showReload）ときの「読み直す」。同じ行を読み直して決める（RuleReread）。
  * - rebase：止められた後（と、応答が届かず版が進んでいたとき）に読み直した行。シートはこの行の版を入力の元にする
  *   （null は行がなくなっていた。undefined は読み直していない・読み直せなかった）。
  */
 export type SaveOutcome =
   | { ok: true }
-  | { ok: false; error: unknown; fieldErrors?: RuleFieldErrors; notice?: string; showReload?: boolean; rebase?: RuleDbRow | null };
+  | {
+      ok: false;
+      error: unknown;
+      fieldErrors?: RuleFieldErrors;
+      notice?: string;
+      showReload?: boolean;
+      reread?: RuleReread;
+      rebase?: RuleDbRow | null;
+    };
+
+/**
+ * 止められた後に読み直せなかった（unread）ときの「読み直す」：止められた書き込みの対象の行を1回読み直し、止められた後の読み直しと
+ * 同じに決める（rereadRejectedRuleWrite）。input は押したときの入力（読み直した行と sameRuleWrite で比べる。確かめを通らなければ
+ * null で、入力と同じとは見ない）。また読み直せなければ null（知らせて、版を進めない）。
+ */
+export type RuleReread = (input: Partial<RuleWrite> | null) => Promise<SaveOutcome | null>;
 
 /** 1つの書き込み */
 export interface RuleWriteRequest {
@@ -61,6 +79,8 @@ export const SAVED_BEFORE_MESSAGE = '保存されていました';
 export const DUPLICATE_CODE_MESSAGE = '同じコードのルールがあります';
 /** conflict・not_found・23505 で止められた後に、対象の行を読み直せなかったとき（「読み直しました」とは言わない） */
 export const REREAD_FAILED_MESSAGE = 'ほかの人が先に変えた可能性がありますが、読み直せませんでした。「読み直す」を押してから、もう一度保存してください';
+/** 「読み直す」でもまた読み直せなかった（知らせと「読み直す」は残す。締切と予定〔T18〕と同じ文） */
+export const REREAD_AGAIN_FAILED_MESSAGE = 'まだ読み直せませんでした。通信を確かめてから、もう一度「読み直す」を押してください（入力は残してあります）';
 
 /** シートの「保存」（既定） */
 export const SAVE_NOTICES: RuleWriteNotices = { unknownOutcome: unknownOutcomeMessage(), rereadFailed: REREAD_FAILED_MESSAGE };
@@ -166,7 +186,15 @@ export async function runRuleWrite(w: RuleWriteRequest, deps: RuleWriteDeps): Pr
     if (outcome === 'saved') return succeed(SAVED_BEFORE_MESSAGE);
     const notices = w.notices ?? SAVE_NOTICES;
     if (unknown && (outcome === 'not-saved' || outcome === 'unread')) return { ok: false, error, notice: notices.unknownOutcome };
-    if (outcome === 'unread') return { ok: false, error, notice: notices.rereadFailed, showReload: true };
+    if (outcome === 'unread') {
+      return {
+        ok: false,
+        error,
+        notice: notices.rereadFailed,
+        showReload: true,
+        reread: (input) => rereadRejectedRuleWrite({ mode: w.mode, reread: w.reread, input, baseVersion: w.baseVersion }, deps),
+      };
+    }
     // changed（と、止められた後の not-saved）：今までの conflict の扱い。一覧を読み直し、入力を残す
     deps.onReload();
     if (w.mode === 'insert' || classifyError(error).code === '23505') {
@@ -187,6 +215,51 @@ export async function runRuleWrite(w: RuleWriteRequest, deps: RuleWriteDeps): Pr
     deps.reloadMembership();
   }
   return { ok: false, error };
+}
+
+export interface RuleRereadRequest {
+  /** insert は (year_id, code)、update は id で読み直す（止められた書き込みと同じ reread） */
+  mode: 'insert' | 'update';
+  /** 対象の行を1行読む（なければ null。失敗したら投げる） */
+  reread: () => Promise<RuleDbRow | null>;
+  /** 押したときの入力（読み直した行と sameRuleWrite で比べる）。確かめを通らなければ null（入力と同じとは見ない） */
+  input: Partial<RuleWrite> | null;
+  /** 入力の元の版（update は止められた保存の版、insert は null） */
+  baseVersion: string | null;
+}
+
+/**
+ * 止められた後に読み直せなかった（unread）ときの「読み直す」（2.6 の (B1) の 3。締切と予定〔T18〕の rereadRejectedSave と同じ形）：
+ * 対象の行を1回読み直し、runRuleWrite の止められたときの道と同じに決める（settleLockedWrite）。
+ * - 入力と同じ → 「保存されていました」（成功と同じ。関係するクエリを読み直す）。
+ * - update：行があれば conflict と読み直した行（rebase。シートはこの版を入力の元にし、次の1回の保存で上書きできる）、
+ *   なければ not_found（rebase は null。シートは「保存」を押せなくする）。insert：同じコードのほかの行 → コードの重複。どれも一覧も読み直す。
+ * - また読み直せなければ null（一覧も読み直さない。シートは知らせて、版を進めない）。
+ * 一覧の読み直しでは入力の元の版を進めない（利用者が見ていない版で上書きしない）ので、シートの「読み直す」はここを通す。
+ */
+export async function rereadRejectedRuleWrite(w: RuleRereadRequest, deps: Pick<RuleWriteDeps, 'afterSaved' | 'onReload'>): Promise<SaveOutcome | null> {
+  const read: { row: RuleDbRow | null } = { row: null };
+  const outcome = await settleLockedWrite<RuleDbRow>({
+    reread: async () => {
+      read.row = await w.reread();
+      return read.row;
+    },
+    matches: (row) => w.input !== null && sameRuleWrite(row, w.input),
+    baseVersion: w.baseVersion,
+    versionOf: (row) => row.updated_at,
+  });
+  if (outcome === 'unread') return null;
+  if (outcome === 'saved') {
+    await deps.afterSaved();
+    toast.success(SAVED_BEFORE_MESSAGE);
+    return { ok: true };
+  }
+  // changed（と not-saved）：止められた後と同じ conflict の扱い。一覧を読み直し、入力を残す
+  deps.onReload();
+  if (w.mode === 'insert') return { ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }), fieldErrors: { code: [DUPLICATE_CODE_MESSAGE] } };
+  return read.row
+    ? { ok: false, error: appError('conflict', 'lock_conflict', { table: 'rules' }), rebase: read.row }
+    : { ok: false, error: appError('not_found', 'lock_missing', { table: 'rules' }), rebase: null };
 }
 
 /** 有効・無効の切り替え（一覧の toast で知らせる）の失敗の文言 */
