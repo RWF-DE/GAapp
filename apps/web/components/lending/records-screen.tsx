@@ -74,7 +74,8 @@ function RecordsBoard({ membership: m, yearId, userId }: { membership: Membershi
   };
 
   return (
-    <div className="mx-auto max-w-xl space-y-3 pb-4">
+    // 画面はスマホの幅（max-w-xl）、印刷は A4 の幅いっぱい（印刷用の表の列を詰めない。撮影で見つけた）
+    <div className="mx-auto max-w-xl space-y-3 pb-4 print:max-w-none">
       <div className="space-y-3 print:hidden">
         <LatestYearSwitch />
         <PageHeader

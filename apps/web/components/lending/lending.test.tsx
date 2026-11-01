@@ -347,6 +347,9 @@ describe('T21 備品と割り当て（/lending）', () => {
     expect(within(screen.getByTestId('lending-items')).queryByText('申請合計')).toBeNull();
     expect(within(screen.getByTestId('lending-assignments')).queryByText('申請')).toBeNull();
     expect(screen.queryByTestId('lending-unconfirm')).toBeNull();
+    // 読むだけの人の「すべての団体」には「入れる」の説明を付けない（撮影で見つけた。直せる人だけに出す）
+    expect(screen.getByText('すべての団体')).toBeTruthy();
+    expect(screen.queryByText(/入れる）$/)).toBeNull();
   });
 
   it('終了した年度：総務に帯「終了した年度のため、テント等の貸し出しは読むだけです」。書くためのボタンと欄を出さない', async () => {
@@ -361,6 +364,7 @@ describe('T21 備品と割り当て（/lending）', () => {
   it('「すべての団体」で申請のない企業にも入れられる（URL の ?view=all）', async () => {
     renderWith(<LendingScreen />, 'head', { search: 'view=all' });
     await screen.findByTestId('lending-assignments');
+    expect(screen.getByText('すべての団体（申請のない企業・休憩所などにも入れる）')).toBeTruthy();
     expect(screen.getAllByTestId('lending-assignment-row').map((r) => r.getAttribute('data-group-id'))).toEqual([G1, G2, CO]);
     expect(cell(CO, TENT).getAttribute('data-state')).toBe('empty');
     await user().click(screen.getByTestId('lending-view-all'));

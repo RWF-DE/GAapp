@@ -2,8 +2,8 @@
 // T16：ダッシュボード（/）の先読み（planHomePrefetch。欄が読むクエリと同じキー。版・スナップショットを読まない）と、
 // ルートのレイアウトの JS に机椅子の数え方・スナップショット・検証を入れないこと
 // T18：/ の先読みに予定と締切の項目（締切と予定の欄と同じキー。4G の計測で団体代表の / が 2 秒以内のままと確かめて足した）
-// T21：/ の先読みに総務のテント等の読み取り（店長・副店長の分は 4G で計ってから決める）、/request にテント等のタブを出すかの備品
-// （`?tab=lending` ならタブの読み取りも）、/lending/records（総務。先送りの許可リストにも入る）
+// T21：/ の先読みに総務のテント等の読み取り（店長・副店長の分は 4G の計測で 2 秒を超えたので足さない）、/request にテント等のタブを
+// 出すかの備品（`?tab=lending` ならタブの読み取りも）、/lending/records（総務。先送りの許可リストにも入る）
 import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
 import type { AppRole, GroupSummary, Membership } from '@/lib/auth/membership';
@@ -154,7 +154,8 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
         if (!p.kinds.includes(c.kind)) continue;
         for (const w of PORTAL_WIDGETS) {
           const q = portalWidgetQuery(p, c, w);
-          // T21：店長・副店長のテント等の読み取りは、4G で計ってから先読みに足すかを決める（notes/T21.md「画面の約束」7）
+          // T21：店長・副店長のテント等の読み取りは先読みに足さない（4G の計測で団体代表の / が 2 秒を超えた。notes/T21.md の
+          // 「実行したコマンドと結果（パート D）」）
           if (q && !(p.moduleId === 'lending' && c.kind === 'rep')) out.set(JSON.stringify(q.queryKey), q.queryKey);
         }
       }
@@ -285,7 +286,7 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     expect(repNotices!.usable!(member(null, [G1g]))).toBe(false);
   });
 
-  it('T21 店長・副店長のテント等の読み取りは / の先読みにまだ入れない（4G で計ってから決める）。総務の分は欄と同じキー', () => {
+  it('T21 店長・副店長のテント等の読み取りは / の先読みに入れない（4G の計測で 2 秒を超えた）。総務の分は欄と同じキー', () => {
     for (const m of [member(null, [G1g]), member('admin', [G1g]), member('viewer', [G1g])]) {
       expect(keys(home(m))).not.toContainEqual(lendingRepOptions(Y, [G1]).queryKey);
     }

@@ -57,9 +57,10 @@ export function RecordsPrint({ data, yearLabel }: { data: LendingRecordsData; ye
         <tbody>
           {groups.map((g) => (
             <tr key={g.id} className="break-inside-avoid">
-              <td className="border border-black px-1 py-1">{CATEGORY_LABELS[g.category]}</td>
-              <td className="border border-black px-1 py-1">{groupDisplayName(g)}</td>
-              <td className="border border-black px-1 py-1">{g.location?.name ?? NO_LOCATION_TEXT}</td>
+              {/* 区分・団体・使用場所は1字ずつ折り返さない（撮影で見つけた。備品の欄の幅を詰める） */}
+              <td className="border border-black px-1 py-1 whitespace-nowrap">{CATEGORY_LABELS[g.category]}</td>
+              <td className="border border-black px-1 py-1 whitespace-nowrap">{groupDisplayName(g)}</td>
+              <td className="border border-black px-1 py-1 whitespace-nowrap">{g.location?.name ?? NO_LOCATION_TEXT}</td>
               {items.map((it) => [
                 <td key={`${it.id}-a`} className="border border-black px-1 py-1 text-right">
                   {assigned.get(cellKey(g.id, it.id)) ?? ''}

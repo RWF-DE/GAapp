@@ -355,7 +355,10 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
  * 版・振り分けの行・ルール・スナップショットは読まない（/ は版を使わないので、記録・先送りもしてよい。D-33）。
  * 立場が届いて、総務・閲覧のみでなくなった・代表する団体が変わった（予定と締切は、ロールがついた・団体がなくなった）ときは使わない
  * （usable。settleEarlyLoad が消す）。予定と締切（T18）は、団体代表の / が 4G で 2 秒以内のままであることを `pnpm e2e:perf` で
- * 確かめて足した（notes/T18.md「実行したコマンドと結果（パート B）」、D-45 の T18 の直し）。
+ * 確かめて足した（notes/T18.md「実行したコマンドと結果（パート B）」、D-45 の T18 の直し）。テント等の貸し出し（T21）は総務の分だけ
+ * 足した。店長・副店長の分（lendingRepOptions）は、足した形の 4G の計測で団体代表の / が 2 秒をわずかに超えた（HTTP/2・first の
+ * 中央値 2,023 ms。並行の作業で負荷が高い中の1回）ので足していない（notes/T21.md「実行したコマンドと結果（パート D）」、D-45 の
+ * T21 の直し。欄が読むので、2回目からは記録・先送りで先に送られる）。
  *
  * @example
  * planHomePrefetch({ yearId, groupIds: [], role: 'staff', params }) // 机椅子の総務の読み取り、総務内のお知らせの新着、予定と締切の項目
@@ -366,7 +369,7 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
     list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
     list.push({ options: noticesLatestOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
     list.push({ options: calendarDatedOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
-    // テント等の貸し出しの総務の読み取り（T21。要対応とカードが同じキーを読む。店長・副店長の分は 4G で計ってから決める）
+    // テント等の貸し出しの総務の読み取り（T21。要対応とカードが同じキーを読む。店長・副店長の分は 4G の計測で 2 秒を超えたので足さない）
     list.push({ options: lendingSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
   }
   if (ctx.role === 'viewer') {

@@ -496,8 +496,9 @@ export function RecordsPanel({ data, group, year, userId, writable, onBack, onRe
               <thead>
                 <tr className="border-b text-left text-muted-foreground">
                   <th className="py-1 font-normal">備品</th>
-                  <th className="py-1 text-right font-normal">ほかの人</th>
-                  <th className="py-1 text-right font-normal">あなた</th>
+                  {/* 2つの数の列の間をあける（スマホの幅で「渡1・返0・破0渡2・…」と続いて読めた。撮影で見つけた） */}
+                  <th className="py-1 pl-3 text-right font-normal whitespace-nowrap">ほかの人</th>
+                  <th className="py-1 pl-3 text-right font-normal whitespace-nowrap">あなた</th>
                 </tr>
               </thead>
               <tbody>
@@ -509,8 +510,8 @@ export function RecordsPanel({ data, group, year, userId, writable, onBack, onRe
                   return (
                     <tr key={it.id} data-testid="records-conflict-row" className={cn('border-b last:border-0', differs && 'font-semibold')}>
                       <td className="py-1">{it.name}</td>
-                      <td className="py-1 text-right tabular-nums">{fmt(theirs.lent_count, theirs.returned_count, theirs.damaged_count)}</td>
-                      <td className="py-1 text-right tabular-nums">{fmt(mine.lent, mine.returned, mine.damaged)}</td>
+                      <td className="py-1 pl-3 text-right tabular-nums whitespace-nowrap">{fmt(theirs.lent_count, theirs.returned_count, theirs.damaged_count)}</td>
+                      <td className="py-1 pl-3 text-right tabular-nums whitespace-nowrap">{fmt(mine.lent, mine.returned, mine.damaged)}</td>
                     </tr>
                   );
                 })}

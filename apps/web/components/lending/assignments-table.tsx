@@ -96,7 +96,8 @@ export function AssignmentsTable({ data, soumu, editable, edits, onEdit, onFill,
             onCheckedChange={(v) => onFilterChange({ ...filter, all: v === true })}
           />
           <Label htmlFor={`${categoryId}-all`} className="font-normal">
-            すべての団体（申請のない企業・休憩所などにも入れる）
+            {/* 「入れる」の説明は直せる人だけ（読むだけの総務部門員・閲覧のみ・終了した年度・確定中には出さない。撮影で見つけた） */}
+            {editable ? 'すべての団体（申請のない企業・休憩所などにも入れる）' : 'すべての団体'}
           </Label>
         </div>
         <label className="flex items-center gap-2 text-sm print:hidden">

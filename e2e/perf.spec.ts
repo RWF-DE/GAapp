@@ -22,6 +22,9 @@
 // / は T16 で先読み・記録・先送りの表に入れた（D-45・D-51）ので、again では / も覚えたリクエストを <head> の script が先に送る。
 // PERF_VISIT=first・again で片方だけ、PERF_ONLY=stock・request・my・home（カンマ区切り）で画面を絞れる（原因を調べるとき）。
 // データはシナリオの年度（合成データ r8like。受付中。部員と団体代表〔模擬店10〕のロール）。
+// T21 で、テント等の貸し出しのスマホの画面（部員の /lending/records と、団体代表の /request?tab=lending）を足した（PERF_ONLY の
+// records・request-lending）。その年度に、模擬店・部門の申請・割り当て（確定）と、模擬店の半分の受け渡しの記録を入れて計る
+// （どの団体代表の画面もテント等の読み取りが中身のある形になる）。
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import http2 from 'node:http2';
@@ -31,6 +34,7 @@ import { gzipSync } from 'node:zlib';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { storageStateFor, type StoredUser } from './support/auth';
 import { createScenario, type Scenario } from './support/db';
+import { confirmLending, insertLendingAssignments, insertLendingItems, insertLendingRecords, insertLendingRequests } from './support/lending';
 import { MOBILE } from './support/shots';
 import { SEED_USER_IDS } from './support/users';
 import { pinYear } from './support/year';
@@ -48,7 +52,7 @@ const H2_PORT = Number(process.env.E2E_PERF_H2_PORT ?? 3102);
 
 interface Target {
   /** PERF_ONLY で選ぶ名前 */
-  id: 'stock' | 'request' | 'my' | 'home';
+  id: 'stock' | 'request' | 'my' | 'home' | 'records' | 'request-lending';
   name: string;
   user: StoredUser;
   /**
@@ -87,6 +91,17 @@ const SHOWN = {
   home: `(a) => {
     const card = [...document.querySelectorAll('[data-testid="rep-card"]')].find((c) => c.getAttribute('data-group') === a.group);
     return !!card && card.offsetParent !== null;
+  }`,
+  // T21：受け渡し・返却の一覧に、団体代表の団体（割り当てのある団体）が出た
+  records: `(a) => {
+    const row = [...document.querySelectorAll('[data-testid="records-group"]')].find((r) => r.textContent.includes(a.group));
+    return !!row && row.offsetParent !== null;
+  }`,
+  // T21：テント等のタブのパネル（団体名と、申請できる備品の ＋－）が出た
+  requestLending: `(a) => {
+    const panel = document.querySelector('[data-testid="lending-request"]');
+    const item = document.querySelector('[data-testid="lending-request-item"]');
+    return !!panel && panel.offsetParent !== null && panel.textContent.includes(a.group) && !!item;
   }`,
 };
 
@@ -139,7 +154,62 @@ const ALL_TARGETS: Target[] = [
     },
     shown: SHOWN.home,
   },
+  // テント等の貸し出し（T21）：部員の受け渡し・返却（スマホ。先読み・記録・先送りの表にある）。表示の印は一覧に模擬店10 が出たこと
+  {
+    id: 'records',
+    name: '/lending/records（部員）',
+    user: 'staff',
+    records: true,
+    url: () => '/lending/records/',
+    ready: async (page) => {
+      await expect(page.getByTestId('records-group').filter({ hasText: REP_GROUP })).toBeVisible({ timeout: 30_000 });
+    },
+    shown: SHOWN.records,
+  },
+  // テント等の貸し出し（T21）：団体代表の申請のテント等のタブ（`?tab=lending` で開く。/request は先読み・記録・先送りの表にある）
+  {
+    id: 'request-lending',
+    name: '/request?tab=lending（団体代表）',
+    user: 'rep',
+    records: true,
+    url: () => '/request/?tab=lending',
+    ready: async (page) => {
+      await expect(page.getByTestId('lending-request')).toContainText(REP_GROUP, { timeout: 30_000 });
+      await expect(page.getByTestId('lending-request-item').first()).toBeVisible({ timeout: 30_000 });
+    },
+    shown: SHOWN.requestLending,
+  },
 ];
+
+/**
+ * テント等の貸し出し（T21）の行：備品3つ（テント・重し・三方幕〔模擬店だけ〕）、模擬店と部門の申請と同じ数の割り当て（確定）、
+ * 模擬店の半分（並びの奇数）の受け渡しの記録（テントを渡して、まだ返っていない）
+ */
+async function seedLending(s: Scenario): Promise<void> {
+  const [tent, weight, curtain] = await insertLendingItems(s.yearId, [
+    { name: 'テント', unit: '張', stock: 60 },
+    { name: '重し', stock: 240 },
+    { name: '三方幕', unit: '枚', stock: 50, categories: ['stall'] },
+  ]);
+  const names = Object.keys(s.ids.groups).sort();
+  const stalls = names.filter((n) => n.startsWith('模擬店'));
+  const departments = names.filter((n) => n.startsWith('部門'));
+  const counts = [
+    ...stalls.flatMap((n) => [
+      { groupId: s.ids.groups[n]!, itemId: tent, count: 1 },
+      { groupId: s.ids.groups[n]!, itemId: weight, count: 4 },
+      { groupId: s.ids.groups[n]!, itemId: curtain, count: 1 },
+    ]),
+    ...departments.map((n) => ({ groupId: s.ids.groups[n]!, itemId: tent, count: 1 })),
+  ];
+  await insertLendingRequests(s.yearId, counts);
+  await insertLendingAssignments(s.yearId, counts);
+  await insertLendingRecords(
+    s.yearId,
+    stalls.filter((_, k) => k % 2 === 0).map((n) => ({ groupId: s.ids.groups[n]!, itemId: tent, lent: 1 })),
+  );
+  await confirmLending(s.yearId, null);
+}
 
 /** 先読みのために覚えた id の localStorage のキー（apps/web/lib/boot/early-load.ts の PREFETCH_HINT_PREFIX と同じ） */
 const PREFETCH_HINT_PREFIX = 'gaapp:prefetch:';
@@ -405,6 +475,7 @@ test('T14 4G での表示の速さ：/stock?room=・/request・/my・団体代�
   const s = await createScenario({ dataset: 'synthetic', status: 'requesting', roles: { staff: true }, repGroup: REP_GROUP });
   const results: { server: string; visit: Visit; page: string; runs: Run[]; medianMs: number }[] = [];
   try {
+    await seedLending(s);
     const servers: { name: string; origin: string | null }[] = [{ name: 'http1', origin: null }, ...(h2 ? [{ name: 'h2', origin: h2.origin }] : [])];
     for (const server of servers) {
       for (const visit of VISITS) {
