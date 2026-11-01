@@ -96,7 +96,7 @@ export function lendingHandler(db: FakeLendingDb, actor: FakeActor) {
   return (call: FakeCall): FakeResult | undefined => {
     switch (call.table) {
       case 'groups':
-        return single(call, filterRows(call, db.groups));
+        return single(call, filterRows(call, db.groups).map((g) => embedInGroup(call, g)));
       case 'lending_years':
         return single(call, db.confirmedAt ? [{ year_id: db.groups[0]?.year_id ?? '', confirmed_at: db.confirmedAt }] : []);
       case 'lending_items':
@@ -116,6 +116,20 @@ export function lendingHandler(db: FakeLendingDb, actor: FakeActor) {
     }
     return undefined;
   };
+
+  /** 団体に埋め込む表（select にあるものだけ。申請のテント等のタブ・店長・副店長のダッシュボードの読み取り） */
+  function embedInGroup(call: FakeCall, g: FakeGroup): object {
+    const select = String(opArgs(call, 'select')[0]?.[0] ?? '');
+    const mine = <T extends { group_id: string }>(rows: readonly T[]) => rows.filter((r) => r.group_id === g.id);
+    const withItem = <T extends { lending_item_id: string }>(rows: readonly T[]) => rows.map((r) => ({ ...r, lending_items: itemEmbed(r.lending_item_id) }));
+    return {
+      ...g,
+      ...(select.includes('lending_requests(') ? { lending_requests: mine(db.requests) } : {}),
+      ...(select.includes('lending_assignments(') ? { lending_assignments: withItem(mine(db.assignments)) } : {}),
+      ...(select.includes('lending_records(') ? { lending_records: withItem(mine(db.records)) } : {}),
+      ...(select.includes('years(lending_years(') ? { years: { lending_years: db.confirmedAt ? { confirmed_at: db.confirmedAt } : null } } : {}),
+    };
+  }
 
   function itemEmbed(id: string) {
     const it = db.items.find((i) => i.id === id);

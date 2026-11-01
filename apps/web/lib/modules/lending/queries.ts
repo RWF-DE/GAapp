@@ -70,25 +70,39 @@ export async function readGroupLendingRequests(groupId: string, client: AppSupab
 }
 
 /**
- * テント等のタブを読む（その団体の申請・確定の印・割り当て・記録を並行に。判断したことの 21：記録は確定の前でも出すので、
- * 割り当て〔確定前は 0 行〕と記録をいつも読む。往復は1回）
+ * テント等のタブの読み取りの select（その団体〔groups〕に、申請・割り当て・記録と、年度〔years〕の確定の印を埋め込んで1本で読む。
+ * 埋め込みにも RLS が効く：割り当ては確定後だけ、申請と記録は自団体だけ。レビューの T21-R1：前は4本を並行に読み、/request の
+ * 机・椅子の読み取りと合わせて Supabase への同時のリクエストが9本になり、HTTP/1.1 の6本の上限で3本が後ろに並んでいた）
+ */
+export const LENDING_REQUEST_TAB_SELECT =
+  'id, lending_requests(group_id, lending_item_id, count, updated_by, updated_at), lending_assignments(group_id, lending_item_id, count), lending_records(group_id, lending_item_id, lent_count, returned_count, damaged_count), years(lending_years(confirmed_at))';
+
+type One<T> = T | T[] | null | undefined;
+const oneOf = <T>(v: One<T>): T | null => (Array.isArray(v) ? (v[0] ?? null) : (v ?? null));
+const byItem = <T extends { lending_item_id: string }>(rows: readonly T[] | null | undefined): T[] =>
+  [...(rows ?? [])].sort((a, b) => (a.lending_item_id < b.lending_item_id ? -1 : a.lending_item_id > b.lending_item_id ? 1 : 0));
+
+type RequestTabGroupRow = {
+  id: string;
+  lending_requests?: LendingRequestRow[] | null;
+  lending_assignments?: LendingAssignmentCount[] | null;
+  lending_records?: LendingRecordCount[] | null;
+  years?: One<{ lending_years?: One<{ confirmed_at: string | null }> }>;
+};
+
+/**
+ * テント等のタブを読む（その団体の申請・確定の印・割り当て・記録を、団体に埋め込んで1本で。判断したことの 21：記録は確定の前でも
+ * 出すので、割り当て〔確定前は 0 行〕と記録をいつも読む）。団体が読めなければ、どれも空として返す
  */
 export async function fetchLendingRequestTab(yearId: string, groupId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRequestTabData> {
-  const [requests, ly, assignments, records] = await Promise.all([
-    readGroupLendingRequests(groupId, client),
-    client.from('lending_years').select('year_id, confirmed_at').eq('year_id', yearId).maybeSingle(),
-    client.from('lending_assignments').select('group_id, lending_item_id, count').eq('group_id', groupId).order('lending_item_id'),
-    client
-      .from('lending_records')
-      .select('group_id, lending_item_id, lent_count, returned_count, damaged_count')
-      .eq('group_id', groupId)
-      .order('lending_item_id'),
-  ]);
+  const res = await client.from('groups').select(LENDING_REQUEST_TAB_SELECT).eq('id', groupId).eq('year_id', yearId).maybeSingle();
+  if (res.error) throw toAppError(res.error, res.status);
+  const g = res.data as RequestTabGroupRow | null;
   return {
-    requests,
-    confirmedAt: confirmedAtOf(ly),
-    assignments: rowsOf<LendingAssignmentCount>(assignments),
-    records: rowsOf<LendingRecordCount>(records),
+    requests: byItem(g?.lending_requests),
+    confirmedAt: oneOf(oneOf(g?.years)?.lending_years)?.confirmed_at ?? null,
+    assignments: byItem(g?.lending_assignments),
+    records: byItem(g?.lending_records),
     loadedAt: new Date().toISOString(),
   };
 }

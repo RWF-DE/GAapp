@@ -296,22 +296,38 @@ describe('T21 プロバイダと読み取り', () => {
     expect(opArgs(calls.find((c) => c.table === 'lending_requests')!, 'gt')).toEqual([['count', 0]]);
   });
 
-  it('店長・副店長の読み取り：代表する団体の割り当てと記録を、備品の名前・単位・並びを埋め込んで2本。団体がなければ読まない', async () => {
+  it('店長・副店長の読み取り：代表する団体に割り当てと記録（備品の名前・単位・並びつき）を埋め込んで1本（レビューの T21-R2）。団体がなければ読まない', async () => {
     const calls: FakeCall[] = [];
     const { client } = createFakeSupabase((call) => {
       calls.push(call);
-      if (call.table === 'lending_assignments') {
-        return { data: [{ group_id: 'g1', lending_item_id: TENT.id, count: 1, lending_items: { name: 'テント', unit: '張', sort_order: 1 } }] };
-      }
-      return { data: [{ group_id: 'g1', lending_item_id: TENT.id, lent_count: 1, returned_count: 0, lending_items: null }] };
+      return {
+        data: [
+          {
+            id: 'g1',
+            lending_assignments: [
+              { lending_item_id: WEIGHT.id, count: 4, lending_items: { name: '重し', unit: '個', sort_order: 2 } },
+              { lending_item_id: TENT.id, count: 1, lending_items: [{ name: 'テント', unit: '張', sort_order: 1 }] },
+            ],
+            lending_records: [{ lending_item_id: TENT.id, lent_count: 1, returned_count: 0, lending_items: null }],
+          },
+          // 確定前（割り当ては RLS が返さない）で記録もない団体
+          { id: 'g2', lending_assignments: [], lending_records: [] },
+        ],
+      };
     });
     const raw = await loadLendingRep(['g1', 'g2'], client);
-    expect(raw.assignments).toEqual([{ group_id: 'g1', lending_item_id: TENT.id, count: 1, item: { name: 'テント', unit: '張', sort_order: 1 } }]);
+    // 団体 → 備品の id の順。埋め込みの備品は配列で返っても最初のもの、読めなければ null
+    expect(raw.assignments).toEqual(
+      [
+        { group_id: 'g1', lending_item_id: WEIGHT.id, count: 4, item: { name: '重し', unit: '個', sort_order: 2 } },
+        { group_id: 'g1', lending_item_id: TENT.id, count: 1, item: { name: 'テント', unit: '張', sort_order: 1 } },
+      ].sort((a, b) => (a.lending_item_id < b.lending_item_id ? -1 : 1)),
+    );
     expect(raw.records).toEqual([{ group_id: 'g1', lending_item_id: TENT.id, lent_count: 1, returned_count: 0, item: null }]);
-    for (const c of calls) {
-      expect(opArgs(c, 'select')[0]![0]).toBe(LENDING_REP_SELECT[c.table as keyof typeof LENDING_REP_SELECT]);
-      expect(opArgs(c, 'in')).toEqual([['group_id', ['g1', 'g2']]]);
-    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.table).toBe('groups');
+    expect(opArgs(calls[0]!, 'select')[0]![0]).toBe(LENDING_REP_SELECT);
+    expect(opArgs(calls[0]!, 'in')).toEqual([['id', ['g1', 'g2']]]);
     const none = createFakeSupabase(() => ({ data: [] }));
     expect(await loadLendingRep([], none.client)).toEqual({ assignments: [], records: [] });
     expect(none.issued).toEqual([]);

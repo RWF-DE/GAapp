@@ -4,18 +4,26 @@
 //   （入力が残る）、`?tab=lending`。
 // - テント等のパネル：申請できる備品の欄・保存（(A)。すべて 0 の確かめ・申請できる備品の全部の行の upsert・保存されていた・ほかの人の
 //   変更の確かめ）・受付の前と締切後の読み取り専用・時計のずれ（42501）・確定後の割り当て（0・未定）と記録・2日目からの未返却。
+// - 下書き・離れるときの確かめ（レビューの T21-R3）：アンマウントで下書きが残る → 開き直すと DraftNotice →「戻す」で入力と入力の元
+//   （保存の確かめに使う）／「捨てる」／保存できると下書きを消す／未保存の間は、テント等のタブを隠していても移る前に確かめる。
+// - `?tab=lending` で開いたときは、タブを出すかの読み取りを待たずにパネルの JS を読み始める（レビューの T21-R1）。
 // 机・椅子のパネルは本物の RequestScreen の代わりに入力が1つの部品を置く（RequestScreen は request-screen.test.tsx が確かめる）。
+// ナビと年度の選択の代わりに、同じ部品と関数（AppLink・useGuardedSetYear）で未保存の入力の確かめを通す（calendar.test.tsx と同じ）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppLink } from '@/components/common/app-link';
 import { UnsavedChangesProvider } from '@/components/common/unsaved-changes-guard';
 import type { MembershipState } from '@/lib/auth/auth-provider';
+import { useGuardedSetYear } from '@/lib/auth/guarded';
 import type { GroupSummary, Membership, YearStatus } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
+import { draftKey, saveDraft, type DraftKey } from '@/lib/drafts';
 import { queryKeys } from '@/lib/query';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 import { lendingHandler, nextAt, pgError, type FakeLendingDb } from '@/lib/testing/fake-lending-db';
+import { LEAVE_MESSAGES } from '@/lib/unsaved-changes';
 import { LENDING_REQUEST_OUTSIDE, LENDING_REQUEST_ZERO } from './lending-request-panel';
 import { REQUEST_TABS_ERROR, RequestTabs } from './request-tabs';
 
@@ -30,6 +38,7 @@ const h = vi.hoisted(() => ({
   params: new URLSearchParams(),
   push: vi.fn(),
   replace: vi.fn(),
+  setYear: vi.fn(),
 }));
 
 vi.mock('@/lib/auth/auth-provider', () => ({
@@ -37,7 +46,7 @@ vi.mock('@/lib/auth/auth-provider', () => ({
     membership: h.membership,
     session: { status: 'signedIn', session: { user: { id: h.userId } } },
     reloadMembership: vi.fn(),
-    setYear: vi.fn(),
+    setYear: h.setYear,
     reauthenticate: async () => false,
     isRefreshing: false,
   }),
@@ -50,6 +59,42 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: h.push, replace: h.replace, refresh: vi.fn() }),
   usePathname: () => '/request',
   useSearchParams: () => h.params,
+}));
+// テント等のパネルの JS の読み込み（読み始めた回数を数える。中身は本物）
+// （fail の間は読めない〔通信が切れた〕ことにし、forget の間は読み終えたものを覚えていないことにする）
+const loader = vi.hoisted(() => ({ calls: 0, fail: false, forget: false }));
+vi.mock('./request-panel-loader', async (orig) => {
+  const m = await orig<typeof import('./request-panel-loader')>();
+  return {
+    ...m,
+    loadLendingRequestPanel: () => {
+      loader.calls++;
+      return loader.fail ? Promise.reject(new Error('ChunkLoadError')) : m.loadLendingRequestPanel();
+    },
+    loadedLendingRequestPanel: () => (loader.forget ? null : m.loadedLendingRequestPanel()),
+  };
+});
+vi.mock('next/link', () => ({
+  // Next の Link と同じく、移る前に onNavigate を呼び、preventDefault されたら移らない（AppLink の未保存の入力の確かめ）。移るときは h.push
+  default: (props: Record<string, unknown> & { href: string; children: React.ReactNode }) => {
+    const { href, children, onNavigate, prefetch, ...rest } = props;
+    void prefetch;
+    const onClick = (e: React.MouseEvent) => {
+      e.preventDefault();
+      let prevented = false;
+      (onNavigate as ((ev: { preventDefault: () => void }) => void) | undefined)?.({
+        preventDefault: () => {
+          prevented = true;
+        },
+      });
+      if (!prevented) h.push(href);
+    };
+    return (
+      <a href={href} {...rest} onClick={onClick}>
+        {children}
+      </a>
+    );
+  },
 }));
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -64,6 +109,7 @@ beforeAll(() => {
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const Y = uuid(1);
+const Y_PREV = uuid(2);
 const TENT = uuid(101);
 const WEIGHT = uuid(102);
 const CURTAIN = uuid(103);
@@ -106,7 +152,8 @@ function seed(): FakeLendingDb {
 
 let db: FakeLendingDb = seed();
 let issued: FakeCall[] = [];
-let override: ((call: FakeCall) => FakeResult | undefined) | null = null;
+/** 偽の DB の前に差し込む応答（Promise を返すと、その間は応答を止められる） */
+let override: ((call: FakeCall) => FakeResult | PromiseLike<FakeResult> | undefined) | null = null;
 
 function member(status: YearStatus): Membership {
   const year = { id: Y, label: 'R8', status, festival_start: '2026-10-17' };
@@ -118,9 +165,25 @@ function FurnitureStub() {
   return <input aria-label="机の数" data-testid="furniture-input" defaultValue="" />;
 }
 
+/** ナビ（AppLink）と年度の選択（useGuardedSetYear）の代わり（AppShell の代わりに、同じ部品と関数で未保存の入力の確かめを通す） */
+function OutsideProbe() {
+  const setYear = useGuardedSetYear();
+  return (
+    <div>
+      <AppLink href="/notices" data-testid="probe-nav">
+        お知らせ一覧
+      </AppLink>
+      <button type="button" data-testid="probe-year" onClick={() => void setYear(Y_PREV)}>
+        年度を切り替える
+      </button>
+    </div>
+  );
+}
+
 function tree() {
   return (
     <UnsavedChangesProvider>
+      <OutsideProbe />
       <RequestTabs>
         <FurnitureStub />
       </RequestTabs>
@@ -170,6 +233,10 @@ beforeEach(() => {
   toast.success.mockClear();
   h.push.mockClear();
   h.replace.mockClear();
+  h.setYear.mockClear();
+  loader.calls = 0;
+  loader.fail = false;
+  loader.forget = false;
   localStorage.clear();
 });
 afterEach(() => {
@@ -321,5 +388,177 @@ describe('T21 申請のテント等のパネル', () => {
     const panel = await screen.findByTestId('lending-request');
     expect(within(panel).getByTestId('lending-request-readonly').textContent).toBe('受付の前です');
     expect((within(panel).getByRole('button', { name: 'テントの数を1増やす' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('T21 申請のテント等のパネル：下書き・離れるときの確かめ（レビューの T21-R3）', () => {
+  const DRAFT: DraftKey = { userId: 'u-rep', yearId: Y, screen: 'request-lending', target: G1 };
+  const draftValue = (): unknown => {
+    const raw = localStorage.getItem(draftKey(DRAFT));
+    return raw === null ? null : (JSON.parse(raw) as { value: unknown }).value;
+  };
+  const count = (name: string) => screen.getByRole('textbox', { name: `${name}の数` }) as HTMLInputElement;
+  const lastPush = () => h.push.mock.calls.at(-1)?.[0];
+  /** 離れるときの確かめのダイアログで「やめる（入力を続ける）」を押し、閉じ終わるまで待つ */
+  const stayOnLeave = async (kind: 'navigate' | 'year') => {
+    const leave = await screen.findByRole('alertdialog');
+    expect(leave.textContent).toContain(LEAVE_MESSAGES[kind].description);
+    await user().click(within(leave).getByRole('button', { name: 'やめる（入力を続ける）' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+  };
+
+  it('入力してアンマウントすると下書き（入力と入力の元）が残り、開き直して「戻す」で両方が戻る。その後にほかの人が変えていれば、送らずに上書きの確かめ', async () => {
+    const first = renderTabs({ search: 'tab=lending' });
+    const panel = await screen.findByTestId('lending-request');
+    await user().click(within(panel).getByRole('button', { name: 'テントの数を1増やす' }));
+    first.unmount(); // 画面を離れる（書いていない分を書き切る）
+    expect(draftValue()).toEqual({ edits: { [TENT]: 1 }, base: [] });
+
+    // 下書きの後に、ほかの人（副店長）がテントを 2 にした
+    db.requests.push({ group_id: G1, lending_item_id: TENT, year_id: Y, count: 2, updated_by: 'u-rep2', updated_at: nextAt() });
+    renderTabs({ search: 'tab=lending' });
+    const again = await screen.findByTestId('lending-request');
+    const notice = await within(again).findByTestId('draft-notice');
+    // 開いたときは今の値。戻すまでは保存していない入力にしない
+    expect(count('テント').value).toBe('2');
+    expect(screen.getByTestId('request-tab-lending').getAttribute('data-unsaved')).toBeNull();
+    await user().click(within(notice).getByRole('button', { name: '戻す' }));
+    expect(within(again).queryByTestId('draft-notice')).toBeNull();
+    expect(count('テント').value).toBe('1');
+    await waitFor(() => expect(screen.getByTestId('request-tab-lending').getAttribute('data-unsaved')).toBe('true'));
+    await user().click(within(again).getByTestId('lending-request-save'));
+    await user().click(await screen.findByRole('button', { name: '保存する' }));
+    // 戻した入力の元（行なし）の後に、ほかの人が変えた：黙って上書きしない
+    expect((await screen.findByTestId('lending-request-conflicts')).textContent).toBe('テント（0 → 2）');
+    expect(upserts()).toHaveLength(0);
+    await user().click(screen.getByRole('button', { name: '上書きして保存する' }));
+    await waitFor(() => expect(db.requests.find((r) => r.lending_item_id === TENT)?.count).toBe(1));
+    // 保存できると下書きを消す
+    await waitFor(() => expect(draftValue()).toBeNull());
+  });
+
+  it('「捨てる」で下書きを消し、保存してある数のまま', async () => {
+    saveDraft(DRAFT, { edits: { [TENT]: 3 }, base: [] });
+    renderTabs({ search: 'tab=lending' });
+    const panel = await screen.findByTestId('lending-request');
+    await user().click(within(await within(panel).findByTestId('draft-notice')).getByRole('button', { name: '捨てる' }));
+    expect(within(panel).queryByTestId('draft-notice')).toBeNull();
+    expect(draftValue()).toBeNull();
+    expect(count('テント').value).toBe('0');
+    expect(screen.getByTestId('request-tab-lending').getAttribute('data-unsaved')).toBeNull();
+  });
+
+  it('形の違う下書き・入力のない下書きは戻さない（DraftNotice を出さない）', async () => {
+    const bad: unknown[] = [
+      { edits: { [TENT]: 1.5 }, base: [] },
+      { edits: { [TENT]: 10001 }, base: [] },
+      { edits: { [TENT]: 1 }, base: [{ lending_item_id: TENT }] },
+      { edits: [], base: [] },
+      { edits: {}, base: [] },
+      'garbage',
+    ];
+    for (const value of bad) {
+      saveDraft(DRAFT, value);
+      const r = renderTabs({ search: 'tab=lending' });
+      const panel = await screen.findByTestId('lending-request');
+      expect(within(panel).queryByTestId('draft-notice')).toBeNull();
+      expect(count('テント').value).toBe('0');
+      r.unmount();
+    }
+  });
+
+  it('保存できると下書きを消す', async () => {
+    renderTabs({ search: 'tab=lending' });
+    const panel = await screen.findByTestId('lending-request');
+    await user().click(within(panel).getByRole('button', { name: '重しの数を1増やす' }));
+    await waitFor(() => expect(draftValue()).toEqual({ edits: { [WEIGHT]: 1 }, base: [] }), { timeout: 2000 });
+    await user().click(within(panel).getByTestId('lending-request-save'));
+    await user().click(await screen.findByRole('button', { name: '保存する' }));
+    await waitFor(() => expect(db.requests.find((r) => r.lending_item_id === WEIGHT)?.count).toBe(1));
+    await waitFor(() => expect(draftValue()).toBeNull());
+  });
+
+  it('保存していない入力がある間は、移る前に確かめる（机・椅子のタブを開いてテント等を隠していても）。入力がなければ確かめない', async () => {
+    const r = renderTabs({ search: 'tab=lending' });
+    const panel = await screen.findByTestId('lending-request');
+    fireEvent.click(screen.getByTestId('probe-nav'));
+    expect(lastPush()).toBe('/notices');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    h.push.mockClear();
+
+    await user().click(within(panel).getByRole('button', { name: 'テントの数を1増やす' }));
+    fireEvent.click(screen.getByTestId('probe-nav'));
+    await stayOnLeave('navigate');
+    expect(h.push).not.toHaveBeenCalled();
+    expect(count('テント').value).toBe('1');
+    // 机・椅子のタブへ（テント等のパネルは隠れたまま残る）
+    h.params = new URLSearchParams('');
+    r.rerenderTree();
+    expect(screen.getByTestId('lending-request').closest('[hidden]')).not.toBeNull();
+    fireEvent.click(screen.getByTestId('probe-year'));
+    await stayOnLeave('year');
+    expect(h.setYear).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('probe-nav'));
+    await user().click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: LEAVE_MESSAGES.navigate.confirm }));
+    await waitFor(() => expect(lastPush()).toBe('/notices'));
+  });
+});
+
+describe('T21 テント等のパネルの JS の読み始め（レビューの T21-R1）', () => {
+  it('`?tab=lending` で開いたら、タブを出すかを決める読み取り（備品）を待たずに、パネルの JS を読み始める（読み取りと並行に）', async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // 備品の読み取りの応答を止める（4G で、タブを出すかが決まる前）
+    override = (call) => (call.table === 'lending_items' ? held.then(() => ({ data: db.items })) : undefined);
+    renderTabs({ search: 'tab=lending' });
+    await waitFor(() => expect(issued.some((c) => c.table === 'lending_items')).toBe(true));
+    await waitFor(() => expect(loader.calls).toBeGreaterThan(0));
+    expect(screen.queryByTestId('request-tabs')).toBeNull();
+    expect(screen.queryByTestId('lending-request')).toBeNull();
+    // 机・椅子のパネルは、タブを出すかが決まるまで作らない（テント等を先に出す）
+    expect(screen.queryByTestId('furniture-input')).toBeNull();
+    release();
+    expect(await screen.findByTestId('lending-request')).toBeTruthy();
+  });
+
+  it('`?tab=lending` で開いたときは、テント等のパネルを出した後に机・椅子のパネルを作る（隠したまま）。机・椅子を開いても作り直さない', async () => {
+    const r = renderTabs({ search: 'tab=lending' });
+    expect(await screen.findByTestId('lending-request')).toBeTruthy();
+    const input = (await screen.findByTestId('furniture-input')) as HTMLInputElement;
+    expect(input.closest('[hidden]')).not.toBeNull();
+    fireEvent.change(input, { target: { value: '5' } });
+    h.params = new URLSearchParams('');
+    r.rerenderTree();
+    expect((screen.getByTestId('furniture-input') as HTMLInputElement).value).toBe('5');
+    expect(screen.getByTestId('furniture-input').closest('[hidden]')).toBeNull();
+    expect(screen.getByTestId('lending-request').closest('[hidden]')).not.toBeNull();
+  });
+
+  it('パネルの JS を読めなければ「テント等の申請を読み込めませんでした」と「もう一度読み込む」（読み直す）。机・椅子は使える', async () => {
+    loader.forget = true;
+    loader.fail = true;
+    const r = renderTabs({ search: 'tab=lending' });
+    const failed = await screen.findByText(REQUEST_TABS_ERROR, { selector: '#request-panel-lending *' });
+    expect(failed).toBeTruthy();
+    expect(screen.queryByTestId('lending-request')).toBeNull();
+    loader.fail = false;
+    await user().click(within(document.getElementById('request-panel-lending')!).getByRole('button', { name: 'もう一度読み込む' }));
+    expect(await screen.findByTestId('lending-request')).toBeTruthy();
+    // 机・椅子のタブはそのまま使える
+    h.params = new URLSearchParams('');
+    r.rerenderTree();
+    expect(screen.getByTestId('furniture-input').closest('[hidden]')).toBeNull();
+  });
+
+  it('`?tab=lending` でなければ、テント等のタブを開くまでパネルの JS を読まない（机・椅子のタブを軽く保つ）', async () => {
+    const r = renderTabs();
+    await screen.findByTestId('request-tabs');
+    expect(loader.calls).toBe(0);
+    h.params = new URLSearchParams('tab=lending');
+    r.rerenderTree();
+    expect(await screen.findByTestId('lending-request')).toBeTruthy();
+    expect(loader.calls).toBeGreaterThan(0);
   });
 });

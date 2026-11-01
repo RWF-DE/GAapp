@@ -13,6 +13,8 @@ import {
   decideLendingRecordSave,
   decideLendingRequestSave,
   fetchLendingBoard,
+  fetchLendingRequestTab,
+  LENDING_REQUEST_TAB_SELECT,
   lendingBoardOptions,
   lendingInvalidateKeys,
   pruneAssignmentEdits,
@@ -66,6 +68,48 @@ describe('T21 /lending の読み取り', () => {
       ['year', Y, 'lending'],
       ['year', Y, 'portal', 'lending'],
     ]);
+  });
+});
+
+describe('T21 申請のテント等のタブの読み取り（レビューの T21-R1）', () => {
+  it('団体に申請・割り当て・記録と年度の確定の印を埋め込んで1本（団体と年度で絞る）。備品の id の順。埋め込みが配列で返っても読む', async () => {
+    const calls: FakeCall[] = [];
+    const { client } = createFakeSupabase((call) => {
+      calls.push(call);
+      return {
+        data: {
+          id: G1,
+          lending_requests: [
+            { group_id: G1, lending_item_id: WEIGHT, count: 4, updated_by: ME, updated_at: V1 },
+            { group_id: G1, lending_item_id: TENT, count: 2, updated_by: ME, updated_at: V2 },
+          ],
+          lending_assignments: [{ group_id: G1, lending_item_id: TENT, count: 1 }],
+          lending_records: [{ group_id: G1, lending_item_id: TENT, lent_count: 1, returned_count: 0, damaged_count: 0 }],
+          years: [{ lending_years: [{ confirmed_at: '2026-10-12T08:00:00Z' }] }],
+        },
+      };
+    });
+    const tab = await fetchLendingRequestTab(Y, G1, client);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.table).toBe('groups');
+    expect(opArgs(calls[0]!, 'select')[0]![0]).toBe(LENDING_REQUEST_TAB_SELECT);
+    expect(opArgs(calls[0]!, 'eq')).toEqual([
+      ['id', G1],
+      ['year_id', Y],
+    ]);
+    expect(tab.requests.map((r) => r.lending_item_id)).toEqual([TENT, WEIGHT].sort());
+    expect(tab.confirmedAt).toBe('2026-10-12T08:00:00Z');
+    expect(tab.assignments).toEqual([{ group_id: G1, lending_item_id: TENT, count: 1 }]);
+    expect(tab.records).toEqual([{ group_id: G1, lending_item_id: TENT, lent_count: 1, returned_count: 0, damaged_count: 0 }]);
+  });
+
+  it('確定の印の行がない（確定前）・団体が読めないときは空。読めなければ AppError', async () => {
+    const before = createFakeSupabase(() => ({ data: { id: G1, lending_requests: [], lending_assignments: [], lending_records: [], years: { lending_years: null } } }));
+    expect(await fetchLendingRequestTab(Y, G1, before.client)).toMatchObject({ requests: [], confirmedAt: null, assignments: [], records: [] });
+    const none = createFakeSupabase(() => ({ data: null }));
+    expect(await fetchLendingRequestTab(Y, G1, none.client)).toMatchObject({ requests: [], confirmedAt: null, assignments: [], records: [] });
+    const failed = createFakeSupabase(() => ({ error: { code: 'XX000', message: 'boom' }, status: 500 }));
+    await expect(fetchLendingRequestTab(Y, G1, failed.client)).rejects.toBeInstanceOf(AppError);
   });
 });
 

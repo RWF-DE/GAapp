@@ -8,12 +8,15 @@
 //   RequestScreen と同じクエリ（repRequestOptions。リクエストは1回）から読む。読み込み中と失敗のときはタブを出さずに机・椅子のまま
 //   （失敗のときはタブの場所に「テント等の申請を読み込めませんでした」と「もう一度」）。
 // - 机・椅子のパネル（children）はいつも同じ位置に置き、タブを出す前後・テント等を開いている間も作り直さない（hidden で隠す。入力・
-//   下書き・確かめを残す）。テント等のパネルは初めて開いたときに作り（その部品の JS もそのときに読む）、その後は残す。
+//   下書き・確かめを残す）。`?tab=lending` で開いたときだけ、テント等のパネルを出した後に作る（隠したまま。描く順だけ）。
+//   テント等のパネルは初めて開いたときに作り、その後は残す。パネルの JS は、`?tab=lending` で開いたときは
+//   立場が届いてこの部品を描くときに（タブを出すかを決める読み取りと並行に）、ほかはテント等のタブを開いたときに読み始める
+//   （request-panel-loader.ts。ダッシュボードの要対応の行き先が `?tab=lending` なので、4G で 2 秒以内に開くため。レビューの T21-R1）。
 // - テント等のタブのボタンに、保存していない入力があれば印（data-unsaved）。
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
-import { lazy, Suspense, useState } from 'react';
-import { LoadingState } from '@/components/states';
+import { startTransition, useCallback, useEffect, useState } from 'react';
+import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth/auth-provider';
 import type { GroupSummary } from '@/lib/auth/membership';
@@ -22,10 +25,8 @@ import { lendingRequestItemsOptions, type LendingRequestItem } from '@/lib/modul
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { parseGroupParam } from '@/lib/schemas/requests';
 import { cn } from '@/lib/utils';
-
-// テント等のパネル（初めて開いたときに読む。/request の最初に読む JS に入れない。next/dynamic より小さい React.lazy。開くのは
-// 立場が届いた後のブラウザだけなので、プリレンダーでは読まない）
-const LendingRequestPanel = lazy(() => import('./lending-request-panel').then((m) => ({ default: m.LendingRequestPanel })));
+import type { LendingRequestPanelProps } from './lending-request-panel';
+import { loadedLendingRequestPanel, loadLendingRequestPanel, type LendingRequestPanelModule } from './request-panel-loader';
 
 /** タブ（`?tab=`） */
 export type RequestTab = 'furniture' | 'lending';
@@ -56,6 +57,11 @@ export function RequestTabs({ children }: { children: React.ReactNode }) {
   const group = groups.find((g) => g.id === wanted) ?? groups[0] ?? null;
   const yearId = m?.year?.id ?? null;
   const userId = session.status === 'signedIn' ? session.session.user.id : null;
+  // `?tab=lending` で開いたときは、タブを出すかを決める読み取り（備品と団体の区分）を待たずに、パネルの JS を読み始める（読み取りと
+  // 並行に。待つと、読み取り → JS の読み込み → 描画と直列に並ぶ。レビューの T21-R1）。描くときに始める（何度呼んでも読むのは1回。
+  // effect で始めると、この下の画面を描き終えるまで遅れる）。タブを出さないと決まれば使わないだけ。失敗は、タブを開いたときの読み込み
+  // （LendingPanelSlot）が読み直して出す。プリレンダーではここを描かない（RequireAudience の中）が、window のないときは読まない
+  if (params.get('tab') === 'lending' && typeof window !== 'undefined') void loadLendingRequestPanel().catch(() => undefined);
   // TabsFrame に key を付けない（団体・年度が変わっても机・椅子のパネル〔children〕を作り直さない。RequestScreen が自分で作り直す）
   return (
     <TabsFrame yearId={yearId} group={group} userId={userId} params={params}>
@@ -92,6 +98,13 @@ function TabsFrame({
   if (tab === 'lending' && openedFor !== frameKey) setOpenedFor(frameKey);
   const opened = openedFor === frameKey;
   const [lendingDirty, setLendingDirty] = useState(false);
+  // 机・椅子のパネル（children）を作ったか。`?tab=lending` で開いたときは、テント等のパネルを出した後に作る（隠したまま。描く順だけで、
+  // 作った後は作り直さない。4G の遅い端末で、隠れた机・椅子の画面を描く分だけテント等の表示が遅れないように。レビューの T21-R1）。
+  // タブを出すかが決まって机・椅子を出すとき（タブを出さない・読み込みの失敗・机・椅子のタブ）は、すぐに作る
+  const [furnitureMounted, setFurnitureMounted] = useState(!wantLending);
+  const decided = !enabled || itemsQ.isError || groupQ.isError || (!!itemsQ.data && !!groupQ.data);
+  if (!furnitureMounted && decided && tab === 'furniture') setFurnitureMounted(true);
+  const onLendingShown = useCallback(() => startTransition(() => setFurnitureMounted(true)), []);
 
   const switchTo = (next: RequestTab) => router.forceReplace(requestTabHref(params, next));
 
@@ -117,26 +130,68 @@ function TabsFrame({
         ) : null}
       </div>
       <div id="request-panel-furniture" role={showTabs ? 'tabpanel' : undefined} aria-labelledby={showTabs ? 'request-tab-furniture' : undefined} hidden={tab === 'lending'}>
-        {children}
+        {furnitureMounted ? children : <LoadingState />}
       </div>
       {opened && showTabs && yearId && group && userId && category ? (
         <div id="request-panel-lending" role="tabpanel" aria-labelledby="request-tab-lending" hidden={tab !== 'lending'}>
-          <Suspense fallback={<LoadingState />}>
-            <LendingRequestPanel
-              key={frameKey}
-              yearId={yearId}
-              group={group}
-              groupCategory={category}
-              locationName={groupQ.data?.locationName ?? null}
-              items={itemsQ.data ?? []}
-              userId={userId}
-              onDirtyChange={setLendingDirty}
-            />
-          </Suspense>
+          <LendingPanelSlot
+            key={frameKey}
+            yearId={yearId}
+            group={group}
+            groupCategory={category}
+            locationName={groupQ.data?.locationName ?? null}
+            items={itemsQ.data ?? []}
+            userId={userId}
+            onDirtyChange={setLendingDirty}
+            onShown={onLendingShown}
+          />
         </div>
       ) : null}
     </>
   );
+}
+
+/**
+ * テント等のパネル（初めて開いたときに JS を読む。/request の最初に読む JS に入れない。開くのは立場が届いた後のブラウザだけなので、
+ * プリレンダーでは読まない）。JS を読み終えていればそのまま描き、まだなら読み込み中を出して、読み終えたら描く。React.lazy と Suspense は
+ * 使わない（React は Suspense の読み込み中を出してから 300 ms たつまで中身を出さないので、4G で JS が読み取りの少し後に届くと、表示が
+ * 300 ms ほど遅れた。レビューの T21-R1）。読めなければ「もう一度読み込む」（読み直す）。パネルを出した後に onShown で1回知らせる
+ */
+function LendingPanelSlot({ onShown, ...props }: LendingRequestPanelProps & { onShown: () => void }) {
+  const [mod, setMod] = useState<LendingRequestPanelModule | null>(loadedLendingRequestPanel);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    if (mod) return;
+    let alive = true;
+    loadLendingRequestPanel().then(
+      (m) => {
+        if (alive) setMod(() => m);
+      },
+      () => {
+        if (alive) setFailed(true);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [mod, attempt]);
+  useEffect(() => {
+    if (mod) onShown();
+  }, [mod, onShown]);
+  if (mod) return <mod.LendingRequestPanel {...props} />;
+  if (failed) {
+    return (
+      <ErrorState
+        message={REQUEST_TABS_ERROR}
+        onRetry={() => {
+          setFailed(false);
+          setAttempt((n) => n + 1);
+        }}
+      />
+    );
+  }
+  return <LoadingState />;
 }
 
 function TabButton({

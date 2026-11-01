@@ -308,8 +308,8 @@ test.describe('T16 ダッシュボード（管理者）', () => {
 
       // 2回目：<head> の script が覚えた読み取りを JS より先に送り、アプリは同じリクエストならその応答を使う（送らない）。JS が
       // ブラウザのキャッシュからすぐに動くと、script より先にアプリが送ることがある（どちらの順でも中身は正しい。速さは e2e:perf で
-      // 計る）ので、アプリの読み取りは表ごとに1回まで、script は覚えた読み取りだけ、合わせて8つの表（と T21 のテント等の5つの表）がそろい、
-      // 版を読まないことを見る
+      // 計る）ので、アプリの読み取りは表ごとに1回まで、script は覚えた読み取りだけ、合わせて8つの表がそろい、版を読まないことを見る
+      // （テント等の貸し出し〔T21〕の総務の5つの表も同じ形でそろう）
       reads.length = 0;
       await openPortal(page, 'ダッシュボード');
       await expect(furnitureCard(page)).toBeVisible();
@@ -395,8 +395,8 @@ test('T16 部門長以上の要対応：受付期間が空・受付開始（過�
   const head = await openAs(browser, 'head', s);
   const staff = await openAs(browser, 'staff', s);
   try {
-    // 準備中で受付期間が空 → マスタ設定の年度へ。準備中でテント等の備品がない年度なので、テント等の「備品と在庫を登録」（T21。ふつう）も
-    // 出る（機能の登録の順で机椅子の後）
+    // 準備中で受付期間が空 → マスタ設定の年度へ
+    // テント等の貸し出し（T21）：準備中で備品がない年度なので、「備品と在庫を登録」（ふつう）も出る（機能の登録の順で机椅子の後）
     await sql('update public.years set request_open_at = null, request_close_at = null where id = $1', [s.yearId]);
     await openPortal(head, 'ダッシュボード');
     expect(await todoIds(head)).toEqual(['furniture:lead:request-window', 'lending:lead:no-items']);
@@ -568,15 +568,14 @@ test.describe('T16 ホーム（団体代表）', () => {
       await expect(card.getByTestId('rep-submission')).toHaveText('未提出');
       await expect(card.getByTestId('rep-consent-asked')).toContainText('キャスター机への交換の依頼があります');
 
-      // 読むのは立場と、自団体の提出と了承と、お知らせの新着（T17）と予定と締切の項目（T18）と、自団体のテント等の割り当てと記録
-      // （T21。割り当ては確定後だけ RLS が返す）だけ（先読み・代表する団体のカード・要対応・お知らせ・締切と予定の欄が同じ読み込みを
-      // 使うので、1回ずつ）
+      // 読むのは立場と、自団体の提出と了承と、お知らせの新着（T17）と予定と締切の項目（T18）だけ（先読み・代表する団体のカード・
+      // 要対応・お知らせ・締切と予定の欄が同じ読み込みを使うので、1回ずつ）
+      // テント等の貸し出し（T21）：自団体の割り当て（確定後だけ RLS が返す）と記録を、代表する団体（groups）に埋め込んで1本
       await page.waitForLoadState('networkidle');
       expect(reads.some((r) => r.table === 'year_roles'), '立場の読み込みを見ている').toBe(true);
       expect(readsBeyondMembership(reads).map((r) => r.split('?')[0]).sort()).toEqual([
         'GET events',
-        'GET lending_assignments',
-        'GET lending_records',
+        'GET groups',
         'GET notices',
         'GET request_submissions',
         'GET substitution_consents',

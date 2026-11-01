@@ -3,8 +3,8 @@
 // レイアウトが読む）からも使うので、数え方（counts.ts）・要対応とカードの組み立て（portal.ts）・ダッシュボードの型と関数
 // （lib/modules/portal.ts）を実行時に import しない（机椅子の soumu.ts・rep.ts と同じ形）。
 // - 総務：確定の印・備品・申請（数が1以上だけ）・割り当て・記録の要る列を、年度で絞って5本並行に読む（判断したことの 3）。
-// - 店長・副店長：代表する団体の割り当て（確定後だけ RLS が返す）と記録を、備品の名前・単位・並びを埋め込んで2本並行に読む
-//   （確定の印は読まない。判断したことの 15）。
+// - 店長・副店長：代表する団体に、割り当て（確定後だけ RLS が返す）と記録を、備品の名前・単位・並びとあわせて埋め込み、1本で読む
+//   （確定の印は読まない。判断したことの 15。団体代表の / の読み取りの数を増やさないよう、2本を1本にした。レビューの T21-R2）。
 // - 閲覧のみ：読まない（年度の行だけで作るカード）。
 import type { Tables } from '@gaapp/shared';
 import { queryOptions } from '@tanstack/react-query';
@@ -81,22 +81,28 @@ export function lendingSoumuOptions(yearId: string) {
   });
 }
 
-/** 店長・副店長の読み取りの select（代表する団体で絞る。備品の名前・単位・並びを埋め込む） */
-export const LENDING_REP_SELECT = {
-  lending_assignments: 'group_id, lending_item_id, count, lending_items(name, unit, sort_order)',
-  lending_records: 'group_id, lending_item_id, lent_count, returned_count, lending_items(name, unit, sort_order)',
-} as const;
+/**
+ * 店長・副店長の読み取りの select（代表する団体〔groups〕に、割り当てと記録と、それぞれの備品の名前・単位・並びを埋め込む。1本で読む）。
+ * 埋め込みにも RLS が効く（割り当ては確定後だけ、記録は自団体だけ。団体は自分が代表する団体だけ）。
+ */
+export const LENDING_REP_SELECT =
+  'id, lending_assignments(lending_item_id, count, lending_items(name, unit, sort_order)), lending_records(lending_item_id, lent_count, returned_count, lending_items(name, unit, sort_order))';
 
 /** 埋め込んだ備品（読めなければ null） */
 export type LendingRepItem = Pick<Tables<'lending_items'>, 'name' | 'unit' | 'sort_order'>;
 
-/** 店長・副店長の読み取りの結果（割り当ては確定後だけ RLS が返す） */
+/** 店長・副店長の読み取りの結果（割り当ては確定後だけ RLS が返す。団体 → 備品の id の順） */
 export interface LendingRepRaw {
   assignments: (Pick<Tables<'lending_assignments'>, 'group_id' | 'lending_item_id' | 'count'> & { item: LendingRepItem | null })[];
   records: (Pick<Tables<'lending_records'>, 'group_id' | 'lending_item_id' | 'lent_count' | 'returned_count'> & { item: LendingRepItem | null })[];
 }
 
-type EmbeddedRow<T> = T & { lending_items?: LendingRepItem | LendingRepItem[] | null };
+type EmbeddedItem = { lending_items?: LendingRepItem | LendingRepItem[] | null };
+type RepGroupRow = {
+  id: string;
+  lending_assignments?: (Pick<Tables<'lending_assignments'>, 'lending_item_id' | 'count'> & EmbeddedItem)[] | null;
+  lending_records?: (Pick<Tables<'lending_records'>, 'lending_item_id' | 'lent_count' | 'returned_count'> & EmbeddedItem)[] | null;
+};
 
 /** 埋め込みの備品（多対一なので object。配列で返ったときは最初のもの） */
 function embeddedItem(v: LendingRepItem | LendingRepItem[] | null | undefined): LendingRepItem | null {
@@ -104,26 +110,35 @@ function embeddedItem(v: LendingRepItem | LendingRepItem[] | null | undefined): 
   return it ? { name: it.name, unit: it.unit, sort_order: it.sort_order } : null;
 }
 
-/** 店長・副店長の行を読む（代表する団体の割り当てと記録。2本を並行に）。団体がなければ読まない */
+const byGroupAndItem = (a: { group_id: string; lending_item_id: string }, b: { group_id: string; lending_item_id: string }) =>
+  a.group_id < b.group_id ? -1 : a.group_id > b.group_id ? 1 : a.lending_item_id < b.lending_item_id ? -1 : a.lending_item_id > b.lending_item_id ? 1 : 0;
+
+/** 店長・副店長の行を読む（代表する団体の割り当てと記録を、団体に埋め込んで1本で）。団体がなければ読まない */
 export async function loadLendingRep(groupIds: readonly string[], client: AppSupabaseClient = getSupabase()): Promise<LendingRepRaw> {
   if (groupIds.length === 0) return { assignments: [], records: [] };
-  const ids = [...groupIds];
-  const S = LENDING_REP_SELECT;
-  const [a, r] = await Promise.all([
-    client.from('lending_assignments').select(S.lending_assignments).in('group_id', ids).order('group_id').order('lending_item_id'),
-    client.from('lending_records').select(S.lending_records).in('group_id', ids).order('group_id').order('lending_item_id'),
-  ]);
-  type A = EmbeddedRow<Pick<Tables<'lending_assignments'>, 'group_id' | 'lending_item_id' | 'count'>>;
-  type R = EmbeddedRow<Pick<Tables<'lending_records'>, 'group_id' | 'lending_item_id' | 'lent_count' | 'returned_count'>>;
+  const res = await client
+    .from('groups')
+    .select(LENDING_REP_SELECT)
+    .in('id', [...groupIds])
+    .order('id');
+  const groups = rowsOf<RepGroupRow>(res);
   return {
-    assignments: rowsOf<A>(a).map((x) => ({ group_id: x.group_id, lending_item_id: x.lending_item_id, count: x.count, item: embeddedItem(x.lending_items) })),
-    records: rowsOf<R>(r).map((x) => ({
-      group_id: x.group_id,
-      lending_item_id: x.lending_item_id,
-      lent_count: x.lent_count,
-      returned_count: x.returned_count,
-      item: embeddedItem(x.lending_items),
-    })),
+    assignments: groups
+      .flatMap((g) =>
+        (g.lending_assignments ?? []).map((x) => ({ group_id: g.id, lending_item_id: x.lending_item_id, count: x.count, item: embeddedItem(x.lending_items) })),
+      )
+      .sort(byGroupAndItem),
+    records: groups
+      .flatMap((g) =>
+        (g.lending_records ?? []).map((x) => ({
+          group_id: g.id,
+          lending_item_id: x.lending_item_id,
+          lent_count: x.lent_count,
+          returned_count: x.returned_count,
+          item: embeddedItem(x.lending_items),
+        })),
+      )
+      .sort(byGroupAndItem),
   };
 }
 
