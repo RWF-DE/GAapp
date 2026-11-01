@@ -30,6 +30,7 @@
 - 依存関係：`pnpm install`
 - 開発サーバー：`pnpm dev`（http://localhost:3100）
 - ローカル DB：`supabase start` → `supabase db reset`（マイグレーションと seed）。終わったら `supabase stop --no-backup`。Docker のデーモンが止まっていれば先に `dockerd` を起動する
+- Storage：提出物（T19）の画面と E2E はファイルを Supabase Storage に上げるので、storage-api が要る。`supabase start -x …` で減らして起動するときも storage-api は外さない（imgproxy は外してよい。README の「ローカルの Supabase」の一行）。pgTAP は storage-api なしで流れる（storage のスキーマは DB の中にある）
 - チェック：`pnpm lint`、`pnpm typecheck`、`pnpm test`、`supabase test db`（DB だけなら `supabase db start`）、`pnpm e2e`（先にローカルの Supabase を起動（`supabase start`。seed のテストユーザーを使う）して `pnpm build:e2e`。3100 番が使われていれば `E2E_PORT=3101 pnpm e2e`）、`pnpm check:emails`
 - E2E：`pnpm e2e` は scripts/e2e.mjs が Playwright を2回呼ぶ（並行の chromium〔setup の db-setup・auth-setup は依存で走る〕の後に、結果によらず serial〔年度の作成・年度をまたぐ表の変更・通しの流れ〕を流し、どちらかが落ちれば失敗。レポートは回ごとに別のフォルダ）。1つだけ流すときは `pnpm exec playwright test --project=chromium e2e/<ファイル>`。スクリーンショットは `pnpm e2e:shots --grep <チケットID>`（`E2E_SHOTS=1` で shots のプロジェクトだけを流し、notes/<チケットID>/ に保存する。CI では流さない。テストの名前はチケット ID で始める）
 - 最初に読む JS の量：`pnpm build` の後に `node scripts/first-load-js.mjs`（apps/web/out の各ページが読む script の gzip の合計）
@@ -68,3 +69,6 @@
 - RLS で拒否された update・delete はエラーにならず 0 行で成功する。直接の更新と削除は `.select()` で変わった行を受け取り、0 行を成功として扱わない。
 - 年度をまたぐ表（rooms・items・distance_overrides）に行を足すと、振り分け中のすべての年度の allocation_version が上がる。E2E では並行のテストの前に1回だけ入れ、テストの途中で変えない。
 - アイコンは Next のファイルの規約（app/icon.png など）で置く（metadata に文字列で書くと basePath が付かない）。マニフェストの JSON の中の URL には basePath を自分で付ける。
+- Storage の物（storage.objects の行）は SQL では消せない（storage.protect_delete。`set local storage.allow_delete_query = 'true'` がなければ 42501。E2E の片付けだけがこれを立てる）。消すのは Storage API（画面の remove）。DB の行を消すと「どの提出にも属さないファイル」が残るので、画面が消す。年度・団体・提出物を SQL で消さない。
+- 提出物のファイルを上げられるのは、DB が予約した path（reserve_document_file の object_path）だけ（storage.objects の insert のポリシー）。update のポリシーはないので、上書き・移動・upsert はできない（upload は `upsert: false`）。path に日本語や個人名を入れない。
+- 署名つき URL（createSignedUrl）は押したときに 60 秒だけ作り、キャッシュ・下書き・ログに残さない（その間は URL を知る誰でも開ける）。

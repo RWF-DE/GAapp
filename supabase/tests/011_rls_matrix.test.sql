@@ -1,5 +1,5 @@
 -- 011_rls_matrix：権限表の全セル（表 × 操作 × 年度の状態 × ペルソナ）（T03。T15 で総務部門長・副部門長を、T17 でお知らせの notices・notice_groups を、
--- T18 で予定と締切の events を、T20 でシフト・作業の5表を足した）
+-- T18 で予定と締切の events を、T19 で提出物の documents・document_submissions・document_files と2つのビューを、T20 でシフト・作業の5表を足した）
 -- 期待値の表（tests.expect）から、試す SQL（tests.cell_sql）と、Y1 の6つの状態（preparing、requesting、requesting:after＝締切後、
 -- allocating、confirmed、closed）と、8人のペルソナ（admin staff rep viewer outsider admin2 head deputy）を掛け合わせてセルを作る。
 -- yn は期待値の列の順（admin staff rep viewer outsider admin2 head）に Y（allowed）/N（denied）を並べた7文字。どのペルソナがどの列で
@@ -171,6 +171,36 @@ insert into tests.cell_sql values
  ('events(groups)','delete','delete from public.events where id = :E_GROUPS'),
  ('events(all)','delete','delete from public.events where id = :E_ALL'),
  ('events(Y2)','delete','delete from public.events where id = :E_Y2_SOUMU');
+-- 提出物（T19）：fixture の提出物・提出・ファイルを1件ずつ読み、提出物を書く。DOC_STALL は G1・G2・G4 が対象、DOC_COMPANY はどの団体も対象で
+-- ない、DOC_Y2 は Y2 の G3 が対象。提出は (DOC_STALL, G1) 提出済み・(DOC_STALL, G2) 差し戻し・(DOC_NOFILE, G4) 承認・(DOC_Y2, G3) 未提出、
+-- ファイルは F_G1（G1）と F_Y2（G3）。提出物の書き込みは RLS（can_lead）、提出とファイルの書き込みは RPC だけ（表に権限がない）
+insert into tests.cell_sql values
+ ('documents','select','select count(*) from public.documents where id = :DOC_STALL'),
+ ('documents(company)','select','select count(*) from public.documents where id = :DOC_COMPANY'),
+ ('documents(Y2)','select','select count(*) from public.documents where id = :DOC_Y2'),
+ ('documents','insert','insert into public.documents(year_id, title, deadline, target_categories) values (:Y1, ''x'', ''2027-09-01 12:00+09'', ''{stall}'')'),
+ ('documents','update','update public.documents set description = ''x'' where id = :DOC_STALL'),
+ ('documents','delete','delete from public.documents where id = :DOC_STALL'),
+ ('documents(Y2)','insert','insert into public.documents(year_id, title, deadline, target_categories) values (:Y2, ''x'', ''2026-09-01 12:00+09'', ''{stall}'')'),
+ ('documents(Y2)','update','update public.documents set description = ''x'' where id = :DOC_Y2'),
+ ('documents(Y2)','delete','delete from public.documents where id = :DOC_Y2'),
+ ('document_submissions','select','select count(*) from public.document_submissions where document_id = :DOC_STALL and group_id = :G1'),
+ ('document_submissions(G2)','select','select count(*) from public.document_submissions where document_id = :DOC_STALL and group_id = :G2'),
+ ('document_submissions(G4)','select','select count(*) from public.document_submissions where document_id = :DOC_NOFILE and group_id = :G4'),
+ ('document_submissions(Y2)','select','select count(*) from public.document_submissions where document_id = :DOC_Y2 and group_id = :G3'),
+ ('document_submissions','insert','insert into public.document_submissions(document_id, group_id, year_id) values (:DOC_NOFILE, :G1, :Y1)'),
+ ('document_submissions','update','update public.document_submissions set status = ''approved'', reviewed_at = now() where document_id = :DOC_STALL and group_id = :G1'),
+ ('document_submissions','delete','delete from public.document_submissions where document_id = :DOC_STALL and group_id = :G1'),
+ ('document_files','select','select count(*) from public.document_files where id = :F_G1'),
+ ('document_files(Y2)','select','select count(*) from public.document_files where id = :F_Y2'),
+ ('document_files','insert','insert into public.document_files(id, year_id, document_id, group_id, object_path, content_type, size) values (gen_random_uuid(), :Y1, :DOC_STALL, :G2, ''x'', ''application/pdf'', 1)'),
+ ('document_files','update','update public.document_files set size = size where id = :F_G1'),
+ ('document_files','delete','delete from public.document_files where id = :F_G1'),
+ ('v_document_status','select','select count(*) from public.v_document_status where document_id = :DOC_STALL and group_id = :G1'),
+ ('v_document_status(G4)','select','select count(*) from public.v_document_status where document_id = :DOC_STALL and group_id = :G4'),
+ ('v_document_status(Y2)','select','select count(*) from public.v_document_status where document_id = :DOC_Y2 and group_id = :G3'),
+ ('v_document_files','select','select count(*) from public.v_document_files where id = :F_G1'),
+ ('v_document_files(Y2)','select','select count(*) from public.v_document_files where id = :F_Y2');
 
 -- シフト・作業（T20）：5表を Y1（fixture の DU1〜DU3・SL1・SL2・ます・割り当て・TK_*）と Y2（準備中のまま。DU_Y2・SL_Y2 など）で1つずつ読み、
 -- 書く。書き込みの値は BEFORE ROW のトリガー（重なり・総務だけ）を通るもの（時間枠は隣り合う時刻、割り当てる人はその年度の総務）。
@@ -359,6 +389,33 @@ insert into tests.expect values
  ('events(groups)','delete','*','YNNNNNY'), ('events(groups)','delete','closed','NNNNNNN'),
  ('events(all)','delete','*','YNNNNNY'), ('events(all)','delete','closed','NNNNNNN'),
  ('events(Y2)','insert','*','NNNNNYN'), ('events(Y2)','update','*','NNNNNYN'), ('events(Y2)','delete','*','NNNNNYN');
+-- 提出物（T19。02「提出物の権限」）：総務（admin・head・deputy_head・staff）はその年度の提出物と提出の全部。ファイル（v_document_files を
+-- 含む）は部門長以上だけ（staff は読めない。Q4）。店長・副店長は自団体が対象の提出物と、自団体の提出・ファイル。閲覧のみは何も読めない（Q5）
+-- が、viewer は G4 の副店長も兼ねるので、G4 が対象の提出物と G4 の行は読む（兼ねた人は両方の権限）。v_document_status は読む人が提出を
+-- 読める団体の行だけ（viewer に G1 の行を未提出として出さない。判断 24）。staff は Y2 では G3 の店長、rep は Y2 の閲覧のみ（何も読めない）。
+-- 読み取りは年度の状態によらない。提出物の書き込みはその年度の部門長以上で、終了でない年度（can_lead。確定中も書ける）。Y2 は準備中のまま
+-- （admin2 だけが書ける）。提出とファイルは誰も直接は書けない（RPC だけ）
+insert into tests.expect values
+ ('documents','select','*','YYYYNNY'),
+ ('documents(company)','select','*','YYNNNNY'),
+ ('documents(Y2)','select','*','NYNNNYN'),
+ ('documents','insert','*','YNNNNNY'), ('documents','insert','closed','NNNNNNN'),
+ ('documents','update','*','YNNNNNY'), ('documents','update','closed','NNNNNNN'),
+ ('documents','delete','*','YNNNNNY'), ('documents','delete','closed','NNNNNNN'),
+ ('documents(Y2)','insert','*','NNNNNYN'), ('documents(Y2)','update','*','NNNNNYN'), ('documents(Y2)','delete','*','NNNNNYN'),
+ ('document_submissions','select','*','YYYNNNY'),
+ ('document_submissions(G2)','select','*','YYNNNNY'),
+ ('document_submissions(G4)','select','*','YYNYNNY'),
+ ('document_submissions(Y2)','select','*','NYNNNYN'),
+ ('document_submissions','insert','*','NNNNNNN'), ('document_submissions','update','*','NNNNNNN'), ('document_submissions','delete','*','NNNNNNN'),
+ ('document_files','select','*','YNYNNNY'),
+ ('document_files(Y2)','select','*','NYNNNYN'),
+ ('document_files','insert','*','NNNNNNN'), ('document_files','update','*','NNNNNNN'), ('document_files','delete','*','NNNNNNN'),
+ ('v_document_status','select','*','YYYNNNY'),
+ ('v_document_status(G4)','select','*','YYNYNNY'),
+ ('v_document_status(Y2)','select','*','NYNNNYN'),
+ ('v_document_files','select','*','YNYNNNY'),
+ ('v_document_files(Y2)','select','*','NYNNNYN');
 
 -- シフト・作業（T20。02「シフト・作業の権限」）：5表とも、その年度の総務（admin・head・deputy_head・staff）が全部を読み（年度の状態によらない）、
 -- その年度の部門長以上が、終了でない年度に書く（can_lead。確定中も書ける）。閲覧のみ・店長・副店長・招待されていない人は読めも書けもしない。
@@ -413,14 +470,14 @@ begin
   return tests.try_cell(p_sql, p_persona, p_op);
 end $$;
 
-select plan((select count(*)::int from tests.cells) + 6 + 31 + 22);   -- 22 は T20 の権限表の外の確かめ
+select plan((select count(*)::int from tests.cells) + 6 + 31 + 14 + 22);   -- 14 は T19、22 は T20 の権限表の外の確かめ
 
 -- 期待値の表の形
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
 select is_empty($$ select e.tbl, e.op from tests.expect e left join tests.cell_sql c using (tbl, op) where c.tbl is null $$,
   '期待値の表に、試す SQL のない行がない');
-select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 28,
-  '27 表（T17 のお知らせの2表、T18 の予定と締切、T20 のシフト・作業の5表を含む）と v_remaining をすべて試す');
+select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 33,
+  '30 表（T17 のお知らせの2表、T18 の予定と締切、T19 の提出物の3表、T20 のシフト・作業の5表を含む）と3つのビュー（v_remaining と提出物の2つ）をすべて試す');
 select is_empty($$ select tbl, op, scenario, yn from tests.expect where yn !~ '^[YN]{7}$' $$,
   '期待値はどの行も7列（admin staff rep viewer outsider admin2 head）');
 select is((select string_agg(persona || '=' || col, ' ' order by ord) from tests.persona_col),
@@ -672,6 +729,66 @@ select tests.login_anon();
 select throws_ok($q$ select count(*) from public.years $q$, '42501', null, 'anon は表を読めない');
 select throws_ok($q$ select count(*) from public.v_remaining $q$, '42501', null, 'anon はビューを読めない');
 select throws_ok($q$ select count(*) from public.events $q$, '42501', null, 'anon は予定と締切を読めない（T18）');
+select tests.logout();
+
+-- 提出物（T19）：直接の書き込みの中身（権限表の外）。部門長以上の直接の insert で created_by・updated_by・files_deleted_at を送っても、書いた人が
+-- 入り files_deleted_at は null（set_actor）、対象の区分は並べ直され、返り値も読める。画面が作った id で送り直すと主キーの重複で止まる（(B1)）
+select tests.set_scenario('requesting');
+select tests.login_as('head');
+with d as (
+  insert into public.documents (id, year_id, title, deadline, target_categories, created_by, updated_by, files_deleted_at)
+  values ('00000000-0000-4000-8000-0000000d0001', tests.id('Y1'), 'T-DOC_DIRECT', '2027-09-01 17:00+09', '{department,stall,department}',
+          tests.id('admin'), tests.id('admin'), now())
+  returning created_by, updated_by, files_deleted_at, target_categories)
+select is((select format('%s %s %s %s', (created_by = tests.id('head'))::text, (updated_by = tests.id('head'))::text,
+                         coalesce(files_deleted_at::text, 'null'), target_categories) from d),
+  'true true null {stall,department}', '部門長の直接の insert：送った created_by・updated_by・files_deleted_at は使われず、区分は並べ直され、返り値も読める');
+select throws_ok($q$ insert into public.documents (id, year_id, title, deadline, target_categories)
+                    values ('00000000-0000-4000-8000-0000000d0001', (select id from tests.ids where name = 'Y1'), 'T-DOC_DIRECT2', '2027-09-01 17:00+09', '{stall}') $q$,
+  '23505', null, '画面が作った id で送り直すと、主キーの重複で止まる（二重にならない）');
+select throws_ok($q$ insert into public.documents (year_id, title, deadline, target_categories)
+                    values ((select id from tests.ids where name = 'Y1'), 'T-DOC_DIRECT', '2027-09-02 17:00+09', '{stall}') $q$,
+  '23505', null, '同じ年度に同じ題名は、部門長でも入らない（documents_year_id_title_key）');
+select tests.logout();
+insert into tests.ids values ('DOC_DIRECT', '00000000-0000-4000-8000-0000000d0001');
+-- 楽観ロック（画面が updated_at を条件に入れる。予定と締切と同じ）：set_timestamps を止めて過去の updated_at を入れてから確かめる
+alter table public.documents disable trigger set_timestamps;
+update public.documents set updated_at = '2027-01-01 00:00:00.123456+00' where id = tests.id('DOC_DIRECT');
+alter table public.documents enable trigger set_timestamps;
+select tests.login_as('deputy');
+with u as (update public.documents set title = 'T-DOC_DIRECT2'
+           where id = tests.id('DOC_DIRECT') and updated_at = '2027-01-01 00:00:00.123456+00' returning 1)
+select is((select count(*)::int from u), 1, '提出物の楽観ロック：updated_at が合えば直せる（1 行）');
+with u as (update public.documents set title = 'T-DOC_DIRECT3'
+           where id = tests.id('DOC_DIRECT') and updated_at = '2027-01-01 00:00:00.123456+00' returning 1)
+select is((select count(*)::int from u), 0, '提出物の楽観ロック：同じ版でもう一度は 0 行（直した後の updated_at は進んでいる）');
+select tests.logout();
+select is((select format('%s %s %s', (created_by = tests.id('head'))::text, (updated_by = tests.id('deputy'))::text, title)
+           from public.documents where id = tests.id('DOC_DIRECT')),
+  'true true T-DOC_DIRECT2', '直した後も created_by は書いた人（head）、updated_by は直した人（副部門長）');
+-- 両方の年度の管理者（admin は上のルールの確かめで Y2 の管理者も兼ねた）でも、提出物を別の年度へ移せない（check_immutable）
+select tests.login_as('admin');
+select throws_ok(format($q$ update public.documents set year_id = %L where id = %L $q$, tests.id('Y2'), tests.id('DOC_DIRECT')),
+  'P0001', 'invalid_input', '両方の年度の管理者でも、提出物を別の年度へ移せない（check_immutable）');
+select tests.logout();
+-- 閲覧のみも務める副店長（viewer。Y1 の閲覧のみで G4 の副店長）：提出の状況は G4 の行だけ（G1・G2 の行を未提出として出さない。判断 24）
+select tests.login_as('viewer');
+select is((select string_agg(t.name || ':' || g.name || ':' || v.status, ' ' order by t.name, g.name)
+           from public.v_document_status v join tests.ids t on t.id = v.document_id join tests.ids g on g.id = v.group_id),
+  'DOC_DIRECT:G4:not_submitted DOC_NOFILE:G4:approved DOC_STALL:G4:not_submitted',
+  '閲覧のみも務める副店長は、提出の状況を自団体（G4）の行だけ読む（G4 が対象の提出物ごとに1行。上で足した DOC_DIRECT も学科が対象）');
+select tests.logout();
+-- v_document_files は security_invoker：届いたか（storage.objects）も読む人の RLS で見る。部門長以上と自団体の店長には届いた物が見える
+select is((select string_agg(p || '=' || tests.try_cell(tests.sql('select count(*) from public.v_document_files where id = :F_G1 and uploaded and stored_size = 1000'), p, 'select'), ' ' order by p)
+           from unnest(array['admin', 'head', 'rep', 'staff']) p),
+  'admin=allowed head=allowed rep=allowed staff=denied', 'v_document_files の届いた物と実際の大きさは、ファイルを読める人（部門長以上・自団体）に見える');
+-- anon は提出物の表もビューも読めない
+select tests.login_anon();
+select throws_ok($q$ select count(*) from public.documents $q$, '42501', null, 'anon は提出物を読めない（T19）');
+select throws_ok($q$ select count(*) from public.document_submissions $q$, '42501', null, 'anon は提出を読めない');
+select throws_ok($q$ select count(*) from public.document_files $q$, '42501', null, 'anon は提出物のファイルを読めない');
+select throws_ok($q$ select count(*) from public.v_document_status $q$, '42501', null, 'anon は提出の状況を読めない');
+select throws_ok($q$ select count(*) from public.v_document_files $q$, '42501', null, 'anon はファイルのビューを読めない');
 select tests.logout();
 
 select * from finish();

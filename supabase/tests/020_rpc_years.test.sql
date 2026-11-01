@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(113);
+select plan(115);
 
 -- エラーの message と detail（invalid_input の field を確かめる）。成功したら 'ok'
 create function tests.error_of(p_sql text) returns text language plpgsql as $$
@@ -293,6 +293,14 @@ select is((select count(*)::int from public.stocks where year_id = tests.id('Y3'
 select is((select count(*)::int from public.events where year_id = tests.id('Y1')), 3,
   '複製元の Y1 には予定と締切が3件ある（fixture。次の「複製しない」が空振りでない）');
 select is((select count(*)::int from public.events where year_id = tests.id('Y3')), 0, '予定と締切は複製しない（T18。D-54）');
+select is((select count(*)::int from public.documents where year_id = tests.id('Y1'))
+          || ' ' || (select count(*)::int from public.document_submissions where year_id = tests.id('Y1'))
+          || ' ' || (select count(*)::int from public.document_files where year_id = tests.id('Y1')), '3 3 1',
+  '複製元の Y1 には提出物3件・提出3件・ファイル1件がある（fixture。次の「複製しない」が空振りでない）');
+select is((select count(*)::int from public.documents where year_id = tests.id('Y3'))
+          + (select count(*)::int from public.document_submissions where year_id = tests.id('Y3'))
+          + (select count(*)::int from public.document_files where year_id = tests.id('Y3')), 0,
+  '提出物・提出・ファイルは複製しない（T19。D-55。写すのは前年度から写す〔copy_previous_documents〕で選んだ提出物だけ）');
 select is((select format('shift_duties=%s shift_slots=%s shift_needs=%s shift_assignments=%s tasks=%s',
                          (select count(*) from public.shift_duties where year_id = tests.id('Y1')),
                          (select count(*) from public.shift_slots where year_id = tests.id('Y1')),

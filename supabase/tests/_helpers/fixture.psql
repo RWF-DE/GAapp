@@ -139,6 +139,54 @@ insert into public.notice_groups (notice_id, year_id, group_id) values
   (tests.id('N_G4'), tests.id('Y1'), tests.id('G4')),
   (tests.id('N_Y2_G3'), tests.id('Y2'), tests.id('G3'));
 
+-- 提出物（T19。D-55）：Y1・Y2 に置く（011 の権限表・013 の D-47・026 の RPC・027 の Storage・030 の招待のない人で読む）。
+-- 書いた人は created_by・updated_by に直接入れる（auth.uid() のない書き込みでは set_actor は入れた値のまま。D-10）。
+-- DOC_STALL は模擬店・学科（G1・G2・G4 が対象。ファイルが要る）、DOC_NOFILE は全区分（ファイルが要らない）、DOC_COMPANY は企業
+-- （fixture の団体はどれも対象でない）。Y2 の DOC_Y2 は模擬店（staff が店長の G3 が対象）。名前は題名の「T-」の後ろ
+with d as (
+  insert into public.documents (year_id, title, deadline, target_categories, food_only, requires_file, created_by, updated_by) values
+    (tests.id('Y1'), 'T-DOC_STALL', '2027-10-01 17:00+09', '{stall,department}', false, true, tests.id('head'), tests.id('head')),
+    (tests.id('Y1'), 'T-DOC_NOFILE', '2027-10-05 17:00+09', '{stall,department,company,rest_area}', false, false, tests.id('admin'), tests.id('admin')),
+    (tests.id('Y1'), 'T-DOC_COMPANY', '2027-10-03 12:00+09', '{company}', false, true, tests.id('deputy'), tests.id('deputy')),
+    (tests.id('Y2'), 'T-DOC_Y2', '2026-10-01 12:00+09', '{stall}', false, true, tests.id('admin2'), tests.id('admin2'))
+  returning id, title)
+insert into tests.ids select substr(title, 3), id from d;
+-- 提出：G1 は提出済み（rep。ファイル F_G1 が Storage に届いている）、G2 は差し戻し（理由つき）、G4 は紙で受け取った承認（admin。提出の
+-- 日時なし）、Y2 の G3 は未提出（staff の予約 F_Y2 だけ。届いていない）。O_G1 は Y1・G1 のフォルダの、どの提出にも属さない物
+insert into public.document_submissions (document_id, group_id, year_id, status, submitted_at, submitted_by, reviewed_at, reviewed_by, review_note) values
+  (tests.id('DOC_STALL'), tests.id('G1'), tests.id('Y1'), 'submitted', '2027-09-20 10:00+09', tests.id('rep'), null, null, null),
+  (tests.id('DOC_STALL'), tests.id('G2'), tests.id('Y1'), 'returned', '2027-09-19 10:00+09', tests.id('rep2'), '2027-09-21 10:00+09', tests.id('head'), 'T-読めません'),
+  (tests.id('DOC_NOFILE'), tests.id('G4'), tests.id('Y1'), 'approved', null, null, '2027-09-22 10:00+09', tests.id('admin'), 'T-紙で受け取った'),
+  (tests.id('DOC_Y2'), tests.id('G3'), tests.id('Y2'), 'not_submitted', null, null, null, null, null);
+insert into tests.ids values ('F_G1', gen_random_uuid()), ('F_Y2', gen_random_uuid()), ('O_G1', gen_random_uuid());
+insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size, created_by) values
+  (tests.id('F_G1'), tests.id('Y1'), tests.id('DOC_STALL'), tests.id('G1'),
+   tests.id('Y1') || '/' || tests.id('G1') || '/' || tests.id('DOC_STALL') || '/' || tests.id('F_G1') || '.pdf', 'application/pdf', 1000, tests.id('rep')),
+  (tests.id('F_Y2'), tests.id('Y2'), tests.id('DOC_Y2'), tests.id('G3'),
+   tests.id('Y2') || '/' || tests.id('G3') || '/' || tests.id('DOC_Y2') || '/' || tests.id('F_Y2') || '.pdf', 'application/pdf', 2000, tests.id('staff'));
+-- Storage の物（postgres で直接。storage-api がなくても入る）：documents に F_G1 の物と O_G1、ほかの bucket（pgtap-other）に F_G1 と同じ
+-- path の物（ポリシーが bucket documents の物だけに効くことを見る）。
+-- bucket documents の物の insert・update は、0016 のトリガー documents_objects_guard（T19 のレビューの T19-SEC-1）がロールによらず予約と
+-- 提出の状態で確かめる。テストの準備で、予約の外の物（提出済みの提出の物・どの提出にも属さない物・形の違う名前・大きな物）を置くときは
+-- tests.put_object を使う（session_replication_role = replica の間に置く。これを設定できるのは postgres だけで、Storage API の
+-- service_role・authenticated はできない。027 の⑦）
+create function tests.put_object(p_bucket text, p_name text, p_metadata jsonb default '{"size": 1}') returns void language plpgsql as $$
+begin
+  set local session_replication_role = replica;
+  insert into storage.objects (bucket_id, name, metadata) values (p_bucket, p_name, p_metadata);
+  set local session_replication_role = origin;
+end $$;
+insert into storage.buckets (id, name, public) values ('pgtap-other', 'pgtap-other', false);
+do $$
+begin
+  perform tests.put_object('documents', tests.id('Y1') || '/' || tests.id('G1') || '/' || tests.id('DOC_STALL') || '/' || tests.id('F_G1') || '.pdf',
+                           '{"size": 1000, "mimetype": "application/pdf"}');
+  perform tests.put_object('documents', tests.id('Y1') || '/' || tests.id('G1') || '/' || tests.id('DOC_STALL') || '/' || tests.id('O_G1') || '.pdf',
+                           '{"size": 500, "mimetype": "application/pdf"}');
+  perform tests.put_object('pgtap-other', tests.id('Y1') || '/' || tests.id('G1') || '/' || tests.id('DOC_STALL') || '/' || tests.id('F_G1') || '.pdf',
+                           '{"size": 7, "mimetype": "application/pdf"}');
+end $$;
+
 -- 予定と締切（T18。D-54）：対象ごとに Y1・Y2 に置く（011 の権限表・013 の D-47・030 の招待のない人で読む）。
 -- 書いた人は created_by・updated_by に直接入れる（auth.uid() のない書き込みでは set_actor は入れた値のまま。D-10）。
 -- E_ALL と E_Y2_ALL は終日（Asia/Tokyo の 00:00。E_ALL は2日間）。Y2 の団体・全員は、Y2 の閲覧のみの rep と、Y2 の G3 の店長の
