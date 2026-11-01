@@ -44,11 +44,15 @@ supabase stop --no-backup   # 終わったら止める
 
 マイグレーションを変えたら、`supabase db reset` のあとに `pnpm gen:types` を実行して packages/shared/src/database.types.ts を作り直す。`pnpm check:types` は生成し直した型とコミット済みの型を比べるので、DB を起動した状態で、CI と同じ版の supabase CLI（2.122.0）で実行する（版が違うと出力がずれる）。
 
-ログインに要るものだけを起動するなら（E2E・画面の確認はこれで足りる。CI の e2e も同じ）：
+ログインとファイルの置き場（Storage）に要るものだけを起動するなら（E2E・画面の確認はこれで足りる。CI の e2e も同じ）。提出物（T19）の画面と E2E はファイルを Supabase Storage に上げるので、storage-api は外さない（画像の変換の imgproxy は使わないので外す）：
 
 ```bash
-supabase start -x realtime,storage-api,imgproxy,mailpit,studio,edge-runtime,logflare,vector,supavisor,postgres-meta
+supabase start -x realtime,imgproxy,mailpit,studio,edge-runtime,logflare,vector,supavisor,postgres-meta
 ```
+
+pgTAP（`supabase test db`）だけなら、DB だけを起動すればよい（`supabase db start`。storage-api がなくても、storage のスキーマは DB の中にあり、提出物の Storage のポリシーも SQL で確かめる）。
+
+Storage について（提出物。T19。D-55）：Storage の物（storage.objects の行）は SQL では消せない（`storage.allow_delete_query` を立てない delete は 42501。消すのは Storage API〔画面の remove〕）。DB の行を消すと、その物は「どの提出にも属さないファイル」として残り、画面が消す。年度・団体・提出物を SQL Editor で消さない（残った物を誰も消せなくなることがある）。ローカルの Storage のファイルの中身は `supabase stop --no-backup` で消える。
 
 ### ログインとテストユーザー（ローカル）
 

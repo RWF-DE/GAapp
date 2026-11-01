@@ -21,6 +21,7 @@ create type delivery_status as enum ('pending','done','problem');
 create type notice_audience as enum ('soumu','all_groups','groups');     -- T17 の 0014（お知らせの宛先）
 create type event_kind as enum ('deadline','event');                     -- T18 の 0015（予定と締切の種類）
 create type event_audience as enum ('soumu','groups','all');             -- T18 の 0015（予定と締切の対象）
+create type document_status as enum ('not_submitted','submitted','returned','approved'); -- T19 の 0016（提出の状態）
 ```
 
 | 型 | 値 | 表示名 |
@@ -39,12 +40,15 @@ create type event_audience as enum ('soumu','groups','all');             -- T18 
 | notice_audience | soumu / all_groups / groups | 総務内 / 全団体 / 指定の団体 |
 | event_kind | deadline / event | 締切 / 予定 |
 | event_audience | soumu / groups / all | 総務 / 団体 / 全員 |
+| document_status | not_submitted / submitted / returned / approved | 未提出 / 提出済み / 差し戻し / 承認（画面の絞り込みでは提出済みを「承認待ち」と呼ぶ） |
 
 app_role の head（総務部門長）と deputy_head（総務副部門長）は T15 で足した（D-48。deputy_head の権限は head と同じ）。`alter type … add value` で足した値は、同じトランザクションの中では使えないので、値を足すだけのマイグレーション（0011）を分け、値を使うのは 0013 からにする。group_role の店長と副店長も権限は同じで、表示名だけが違う。画面の表示名は T15b でこの表の名前にそろえた（T15b より前の画面は admin を「総務管理者」、staff を「総務部員」と出していた。head・deputy_head は T15b を出してから、管理者が招待で付ける。README の 5）。団体代表は、画面では「{団体名} の店長」「{団体名} の副店長」と出す（04「共通レイアウト」。D-50）。
 
 ## テーブル定義
 
 マイグレーションは supabase/migrations に4桁の連番で置く。0001_init.sql（列挙型・表・ビュー）と 0002_triggers.sql（トリガー）は T02、0003〜0006（権限の関数・RLS・RPC）は T03、0007_auth.sql（auth.users のトリガーと Before User Created フック）は T04、0008_confirm_keep_both_ways.sql（確定の前の確認の E005 を両方向にする）は T07、0009_apply_invitations_keep_conflict.sql（別のロールを持つ人へのロールの招待を使用済みにしない。remove_role で本人あての未使用のロールの招待も取り消す）は T03 のマージの後の直しで作る。0010_rls_select_once.sql（行が多くなりうる表の select のポリシーを、判定関数を行ごとに呼ばない形にする。意味は変えない。D-47）は T14 の速さの改善で作る。0011_app_role_lead.sql（app_role に head・deputy_head を足すだけ）、0012_group_role.sql（group_role の型と group_members.role・invitations.group_role の列を足すだけ。今の関数のまま動く）、0013_role_overlap_lead_tier.sql（兼任の禁止〔適用の前の確かめ・invitations_group_role_check・トリガー〕と3つの段の判定関数・ポリシー・RPC。動きを変えるものは、古い関数とぶつからないように全部ここに入れ、1つのトランザクションで切り替える。D-48・D-49）は T15 で作る。0014_notices.sql（お知らせの宛先の型 notice_audience、表 notices・notice_groups とそのトリガー・RLS、RPC save_notice・delete_notice。足すだけで、今の表と関数は変えない。D-53）は T17 で作る。0015_events.sql（予定と締切の種類 event_kind・対象 event_audience の型、表 events とそのトリガー・RLS。書き込みは画面から直接〔RLS〕で、RPC はない。足すだけで、今の表と関数は変えない。D-54）は T18 で作る。本番に適用したファイルは書き換えず、次の番号のファイルを足す。created_at・updated_at は audit_logs を除く全テーブルに付け（下では省略）、トリガーで入れる（クライアントが送った値は使わない）。日時は timestamptz で保存し、画面では Asia/Tokyo で入力・表示する。
+
+0016_documents.sql（提出の状態の型 document_status、表 documents・document_submissions・document_files とビュー v_document_status・v_document_files、そのトリガー・RLS、RPC 11 個〔reserve_document_file など。04〕、Supabase Storage の非公開の bucket documents と storage.objects のポリシー3つ。提出物の書き込みは画面から直接〔RLS〕、提出とファイルは RPC だけ。足すだけで、今の表と関数は変えない。D-55）は T19 で作る（番号はリードが割り当てた。並行の T20 は 0017、T21 は 0018）。
 
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
 
@@ -359,6 +363,104 @@ create index on events (year_id, starts_at);
 
 終日の項目（all_day）の日時は、日付を Asia/Tokyo の 00:00 で表して保存する：starts_at は開始の日の 00:00、ends_at は最後の日の 00:00（その日を含む。翌日の 00:00 ではない）で、1日だけなら ends_at は null（開始と同じ日時でもよい）。例：10月16日〜17日の2日間は starts_at = 2027-10-16 00:00+09:00、ends_at = 2027-10-17 00:00+09:00。画面は終日の項目を日付だけで出し（時刻を出さない）、日付は Asia/Tokyo で読む（UTC の日付にしない。Asia/Tokyo の 00:00 は UTC では前の日の 15:00）。終日でない項目は、starts_at・ends_at を時刻つきで Asia/Tokyo で入力・表示する。CHECK は、終日の項目の日時が Asia/Tokyo の 00:00 であることと、開始・終了の日付が 2000-01-01〜2200-12-31（Asia/Tokyo）であること（infinity や、JavaScript の Date で扱えない日時を入れさせない）を確かめる。
 
+**提出物（T19。0016。D-55）**
+
+総務アプリの機能「提出物」（機能の id は documents）の表と、ファイルの置き場（Supabase Storage）。年度ごとに部門長以上が提出物（団体が出す書類の種類と締切）を登録し（画面から直接。RLS）、団体の店長・副店長（と、代わりに出す部門長以上）がファイルを上げて「提出した」を押し、部門長以上が承認か差し戻しをする（提出とファイルは RPC だけで書く。04 の DB 関数）。読める人は下の「権限とRLS」の「提出物の権限」、画面は [画面とAPI](04_screens_api.md) の「提出物」。細部（RPC のエラーの順など）は notes/T19.md の「SQL の約束」。
+
+```sql
+-- 提出物（年度ごとの書類の種類と締切）
+create table documents (
+  id uuid primary key default gen_random_uuid(), -- 画面は自分で作った id で insert する（04 の (B1)）
+  year_id uuid not null references years on delete cascade,
+  title text not null,                        -- notices の題名と同じ：前後の空白（JavaScript の trim と同じ 25 文字）を除いた形で 1〜100 字
+  description text check (length(description) <= 2000), -- 説明（任意。空なら null。D-33）
+  deadline timestamptz not null,              -- 締切（Asia/Tokyo の日付で 2000-01-01〜2200-12-31）
+  target_categories group_category[] not null, -- 出す団体の区分（1〜4 個。トリガーが重なりを除き、列挙の順に並べる。null の要素は不可）
+  food_only boolean not null default false,   -- 飲食の団体（groups.is_food）だけに出す（Q8）
+  requires_file boolean not null default true, -- 「提出した」にファイルが1つ以上要る（Q7。オフなら「提出した」を押すだけ。ファイルは付けてもよい）
+  files_deleted_at timestamptz,               -- 年度のファイルを削除した日時（delete_year_document_files だけが入れる。Q3）
+  created_by uuid references auth.users on delete set null, -- 書いた人。DB が auth.uid() を入れる（変えない）
+  updated_by uuid references auth.users on delete set null, -- 最後に直した人。DB が auth.uid() を入れる
+  check (title <> '' and title = btrim(title, …notices と同じ 25 文字…) and length(title) <= 100),
+  check ((deadline at time zone 'Asia/Tokyo')::date between '2000-01-01' and '2200-12-31'),
+  check (cardinality(target_categories) between 1 and 4 and array_position(target_categories, null) is null),
+  unique (year_id, title),                    -- 同じ年度に同じ題名は不可（前年度から写すときは飛ばす）
+  unique (id, year_id)                        -- 提出の複合外部キーの参照先
+);
+create index on documents (year_id, deadline);
+
+-- 提出（団体×提出物で1行。最初の操作で作る。行がなければ未提出）
+create table document_submissions (
+  document_id uuid not null,
+  group_id uuid not null,
+  year_id uuid not null,
+  status document_status not null default 'not_submitted',
+  submitted_at timestamptz,                   -- 最後に「提出した」を押した日時（未提出と、紙などで受け取った承認では null）
+  submitted_by uuid references auth.users on delete set null,
+  proxy boolean not null default false,       -- 部門長以上が代わりに提出した（Q9）
+  reviewed_at timestamptz,                    -- 最後の承認・差し戻しの日時
+  reviewed_by uuid references auth.users on delete set null,
+  review_note text,                           -- 差し戻しの理由・承認のメモ（前後の空白〔25 文字〕を除いて 1〜1000 字。なければ null）
+  primary key (document_id, group_id),
+  unique (document_id, group_id, year_id),    -- ファイルの複合外部キーの参照先
+  foreign key (document_id, year_id) references documents (id, year_id) on delete cascade, -- 提出物と団体が同じ年度
+  foreign key (group_id, year_id) references groups (id, year_id) on delete cascade,
+  check (review_note is null or (review_note <> '' and review_note = btrim(review_note, …25 文字…) and length(review_note) <= 1000)),
+  check (case status                          -- 状態と列をそろえる（同じ行の列だけを見る）
+           when 'not_submitted' then submitted_at is null and not proxy
+           when 'submitted' then submitted_at is not null
+           when 'returned' then reviewed_at is not null and review_note is not null
+           when 'approved' then reviewed_at is not null end
+         and (not proxy or submitted_at is not null))
+);
+create index on document_submissions (group_id);
+create index on document_submissions (year_id, status);
+
+-- 提出物のファイル（Storage の物と1対1。行は足すか消すだけ）
+create table document_files (
+  id uuid primary key,                        -- 画面が作る（reserve_document_file の file_id。既定値なし。送り直しの鍵）
+  year_id uuid not null,
+  document_id uuid not null,
+  group_id uuid not null,
+  object_path text not null unique,           -- Storage の path（下の CHECK の形）
+  content_type text not null check (content_type in ('application/pdf','image/jpeg','image/png')),
+  size integer not null check (size between 1 and 10485760), -- 申告の大きさ（バイト。1 B〜10 MiB）
+  created_by uuid references auth.users on delete set null, -- 予約した人（Storage に上げられるのはこの人だけ）
+  foreign key (document_id, group_id, year_id) references document_submissions (document_id, group_id, year_id) on delete cascade,
+  check (object_path = year_id::text || '/' || group_id::text || '/' || document_id::text || '/' || id::text || '.'
+         || case content_type when 'application/pdf' then 'pdf' when 'image/jpeg' then 'jpg' when 'image/png' then 'png' end)
+);
+create index on document_files (document_id, group_id);
+create index on document_files (year_id);
+
+-- 提出の状況（提出物 × 対象の団体〔区分・飲食〕× 提出の行。行がなければ未提出。RLS を素通りしないよう security_invoker）
+create view v_document_status with (security_invoker = true) as
+  select d.year_id, d.id as document_id, g.id as group_id,
+         d.title, d.description, d.deadline, d.requires_file,
+         coalesce(s.status, 'not_submitted') as status,
+         s.submitted_at, s.submitted_by, coalesce(s.proxy, false) as proxy,
+         coalesce(s.submitted_at > d.deadline, false) as late,  -- 締切の後の提出（Q6）
+         s.reviewed_at, s.reviewed_by, s.review_note,
+         s.updated_at                                           -- 楽観ロックの版（行がなければ null）
+  from documents d
+  join groups g on g.year_id = d.year_id and g.category = any (d.target_categories) and (not d.food_only or g.is_food)
+  left join document_submissions s on s.document_id = d.id and s.group_id = g.id
+  -- 読む人が提出を読める団体の行だけ（document_submissions の select と同じ集合。閲覧のみも務める店長・副店長は groups を
+  -- その年度の全部読めるので、これがないと、ほかの団体の行を提出を読めないまま未提出として出してしまう）
+  where d.year_id in (select private.my_role_year_ids('{admin,head,deputy_head,staff}'))
+     or g.id in (select private.my_group_ids());
+
+-- ファイルの行に、Storage に届いたか（uploaded）と実際の大きさ（stored_size）を足す（security_invoker。storage.objects の RLS も効く）
+create view v_document_files with (security_invoker = true) as
+  select f.id, f.year_id, f.document_id, f.group_id, f.object_path, f.content_type, f.size, f.created_by, f.created_at,
+         o.id is not null as uploaded,
+         (o.metadata ->> 'size')::bigint as stored_size
+  from document_files f
+  left join storage.objects o on o.bucket_id = 'documents' and o.name = f.object_path;
+```
+
+ファイルの置き場は Supabase Storage の非公開の bucket `documents`（0016 が `insert into storage.buckets … on conflict (id) do update` で作る。public は false、file_size_limit は 10485760〔10 MiB〕、allowed_mime_types は application/pdf・image/jpeg・image/png。config.toml の `[storage.buckets]` は使わない〔ローカル・CI・本番を同じマイグレーションでそろえる〕。版〔versioning〕は持たない）。path は `{year_id}/{group_id}/{document_id}/{file_id}.{pdf|jpg|png}` で、DB が予約の RPC で作り、document_files の CHECK で形を固定する（日本語や個人名を入れない。元のファイル名は持たない。Q16）。上げられるのは予約した人が、その path にだけ（storage.objects の insert のポリシー。下の「提出物の権限」）。Storage の物（storage.objects の行）は SQL では消せない（Supabase の storage.protect_delete。`storage.allow_delete_query` を立てない delete は 42501）ので、DB の行を消した物（外したファイル、消した提出物・団体のファイル、年度の終了の後に消したファイル）は「どの提出にも属さないファイル」として Storage に残り、画面が Storage API で消す（04 の「提出物」）。容量は予約のときに守る：1つの提出に 5 つまで、1つ 10 MiB まで（bucket も止める）、bucket の合計（届いた物の大きさ＋届いていない予約の申告）が 900 MiB（943718400 バイト。無料プランの 1 GB の手前）まで。
+
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
@@ -381,6 +483,15 @@ create index on events (year_id, starts_at);
 - 兼任の禁止（D-49）：同じ年度で、部門のロール（head・deputy_head・staff）を year_roles に持つ人は、その年度の団体の group_members に入れない（admin と viewer は入れる。違う年度ならよい）。他の表を参照する CHECK は使えないので、BEFORE ROW のトリガー `check_role_overlap` で止める（year_roles の insert と update of role, user_id、group_members の insert と update of user_id, group_id。名前の順で check_immutable の後に動く。店長⇄副店長の role だけの更新では動かない）。トリガーは最初に、年度と人ごとの勧告的ロック `pg_advisory_xact_lock(hashtext('gaapp.year_member'), hashtext(year_id::text || '/' || user_id::text))`（`private.lock_year_member`）を取り、その後の文で反対側を確かめる（READ COMMITTED なので、ロックを待つ間に確定した行も見える。確かめる関数は VOLATILE）。違反は `role_overlap`（detail は `{year_id, user_id}`。メールは入れない）。年度の行はロックしない（在庫の保存・提出の lock_year_guard の for share とぶつかり、GoTrue のログインのトランザクションを長い振り分けの保存の後ろで待たせ、年度をまたいでデッドロックし得るため）。RPC `invite` は早めに role_overlap を返し、招待の受け入れ（`private.apply_invitations`）は同じロックの下で先に確かめて、重なる招待を飛ばす（未使用のまま残す。例外を出さない。「権限とRLS」の招待の受け入れ）。0013 は、適用する時点で違反しているデータがあれば `role_overlap …` で止まる（何も残らない。README の 5 の問い合わせで探して直してから流し直す）
 - お知らせ（T17。D-53）：書き込みは RPC（save_notice・delete_notice）だけで、表には insert・update・delete の権限を与えない（理由を書き込みと同じトランザクションで置き、お知らせと宛先の団体を1回で入れ替えるため）。created_by・updated_by はトリガー `set_actor` が auth.uid() を入れ（created_by は最初に書いた人のまま。seed・SQL Editor〔auth.uid() が null〕では入れた値のまま。D-10 と同じ）、created_at・updated_at は set_timestamps が入れる。宛先の団体の行（notice_groups）は、宛先が groups のお知らせにだけ置ける。他の表を参照する CHECK は使わないので、notice_groups の insert（`check_audience`）と notices の audience の更新（`check_groups`）のトリガーで確かめ（invalid_input。field: group_ids）、RLS はこれを前提にする（閲覧のみと店長・副店長が読む notice_groups の行は、団体あてのお知らせのものだけ）。宛先の団体はお知らせと同じ年度の団体だけ（複合外部キー）。団体を消すと宛先の団体の行も消え、お知らせは残る（宛先の団体が 0 になった指定の団体あては、総務と閲覧のみだけが読める。団体を消せるのは管理者で、確定中・終了の年度では消せない）。終了の年度では書けない（読むだけ。RPC が invalid_state）。確定中も書ける（振り分けの入力でないので、確定中の守りも版〔allocation_version〕の増分もない）。題名（100 字）・本文（4000 字）・宛先の団体の数（1000）のほかに、件数の上限は持たない（書けるのは招待した総務だけ）
 - 予定と締切（T18。D-54）：書き込みは画面から直接（RLS。理由の要らない、1つの表だけの書き込みなので RPC にしない。監査の理由は null）。insert・update・delete は、その年度の部門長以上で、年度が終了でないとき（`private.can_lead`。終了の年度は読むだけ）。直すときは画面が updated_at を条件に入れて変わった行を返させ（`update … where id = … and updated_at = …`。受け取った文字列のまま）、消すときも変わった行を受け取り、0 行なら読み直して not_found・conflict・権限や状態の変化を分ける（04 の (B1)）。作るときに画面が id（uuid）を作って送れば、送り直しても主キーの重複（23505）で二重にならない。created_by・updated_by はトリガー `set_actor` が auth.uid() を入れ（created_by は最初に書いた人のまま。seed・SQL Editor〔auth.uid() が null〕では入れた値のまま。D-10。お知らせと同じ）、created_at・updated_at は set_timestamps が入れる。year_id は変えられない（check_immutable）。監査は tg_audit（D-11。group_id は null）。題名・メモ・日時の形は CHECK で止める（上の「予定と締切」。違反は 23514）。振り分けの入力でないので、版（allocation_version）を増やさず、確定中の守りもない（確定中も書ける）。件数の上限は持たない（書けるのは部門長以上だけ）。年度の複製（create_year_from）は予定と締切を写さない（日付が年ごとに違うため）
+- 提出物（T19。D-55）：
+  - 書き込みの道：提出物（documents）は画面から直接（RLS。insert・update・delete は `private.can_lead(year_id)`。予定と締切と同じく、画面が id を作って insert し、変更・削除は updated_at を条件に入れる。04 の (B1)。監査の理由は null）。提出（document_submissions）とファイル（document_files）は RPC だけで書き、表には書き込みの権限を与えない（状態の移り方・ファイルの数と容量・理由を RPC の中で確かめ、提出とファイルを1回で変えるため）。提出の行は最初の操作（予約・提出・承認など）で作る
+  - トリガー：documents の created_by・updated_by は `set_actor`（予定と締切と同じ。D-10）。set_actor は files_deleted_at も元の値（insert では null）に戻し、delete_year_document_files が transaction-local の `app.document_files_deleted` を立てたときだけ入れさせる（部門長以上の直接の update で入れさせない。RLS は列を制限できないため。app.keep_submitted_at と同じ形。戻すのは created_by と同じく auth.uid() があるときだけで、seed・SQL Editor では入れた値のまま）。対象の区分（target_categories）は `normalize_target_categories` が重なりを除いて列挙の順に並べる。year_id は3表とも、提出の document_id・group_id と、ファイルの id・document_id・group_id・object_path・content_type・size は作った後に変えられない（check_immutable。invalid_input）。監査（tg_audit。D-11）は3表に付ける（提出とファイルの year_id・group_id は行から。元のファイル名は持たないので監査にも残らない）。created_at・updated_at は set_timestamps
+  - 状態（document_status）の移り方：未提出・差し戻し →（「提出した」）→ 提出済み →（取り消し。Q13）→ 未提出、提出済み →（承認）→ 承認、提出済み・承認・差し戻し →（差し戻し。理由が必須。承認の取り消しと理由の書き直しを兼ねる）→ 差し戻し、未提出・差し戻し →（紙などで受け取った承認。メモが必須。Q9）→ 承認。ファイルを足す・外すのは、店長・副店長は未提出・差し戻しのとき、部門長以上（代理）は承認でないとき（Storage に届いていない予約は、状態によらず外せる）。締切の後も出せる（「締切の後」の印は v_document_status の late。Q6）
+  - 楽観ロック：提出・取り消し・承認・差し戻しの RPC は base_updated_at（読んだときの提出の updated_at。行がなければ null）をミリ秒までで比べ、違えば conflict。ファイルを足す・外す RPC も提出の updated_at を進める（提出の版がファイルの組も守る）。提出物の直接の update・delete は、予定と締切と同じく受け取った文字列のまま（マイクロ秒まで）比べる
+  - 終了（closed）の年度は読むだけ（提出物のポリシーの can_lead と、RPC の invalid_state）。例外は、管理者がその年度のファイルの行を全部消す RPC `delete_year_document_files`（終了の年度だけ。Q3。提出の状態・日時・理由は残し、提出物の files_deleted_at を入れる）。上の「closed の年度は読み取り専用にする」の例外に、これを足す。確定中も書ける（振り分けの入力でないので、版〔allocation_version〕を増やさず、確定中の守りもない）
+  - Storage（上の「提出物」の表の後の段落）：物は SQL では消せないので、DB の行を消した物は「どの提出にも属さないファイル」として残り、画面が消す（RPC `document_orphan_paths` が消せる path を返す）。年度・団体・提出物を SQL Editor で消さない（その物は誰の範囲からも消せなくなることがある。README）。容量の守り（5 つ・10 MiB・900 MiB）は予約の RPC が行う
+  - 年度の複製（create_year_from）は提出物・提出・ファイルを写さない（D-54 と同じ）。前年度の提出物は、部門長以上が選んで写す（RPC `copy_previous_documents`。締切は1日目の差の日数だけずらし、Asia/Tokyo の時刻は同じ。同じ題名は飛ばす。Q10）
+  - 件数の上限：1つの提出のファイルは 5 つまで。提出物の数は持たない（書けるのは部門長以上だけ）
 
 ## 権限とRLS
 
@@ -403,12 +514,15 @@ create index on events (year_id, starts_at);
 - `private.can_see_profile(user_id)`：自分と、自分が総務である年度のメンバー
 - `private.my_role_year_ids(roles)`・`private.my_group_ids()`・`private.my_role_group_ids(roles)`：行の多い表の select のポリシーで使う集合（下の D-47 の項）
 - `private.my_group_year_ids()`・`private.my_group_notice_ids()`：お知らせの select のポリシーで使う集合（自分が団体の代表である年度、自分が代表の団体を宛先の団体に含むお知らせ。T17）。my_group_year_ids は予定と締切の events の select のポリシーでも使う（T18）
+- `private.my_group_document_ids()`・`private.my_document_upload_paths()`・`private.my_document_orphan_paths()`：提出物の select のポリシーと、Storage（storage.objects）の insert・delete のポリシーで使う集合（自分が代表の団体が対象の提出物、自分が予約した今書ける提出の path、自分の範囲のどの提出にも属さない物の path。T19。下の「提出物の権限」）
 - `private.my_verified_email()`：本人のものと確かめられる今のメール（自分あての招待の読み取り）
 - ほかに、年度の状態と団体の年度を引く関数（`private.year_status`・`private.group_year_id`）
 
 兼任の禁止の補助（`private.lock_year_member`・`private.year_member_has_department_role`・`private.year_member_in_group`）は任意の人について答えるので、authenticated にも execute を与えない（トリガーと RPC の中からだけ呼ぶ。VOLATILE。「設計上の決めごと」）。アプリが使う鍵は publishable キーだけで、secret（旧 service_role）キーは使わない。
 
 表の権限（grant）も権限表に合わせる。anon には何も与えない。authenticated には全表の select と、W の表の insert・update・delete だけを与え、RPC でだけ書く表（years・year_roles・group_members・invitations・substitution_consents・allocations・profiles・audit_logs・notices・notice_groups）には書き込みの権限を与えない。RPC の execute は authenticated だけに与える。
+
+提出物（T19）：documents は W の表、document_submissions・document_files は RPC でだけ書く表（書き込みの権限を与えない）、ビュー v_document_status・v_document_files は select だけ。Storage の表（storage.objects・storage.buckets）の権限は Supabase の既定（anon・authenticated に select・insert・update・delete）のまま変えず、storage.objects のポリシー（bucket documents の物だけに効く3つ。下の「提出物の権限」）で守る。
 
 R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ書ける、—＝不可。招待されていない人は、自分の profiles 以外は何も読めない。
 
@@ -432,6 +546,11 @@ R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ
 | notices | R・RPC | R・RPC | R・RPC（読むのはその年度の全部。書くのは総務内のお知らせを出すことと、自分が書いたものを直す・消すことだけ。下の「お知らせの権限」） | R（代表である年度の全団体あてと、自団体を宛先の団体に含む指定の団体あて） | R（その年度の全団体あて・指定の団体あて。総務内は読めない） |
 | notice_groups | R・RPC | R・RPC | R | R（自団体の行だけ） | R（その年度の行） |
 | events | RW（closed でない年度） | RW（closed でない年度） | R | R（代表である年度の、対象が団体・全員の項目） | R（その年度の、対象が団体・全員の項目。総務の項目は読めない） |
+| documents | RW（closed でない年度） | RW（closed でない年度） | R | R（自団体が対象〔区分・飲食〕の提出物） | — |
+| document_submissions | R・RPC | R・RPC | R | R（自団体）・RPC | — |
+| document_files | R・RPC | R・RPC | — | R（自団体）・RPC | — |
+| v_document_status | R | R | R | R（自団体が対象の提出物 × 自団体） | — |
+| v_document_files | R | R | — | R（自団体） | — |
 
 admin・head・deputy_head・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。「自分のメール」は、本人のものと確かめられる今のメール（`private.verified_email`。下の招待の受け入れと同じ判定。ポリシーは自分の分だけを返す `private.my_verified_email()` を呼ぶ）で、JWT の email とは比べない（email を他人のアドレスに変えた状態で、その人あての未使用の招待を読ませないため。D-17a）。head・deputy_head が読める招待は、その年度の staff のロールの招待と団体代表の招待（と自分のメールの行）で、admin・head・deputy_head・viewer のロールの招待は読めない。admin と viewer は、同じ年度の団体代表を兼ねられ、兼ねた人は両方の権限を持つ（例：admin が自団体の代表として申請を書く）。head・deputy_head・staff は、同じ年度の団体代表を兼ねられない（兼任の禁止。「設計上の決めごと」。違う年度なら兼ねてよい）。店長と副店長の権限は同じ。
 
@@ -459,9 +578,33 @@ admin・head・deputy_head・staff・viewer は、その行の年度でのロー
 | 足す・直す・消す（準備中・受付中・振り分け中・確定） | ○ | ○ | — | — | — |
 | 足す・直す・消す（終了） | — | — | — | — | — |
 
+**提出物の権限**（T19。D-55）：提出物（documents）の書き込みは画面から直接（RLS。insert・update・delete のポリシーは `private.can_lead(year_id)`。書けない人の insert は 42501、update・delete は 0 行）。提出とファイルの書き込みは RPC だけ（直接の insert・update・delete は 42501）。書き込みの行（○・—）は、年度の状態が準備中・受付中・振り分け中・確定のときのもの。終了の年度では、どのロールも読むだけ（RPC は invalid_state）で、例外は管理者のファイルの削除だけ。読み取りは年度の状態によらない。「その年度」は提出物の年度、「対象」は提出物の区分（target_categories）と飲食の団体だけ（food_only）に合う団体。部門長以上で店長・副店長も務める人（管理者）は両方の権限を持つ（自分の団体に出す提出は代理にならない）。
+
+| 操作 | admin | head・deputy_head | staff | 団体代表（店長・副店長） | viewer |
+| --- | --- | --- | --- | --- | --- |
+| 提出物と提出の状況を読む | その年度の全部 | その年度の全部 | その年度の全部 | 自団体が対象の提出物と、自団体の提出 | —（Q5） |
+| ファイルを読む・開く・保存する（Storage の物を含む） | その年度の全部 | その年度の全部 | —（Q4） | 自団体の分 | — |
+| 提出物の登録・変更・削除、前年度から写す | ○ | ○ | — | — | — |
+| ファイルを足す・外す（RPC reserve_document_file・discard_document_file） | ○（承認でない提出。代理） | ○（同じ） | — | ○（自団体・対象の提出物で、未提出・差し戻しのとき） | — |
+| Storage に届いていない予約を外す | ○ | ○ | — | ○（自団体。状態によらない） | — |
+| 「提出した」・提出を取り消す（submit_document・withdraw_document） | ○（代理） | ○（代理） | — | ○（自団体） | — |
+| 承認・差し戻し・紙などで受け取った承認（approve_document・return_document） | ○ | ○ | — | — | — |
+| どの提出にも属さないファイルの path を読み、Storage から消す（document_orphan_paths） | ○（その年度の全部） | ○（その年度の全部） | — | ○（自団体の分） | — |
+| 使った量を読む（document_storage_usage） | ○ | ○ | — | — | — |
+| 終了の年度のファイルの行をすべて消す（delete_year_document_files） | ○（終了の年度だけ） | — | — | — | — |
+
+Storage（bucket documents の物。storage.objects のポリシー。anon 向けと update のポリシーは作らない）：
+
+| 操作（Storage API） | ポリシー | 許す条件 |
+| --- | --- | --- |
+| select（ダウンロード・署名つき URL・一覧。消すときの読み取りにも要る） | documents_objects_select | path の1つ目のフォルダが自分の部門長以上の年度（`split_part(name, '/', 1) in (select y::text from private.my_role_year_ids('{admin,head,deputy_head}') as y)`）、または2つ目のフォルダが自分の団体（`… in (select g::text from private.my_group_ids() as g)`）。DB の行でなくフォルダで決める（どの提出にも属さない物も、範囲の人が読んで消せる） |
+| insert（アップロード） | documents_objects_insert | name が `private.my_document_upload_paths()` に入る：自分が予約した（created_by）、終了でない年度の、今書ける提出（店長・副店長は未提出・差し戻し、部門長以上は承認でない）の path。届いた後の2回目は storage.objects の一意の索引（bucket_id, name）で止まる（23505。Storage API は 409）。update のポリシーがないので、上書き・移動・upsert はできない |
+| delete（削除） | documents_objects_delete | name が `private.my_document_orphan_paths()` に入る：select と同じ範囲の、document_files に行のない物。DB の行がある物（承認したファイルなど）は Storage からも消せない |
+
 - allocations は誰にも直接の書き込みを許さない。すべて RPC で書き、確定中は RPC がエラーを返す。団体の連鎖削除などで確定中・終了の年度の allocations が変わることも、トリガーが止める。これで確定後の書き込みは確実に止まる
 - 締切前：団体代表が申請を書けるのは、status が requesting で、request_open_at が null か過ぎていて、now() が request_close_at より前のとき。request_close_at が null なら締切前とみなさない（書けない）。部門長以上（admin・head・deputy_head）が RPC なしで書けるのは、status が preparing のときと、requesting で締切前のとき。受付開始（requesting への遷移）は request_close_at が未来でなければエラーにする
 - select のポリシーの書き方（D-47）：行が多くなりうる表（audit_logs・allocations・requests・request_submissions・substitution_consents・stocks・groups）では、行の列を判定関数に渡す形（`private.has_role(year_id, 'admin')` など）にしない。関数が残った行の数だけ呼ばれ、そのたびに year_roles などを引くため（audit_logs に 10 万行で、未招待の人の絞り込みなしの読みが約 1〜4 秒）。代わりに、呼んだ人の年度・団体の集合を問い合わせごとに1回だけ作る関数（`private.my_role_year_ids(roles)`：自分がそのロールを持つ年度、`private.my_group_ids()`：自分が代表の団体、`private.my_role_group_ids(roles)`：自分がそのロールを持つ年度の団体。どれも SECURITY DEFINER・`search_path = ''`・STABLE で、呼んだ人についてだけ答え、execute は authenticated だけ）を使い、`year_id in (select private.my_role_year_ids('{admin,head,deputy_head}'))` のように書く（段の配列を渡す。T15 で段を変えたときも、この形のまま配列だけを直した）。引数のない判定関数は `(select private.is_admin_of_open_year())` のように select で包む（どちらも1回だけ評価される）。見える行は行ごとの形と同じにする（pgTAP の 013 が、0004 の述語と行の中身ごと比べる）。行の少ない表と書き込みのポリシーは行ごとの形のままでよい。allocations の `private.year_status(year_id)` は見える側の行でしか呼ばれないので残す。お知らせの notices・notice_groups（T17）も同じ形で書く（`private.my_group_year_ids()`・`private.my_group_notice_ids()` を足した。notices のポリシーから宛先の団体を読むので、RLS を通らない DEFINER の関数で読む。宛先で分ける枝は `audience in ('all_groups','groups')` のように宛先を名前で並べ、宛先の種類を足しても黙って広がらないようにする）。予定と締切の events（T18）の select のポリシーも同じ形で書く（`private.my_role_year_ids(…)` と `private.my_group_year_ids()`。対象で分ける枝は `audience in ('groups','all')` と名前で並べる）。書き込みのポリシー（`private.can_lead(year_id)`）は行ごとの形のまま
+- 提出物（T19）の select のポリシーも D-47 の形で書く：documents は `year_id in (select private.my_role_year_ids('{admin,head,deputy_head,staff}')) or id in (select private.my_group_document_ids())`、document_submissions は同じ年度の集合と `group_id in (select private.my_group_ids())`、document_files は `'{admin,head,deputy_head}'`（部門員は読めない。Q4）と自分の団体。閲覧のみは配列に入れない（Q5）。ビュー v_document_status の where も document_submissions と同じ集合の形（読む人が提出を読める団体の行だけ）。Storage の3つのポリシーも、集合の関数を `x in (select …)` の形で問い合わせごとに1回だけ作り、行ごとには組み込みの split_part（文字列を分けるだけ。storage.foldername と同じ意味）だけを呼ぶ。集合の関数の持ち主は postgres（BYPASSRLS）なので、storage.objects と提出物の表を RLS を通らずに読む（ポリシーの中で RLS のある表を読み合わない）。documents の書き込みのポリシー（`private.can_lead(year_id)`）は行ごとの形のまま
 - ポリシーの update は using と with check に同じ述語を書く。with check は更新後の行しか見られないので、「年度・団体を変えない」はトリガー（check_immutable、rules は guard_rules）で止める（「設計上の決めごと」）
 - deliveries の「状態・問題・返却だけ更新できる」は、RLS ではなく RPC `check_delivery` で実現する（RLS は列を制限できない）
 - ログインは Supabase Auth の Google プロバイダー（ブラウザの PKCE フロー）。Google 以外のプロバイダー（メールのサインアップなど）と、学校のドメイン以外は Before User Created フック（Postgres 関数 `private.hook_before_user_created`）で拒否する。関数は公開しないスキーマ private に置き、execute は supabase_auth_admin にだけ与える。許可するドメインは `g.kumamoto-nct.ac.jp`（D-04）で、関数 `private.school_domain()` の1か所に書き、フックはそれを呼ぶ（execute は supabase_auth_admin にだけ与える。テストはトランザクションの中でこの関数を予約済みのドメインを返すものに置き換えて、実在のドメインのメールアドレスを書かずに判定を確かめる）。フックの入力では、プロバイダーが `user.app_metadata.provider`、Google の hd クレームが `user.user_metadata.custom_claims.hd` に入る（GoTrue が ID トークンから hd を写す。userinfo で取ったときは入らない）。hd があれば hd とメールのドメインの両方、なければメールのドメインだけで判定する。拒否は HTTP 403 で、画面は「学校の Google アカウントでログインしてください」と出す。フックは GoTrue の API でユーザーを作るときだけ呼ばれ、seed・SQL Editor・管理 API での作成では呼ばれない
