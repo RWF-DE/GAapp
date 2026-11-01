@@ -49,6 +49,12 @@ export const AUDIT_TABLES = [
   'notice_groups',
   // 締切と予定（T18。足すだけ）
   'events',
+  // テント等の貸し出し（T21。足すだけ）
+  'lending_items',
+  'lending_requests',
+  'lending_assignments',
+  'lending_records',
+  'lending_years',
 ] as const;
 export type AuditTable = (typeof AUDIT_TABLES)[number];
 
@@ -68,6 +74,42 @@ export function crossYearNote(adminOfOpenYear: boolean): string {
 /** 1回に読む件数 */
 export const HISTORY_PAGE_SIZE = 50;
 
+/**
+ * テント等の5表の変更の列の名前（T21。notes/T21.md の判断したことの 17）。約束では lib/labels.ts に置くが、lib/labels.ts は lib/errors.ts
+ * 経由でどのページの最初に読む JS にも入るので、履歴だけが使うこの表はここに置いた（T18 の lib/datetime-weekday.ts と同じ理由）
+ */
+const LENDING_COLUMN_LABELS: Readonly<Record<string, string>> = {
+  name: '名前',
+  unit: '単位',
+  stock: '在庫',
+  requestable_categories: '申請できる区分',
+  sort_order: '並び',
+  count: '数',
+  lent_count: '渡した数',
+  returned_count: '返った数',
+  damaged_count: '破損の数',
+  note: 'メモ',
+  confirmed_at: '確定した日時',
+  confirmed_by: '確定した人',
+  lending_item_id: '備品',
+  updated_by: '書いた人',
+};
+
+/** 履歴の変更の列の名前（表ごと。表にない表・列は列名のまま。今はテント等の5表だけ日本語にする。T21） */
+export const AUDIT_COLUMN_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  lending_items: LENDING_COLUMN_LABELS,
+  lending_requests: LENDING_COLUMN_LABELS,
+  lending_assignments: LENDING_COLUMN_LABELS,
+  lending_records: LENDING_COLUMN_LABELS,
+  lending_years: LENDING_COLUMN_LABELS,
+};
+
+/** 履歴の変更の列の名前（AUDIT_COLUMN_LABELS にあれば日本語、なければ列名のまま） */
+export function auditColumnLabel(table: string, column: string): string {
+  const cols = Object.hasOwn(AUDIT_COLUMN_LABELS, table) ? AUDIT_COLUMN_LABELS[table] : undefined;
+  return cols ? labelOf(cols, column, column) : column;
+}
+
 /** 変更の列に出さない列 */
 export const DIFF_IGNORED_KEYS: readonly string[] = ['created_at', 'updated_at'];
 
@@ -75,6 +117,8 @@ export const DIFF_IGNORED_KEYS: readonly string[] = ['created_at', 'updated_at']
 export const OUTSIDE_USER = 'outside';
 
 export const NAME_UNKNOWN = '名前を表示できません';
+/** 今の年度にないテント等の備品（申請・割り当て・記録の対象。T21） */
+export const DELETED_LENDING_ITEM = '（消えた備品）';
 export const OUTSIDE_LABEL = 'SQL・seed（アプリの外）';
 
 export const AUDIT_ACTIONS = { insert: '追加', update: '変更', delete: '削除' } as const;
@@ -333,6 +377,8 @@ export interface HistoryLookups {
   users: Map<string, string>;
   /** 年度の名前（開いている年度。year_id・prev_year_id の表示） */
   years: Map<string, string>;
+  /** テント等の備品の名前（T21。今の年度の備品。申請・割り当て・記録の対象と lending_item_id） */
+  lendingItems?: Map<string, string>;
 }
 
 export interface HistoryOptions {
@@ -342,12 +388,26 @@ export interface HistoryOptions {
   members: HistoryMember[];
   rooms: Map<string, string>;
   items: Map<string, string>;
+  /** テント等の備品の名前（T21。読めなければ空） */
+  lendingItems?: Map<string, string>;
+}
+
+/** テント等の備品の名前（T21。部門長以上は読める。読めなければ空の表にして、対象を「（消えた備品）」にするだけで履歴は出す） */
+export async function fetchLendingItemNames(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<Map<string, string>> {
+  try {
+    const rows = await fetchAll((from, to) => client.from('lending_items').select('id, name').eq('year_id', yearId).order('id').range(from, to));
+    return new Map(rows.map((r) => [r.id, r.name]));
+  } catch {
+    return new Map();
+  }
 }
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** 絞り込みの選択肢と、対象の名前に使う団体・場所・品目・メンバーを読む */
 export async function fetchHistoryOptions(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<HistoryOptions> {
+  // テント等の備品の名前（T21）。ほかの読み取りと並行に読む（失敗しても空の表を返す）
+  const lendingItems = fetchLendingItemNames(yearId, client);
   const [groups, roles, reps, rooms, items] = await Promise.all([
     fetchAll((from, to) =>
       client.from('groups').select('id, name, category, sort_order').eq('year_id', yearId).order('id').range(from, to),
@@ -378,6 +438,8 @@ export async function fetchHistoryOptions(yearId: string, client: AppSupabaseCli
     members,
     rooms: new Map(rooms.map((r) => [r.id, r.name])),
     items: new Map(items.map((i) => [i.id, i.name])),
+    // テント等の備品（T21）
+    lendingItems: await lendingItems,
   };
 }
 
@@ -503,6 +565,9 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     if (ref) return lookups?.[ref]?.get(v) ?? v;
     if (key === 'year_id' || key === 'prev_year_id') return lookups?.years?.get(v) ?? v;
     if (key === 'user_id' || key === 'counted_by' || key === 'updated_by' || key === 'created_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
+    // テント等（T21）：備品は今の備品の名前（なければ「（消えた備品）」）、確定した人は表示名
+    if (key === 'lending_item_id') return lookups?.lendingItems?.get(v) ?? DELETED_LENDING_ITEM;
+    if (key === 'confirmed_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
     if (key === 'status') {
       if (table === 'years') return labelOf(YEAR_STATUS_LABELS, v, v);
       if (table === 'substitution_consents') return labelOf(CONSENT_STATUS_LABELS, v, v);
@@ -523,6 +588,10 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v)) return formatDateTime(v) || v;
     return v;
   }
+  // テント等の備品の申請できる区分（T21）：区分の表示名
+  if (key === 'requestable_categories' && Array.isArray(v)) {
+    return v.length === 0 ? '（空）' : v.map((x) => (typeof x === 'string' ? labelOf(CATEGORY_LABELS, x, x) : String(x))).join('、');
+  }
   if (Array.isArray(v) && v.every((x) => typeof x === 'string' || typeof x === 'number')) return v.length === 0 ? '（空）' : v.join('、');
   return JSON.stringify(v);
 }
@@ -531,9 +600,11 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
 export function formatDiffEntry(table: string, d: DiffEntry, lookups?: Partial<HistoryLookups>): string {
   const bv = formatAuditValue(table, d.key, d.before, lookups);
   const av = formatAuditValue(table, d.key, d.after, lookups);
-  if (d.before === undefined) return `${d.key}：${av}`;
-  if (d.after === undefined) return `${d.key}：${bv}（削除前）`;
-  return `${d.key}：${bv} → ${av}`;
+  // 列の名前（テント等の5表は日本語。ほかの表は列名のまま。T21）
+  const key = auditColumnLabel(table, d.key);
+  if (d.before === undefined) return `${key}：${av}`;
+  if (d.after === undefined) return `${key}：${bv}（削除前）`;
+  return `${key}：${bv} → ${av}`;
 }
 
 /** 操作の日本語（追加・変更・削除） */
@@ -558,6 +629,7 @@ export function auditTarget(row: Pick<AuditLogRow, 'table_name' | 'row_pk' | 'be
   const room = (id: string | null): string | null => (id ? (lookups.rooms?.get(id) ?? '（消えた場所）') : null);
   const item = (id: string | null): string | null => (id ? (lookups.items?.get(id) ?? '（消えた品目）') : null);
   const user = (id: string | null): string | null => (id ? (lookups.users?.get(id) ?? NAME_UNKNOWN) : null);
+  const lendingItem = (id: string | null): string | null => (id ? (lookups.lendingItems?.get(id) ?? DELETED_LENDING_ITEM) : null);
   const groupName = (id: string | null) => group(id) ?? (id ? '（消えた団体）' : null);
   const parts: (string | null)[] = (() => {
     switch (row.table_name) {
@@ -596,6 +668,15 @@ export function auditTarget(row: Pick<AuditLogRow, 'table_name' | 'row_pk' | 'be
       // 締切と予定（T18）：題名
       case 'events':
         return [str('title')];
+      // テント等の貸し出し（T21）：備品は名前、申請・割り当て・記録は団体と備品、確定の印は年度名
+      case 'lending_items':
+        return [str('name')];
+      case 'lending_requests':
+      case 'lending_assignments':
+      case 'lending_records':
+        return [groupName(str('group_id')), lendingItem(str('lending_item_id'))];
+      case 'lending_years':
+        return [str('year_id') ? (lookups.years?.get(str('year_id')!) ?? null) : null];
       default:
         return [];
     }
@@ -646,6 +727,9 @@ export function useHistoryNames(yearId: string, rows: readonly AuditLogRow[], op
       // お知らせの書いた人（notices.created_by。T17）
       asRecord(r.after)?.created_by,
       asRecord(r.before)?.created_by,
+      // テント等の割り当てを確定した人（lending_years.confirmed_by。T21）
+      asRecord(r.after)?.confirmed_by,
+      asRecord(r.before)?.confirmed_by,
     ]) {
       if (typeof v === 'string' && !known.has(v)) userIds.add(v);
     }

@@ -2,7 +2,15 @@
 // 機能のチケット（T17〜T21）は、自分のプロバイダを最後に1行足す（並びは registry.ts の MODULES と同じにする。registry.test.ts）。
 import { calendarPortalProvider } from './calendar/portal';
 import { furniturePortalProvider } from './furniture/portal';
+// テント等の貸し出し（T21。D-57）
+import { lendingPortalProvider } from './lending/portal';
 import { noticesPortalProvider } from './notices/portal';
 import type { PortalProvider } from './portal';
 
-export const PORTAL_PROVIDERS: readonly PortalProvider[] = [furniturePortalProvider, noticesPortalProvider, calendarPortalProvider];
+export const PORTAL_PROVIDERS: readonly PortalProvider[] = [
+  furniturePortalProvider,
+  noticesPortalProvider,
+  calendarPortalProvider,
+  // テント等の貸し出し（T21。D-57）
+  lendingPortalProvider,
+];

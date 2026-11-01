@@ -93,6 +93,11 @@ export const ROUTES: readonly RouteDef[] = [
   // （締切と予定）と同じ言葉を縦に並べないよう「締切と予定の一覧」（お知らせの「お知らせ一覧」と同じ形。マージの後の直し。
   // notes/T18.md の「後半で決められなかったこと」の 1 の (a)）
   { href: '/calendar', label: '締切と予定の一覧', section: 'calendar', audiences: ALL, nav: true, ticket: 'T18' },
+  // テント等の貸し出し（lending。T21・D-57）：備品と割り当ては総務と閲覧のみ（閲覧のみは割り当ての確定によらず開ける。確定前は画面の
+  // 中で「割り当ては確定後に表示されます」。finalOnly は年度の状態なので使わない）、受け渡し・返却は総務。店長・副店長は見出しごと
+  // 出ない（申請〔/request〕の「テント等」のタブから入る）
+  { href: '/lending', label: '備品と割り当て', section: 'lending', audiences: [...SOUMU, 'viewer'], nav: true, ticket: 'T21' },
+  { href: '/lending/records', label: '受け渡し・返却', section: 'lending', audiences: SOUMU, nav: true, ticket: 'T21' },
   // 共通（部門長・副部門長はマスタ設定の一部のタブだけ。settingsTabsFor）
   { href: '/settings', label: 'マスタ設定', section: 'common', audiences: LEAD, nav: true, ticket: 'T09' },
   { href: '/history', label: '履歴', section: 'common', audiences: LEAD, nav: true, ticket: 'T14' },

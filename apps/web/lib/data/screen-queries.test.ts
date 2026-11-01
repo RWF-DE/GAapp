@@ -2,6 +2,8 @@
 // T16：ダッシュボード（/）の先読み（planHomePrefetch。欄が読むクエリと同じキー。版・スナップショットを読まない）と、
 // ルートのレイアウトの JS に机椅子の数え方・スナップショット・検証を入れないこと
 // T18：/ の先読みに予定と締切の項目（締切と予定の欄と同じキー。4G の計測で団体代表の / が 2 秒以内のままと確かめて足した）
+// T21：/ の先読みに総務のテント等の読み取り（店長・副店長の分は 4G で計ってから決める）、/request にテント等のタブを出すかの備品
+// （`?tab=lending` ならタブの読み取りも）、/lending/records（総務。先送りの許可リストにも入る）
 import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
 import type { AppRole, GroupSummary, Membership } from '@/lib/auth/membership';
@@ -9,6 +11,8 @@ import type { YearRow } from '@/lib/db/types';
 import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
+import { lendingRecordsOptions, lendingRequestItemsOptions, lendingRequestTabOptions } from '@/lib/modules/lending/queries';
+import { lendingRepOptions, lendingSoumuOptions } from '@/lib/modules/lending/summary';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
 import { PORTAL_WIDGETS, portalContextsOf, portalWidgetQuery } from '@/lib/modules/portal';
 import { PORTAL_PROVIDERS } from '@/lib/modules/providers';
@@ -22,6 +26,7 @@ import {
   freshYearRow,
   loadMyData,
   planHomePrefetch,
+  planLendingRecordsPrefetch,
   planMyPrefetch,
   planRequestPrefetch,
   planStockPrefetch,
@@ -53,8 +58,8 @@ describe('先読みの決め方（URL と覚えた id から）', () => {
   });
 
   it('/request・/my：?group= が覚えた団体ならその団体、なければ最初の団体。団体がなければ読まない', () => {
-    expect(planRequestPrefetch(ctx(`group=${G2}`, [G1, G2])).map((e) => e.groupId)).toEqual([G2]);
-    expect(planRequestPrefetch(ctx('group=other', [G1, G2])).map((e) => e.groupId)).toEqual([G1]);
+    expect(planRequestPrefetch(ctx(`group=${G2}`, [G1, G2])).map((e) => e.groupId)).toEqual([G2, G2]);
+    expect(planRequestPrefetch(ctx('group=other', [G1, G2])).map((e) => e.groupId)).toEqual([G1, G1]);
     expect(planRequestPrefetch(ctx('', []))).toEqual([]);
     expect(keys(planMyPrefetch(ctx(`group=${G2}`, [G1, G2])))).toEqual([queryKeys.yearPart(Y, 'my', G2)]);
     expect(planMyPrefetch(ctx('', []))).toEqual([]);
@@ -84,10 +89,43 @@ function fakeClient(rows: Record<string, unknown>, gates: Record<string, Promise
   return { client, log };
 }
 
+describe('T21 テント等の先読み（/request のタブ・/lending/records）', () => {
+  it('/request：申請と、テント等のタブを出すかを決める備品（いつも）。`?tab=lending` ならその団体のテント等のタブも', () => {
+    expect(keys(planRequestPrefetch(ctx(`group=${G2}`, [G1, G2])))).toEqual([
+      queryKeys.yearPart(Y, 'request', G2),
+      lendingRequestItemsOptions(Y).queryKey,
+    ]);
+    expect(keys(planRequestPrefetch(ctx(`group=${G2}&tab=lending`, [G1, G2])))).toEqual([
+      queryKeys.yearPart(Y, 'request', G2),
+      lendingRequestItemsOptions(Y).queryKey,
+      lendingRequestTabOptions(Y, G2).queryKey,
+    ]);
+    // 知らないタブは机・椅子（テント等のタブの読み取りはしない）
+    expect(keys(planRequestPrefetch(ctx('tab=other', [G1])))).toEqual([queryKeys.yearPart(Y, 'request', G1), lendingRequestItemsOptions(Y).queryKey]);
+  });
+
+  it('/lending/records：ロールが総務なら受け渡し・返却の読み取り（総務のままのときだけ使う）。ほかは読まない', () => {
+    for (const role of ['admin', 'head', 'deputy_head', 'staff'] as const) {
+      const [e] = planLendingRecordsPrefetch(ctx('', [], role));
+      expect(e!.options.queryKey).toEqual(lendingRecordsOptions(Y).queryKey);
+    }
+    expect(planLendingRecordsPrefetch(ctx('', [], 'viewer'))).toEqual([]);
+    expect(planLendingRecordsPrefetch(ctx('', [G1], null))).toEqual([]);
+    const [e] = planLendingRecordsPrefetch(ctx('', [], 'staff'));
+    const member = (role: AppRole | null) => ({ role, groups: [] }) as unknown as Membership;
+    expect(e!.usable!(member('head'))).toBe(true);
+    expect(e!.usable!(member('viewer'))).toBe(false);
+    expect(e!.usable!(member(null))).toBe(false);
+    expect(SCREEN_PREFETCH['/lending/records']).toBe(planLendingRecordsPrefetch);
+  });
+});
+
 describe('先送りしてよい画面（EARLY_FETCH_PATHS）', () => {
   it('版を使わない画面（先読みの表と同じ /・/stock・/request・/my）だけで、振り分けに関わる画面（版を先に読む。D-33）は入らない', () => {
     // T16：ダッシュボード（/）は版・振り分けの行を読まないので入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）
-    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/', '/my', '/request', '/stock']);
+    // T21：受け渡し・返却（/lending/records）も版を使わないので入れた（/lending〔PC〕は入れない）
+    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/', '/lending/records', '/my', '/request', '/stock']);
+    expect(EARLY_FETCH_PATHS).not.toContain('/lending');
     expect(EARLY_FETCH_PATHS).toEqual(Object.keys(SCREEN_PREFETCH));
     expect(SCREEN_PREFETCH['/']).toBe(planHomePrefetch);
     // 振り分けに関わる画面（スナップショットで版を先に読む：机椅子の状況・振り分け・キャスター机交換）
@@ -116,7 +154,8 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
         if (!p.kinds.includes(c.kind)) continue;
         for (const w of PORTAL_WIDGETS) {
           const q = portalWidgetQuery(p, c, w);
-          if (q) out.set(JSON.stringify(q.queryKey), q.queryKey);
+          // T21：店長・副店長のテント等の読み取りは、4G で計ってから先読みに足すかを決める（notes/T21.md「画面の約束」7）
+          if (q && !(p.moduleId === 'lending' && c.kind === 'rep')) out.set(JSON.stringify(q.queryKey), q.queryKey);
         }
       }
     }
@@ -131,6 +170,8 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
         furnitureSoumuOptions(Y).queryKey,
         noticesLatestOptions(Y, 'soumu').queryKey,
         calendarDatedOptions(Y, 'soumu').queryKey,
+        // T21：テント等の貸し出しの総務の読み取り
+        lendingSoumuOptions(Y).queryKey,
       ]);
     },
   );
@@ -151,6 +192,7 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
       furnitureSoumuOptions(Y).queryKey,
       noticesLatestOptions(Y, 'soumu').queryKey,
       calendarDatedOptions(Y, 'soumu').queryKey,
+      lendingSoumuOptions(Y).queryKey,
       furnitureRepOptions(Y, [G1]).queryKey,
       noticesLatestOptions(Y, 'rep', [G1]).queryKey,
     ]);
@@ -207,7 +249,7 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     for (const m of [member('admin', [G1g]), member('staff'), member('viewer', [G2g]), member(null, [G1g, G2g])]) {
       for (const key of keys(home(m))) {
         expect(key.slice(0, 3)).toEqual(['year', Y, 'portal']);
-        expect(['furniture', 'notices', 'calendar']).toContain(key[3]);
+        expect(['furniture', 'notices', 'calendar', 'lending']).toContain(key[3]);
       }
     }
   });
@@ -242,6 +284,16 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     expect(repNotices!.usable!(member('viewer', [G1g, G2g]))).toBe(false);
     expect(repNotices!.usable!(member(null, [G1g]))).toBe(false);
   });
+
+  it('T21 店長・副店長のテント等の読み取りは / の先読みにまだ入れない（4G で計ってから決める）。総務の分は欄と同じキー', () => {
+    for (const m of [member(null, [G1g]), member('admin', [G1g]), member('viewer', [G1g])]) {
+      expect(keys(home(m))).not.toContainEqual(lendingRepOptions(Y, [G1]).queryKey);
+    }
+    const lending = home(member('staff')).find((e) => e.options.queryKey[3] === 'lending');
+    expect(lending!.options.queryKey).toEqual(lendingSoumuOptions(Y).queryKey);
+    expect(lending!.usable!(member('head'))).toBe(true);
+    expect(lending!.usable!(member('viewer'))).toBe(false);
+  });
 });
 
 describe('T16 ルートのレイアウトの JS（Providers が先読みの表を読む）', () => {
@@ -275,6 +327,11 @@ describe('T16 ルートのレイアウトの JS（Providers が先読みの表�
     expect(g.files).toContain('lib/modules/calendar/dated.ts');
     expect(g.files.filter((f) => f.includes('calendar') && f !== 'lib/modules/calendar/dated.ts')).toEqual([]);
     expect(g.files).not.toContain('lib/datetime-weekday.ts');
+    // T21：テント等は読み取りとキー（summary.ts・queries.ts）だけ。数え方・組み立て・CSV・言葉・/lending の読み書き・入力の zod・
+    // 画面の部品は入れない
+    expect(g.files).toContain('lib/modules/lending/summary.ts');
+    expect(g.files).toContain('lib/modules/lending/queries.ts');
+    expect(g.files.filter((f) => f.includes('lending') && !['lib/modules/lending/summary.ts', 'lib/modules/lending/queries.ts'].includes(f))).toEqual([]);
   });
 });
 

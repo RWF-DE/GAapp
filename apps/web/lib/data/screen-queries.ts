@@ -27,6 +27,8 @@ import { appError, toAppError } from '@/lib/errors';
 import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
+import { lendingRecordsOptions, lendingRequestItemsOptions, lendingRequestTabOptions } from '@/lib/modules/lending/queries';
+import { lendingSoumuOptions } from '@/lib/modules/lending/summary';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
 import { queryKeys, STALE_TIME_MS } from '@/lib/query';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
@@ -208,7 +210,23 @@ export function repRequestOptions(yearId: string | null | undefined, groupId: st
 export function planRequestPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
   const wanted = ctx.params.get('group');
   const groupId = ctx.groupIds.find((g) => g === wanted) ?? ctx.groupIds[0];
-  return groupId ? [{ groupId, options: repRequestOptions(ctx.yearId, groupId) }] : [];
+  if (!groupId) return [];
+  return [
+    { groupId, options: repRequestOptions(ctx.yearId, groupId) },
+    // テント等のタブ（T21）：タブを出すかを決める備品はいつも、`?tab=lending` で開いたときはテント等のタブの読み取りも
+    { groupId, options: lendingRequestItemsOptions(ctx.yearId) },
+    ...(ctx.params.get('tab') === 'lending' ? [{ groupId, options: lendingRequestTabOptions(ctx.yearId, groupId) }] : []),
+  ];
+}
+
+// ---------------------------------------------------------------- 受け渡し・返却 /lending/records（T21）
+
+/**
+ * /lending/records の先読み（D-45。T21）：ロールが総務なら、受け渡し・返却の読み取り（備品・団体・割り当て・記録・確定の印）。
+ * 版を使わない画面なので、記録・先送りの許可リスト（EARLY_FETCH_PATHS）にも入る。立場が届いて総務でなくなったら使わない。
+ */
+export function planLendingRecordsPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
+  return isSoumu(ctx.role) ? [{ options: lendingRecordsOptions(ctx.yearId), usable: (m) => isSoumu(m.role) }] : [];
 }
 
 // ---------------------------------------------------------------- 自団体の振り分け /my（T13）
@@ -348,6 +366,8 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
     list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
     list.push({ options: noticesLatestOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
     list.push({ options: calendarDatedOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
+    // テント等の貸し出しの総務の読み取り（T21。要対応とカードが同じキーを読む。店長・副店長の分は 4G で計ってから決める）
+    list.push({ options: lendingSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
   }
   if (ctx.role === 'viewer') {
     list.push({ options: noticesLatestOptions(ctx.yearId, 'viewer'), usable: (m) => m.role === 'viewer' });
@@ -377,6 +397,8 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
   '/stock': planStockPrefetch,
   '/request': planRequestPrefetch,
   '/my': planMyPrefetch,
+  // 受け渡し・返却（T21。スマホ。版を使わない）
+  '/lending/records': planLendingRecordsPrefetch,
 };
 
 /**

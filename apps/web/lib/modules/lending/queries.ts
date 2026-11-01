@@ -1,0 +1,199 @@
+// 申請（/request）のテント等のタブと、受け渡し・返却（/lending/records）が読むもの（T21・D-57。04「テント等の貸し出し」、notes/T21.md
+// 「画面の約束」2）。読み取りとキーだけの軽いモジュール：画面を開いたときの先読み（lib/data/screen-queries.ts の planRequestPrefetch・
+// planLendingRecordsPrefetch。ルートのレイアウトが読む）からも使うので、数え方・画面の部品・lib/data・zod を実行時に import しない。
+// どれも要る列だけを並行に読む。版（allocation_version）は使わない（振り分けの入力でない）。
+import type { Tables } from '@gaapp/shared';
+import { queryOptions } from '@tanstack/react-query';
+import { fetchAll, type PageResult } from '@/lib/db/fetch-all';
+import { toAppError } from '@/lib/errors';
+import { queryKeys } from '@/lib/query';
+import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
+
+type Res = { data: unknown; error: unknown; status?: number };
+
+function rowsOf<T>(res: Res): T[] {
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data ?? []) as T[];
+}
+
+/** 確定の印の確定の日時（行がない・解除の後は null） */
+function confirmedAtOf(res: Res): string | null {
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data as { confirmed_at: string | null } | null)?.confirmed_at ?? null;
+}
+
+// ---------------------------------------------------------------- 申請のテント等のタブ
+
+/** タブを出すかを決める備品の列（申請できる区分を含む） */
+export const LENDING_REQUEST_ITEMS_SELECT = 'id, name, unit, requestable_categories, sort_order';
+export type LendingRequestItem = Pick<Tables<'lending_items'>, 'id' | 'name' | 'unit' | 'requestable_categories' | 'sort_order'>;
+
+/** 年度の備品（タブを出すか・タブの欄。店長・副店長は代表である年度の備品を RLS で読める） */
+export async function fetchLendingRequestItems(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRequestItem[]> {
+  const res = await client.from('lending_items').select(LENDING_REQUEST_ITEMS_SELECT).eq('year_id', yearId).order('sort_order').order('id');
+  return rowsOf<LendingRequestItem>(res);
+}
+
+/** 備品のクエリ（キーは `['year', yearId, 'lending', 'request-items']`）。申請の画面の読み込みと並行に読む */
+export function lendingRequestItemsOptions(yearId: string) {
+  return queryOptions({
+    queryKey: queryKeys.yearPart(yearId, 'lending', 'request-items'),
+    queryFn: () => fetchLendingRequestItems(yearId),
+  });
+}
+
+/** 申請の行の列（(A) の読み直しで、書いた人と更新日時を比べる） */
+export const LENDING_REQUEST_ROW_SELECT = 'group_id, lending_item_id, count, updated_by, updated_at';
+export type LendingRequestRow = Pick<Tables<'lending_requests'>, 'group_id' | 'lending_item_id' | 'count' | 'updated_by' | 'updated_at'>;
+
+/** 割り当ての数（団体×備品） */
+export type LendingAssignmentCount = Pick<Tables<'lending_assignments'>, 'group_id' | 'lending_item_id' | 'count'>;
+
+/** タブの記録の列（渡した・返った・破損） */
+export type LendingRecordCount = Pick<Tables<'lending_records'>, 'group_id' | 'lending_item_id' | 'lent_count' | 'returned_count' | 'damaged_count'>;
+
+/** テント等のタブのデータ（その団体の分だけ） */
+export interface LendingRequestTabData {
+  requests: LendingRequestRow[];
+  /** 割り当ての確定の日時（確定前は null） */
+  confirmedAt: string | null;
+  /** 割り当て（確定前は RLS が 0 行を返す） */
+  assignments: LendingAssignmentCount[];
+  records: LendingRecordCount[];
+  loadedAt: string;
+}
+
+/** その団体の申請を読む（(A) の送る前の読み直し。RLS で自団体〔と総務〕だけ） */
+export async function readGroupLendingRequests(groupId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRequestRow[]> {
+  const res = await client.from('lending_requests').select(LENDING_REQUEST_ROW_SELECT).eq('group_id', groupId).order('lending_item_id');
+  return rowsOf<LendingRequestRow>(res);
+}
+
+/**
+ * テント等のタブを読む（その団体の申請・確定の印・割り当て・記録を並行に。判断したことの 21：記録は確定の前でも出すので、
+ * 割り当て〔確定前は 0 行〕と記録をいつも読む。往復は1回）
+ */
+export async function fetchLendingRequestTab(yearId: string, groupId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRequestTabData> {
+  const [requests, ly, assignments, records] = await Promise.all([
+    readGroupLendingRequests(groupId, client),
+    client.from('lending_years').select('year_id, confirmed_at').eq('year_id', yearId).maybeSingle(),
+    client.from('lending_assignments').select('group_id, lending_item_id, count').eq('group_id', groupId).order('lending_item_id'),
+    client
+      .from('lending_records')
+      .select('group_id, lending_item_id, lent_count, returned_count, damaged_count')
+      .eq('group_id', groupId)
+      .order('lending_item_id'),
+  ]);
+  return {
+    requests,
+    confirmedAt: confirmedAtOf(ly),
+    assignments: rowsOf<LendingAssignmentCount>(assignments),
+    records: rowsOf<LendingRecordCount>(records),
+    loadedAt: new Date().toISOString(),
+  };
+}
+
+/** テント等のタブのクエリ（キーは `['year', yearId, 'lending', 'request', groupId]`） */
+export function lendingRequestTabOptions(yearId: string, groupId: string) {
+  return queryOptions({
+    queryKey: queryKeys.yearPart(yearId, 'lending', 'request', groupId),
+    queryFn: () => fetchLendingRequestTab(yearId, groupId),
+  });
+}
+
+// ---------------------------------------------------------------- 受け渡し・返却 /lending/records
+
+/** 団体の列（名前・表示名・別名・区分・並び・使用場所の名前と種類） */
+export const LENDING_GROUP_SELECT =
+  'id, name, display_name, aliases, category, sort_order, location_room_id, location_room:rooms!location_room_id(name, kind)';
+
+/** 団体（使用場所の名前と種類つき。使用場所がない・読めなければ location は null） */
+export interface LendingGroup extends Pick<Tables<'groups'>, 'id' | 'name' | 'display_name' | 'aliases' | 'category' | 'sort_order' | 'location_room_id'> {
+  location: Pick<Tables<'rooms'>, 'name' | 'kind'> | null;
+}
+
+type GroupWithRoom = Omit<LendingGroup, 'location'> & {
+  location_room?: Pick<Tables<'rooms'>, 'name' | 'kind'> | Pick<Tables<'rooms'>, 'name' | 'kind'>[] | null;
+};
+
+/** 年度の団体を読む（使用場所の名前と種類を埋め込む。並べ方は画面〔counts.ts の団体の並び〕） */
+export async function fetchLendingGroups(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingGroup[]> {
+  const rows = await fetchAll<GroupWithRoom>(
+    (from, to) =>
+      client.from('groups').select(LENDING_GROUP_SELECT).eq('year_id', yearId).order('id').range(from, to) as unknown as PromiseLike<
+        PageResult<GroupWithRoom>
+      >,
+  );
+  return rows.map(({ location_room: room, ...g }) => {
+    const r = Array.isArray(room) ? room[0] : room;
+    return { ...g, location: g.location_room_id && r ? { name: r.name, kind: r.kind } : null };
+  });
+}
+
+/** 記録の列（受け渡し・返却の画面と (A) の読み直し） */
+export const LENDING_RECORD_SELECT = 'group_id, lending_item_id, lent_count, returned_count, damaged_count, note, updated_by, updated_at';
+export type LendingRecordRow = Pick<
+  Tables<'lending_records'>,
+  'group_id' | 'lending_item_id' | 'lent_count' | 'returned_count' | 'damaged_count' | 'note' | 'updated_by' | 'updated_at'
+>;
+
+/** 受け渡し・返却の備品の列 */
+export type LendingRecordsItem = Pick<Tables<'lending_items'>, 'id' | 'name' | 'unit' | 'sort_order'>;
+
+export interface LendingRecordsData {
+  items: LendingRecordsItem[];
+  groups: LendingGroup[];
+  assignments: LendingAssignmentCount[];
+  records: LendingRecordRow[];
+  /** 割り当ての確定の日時（確定前は null） */
+  confirmedAt: string | null;
+  loadedAt: string;
+}
+
+/** 団体×備品の表を年度で絞って全部読む */
+function readYearPairs<T>(client: AppSupabaseClient, table: 'lending_assignments' | 'lending_records', select: string, yearId: string) {
+  return fetchAll<T>(
+    (from, to) =>
+      client.from(table).select(select).eq('year_id', yearId).order('group_id').order('lending_item_id').range(from, to) as unknown as PromiseLike<
+        PageResult<T>
+      >,
+  );
+}
+
+/** 受け渡し・返却の画面を読む（備品・団体・割り当て・記録・確定の印を並行に、要る列だけ） */
+export async function fetchLendingRecords(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRecordsData> {
+  const [items, groups, assignments, records, ly] = await Promise.all([
+    client.from('lending_items').select('id, name, unit, sort_order').eq('year_id', yearId).order('sort_order').order('id'),
+    fetchLendingGroups(yearId, client),
+    readYearPairs<LendingAssignmentCount>(client, 'lending_assignments', 'group_id, lending_item_id, count', yearId),
+    readYearPairs<LendingRecordRow>(client, 'lending_records', LENDING_RECORD_SELECT, yearId),
+    client.from('lending_years').select('year_id, confirmed_at').eq('year_id', yearId).maybeSingle(),
+  ]);
+  return {
+    items: rowsOf<LendingRecordsItem>(items),
+    groups,
+    assignments,
+    records,
+    confirmedAt: confirmedAtOf(ly),
+    loadedAt: new Date().toISOString(),
+  };
+}
+
+/** 受け渡し・返却のクエリ（キーは `['year', yearId, 'lending', 'records']`） */
+export function lendingRecordsOptions(yearId: string) {
+  return queryOptions({
+    queryKey: queryKeys.yearPart(yearId, 'lending', 'records'),
+    queryFn: () => fetchLendingRecords(yearId),
+  });
+}
+
+/** その団体の記録を読む（(A) の送る前の読み直し） */
+export async function readGroupRecords(yearId: string, groupId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRecordRow[]> {
+  const res = await client
+    .from('lending_records')
+    .select(LENDING_RECORD_SELECT)
+    .eq('year_id', yearId)
+    .eq('group_id', groupId)
+    .order('lending_item_id');
+  return rowsOf<LendingRecordRow>(res);
+}

@@ -69,6 +69,12 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   notice_groups: '宛先の団体',
   // 締切と予定（T18。表 events。種類・対象の表示名は lib/modules/calendar/labels.ts）
   events: '締切と予定',
+  // テント等の貸し出し（T21。D-57）
+  lending_items: 'テント等の備品',
+  lending_requests: 'テント等の申請',
+  lending_assignments: 'テント等の割り当て',
+  lending_records: 'テント等の受け渡し・返却',
+  lending_years: 'テント等の割り当ての確定',
 };
 
 /** 監査ログの操作（audit_logs.action） */
