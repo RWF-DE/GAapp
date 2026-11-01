@@ -341,6 +341,49 @@
 - 読み取りの結果を使う欄：締切と予定だけ（読み込み中・失敗はこの欄にだけ出し、要対応・カード・お知らせの欄には出さない。年度の行だけで決まる項目はない）。失敗の文言は「締切と予定：{文言}」と「もう一度」で、机椅子の日付（年度の行から）は出したまま
 - 先読み：ダッシュボードの先読み（「共通レイアウト」の読み込みの項）に、この読み取りを足す（総務は総務として、閲覧のみは閲覧のみとして、ロールのない店長・副店長は店長・副店長として。店長・副店長も務める管理者・閲覧のみは総務・閲覧のみとして1回だけ）。軽いモジュール（読み取りとキーだけ。並べ方や組み立てを持たない）から読む（D-52）。団体代表の / が 4G で 2 秒以内のままであることを `pnpm e2e:perf` で確かめて足した（notes/T18.md の「実行したコマンドと結果（パート B）」、D-45 の T18 の直し）
 
+### 提出物 /documents・/document（T19）
+
+- 提出物の機能（T19。D-55。機能の id は documents。コードの変数名は doc にして、ブラウザの document とぶつけない）。入口は「提出状況」（/documents。総務。PC）と「自団体の提出物」（/document。店長・副店長。スマホ）の2つ（申請一覧 /requests と申請 /request と同じ並べ方）。閲覧のみには出さない（Q5）。表と読める人は [データ設計](02_data.md) の「提出物」と「提出物の権限」、書き込みは提出物の登録・変更・削除の直接の書き込み（下）と、下の「DB関数」の 11 個（reserve_document_file など）、ファイルは Supabase Storage の非公開の bucket documents
+- 画面（2つの画面・ナビの見出し「提出物」と項目・段ごとの出し分け・ダイアログ・エラーの文言・CSV）は、パート B でこの節に書く（下書きは notes/T19.md の「計画」の 5〜7 章。パート A は DB と Storage だけ。D-55）。ここには、パート A で決めた、画面が守る DB と Storage の約束を書く
+- 提出物の登録・変更・削除（部門長以上。終了した年度は読むだけ）：画面から直接（RLS。締切と予定と同じ）。登録は画面が id（uuid）を作って insert し、変わった行を返させる（送り直しは主キーの重複〔23505・documents_pkey〕で止まる）。変更は `update … where id = … and updated_at = …`（受け取った updated_at の文字列のまま）で変わった行を返させ、削除も変わった行を受け取る。0 行なら読み直して、なくなった（not_found）・ほかの人が変えた（conflict）・権限か年度の状態が変わった（forbidden）を分ける。送る値：題名（zod の trim〔DB と同じ 25 文字〕の後に 1〜100 字。同じ年度に同じ題名は 23505・documents_year_id_title_key）、説明（空なら null。2000 字まで）、締切（Asia/Tokyo の日時を `+09:00` で。2000〜2200 年）、対象の区分（1つ以上。DB が重なりを除いて並べる）、飲食の団体だけ、ファイルが要る。書いた人・直した人・日時と files_deleted_at は送らない（DB が入れる。files_deleted_at は送っても DB が元に戻す）。消すと、その提出物の提出とファイルの行も消える（Storage の物は残るので、下の片付けで消す。画面は「提出 N 件とファイル M 件も消えます」と確かめる）
+- 読むもの：v_document_status（提出物 × 対象の団体 × 提出。行がなければ未提出。読む人が提出を読める団体の行だけ。題名・説明・締切・ファイルが要るか・締切の後の印 late・提出の updated_at を含む）、v_document_files（ファイルの行に、Storage に届いたか uploaded と実際の大きさ stored_size を足したもの）、提出物の設定には documents。どれも RLS が返したものをそのまま出す（総務はその年度の全部、ただし部門員はファイルを読めない〔Q4〕。店長・副店長は自団体が対象の提出物と自団体の分。閲覧のみは何も読めない）
+- ファイル（Storage。supabase-js の storage でブラウザから直接。守るのは storage.objects のポリシー）：
+  - path は `{year_id}/{group_id}/{document_id}/{file_id}.{pdf|jpg|png}` で、DB が作る（reserve_document_file の返り値の object_path）。日本語や個人名を入れない。元のファイル名は持たず、「ファイル 1（PDF・1.2 MB）」と出す（Q16）
+  - 上げる：画面で形（PDF・JPEG・PNG）・先頭のバイト・大きさ（10 MiB まで）・数（5 つまで）を確かめ、JPEG は長い辺 2500px までに作り直して EXIF（位置情報など）を消す（Q1）。file_id（uuid）を作って reserve_document_file で予約し、`storage.from('documents').upload(object_path, blob, { contentType, upsert: false })` で上げ、一覧を読み直す。通信が切れたら同じ file_id で予約し直し（同じ行が返る）、同じ path へ上げ直す（409 なら、もう届いていた）
+  - 開く・保存（部門長以上と自団体の店長・副店長）：押したときに `createSignedUrl(object_path, 60)`（60 秒だけ使える）。ポップアップで止められないよう、押したときに先にタブを開いてから URL を入れる。保存は `download` に「{提出物}_{団体}_{n}.{拡張子}」を渡す（個人名を入れない）。URL はキャッシュ・下書き・ログに残さない
+  - 外す：discard_document_file の後、すぐ `remove([object_path])`
+  - どの提出にも属さないファイル（DB の行がない Storage の物。外した・消した提出物や団体の物）：document_orphan_paths が返す path を `remove` で消す（部門長以上は提出状況を開いたとき、店長・副店長は外した直後）。Storage の物は SQL では消せない
+  - 終了した年度：ファイルは読める・開ける。管理者が delete_year_document_files で行を消し、続けて document_orphan_paths の path を `remove` で消す（状態・日時・理由は残る。Q3）
+  - 守り（02「提出物の権限」）：上げられるのは自分が予約した path だけ（update のポリシーはないので、上書き・移動・upsert はできない）、読めるのは部門長以上（年度のフォルダ）と自団体の店長・副店長（団体のフォルダ）、消せるのはどの提出にも属さない物だけ。bucket は 10 MiB を超える物と、3つの形のほかを止める
+  - 署名つきアップロード（createSignedUploadUrl → uploadToSignedUrl）も使えるが、書くときに storage.objects のトリガーが予約と提出の状態を確かめるので、提出・承認・終了の後や、予約を外した後には、前に作った URL でも上げられない（403）。上書き（upsert）はどの道でもできない（403）。画面は upload（`upsert: false`）を使い、署名つき URL を作って取っておかない
+  - 予約の size には、上げる物（JPEG は作り直した後）の大きさをそのまま送る。届いた物が申告より大きいと、Storage が 403 で止める（トリガー。申告で数える容量を実際より小さく見せない）
+  - どの提出にも属さない物が団体のフォルダに 5 つ以上あると、予約が invalid_state（reason too_many_orphans）になる。画面は外した直後に remove し、too_many_orphans が返ったら document_orphan_paths の path を remove してから予約し直す
+- 提出・取り消し・承認・差し戻しは、読んだときの提出の updated_at（v_document_status の updated_at。行がなければ null）を base_updated_at に渡す。ファイルを足す・外すと提出の updated_at が進むので、続けて提出するときは読み直した版で送る
+- 提出・取り消し・承認で同じ操作が重なったとき（店長と副店長が同時に「提出した」を押した、部門長2人が同時に承認した）と、成功した後の送り直しは、conflict でなく invalid_state（reason not_editable と今の status）になる（RPC は状態を版より先に見る。後の操作はロックを待った後の状態で決まる）。画面は読み直して今の状態を出す（「すでに提出済みです」など）。conflict になるのは、読んだ後にほかの人がファイルを足す・外すなどで版が進み、状態は変わっていないとき（差し戻しは差し戻しからもできるので、差し戻しが重なったときも conflict）
+- 通信が切れたとき（「DB関数とブラウザ側の処理」の (B1)）：提出物の登録・変更・削除（直接）、予約と上げる（file_id と path が鍵）、提出・取り消し・承認・差し戻し（base_updated_at）はどれも (B1)。前年度から写す・年度のファイルの削除・片付けは、何度しても同じ結果になる。(B2) になる書き込みはない
+- エラー：RPC の invalid_state の reason（not_editable・no_file・not_uploaded・too_many_files・too_many_orphans・storage_full・not_closed）と invalid_input の field・reason（in_use・required・too_long・not_in_prev_year など）は、下の DB関数の表。文言はパート B で lib/errors.ts に足す
+
+**ダッシュボードに出すもの（提出物。D-52・D-55）**
+
+- 欄：要対応・締切と予定・機能ごとのカード（お知らせの欄には出さない）。閲覧のみには何も出さず、何も読まない（Q5）
+- 読むもの（軽く読む。版・振り分けの行は読まない）：総務は v_document_status の document_id・group_id・status・submitted_at・title・deadline（ほかの列は読まない）、部門長以上はそれに加えて document_storage_usage、店長・副店長は自団体の行（題名・締切・状態・差し戻しの理由）
+- 要対応（行き先を開ける立場にだけ出す）：
+
+  | 立場 | 出すとき | 文 | 度合い | 行き先 |
+  | --- | --- | --- | --- | --- |
+  | 部門長以上 | 提出済みがある | 承認待ち N 件 | ふつう | /documents?status=submitted |
+  | 総務 | 締切を過ぎた未提出・差し戻しがある | 締切を過ぎた未提出 N 件（差し戻しを含む） | 部門長以上はふつう、部門員は参考 | /documents?status=overdue |
+  | 部門長以上 | どの提出にも属さないファイルがある | 片付けていないファイル N 件（提出状況を開くと消します） | 参考 | /documents |
+  | 管理者 | 終了の年度にファイルが残っている | 提出物のファイル N 件（X MB）が残っています。要るものを保存してから削除してください | ふつう | /documents |
+  | 店長・副店長 | 差し戻しがある（提出物ごとに1件） | {団体}：提出物「{名前}」が差し戻されました（2行目に「理由：…」） | 急ぎ | /document?group=… |
+  | 店長・副店長 | 未提出がある（団体ごとに1件にまとめる） | {団体}：未提出の提出物 N 件（期日はいちばん早い締切） | 締切まで 24 時間を切った・過ぎたら急ぎ、ほかはふつう | /document?group=… |
+
+- 差し戻しの理由は、要対応の1件の任意の2行目（detail。3行まで、改行を残す）に「理由：…」と出す（Q14）。共有の型（lib/modules/portal.ts の TodoItem）と部品（components/portal/todo-list.tsx）を直すので、パート B で先に「ダッシュボード」の節と D-52 を直してから作る（並行の機能のチケットに知らせる）
+- 締切と予定：提出物ごとに「提出物「{名前}」の締切」（種類は締切）。総務には全部、店長・副店長には自団体が対象のものだけ。行き先は /documents?document={id}（開けなければ /document）。同じ項目は立場によらず同じ id・同じ中身。締切と予定の一覧（/calendar）にも、読み取りの要る機能の日付として出す（「締切と予定」の読むもの）
+- カード「提出物」（総務）：「提出物 6 件（次の締切 10/5 17:00）」「承認 40／61・承認待ち 7・差し戻し 2・未提出 12」、管理者には「ファイル 180 MB（上限 900 MB）」も。リンクは「提出状況へ」
+- 読み取りの結果を使う欄：要対応・締切と予定・カード（年度の行だけで決まる項目はない）。失敗の文言は「提出物：{文言}」と「もう一度」
+- 先読み：店長・副店長の分は、団体代表の / が 4G で 2 秒以内のままであることを `pnpm e2e:perf` で確かめてから足す（T17・T18 と同じ。超えたら足さない）
+
 ## DB関数とブラウザ側の処理
 
 サーバーを持たないので、Route Handler と Server Action は使わない。読み取りと、理由の要らない書き込み（在庫入力、締切前の申請一覧のセル編集、マスタの編集、締切と予定の項目〔T18。表 events〕の登録・変更・削除）は、画面から Supabase クライアントで直接行い、RLS で守る。理由が要る書き込みと、複数の表をまとめて変える書き込み（申請の提出を含む）は DB 関数（RPC）で行う。重い計算とファイルの作成は使う人のブラウザで行う（振り分けの計算は部門長以上、振り分け表の Excel は総務、年度データの書き出しは管理者）。
@@ -371,6 +414,17 @@
 | previous_year_requests(year_id) | 部門長以上 | 前年度の申請の数を団体名つきで返す（休憩所の初期値。読み取りのみ） |
 | save_notice(year_id, audience, title, body, pinned, group_ids, notice_id, base_updated_at) | 総務（宛先が全団体・指定の団体なら部門長以上。ピン留めを付ける・外すのは部門長以上。ほかの人が書いたお知らせを直すのは部門長以上。T17・D-53） | お知らせを作る（notice_id が null）か直す（全部の欄を置き換え、宛先の団体は差分で入れ替える）。要る引数は year_id・audience・title で、body（null）・pinned（false）・group_ids（空）・notice_id（null）・base_updated_at（null）は省ける（引数の並びは既定値のないものが先）。題名は前後の空白（JavaScript の trim と同じ 25 文字。全角の空白・タブ・改行・U+00A0 などを含む。02 の notices）を除いて 1〜100 字、本文は 4000 字まで（同じ空白だけなら null）。宛先が「指定の団体」なら、その年度の団体を1つ以上（重複なし・1000 まで）、ほかの宛先なら団体を渡さない。書いた人・直した人と日時は DB が入れる。終了した年度では書けない（確定中は書ける）。直すときは base_updated_at（読んだときの updated_at の文字列のまま。ミリ秒までで比べる）が今の行と違えば conflict（detail は id）。返り値はお知らせの行。理由は「お知らせ」（作る）・「お知らせの更新」（直す）。エラーの順：forbidden（その年度の総務でない・年度がない）→ invalid_state（終了）→ invalid_input（field：audience・title・body・pinned・group_ids〔reason：required・not_allowed・too_many・invalid・not_in_year〕・base_updated_at〔作るときに渡した・直すときにない〕）→ forbidden（宛先の段）→ not_found（その年度にないお知らせ。呼んだ人はその年度のお知らせを全部読めるので有無を漏らさない）→ forbidden（書いた人でも部門長以上でもない、ピン留めを変える）→ conflict。作るときは冪等の鍵がない（応答が届かなければ、一覧を読み直して確かめてから送り直す。下の (B2)）。画面は「お知らせ一覧」 |
 | delete_notice(notice_id, base_updated_at) | 総務で、そのお知らせを書いた人か部門長以上（T17・D-53） | お知らせを消す（宛先の団体の行も消える）。終了した年度では消せない。お知らせが見つからない・その年度の総務でないときは forbidden（有無を漏らさない）、base_updated_at が null なら invalid_input（field: base_updated_at）、ロックを待つ間に消えていれば not_found、書いた人でも部門長以上でもなければ forbidden、base_updated_at が今の行と違えば conflict（detail は id）。理由は「お知らせの削除」 |
+| reserve_document_file(document_id, group_id, file_id, content_type, size) | その年度の部門長以上（代理。承認でない提出）、その団体の店長・副店長（未提出・差し戻しの提出）（T19・D-55） | 提出物のファイルを予約し、ファイルの行（object_path を含む）を返す。提出の行がなければ作る（未提出）。file_id は画面が作る uuid、content_type は application/pdf・image/jpeg・image/png、size は申告の大きさ（1〜10485760）。path は `{year_id}/{group_id}/{document_id}/{file_id}.{拡張子}`（拡張子は形から pdf・jpg・png。DB が作る）。同じ file_id で同じ中身なら、状態・数・容量を見ずにその行を返す（冪等。送り直してよい）。1つの提出に 5 つまで、その団体のフォルダのどの提出にも属さない物が 5 つ未満、bucket の合計（届いた物の大きさ＋届いていない予約の申告＋今回）が 900 MiB まで。届いた物は申告を超えられない（Storage のトリガー）。提出の updated_at を進める。終了した年度ではできない。理由は置かない。エラーの順：forbidden（団体がない・その年度の部門長以上でもその団体の店長・副店長でもない）→ invalid_state（終了）→ invalid_input（field：document_id・file_id〔reason: in_use は、同じ file_id が違う中身で既にある〕・content_type・size）→ not_found（その年度にない提出物・団体が対象でない）→ invalid_state（detail は status と reason：not_editable・too_many_files・too_many_orphans・storage_full の順） |
+| discard_document_file(file_id) | 同上（Storage に届いていない予約は、提出の状態によらない） | ファイルの行を消し、object_path を返す（Storage の物は「どの提出にも属さないファイル」になり、画面がすぐ remove する）。提出の updated_at を進める。終了した年度ではできない。理由は置かない。エラーの順：forbidden（ファイルがない・その年度の部門長以上でもその団体の店長・副店長でもない。有無を漏らさない）→ invalid_state（終了）→ not_found（ロックを待つ間に消えた）→ invalid_state（届いたファイルで、提出の状態が書けない：not_editable） |
+| submit_document(document_id, group_id, base_updated_at) | 同上（部門長以上は、その団体の店長・副店長でなければ代理） | 未提出・差し戻し → 提出済み（提出した日時と人。代理の印）。ファイルが要る提出物は1つ以上、付けたファイルは全部 Storage に届いていること。締切の後も出せる（v_document_status の late）。base_updated_at は読んだときの提出の updated_at（行がなければ null。ミリ秒までで比べる）。前の差し戻しの理由は残す。返り値は提出の行。理由は「提出物の提出」（代理は「提出物の代理の提出」）。エラーの順：forbidden → invalid_state（終了）→ invalid_input（document_id）→ not_found → invalid_state（not_editable・no_file・not_uploaded）→ conflict（detail は document_id と group_id） |
+| withdraw_document(document_id, group_id, base_updated_at) | 同上 | 提出済み → 未提出（Q13。提出した日時と人・代理の印を消す。ファイルは残る）。返り値は提出の行。理由は「提出の取り消し」。エラーの順：forbidden → invalid_state（終了）→ invalid_input（document_id・base_updated_at〔null は不可〕）→ not_found → invalid_state（提出済みでない：not_editable）→ conflict |
+| approve_document(document_id, group_id, note, base_updated_at) | その年度の部門長以上 | 提出済み → 承認（メモは任意）。未提出・差し戻しからの承認（紙などで受け取ったとき。Q9）はメモが必須で、提出した日時と人・代理の印を消す。メモは前後の空白（25 文字）を除いて 1000 字まで（空なら null）。base_updated_at は行がなければ null。返り値は提出の行。理由は「提出物の承認」。エラーの順：forbidden → invalid_state（終了）→ invalid_input（document_id・note〔too_long〕）→ not_found → invalid_state（承認済み：not_editable）・invalid_input（未提出・差し戻しからでメモがない：field note、reason required。状態で決まるのでここ）→ conflict |
+| return_document(document_id, group_id, note, base_updated_at) | その年度の部門長以上 | 提出済み・承認・差し戻し → 差し戻し（承認の取り消しと、理由の書き直しも兼ねる）。理由（note）は前後の空白を除いて 1〜1000 字で必須。団体のホームの要対応に出す。提出した日時と人は残す。返り値は提出の行。理由は「提出物の差し戻し」。エラーの順：forbidden → invalid_state（終了）→ invalid_input（document_id・note〔required・too_long〕・base_updated_at〔null は不可〕）→ not_found → invalid_state（未提出：not_editable）→ conflict |
+| previous_year_documents(year_id) | その年度の部門長以上 | 複製元（prev_year_id）の年度の提出物を、締切 → 題名 → id の順に返す（読み取りのみ。年度の状態によらない）。列は提出物の中身と、ずらした締切 new_deadline（1日目の差の日数だけずらし、Asia/Tokyo の時刻は同じ）と、同じ題名がこの年度にあるか exists_in_year。複製元がなければ空 |
+| copy_previous_documents(year_id, document_ids) | その年度の部門長以上 | 選んだ前年度の提出物を、ずらした締切でこの年度に写す（題名・説明・対象の区分・飲食の団体だけ・ファイルが要る。同じ題名は飛ばす。Q10）。写した行を返す（何度呼んでも同じ結果）。終了した年度ではできない。理由は「提出物の前年度からの写し」。エラーの順：forbidden → invalid_state（終了）→ invalid_input（field document_ids、reason：required・too_many〔1000 を超える〕・invalid〔null・重なり〕・not_in_prev_year・deadline_out_of_range） |
+| delete_year_document_files(year_id, reason) | その年度の管理者（終了の年度だけ） | その年度の提出物のファイルの行を全部消し、提出物の files_deleted_at を入れる（最初の削除の日時のまま）。提出の状態・日時・理由は残す（Q3）。消した行の数を返す（Storage の物は、画面が document_orphan_paths の path を remove する）。reason は省ける（省けば理由は「提出物のファイルの削除」）。エラーの順：forbidden → invalid_state（終了でない：reason not_closed）→ invalid_input（reason が 500 字を超える） |
+| document_orphan_paths(year_id) | その年度の部門長以上、その年度の団体の店長・副店長 | 呼んだ人が Storage から消せる「どの提出にも属さないファイル」の path を返す（その年度のフォルダの分。部門長以上は年度の全部、店長・副店長は自団体の分。読み取りのみ。終了の年度も） |
+| document_storage_usage(year_id) | その年度の部門長以上 | 1行を返す（読み取りのみ）：bucket documents の合計（全年度の届いた物の大きさ）bucket_bytes と上限 limit_bytes（900 MiB）、その年度のファイルの行の数 file_count と大きさ file_bytes（届いたものは実際、届いていないものは申告）、その年度のどの提出にも属さない物の数 orphan_count |
 
 **ブラウザ側の処理**
 
@@ -397,3 +451,4 @@
   - (A) 数を絶対値で書く書き込み（在庫・申請）：保存のたびに、送る前に今の行を読み直して決める（入力と同じ値になっていれば送らずに「保存されていました」）
   - (B1) 楽観ロックの更新（updated_at）と、一意のキーのある insert（マスタ・ルール・今年の使用。お知らせの更新と削除〔save_notice の notice_id あり・delete_notice。T17〕も楽観ロックなのでこれ。締切と予定の項目〔T18。表 events〕も、変更・削除は updated_at を条件に入れた直接の update・delete、登録は画面が id を作って送る insert〔主キーが一意のキー〕なのでこれ）：応答が届かなかったその場で行を1回読み直し、入力と同じなら「保存されていました」とする。決められなければ入力を残し、もう一度の保存はふつうに送ってよい。前の送信が通っていれば DB が updated_at の違い（conflict）か重複（23505）で止めるので上書きにならず、止まった後に行を読み直して入力と比べる（同じなら保存されていた、違えばほかの人の変更として扱う）。止まった後に行を読み直せなかったときは「読み直す」を出し、押すとその行を1回読み直して同じに決める（入力の元の版を進めるのは、その行を読み直して違っていたときだけ。一覧の読み直しでは進めない。締切と予定・お知らせ・ルールのシート。一意のキーの insert は、押したときの入力のキーの行を読み、キーを変えていれば前のキーで止められた結果では決めない。マスタ設定・ルールのシート）
   - (B2) save_allocation_rows（行の追加に冪等の鍵がなく、確かめずに送り直すと二重にできる）と、ほかの RPC（save_auto_allocations・確定・了承の回答。お知らせの作成〔save_notice の notice_id なし。T17〕も冪等の鍵がないのでこれ）：版などで保存されたかを読み直して確かめてから送り直す
+  - 提出物（T19）の書き込みはどれも (B1) で、(B2) はない：提出物の登録・変更・削除は締切と予定と同じ直接の書き込み、ファイルの予約（reserve_document_file）と Storage への upload は file_id と path が鍵（予約し直すと同じ行が返り、2回目の upload は 409 で止まる）、提出・取り消し・承認・差し戻しは base_updated_at の楽観ロック。前年度から写す・年度のファイルの削除・どの提出にも属さないファイルの片付けは、何度しても同じ結果になる（「提出物」の節）

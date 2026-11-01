@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(265);
+select plan(371);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -23,12 +23,16 @@ select enum_has_labels('public', 'notice_audience', array['soumu','all_groups','
 -- event_kind・event_audience：予定と締切の種類（締切・予定）と対象（総務・団体・全員。T18）
 select enum_has_labels('public', 'event_kind', array['deadline','event']);
 select enum_has_labels('public', 'event_audience', array['soumu','groups','all']);
+-- document_status：提出の状態（未提出・提出済み・差し戻し・承認。T19）
+select enum_has_labels('public', 'document_status', array['not_submitted','submitted','returned','approved']);
 
--- 表が 22 個（T17 でお知らせの notices・notice_groups を、T18 で予定と締切の events を足した）、ビューが v_remaining
+-- 表が 25 個（T17 でお知らせの notices・notice_groups を、T18 で予定と締切の events を、T19 で提出物の3表を足した）、ビューが3つ
+-- （v_remaining と、T19 の提出の状況 v_document_status・ファイル v_document_files）
 select tables_are('public', array['years','rooms','room_years','items','stocks','groups','year_roles','group_members',
   'invitations','request_submissions','requests','rules','substitution_consents','allocations',
-  'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events'], 'public の表は 22 個');
-select views_are('public', array['v_remaining'], 'public のビューは v_remaining だけ');
+  'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events',
+  'documents','document_submissions','document_files'], 'public の表は 25 個');
+select views_are('public', array['v_remaining','v_document_status','v_document_files'], 'public のビューは v_remaining・v_document_status・v_document_files');
 
 -- 列（表ごとに列の集合が一致する）
 select columns_are('public', 'years', array['id','label','festival_start','request_open_at','request_close_at','status','allocation_version','auto_allocated_at','prev_year_id','created_at','updated_at']);
@@ -54,6 +58,12 @@ select columns_are('public', 'notices', array['id','year_id','audience','title',
 select columns_are('public', 'notice_groups', array['notice_id','year_id','group_id','created_at','updated_at']);
 select columns_are('public', 'events', array['id','year_id','kind','audience','title','starts_at','ends_at','all_day','note','created_by','updated_by','created_at','updated_at']);
 select columns_are('public', 'v_remaining', array['year_id','room_id','item_id','stock','allocated','remaining']);
+-- 提出物（T19）
+select columns_are('public', 'documents', array['id','year_id','title','description','deadline','target_categories','food_only','requires_file','files_deleted_at','created_by','updated_by','created_at','updated_at']);
+select columns_are('public', 'document_submissions', array['document_id','group_id','year_id','status','submitted_at','submitted_by','proxy','reviewed_at','reviewed_by','review_note','created_at','updated_at']);
+select columns_are('public', 'document_files', array['id','year_id','document_id','group_id','object_path','content_type','size','created_by','created_at','updated_at']);
+select columns_are('public', 'v_document_status', array['year_id','document_id','group_id','title','description','deadline','requires_file','status','submitted_at','submitted_by','proxy','late','reviewed_at','reviewed_by','review_note','updated_at']);
+select columns_are('public', 'v_document_files', array['id','year_id','document_id','group_id','object_path','content_type','size','created_by','created_at','uploaded','stored_size']);
 
 -- 主な列の型・既定値
 select col_type_is('years', 'allocation_version', 'integer');
@@ -121,10 +131,66 @@ select ok((select bool_and(data_type = 'uuid' and is_nullable = 'YES' and column
           and (select count(*) = 2 from information_schema.columns
                where table_schema = 'public' and table_name = 'events' and column_name in ('created_by', 'updated_by')),
   'events.created_by・updated_by は uuid・null 可・既定なし');
+-- 提出物（T19）：documents は年度・題名・締切・対象の区分が not null（既定値なし。画面が決めて送る）、飲食だけ（既定 false）とファイルが
+-- 要る（既定 true）も not null。説明・ファイルを削除した日時は任意。書いた人・直した人は null 可・既定なし（set_actor が入れる）
+select col_type_is('documents', 'deadline', 'timestamp with time zone');
+select col_type_is('documents', 'target_categories', 'group_category[]');
+select col_type_is('documents', 'files_deleted_at', 'timestamp with time zone');
+select ok((select bool_and(is_nullable = 'NO' and column_default is null) from information_schema.columns
+           where table_schema = 'public' and table_name = 'documents' and column_name in ('year_id', 'title', 'deadline', 'target_categories'))
+          and (select count(*) = 4 from information_schema.columns
+               where table_schema = 'public' and table_name = 'documents' and column_name in ('year_id', 'title', 'deadline', 'target_categories')),
+  'documents の year_id・title・deadline・target_categories は not null・既定値なし');
+select col_default_is('documents', 'food_only', 'false');
+select col_default_is('documents', 'requires_file', 'true');
+select ok((select bool_and(is_nullable = 'NO') from information_schema.columns
+           where table_schema = 'public' and table_name = 'documents' and column_name in ('food_only', 'requires_file')),
+  'documents の food_only・requires_file は not null');
+select ok((select bool_and(is_nullable = 'YES' and column_default is null) from information_schema.columns
+           where table_schema = 'public' and table_name = 'documents'
+             and column_name in ('description', 'files_deleted_at', 'created_by', 'updated_by'))
+          and (select count(*) = 4 from information_schema.columns
+               where table_schema = 'public' and table_name = 'documents'
+                 and column_name in ('description', 'files_deleted_at', 'created_by', 'updated_by')),
+  'documents の description・files_deleted_at・created_by・updated_by は null 可・既定なし');
+-- 提出：状態は not null・既定は未提出、代理は not null・既定 false。提出・確かめた日時と人・理由は null 可
+select col_type_is('document_submissions', 'status', 'document_status');
+select col_default_is('document_submissions', 'status', 'not_submitted');
+select col_default_is('document_submissions', 'proxy', 'false');
+select ok((select bool_and(is_nullable = 'NO') from information_schema.columns
+           where table_schema = 'public' and table_name = 'document_submissions'
+             and column_name in ('document_id', 'group_id', 'year_id', 'status', 'proxy')),
+  'document_submissions の document_id・group_id・year_id・status・proxy は not null');
+select ok((select bool_and(is_nullable = 'YES' and column_default is null) from information_schema.columns
+           where table_schema = 'public' and table_name = 'document_submissions'
+             and column_name in ('submitted_at', 'submitted_by', 'reviewed_at', 'reviewed_by', 'review_note'))
+          and (select count(*) = 5 from information_schema.columns
+               where table_schema = 'public' and table_name = 'document_submissions'
+                 and column_name in ('submitted_at', 'submitted_by', 'reviewed_at', 'reviewed_by', 'review_note')),
+  'document_submissions の submitted_at・submitted_by・reviewed_at・reviewed_by・review_note は null 可・既定なし');
+-- ファイル：id は画面が作る（既定値なし。送り直しの鍵）。大きさは integer（10 MiB は int4 に入る）。予約した人は null 可
+select col_type_is('document_files', 'size', 'integer');
+select col_hasnt_default('document_files', 'id');
+select ok((select bool_and(is_nullable = 'NO' and column_default is null) from information_schema.columns
+           where table_schema = 'public' and table_name = 'document_files'
+             and column_name in ('id', 'year_id', 'document_id', 'group_id', 'object_path', 'content_type', 'size'))
+          and (select count(*) = 7 from information_schema.columns
+               where table_schema = 'public' and table_name = 'document_files'
+                 and column_name in ('id', 'year_id', 'document_id', 'group_id', 'object_path', 'content_type', 'size')),
+  'document_files の id・year_id・document_id・group_id・object_path・content_type・size は not null・既定値なし');
+select col_is_null('document_files', 'created_by');
+-- ビューの列の型（提出の状況の status は列挙型、late・proxy・uploaded は真偽、stored_size は bigint）
+select col_type_is('v_document_status', 'status', 'document_status');
+select col_type_is('v_document_status', 'late', 'boolean');
+select col_type_is('v_document_files', 'uploaded', 'boolean');
+select col_type_is('v_document_files', 'stored_size', 'bigint');
+-- ビューの列（提出の状況の updated_at など。null になりうる）は数えない（T19 で created_at・updated_at の列を持つビューを足した）
 select ok((select bool_and(is_nullable = 'NO' and column_default is not null)
-           from information_schema.columns
+           from information_schema.columns c
            where table_schema = 'public' and column_name in ('created_at', 'updated_at')
-             and table_name <> 'audit_logs'),
+             and table_name <> 'audit_logs'
+             and exists (select 1 from information_schema.tables t
+                         where t.table_schema = 'public' and t.table_name = c.table_name and t.table_type = 'BASE TABLE')),
   'created_at・updated_at は全表で not null・既定値あり');
 
 -- 主キー
@@ -142,6 +208,10 @@ select col_is_pk('audit_logs', 'id');
 select col_is_pk('notices', 'id');
 select col_is_pk('notice_groups', array['notice_id','group_id']);
 select col_is_pk('events', 'id');
+-- 提出物（T19）：提出は団体×提出物で1行
+select col_is_pk('documents', 'id');
+select col_is_pk('document_submissions', array['document_id','group_id']);
+select col_is_pk('document_files', 'id');
 
 -- 一意制約
 select col_is_unique('years', 'label');
@@ -156,6 +226,16 @@ select col_is_unique('rules', array['year_id','code']);
 select col_is_unique('notices', array['id','year_id']);
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_id_year_id_key'), 'UNIQUE (id, year_id)',
   'notices_id_year_id_key は unique (id, year_id)');
+-- 提出物（T19）：題名は年度の中で一意。(id, year_id) は提出の、提出の (document_id, group_id, year_id) はファイルの複合外部キーの参照先。
+-- Storage の path は一意（1つの物に1行）
+select is((select string_agg(conname || ': ' || pg_get_constraintdef(oid), ' / ' order by conname collate "C") from pg_constraint
+           where conrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)
+             and contype in ('u', 'p')),
+  'document_files_object_path_key: UNIQUE (object_path) / document_files_pkey: PRIMARY KEY (id) / '
+  || 'document_submissions_document_id_group_id_year_id_key: UNIQUE (document_id, group_id, year_id) / '
+  || 'document_submissions_pkey: PRIMARY KEY (document_id, group_id) / documents_id_year_id_key: UNIQUE (id, year_id) / '
+  || 'documents_pkey: PRIMARY KEY (id) / documents_year_id_title_key: UNIQUE (year_id, title)',
+  '提出物の3表の主キーと一意制約');
 
 -- 外部キー（年度の一致は複合外部キー）
 select fk_ok('public', 'allocations', array['group_id','year_id'], 'public', 'groups', array['id','year_id']);
@@ -179,6 +259,29 @@ select is((select string_agg(conname || ': ' || pg_get_constraintdef(oid), ' / '
 select fk_ok('public', 'events', 'year_id', 'public', 'years', 'id');
 select fk_ok('public', 'events', 'created_by', 'auth', 'users', 'id');
 select fk_ok('public', 'events', 'updated_by', 'auth', 'users', 'id');
+-- 提出物（T19）：年度へは cascade、提出は提出物・団体と年度ごと結び（同じ年度）、ファイルは提出と年度ごと結ぶ。記録のための人は set null
+select fk_ok('public', 'documents', 'year_id', 'public', 'years', 'id');
+select fk_ok('public', 'document_submissions', array['document_id','year_id'], 'public', 'documents', array['id','year_id']);
+select fk_ok('public', 'document_submissions', array['group_id','year_id'], 'public', 'groups', array['id','year_id']);
+select fk_ok('public', 'document_files', array['document_id','group_id','year_id'], 'public', 'document_submissions', array['document_id','group_id','year_id']);
+select is((select string_agg(conname || ': ' || pg_get_constraintdef(oid), ' / ' order by conname collate "C") from pg_constraint
+           where conrelid in ('public.document_submissions'::regclass, 'public.document_files'::regclass) and contype = 'f'
+             and array_length(conkey, 1) > 1),
+  'document_files_submission_fkey: FOREIGN KEY (document_id, group_id, year_id) REFERENCES document_submissions(document_id, group_id, year_id) ON DELETE CASCADE / '
+  || 'document_submissions_document_fkey: FOREIGN KEY (document_id, year_id) REFERENCES documents(id, year_id) ON DELETE CASCADE / '
+  || 'document_submissions_group_fkey: FOREIGN KEY (group_id, year_id) REFERENCES groups(id, year_id) ON DELETE CASCADE',
+  '提出・ファイルの複合外部キーは3本とも名前つきで cascade（提出物・団体・提出を消すと行も消える）');
+with fk as (
+  select conrelid::regclass::text as tbl, confdeltype as del,
+         (select string_agg(a.attname, ',' order by a.attnum) from pg_attribute a
+           where a.attrelid = c.conrelid and a.attnum = any (c.conkey)) as cols
+  from pg_constraint c where c.contype = 'f'
+    and c.conrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass))
+select is((select string_agg(tbl || '.' || cols || '=' || del::text, ' ' order by tbl, cols) from fk),
+  'document_files.created_by=n document_files.year_id,document_id,group_id=c document_submissions.document_id,year_id=c '
+  || 'document_submissions.group_id,year_id=c document_submissions.reviewed_by=n document_submissions.submitted_by=n documents.created_by=n '
+  || 'documents.updated_by=n documents.year_id=c',
+  '提出物の3表の外部キーの on delete：年度・提出物・団体・提出へは cascade（c）、記録のための人（書いた人・直した人・提出した人・確かめた人・予約した人）は set null（n）。下の set null の一覧には入れない');
 
 -- on delete の動作（c＝cascade、r＝restrict、n＝set null）
 with fk as (
@@ -193,14 +296,15 @@ with fk as (
   select conrelid::regclass::text as tbl, confdeltype as del,
          (select string_agg(a.attname, ',' order by a.attnum) from pg_attribute a
            where a.attrelid = c.conrelid and a.attnum = any (c.conkey)) as cols
-  from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace)
+  from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace
+    and c.conrelid not in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)) -- 提出物（T19）は上で見る
 select is((select string_agg(tbl || '.' || cols, ' ' order by tbl, cols) from fk where del = 'n'),
   'deliveries.checked_by deliveries.year_id,slot_id events.created_by events.updated_by notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by years.prev_year_id',
   '記録のためのユーザー参照（お知らせ・予定と締切の書いた人・直した人を含む）・時間枠・複製元は set null');
 -- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー。T18 で events.year_id を足した
 select is((select count(*)::int from pg_constraint c
-           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 23,
-  '年度・団体・ユーザー・お知らせへの参照は cascade（23 本）');
+           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 27,
+  '年度・団体・ユーザー・お知らせ・提出物・提出への参照は cascade（27 本。T19 で documents.year_id と、提出の2本・ファイルの1本の複合外部キーを足した）');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'deliveries_slot_id_year_id_fkey'),
   'FOREIGN KEY (slot_id, year_id) REFERENCES slots(id, year_id) ON DELETE SET NULL (slot_id)',
   '時間枠を消しても受け渡しの year_id は残す（列を指定した set null）');
@@ -379,6 +483,144 @@ select lives_ok(format($$ insert into public.events (year_id, kind, audience, ti
   '2200-12-31 23:59（Asia/Tokyo）の終わりは入る');
 select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at) values (%L, 'event', 'soumu', '範囲', now(), '2201-01-01 00:00+09') $$, tests.id('Y1')),
   '23514', null, '終わりの日付は 2200-12-31（Asia/Tokyo）まで');
+-- 提出物（T19）：題名は notices・events と同じ式（同じ 25 文字の空白を除いた形で 1〜100 字。DB では除かず、前後の空白は拒む）。
+-- 説明は 2000 字まで。締切の日付（Asia/Tokyo）は 2000-01-01〜2200-12-31。対象の区分は 1〜4 個で null の要素は不可（重なりは
+-- トリガーが除く。002）。提出の理由・メモ（review_note）は題名と同じ 25 文字を除いた形で 1〜1000 字（RPC が除いてから入れる）。
+-- 状態の CHECK は同じ行の列で状態と列をそろえる。ファイルは形3つ・大きさ 1 B〜10 MiB・path は列から作った形
+select is((select string_agg(conname, ' ' order by conname collate "C") from pg_constraint
+           where conrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)
+             and contype = 'c'),
+  'document_files_content_type_check document_files_object_path_check document_files_size_check '
+  || 'document_submissions_review_note_check document_submissions_status_check documents_deadline_check documents_description_check '
+  || 'documents_target_categories_check documents_title_check',
+  '提出物の3表の CHECK は9つ');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'documents_title_check'),
+  (select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_title_check'),
+  'documents_title_check は notices_title_check と同じ式（同じ 25 文字の空白・100 字まで）');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'document_submissions_review_note_check'),
+  (select 'CHECK (((review_note IS NULL) OR '
+          || replace(replace(substr(pg_get_constraintdef(oid), 8), 'title', 'review_note'), '<= 100)', '<= 1000)') || ')'
+   from pg_constraint where conname = 'notices_title_check'),
+  'document_submissions_review_note_check は題名と同じ 25 文字の空白を除いた形で、null か 1〜1000 字');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'documents_description_check'), 'CHECK ((length(description) <= 2000))',
+  'documents_description_check は説明 2000 字まで');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'documents_target_categories_check'),
+  'CHECK ((((cardinality(target_categories) >= 1) AND (cardinality(target_categories) <= 4)) AND (array_position(target_categories, NULL::group_category) IS NULL)))',
+  'documents_target_categories_check は 1〜4 個で null の要素なし');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'document_files_content_type_check'),
+  'CHECK ((content_type = ANY (ARRAY[''application/pdf''::text, ''image/jpeg''::text, ''image/png''::text])))',
+  'document_files_content_type_check は PDF・JPEG・PNG の3つ（Q1）');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'document_files_size_check'), 'CHECK (((size >= 1) AND (size <= 10485760)))',
+  'document_files_size_check は 1 B〜10 MiB（Q1）');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '', '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1')), '23514', null, 'documents.title が空');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, %L, '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1'), chr(12288) || chr(9)), '23514', null, '提出物の題名が空白だけ（全角の空白とタブ）');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, ' 題名', '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1')), '23514', null, '提出物の題名の前に半角の空白（DB は除かずに拒む）');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, %L, '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1'), '題名' || chr(160)), '23514', null, '提出物の題名の後ろに U+00A0');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, %L, '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1'), chr(65279) || '題名'), '23514', null, '提出物の題名の前に U+FEFF');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, repeat('あ', 101), '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1')), '23514', null, '提出物の題名は 100 字まで');
+select lives_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, repeat('あ', 100), '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1')), '提出物の 100 字の題名は入る');
+select lives_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, %L, '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1'), '題 名' || chr(12288) || 'の中' || chr(8203)), '提出物の題名の中の空白と、後ろの U+200B（trim が除かない）はそのまま入る');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, 'T-DOC_STALL', '2027-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y1')), '23505', null, '同じ年度に同じ題名の提出物は入らない（documents_year_id_title_key）');
+select lives_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, 'T-DOC_STALL', '2026-09-01 12:00+09', '{stall}') $$,
+  tests.id('Y2')), 'ほかの年度なら同じ題名の提出物も入る');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories, description) values (%L, '説明', '2027-09-01 12:00+09', '{stall}', repeat('あ', 2001)) $$,
+  tests.id('Y1')), '23514', null, 'documents.description は 2000 字まで');
+select lives_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories, description) values (%L, '説明', '2027-09-01 12:00+09', '{stall}', repeat('あ', 2000)) $$,
+  tests.id('Y1')), '2000 字の説明は入る');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '締切', '1999-12-31 23:59+09', '{stall}') $$,
+  tests.id('Y1')), '23514', null, '締切の日付は 2000-01-01（Asia/Tokyo）から');
+select lives_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '締切2000', '2000-01-01 00:00+09', '{stall}') $$,
+  tests.id('Y1')), '2000-01-01 00:00（Asia/Tokyo）の締切は入る');
+select lives_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '締切2200', '2200-12-31 23:59+09', '{stall}') $$,
+  tests.id('Y1')), '2200-12-31 23:59（Asia/Tokyo）の締切は入る');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '締切', '2200-12-31 15:00+00', '{stall}') $$,
+  tests.id('Y1')), '23514', null, '締切の日付は Asia/Tokyo で見る（UTC の 2200-12-31 15:00 は Asia/Tokyo の 2201-01-01）');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '締切', 'infinity', '{stall}') $$,
+  tests.id('Y1')), '23514', null, '締切は infinity にできない');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '締切', '-infinity', '{stall}') $$,
+  tests.id('Y1')), '23514', null, '締切は -infinity にできない');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '区分', '2027-09-01 12:00+09', '{}') $$,
+  tests.id('Y1')), '23514', null, '対象の区分が 0 個');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '区分', '2027-09-01 12:00+09', array['stall', null]::public.group_category[]) $$,
+  tests.id('Y1')), '23514', null, '対象の区分に null の要素');
+select throws_ok(format($$ insert into public.documents (year_id, title, deadline, target_categories) values (%L, '区分', '2027-09-01 12:00+09', null) $$,
+  tests.id('Y1')), '23502', null, '対象の区分は not null');
+select throws_ok(format($$ insert into public.documents (year_id, title, target_categories) values (%L, '締切なし', '{stall}') $$,
+  tests.id('Y1')), '23502', null, '締切は not null');
+-- 提出の状態の CHECK（G1 の DOC_NOFILE に新しい行を入れて試す。通るものは残る）
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, submitted_at) values (%L, %L, %L, 'not_submitted', now()) $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '未提出は提出の日時を持たない');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, proxy) values (%L, %L, %L, 'not_submitted', true) $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '未提出は代理の印を持たない');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status) values (%L, %L, %L, 'submitted') $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '提出済みは提出の日時が要る');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, reviewed_at) values (%L, %L, %L, 'returned', now()) $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '差し戻しは理由が要る');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, review_note) values (%L, %L, %L, 'returned', '理由') $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '差し戻しは確かめた日時が要る');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, submitted_at) values (%L, %L, %L, 'approved', now()) $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '承認は確かめた日時が要る');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, reviewed_at, proxy) values (%L, %L, %L, 'approved', now(), true) $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '代理の印は提出の日時が要る（紙での承認は代理でない）');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status) values (%L, %L, %L, null) $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23502', null, '状態は not null');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, reviewed_at, review_note) values (%L, %L, %L, 'returned', now(), ' 理由') $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '理由の前に空白（RPC が除いてから入れる）');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, reviewed_at, review_note) values (%L, %L, %L, 'returned', now(), '') $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '理由が空');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, reviewed_at, review_note) values (%L, %L, %L, 'returned', now(), repeat('あ', 1001)) $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '23514', null, '理由は 1000 字まで');
+select lives_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, reviewed_at, review_note) values (%L, %L, %L, 'returned', now(), repeat('あ', 1000)) $$,
+  tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), '1000 字の理由の差し戻しは入る（紙での承認を差し戻したときのように、提出の日時がなくてもよい）');
+select lives_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id, status, submitted_at, proxy) values (%L, %L, %L, 'submitted', now(), true) $$,
+  tests.id('DOC_NOFILE'), tests.id('G2'), tests.id('Y1')), '代理の提出済みは入る');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id) values (%L, %L, %L) $$,
+  tests.id('DOC_Y2'), tests.id('G1'), tests.id('Y1')), '23503', null, '提出は提出物と同じ年度の団体だけ（Y2 の提出物に Y1 の団体）');
+select throws_ok(format($$ insert into public.document_submissions (document_id, group_id, year_id) values (%L, %L, %L) $$,
+  tests.id('DOC_STALL'), tests.id('G3'), tests.id('Y1')), '23503', null, '提出は団体と同じ年度だけ（Y1 の提出物に Y2 の団体）');
+-- ファイルの CHECK（形・大きさ・path。G2 の DOC_STALL の提出に入れて試す）
+create function tests.doc_file_sql(p_id uuid, p_type text, p_size int, p_path text default null) returns text language sql stable as $$
+  select format($q$ insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size) values (%L, %L, %L, %L, %L, %L, %s) $q$,
+    p_id, tests.id('Y1'), tests.id('DOC_STALL'), tests.id('G2'),
+    coalesce(p_path, tests.id('Y1') || '/' || tests.id('G2') || '/' || tests.id('DOC_STALL') || '/' || p_id || '.'
+                     || case p_type when 'image/jpeg' then 'jpg' when 'image/png' then 'png' else 'pdf' end),
+    p_type, p_size)
+$$;
+select throws_ok(tests.doc_file_sql(gen_random_uuid(), 'image/gif', 10), '23514', null, 'ファイルの形は PDF・JPEG・PNG だけ（GIF は入らない）');
+select throws_ok(tests.doc_file_sql(gen_random_uuid(), 'application/PDF', 10), '23514', null, 'ファイルの形は小文字の名前だけ');
+select throws_ok(tests.doc_file_sql(gen_random_uuid(), 'application/pdf', 0), '23514', null, 'ファイルの大きさは 1 B から');
+select throws_ok(tests.doc_file_sql(gen_random_uuid(), 'application/pdf', 10485761), '23514', null, 'ファイルの大きさは 10 MiB まで');
+select lives_ok(tests.doc_file_sql(gen_random_uuid(), 'application/pdf', 10485760), '10 MiB ちょうどのファイルは入る');
+select lives_ok(tests.doc_file_sql(gen_random_uuid(), 'image/jpeg', 1), 'JPEG（拡張子 jpg）・1 B のファイルは入る');
+select lives_ok(tests.doc_file_sql(gen_random_uuid(), 'image/png', 1), 'PNG（拡張子 png）のファイルは入る');
+select throws_ok(tests.doc_file_sql('00000000-0000-4000-8000-0000000df001', 'image/png', 1,
+  tests.id('Y1') || '/' || tests.id('G2') || '/' || tests.id('DOC_STALL') || '/00000000-0000-4000-8000-0000000df001.pdf'),
+  '23514', null, 'path の拡張子は形から決まる（PNG に .pdf は入らない）');
+select throws_ok(tests.doc_file_sql('00000000-0000-4000-8000-0000000df001', 'application/pdf', 1,
+  tests.id('Y2') || '/' || tests.id('G2') || '/' || tests.id('DOC_STALL') || '/00000000-0000-4000-8000-0000000df001.pdf'),
+  '23514', null, 'path の1つ目のフォルダは年度（ほかの年度の id は入らない）');
+select throws_ok(tests.doc_file_sql('00000000-0000-4000-8000-0000000df001', 'application/pdf', 1,
+  upper(tests.id('Y1')::text) || '/' || tests.id('G2') || '/' || tests.id('DOC_STALL') || '/00000000-0000-4000-8000-0000000df001.pdf'),
+  '23514', null, 'path の uuid は小文字（大文字の年度の id は入らない）');
+select throws_ok(tests.doc_file_sql('00000000-0000-4000-8000-0000000df001', 'application/pdf', 1,
+  tests.id('Y1') || '/' || tests.id('G2') || '/' || tests.id('DOC_STALL') || '/00000000-0000-4000-8000-0000000df001.pdf/x'),
+  '23514', null, 'path は列から作った形だけ（後ろに足せない）');
+select throws_ok(format($$ insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size) values (gen_random_uuid(), %L, %L, %L, 'x', 'application/pdf', 1) $$,
+  tests.id('Y1'), tests.id('DOC_NOFILE'), tests.id('G4')), '23514', null, 'path の CHECK は外部キーより先（形の誤りは 23514）');
+select throws_ok(format($$ insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
+                           values ('00000000-0000-4000-8000-0000000df002', %L, %L, %L, %L, 'application/pdf', 1) $$,
+  tests.id('Y1'), tests.id('DOC_COMPANY'), tests.id('G1'),
+  tests.id('Y1') || '/' || tests.id('G1') || '/' || tests.id('DOC_COMPANY') || '/00000000-0000-4000-8000-0000000df002.pdf'),
+  '23503', null, 'ファイルは提出の行が要る（提出の行のない提出物・団体には入らない）');
 
 -- 部分一意 index：未使用の招待は二重にできない
 select throws_ok(format($$ insert into public.invitations (year_id, email, role) values (%L, 'someone@pgtap.test', 'viewer') $$,
@@ -406,10 +648,37 @@ select is((select pg_get_indexdef('public.notice_groups_group_id_idx'::regclass)
 -- 予定と締切（T18）：年度ごとの一覧（早い順）とポリシーの year_id in (…) 用
 select is((select pg_get_indexdef('public.events_year_id_idx'::regclass)),
   'CREATE INDEX events_year_id_idx ON public.events USING btree (year_id, starts_at)', 'events_year_id_idx は (year_id, starts_at)');
+-- 提出物（T19）：年度ごとの一覧（締切の順）、団体からの引き（連鎖削除・自団体の読み取り）、年度ごとの状態の数え上げ、提出ごとのファイル
+-- （数の上限・提出の確かめ）、年度ごとのファイル（ポリシー・年度のファイルの削除・使った量）
+select is((select string_agg(pg_get_indexdef(i.indexrelid), ' / ' order by c.relname collate "C") from pg_index i join pg_class c on c.oid = i.indexrelid
+           where i.indrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)
+             and not i.indisunique),
+  'CREATE INDEX document_files_submission_idx ON public.document_files USING btree (document_id, group_id) / '
+  || 'CREATE INDEX document_files_year_id_idx ON public.document_files USING btree (year_id) / '
+  || 'CREATE INDEX document_submissions_group_id_idx ON public.document_submissions USING btree (group_id) / '
+  || 'CREATE INDEX document_submissions_year_id_idx ON public.document_submissions USING btree (year_id, status) / '
+  || 'CREATE INDEX documents_year_id_idx ON public.documents USING btree (year_id, deadline)',
+  '提出物の3表の索引（一意でないもの）は5つ');
 
 -- ビュー：security_invoker（RLS を素通りしない）
 select ok((select 'security_invoker=true' = any (reloptions) from pg_class where oid = 'public.v_remaining'::regclass),
   'v_remaining は security_invoker');
+select ok((select bool_and('security_invoker=true' = any (reloptions)) and count(*) = 2 from pg_class
+           where oid in ('public.v_document_status'::regclass, 'public.v_document_files'::regclass)),
+  '提出物のビュー（v_document_status・v_document_files）は security_invoker（T19）');
+select ok((select bool_and(coalesce('security_invoker=true' = any (reloptions), false)) from pg_class
+           where relnamespace = 'public'::regnamespace and relkind = 'v'),
+  'public のビューはすべて security_invoker');
+-- 提出の状況は、読む人が提出を読める団体の行だけを出す（document_submissions_select と同じ集合。閲覧のみも務める店長・副店長に、ほかの団体を
+-- 未提出として出さない。T19 の判断 24）。ファイルの届いたかは storage.objects の bucket documents の行を見る
+select ok((select pg_get_viewdef('public.v_document_status'::regclass) ~ 'WHERE \(\(d\.year_id IN \( SELECT private\.my_role_year_ids\(''\{admin,head,deputy_head,staff\}''::app_role\[\]\)'
+                  and pg_get_viewdef('public.v_document_status'::regclass) ~ 'OR \(g\.id IN \( SELECT private\.my_group_ids\(\)'),
+  'v_document_status の where は総務の年度か自分の団体（集合を1回作る形）');
+select ok((select pg_get_viewdef('public.v_document_files'::regclass) ~ 'LEFT JOIN storage\.objects o ON \(\(\(o\.bucket_id = ''documents''::text\) AND \(o\.name = f\.object_path\)\)\)'),
+  'v_document_files は storage.objects の bucket documents の同じ path の物を左外部結合で見る');
+-- Storage の bucket documents（T19。0016 が作る）：非公開・1ファイル 10 MiB・PDF・JPEG・PNG（Q1）
+select is((select format('%s %s %s %s', name, public::text, file_size_limit, allowed_mime_types) from storage.buckets where id = 'documents'),
+  'documents false 10485760 {application/pdf,image/jpeg,image/png}', 'bucket documents は非公開・10 MiB・PDF・JPEG・PNG');
 
 -- RLS を全表で有効にし、anon・PUBLIC には何の権限も与えていない（authenticated の権限は T03 の 010_grants で集合として確かめる）
 select is((select count(*)::int from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind = 'r' and not c.relrowsecurity), 0,
@@ -449,11 +718,12 @@ select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schem
           and not has_schema_privilege('anon', 'private', 'create') and not has_schema_privilege('authenticated', 'private', 'create'),
   'private スキーマは anon・PUBLIC から使えず、だれも create できない（authenticated の usage は T03 の 010）');
 
--- 年度・団体の付け替えを止めるトリガーが 15 表にある（T17 で notices の year_id と notice_groups の鍵の列を、T18 で events の year_id を足した）
+-- 年度・団体の付け替えを止めるトリガーが 18 表にある（T17 で notices の year_id と notice_groups の鍵の列を、T18 で events の year_id を、
+-- T19 で提出物の3表を足した）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'check_immutable' and c.relnamespace = 'public'::regnamespace),
-  'allocations deliveries events group_members groups invitations notice_groups notices request_submissions requests room_years slots stocks substitution_consents year_roles',
-  'check_immutable が 15 表にある');
+  'allocations deliveries document_files document_submissions documents events group_members groups invitations notice_groups notices request_submissions requests room_years slots stocks substitution_consents year_roles',
+  'check_immutable が 18 表にある');
 select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'check_immutable' and t.tgrelid = 'public.events'::regclass),
   'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.events FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'')',
   'events は year_id を変えられない');
@@ -514,6 +784,43 @@ select is((select case when p.prosecdef then 'definer' else 'invoker' end from p
            where p.oid = 'private.tg_events_set_actor()'::regprocedure),
   'invoker', 'tg_events_set_actor は INVOKER（auth.uid() を読むだけ。直接の書き込みでは authenticated で動く）');
 
+-- 提出物（T19）のトリガー：版の増分（bump_version_*）と確定中・終了の守りはない（振り分けの入力でない。終了の年度の読み取り専用は、
+-- 提出物は RLS の can_lead、提出とファイルは RPC）。documents は対象の区分の並べ直しと set_actor を持つ。BEFORE ROW のトリガーは名前の順に動く
+select is((select string_agg(c.relname || ':' || t.tgname, ' ' order by c.relname collate "C", t.tgname collate "C") from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where t.tgrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)
+             and not t.tgisinternal),
+  'document_files:audit document_files:check_immutable document_files:set_timestamps document_submissions:audit '
+  || 'document_submissions:check_immutable document_submissions:set_timestamps documents:audit documents:check_immutable '
+  || 'documents:normalize_target_categories documents:set_actor documents:set_timestamps',
+  '提出物の3表のトリガー（版の増分・確定中の守りはない）');
+select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.documents'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
+  'check_immutable normalize_target_categories set_actor set_timestamps', 'documents の BEFORE ROW のトリガーの順（並べ直しの後に set_actor）');
+select is((select string_agg(c.relname || '=' || pg_get_triggerdef(t.oid), ' / ' order by c.relname collate "C") from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where t.tgname = 'check_immutable'
+             and t.tgrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)),
+  'document_files=CREATE TRIGGER check_immutable BEFORE UPDATE OF id, year_id, document_id, group_id, object_path, content_type, size ON public.document_files FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''id'', ''year_id'', ''document_id'', ''group_id'', ''object_path'', ''content_type'', ''size'') / '
+  || 'document_submissions=CREATE TRIGGER check_immutable BEFORE UPDATE OF document_id, group_id, year_id ON public.document_submissions FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''document_id'', ''group_id'', ''year_id'') / '
+  || 'documents=CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.documents FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'')',
+  '提出物は year_id、提出は鍵の列と年度、ファイルは鍵・path・形・大きさを変えられない（ファイルの行は足すか消すだけ）');
+select is((select string_agg(c.relname || '=' || pg_get_triggerdef(t.oid), ' / ' order by c.relname collate "C") from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where t.tgname = 'audit'
+             and t.tgrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)),
+  'document_files=CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.document_files FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''id'') / '
+  || 'document_submissions=CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.document_submissions FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''document_id,group_id'') / '
+  || 'documents=CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.documents FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''id'')',
+  '提出物の監査の row_pk は id、提出は (document_id, group_id)、ファイルは id');
+select is((select string_agg(pg_get_triggerdef(t.oid), ' / ' order by t.tgname) from pg_trigger t
+           where t.tgrelid = 'public.documents'::regclass and t.tgname in ('normalize_target_categories', 'set_actor')),
+  'CREATE TRIGGER normalize_target_categories BEFORE INSERT OR UPDATE OF target_categories ON public.documents FOR EACH ROW EXECUTE FUNCTION private.tg_documents_normalize_categories() / '
+  || 'CREATE TRIGGER set_actor BEFORE INSERT OR UPDATE ON public.documents FOR EACH ROW EXECUTE FUNCTION private.tg_documents_set_actor()',
+  'documents の normalize_target_categories（対象の区分の更新のときだけ）と set_actor（insert・update）');
+select is((select string_agg(p.proname || '=' || case when p.prosecdef then 'definer' else 'invoker' end, ' ' order by p.proname)
+           from pg_proc p where p.pronamespace = 'private'::regnamespace
+             and p.proname in ('tg_documents_set_actor', 'tg_documents_normalize_categories')),
+  'tg_documents_normalize_categories=invoker tg_documents_set_actor=invoker',
+  '提出物のトリガー関数は INVOKER（表を読まない。直接の書き込みでは authenticated で動く）');
+
 -- 兼任の禁止（T15。0013）：check_role_overlap が year_roles・group_members にだけあり、BEFORE・ROW・列が約束どおり。
 -- 店長⇄副店長（group_members の role だけの更新）では動かない（列に role がない）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
@@ -533,13 +840,15 @@ select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
            where t.tgrelid = 'public.group_members'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
   'check_immutable check_role_overlap set_timestamps', 'group_members の BEFORE ROW のトリガーの順');
 
--- 時刻のトリガーが audit_logs 以外の 21 表にある（T17 で notices・notice_groups を、T18 で events を足した）
+-- 時刻のトリガーが audit_logs 以外の 24 表にある（T17 で notices・notice_groups を、T18 で events を、T19 で提出物の3表を足した）
 select is((select count(distinct c.relname)::int from pg_trigger t join pg_class c on c.oid = t.tgrelid
-           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 21,
-  'set_timestamps が 21 表にある');
+           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 24,
+  'set_timestamps が 24 表にある');
 
 -- トリガーの一覧（表ごとの名前の集合）
+-- 提出物の3表（T19）の audit は、T19 の確かめ（3表のトリガーの一覧と定義）で見る（並行の機能のチケットとぶつからないよう、ここの一覧は変えない）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+             and c.relname not in ('documents', 'document_submissions', 'document_files')
            where t.tgname = 'audit' and c.relnamespace = 'public'::regnamespace),
   'allocations distance_overrides events group_members groups items notice_groups notices request_submissions requests room_years rooms rules stocks substitution_consents year_roles years',
   'audit が 17 表にある（invitations・profiles は個人情報のため記録しない。T17 でお知らせの2表を、T18 で予定と締切を足した）');

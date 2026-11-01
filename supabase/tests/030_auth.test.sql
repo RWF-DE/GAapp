@@ -7,7 +7,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(90);
+select plan(92);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。confirmed = false なら email_confirmed_at を null にする。
 -- provider が google なら Google の identity（Google の経路）、email なら email_verified: true の email の identity（seed の経路）
@@ -269,6 +269,14 @@ select is_empty($$ select t from unnest(array['years','rooms','room_years','item
                      'distance_overrides','slots','deliveries','audit_logs','notices','notice_groups','events','v_remaining']) t
                    where tests.count_visible(t) > 0 $$,
   '招待のない人は、profiles の自分の行のほかに何も読めない（全表〔T17 のお知らせの2表と T18 の予定と締切を含む〕と v_remaining が0行）');
+select tests.logout();
+-- 提出物（T19）：招待のない人は、提出物の3表・2つのビューと Storage の物（提出物のファイル）も読めない（並行の機能のチケットと
+-- ぶつからないよう、上の一覧とは分ける）
+select tests.login_as('nobody');
+select is_empty($$ select t from unnest(array['documents','document_submissions','document_files','v_document_status','v_document_files']) t
+                   where tests.count_visible(t) > 0 $$,
+  '招待のない人は、提出物の3表と2つのビューも読めない（0行。T19）');
+select is((select count(*)::int from storage.objects), 0, '招待のない人は、Storage の物（提出物のファイル。T19）も読めない');
 select tests.logout();
 -- 同じ人をあとから招待すると、その場でロールが付き、読めるようになる
 select tests.login_as('admin');
