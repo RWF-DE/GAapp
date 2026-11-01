@@ -778,6 +778,184 @@ export type Database = {
           },
         ];
       };
+      shift_assignments: {
+        Row: {
+          created_at: string;
+          duty_id: string;
+          slot_id: string;
+          updated_at: string;
+          user_id: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          duty_id: string;
+          slot_id: string;
+          updated_at?: string;
+          user_id: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          duty_id?: string;
+          slot_id?: string;
+          updated_at?: string;
+          user_id?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shift_assignments_member_fkey";
+            columns: ["year_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "year_roles";
+            referencedColumns: ["year_id", "user_id"];
+          },
+          {
+            foreignKeyName: "shift_assignments_need_fkey";
+            columns: ["slot_id", "duty_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "shift_needs";
+            referencedColumns: ["slot_id", "duty_id", "year_id"];
+          },
+          {
+            foreignKeyName: "shift_assignments_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      shift_duties: {
+        Row: {
+          created_at: string;
+          id: string;
+          name: string;
+          note: string | null;
+          place: string | null;
+          sort_order: number;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          id?: string;
+          name: string;
+          note?: string | null;
+          place?: string | null;
+          sort_order?: number;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          name?: string;
+          note?: string | null;
+          place?: string | null;
+          sort_order?: number;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shift_duties_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      shift_needs: {
+        Row: {
+          created_at: string;
+          duty_id: string;
+          required_count: number;
+          slot_id: string;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          duty_id: string;
+          required_count?: number;
+          slot_id: string;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          duty_id?: string;
+          required_count?: number;
+          slot_id?: string;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shift_needs_duty_fkey";
+            columns: ["duty_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "shift_duties";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "shift_needs_slot_fkey";
+            columns: ["slot_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "shift_slots";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "shift_needs_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      shift_slots: {
+        Row: {
+          created_at: string;
+          ends_at: string;
+          id: string;
+          starts_at: string;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          ends_at: string;
+          id?: string;
+          starts_at: string;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          ends_at?: string;
+          id?: string;
+          starts_at?: string;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shift_slots_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       slots: {
         Row: {
           created_at: string;
@@ -932,6 +1110,64 @@ export type Database = {
           },
         ];
       };
+      tasks: {
+        Row: {
+          assignee_id: string | null;
+          created_at: string;
+          created_by: string | null;
+          due_at: string | null;
+          id: string;
+          note: string | null;
+          status: Database["public"]["Enums"]["task_status"];
+          title: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          assignee_id?: string | null;
+          created_at?: string;
+          created_by?: string | null;
+          due_at?: string | null;
+          id?: string;
+          note?: string | null;
+          status?: Database["public"]["Enums"]["task_status"];
+          title: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id: string;
+        };
+        Update: {
+          assignee_id?: string | null;
+          created_at?: string;
+          created_by?: string | null;
+          due_at?: string | null;
+          id?: string;
+          note?: string | null;
+          status?: Database["public"]["Enums"]["task_status"];
+          title?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "tasks_assignee_fkey";
+            columns: ["year_id", "assignee_id"];
+            isOneToOne: false;
+            referencedRelation: "year_roles";
+            referencedColumns: ["year_id", "user_id"];
+          },
+          {
+            foreignKeyName: "tasks_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       year_roles: {
         Row: {
           created_at: string;
@@ -1055,6 +1291,23 @@ export type Database = {
     };
     Functions: {
       accept_my_invitations: { Args: Record<PropertyKey, never>; Returns: number };
+      add_shift_slots: {
+        Args: { p_needs?: Json; p_slots: Json; p_year_id: string };
+        Returns: {
+          created_at: string;
+          ends_at: string;
+          id: string;
+          starts_at: string;
+          updated_at: string;
+          year_id: string;
+        }[];
+        SetofOptions: {
+          from: "*";
+          to: "shift_slots";
+          isOneToOne: false;
+          isSetofReturn: true;
+        };
+      };
       check_delivery: {
         Args: {
           p_delivery_id: string;
@@ -1226,6 +1479,32 @@ export type Database = {
         };
         Returns: undefined;
       };
+      set_task_status: {
+        Args: {
+          p_base_updated_at: string;
+          p_status: Database["public"]["Enums"]["task_status"];
+          p_task_id: string;
+        };
+        Returns: {
+          assignee_id: string | null;
+          created_at: string;
+          created_by: string | null;
+          due_at: string | null;
+          id: string;
+          note: string | null;
+          status: Database["public"]["Enums"]["task_status"];
+          title: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "tasks";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       set_year_status: {
         Args: {
           p_base_version?: number;
@@ -1311,6 +1590,7 @@ export type Database = {
       notice_audience: "soumu" | "all_groups" | "groups";
       room_kind: "room" | "gym" | "outdoor" | "other";
       rule_kind: "substitute" | "source_restrict" | "fixed_request" | "keep";
+      task_status: "todo" | "doing" | "done";
       year_status: "preparing" | "requesting" | "allocating" | "confirmed" | "closed";
     };
     CompositeTypes: {
@@ -1440,6 +1720,7 @@ export const Constants = {
       notice_audience: ["soumu", "all_groups", "groups"],
       room_kind: ["room", "gym", "outdoor", "other"],
       rule_kind: ["substitute", "source_restrict", "fixed_request", "keep"],
+      task_status: ["todo", "doing", "done"],
       year_status: ["preparing", "requesting", "allocating", "confirmed", "closed"],
     },
   },

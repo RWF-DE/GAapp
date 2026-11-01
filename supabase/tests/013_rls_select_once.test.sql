@@ -9,6 +9,8 @@
 -- から書いた）、②に集合の関数 my_group_year_ids・my_group_notice_ids、④に2表のポリシーの形と実行計画を足した。
 -- T18：予定と締切の events（0015）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「予定と締切の権限」から書いた）、
 -- ④にポリシーの形と実行計画を足した（集合の関数は足していない）。
+-- T20：シフト・作業の5表（0017）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「シフト・作業の権限」から書いた）、
+-- ④にポリシーの形と実行計画を足した（集合の関数は足していない）。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
@@ -18,7 +20,7 @@ begin;
 insert into public.audit_logs (table_name, row_pk, action, year_id, before, after)
 values ('years', '{}', 'update', null, '{"a":1}', '{"a":2}'), ('profiles', '{}', 'update', null, '{"a":1}', '{"a":2}');
 
-select plan(71);
+select plan(80);
 
 -- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
 -- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
@@ -50,6 +52,13 @@ insert into tests.old_pred values
                  or (audience in ('groups', 'all')
                      and (private.has_role(year_id, 'viewer')
                           or exists (select 1 from public.groups g where g.year_id = t.year_id and private.is_group_member(g.id)))) $p$);
+-- シフト・作業（T20）：5表とも、その年度の総務（admin・head・deputy_head・staff）だけが全部を読む（閲覧のみ・団体の代表の枝はない）
+insert into tests.old_pred values
+  ('shift_duties', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$),
+  ('shift_slots', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$),
+  ('shift_needs', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$),
+  ('shift_assignments', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$),
+  ('tasks', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$);
 
 -- 行の中身をまとめた指紋（件数と、行の文字列を並べた md5）
 create function tests.visible_old(p_tbl text, p_persona text) returns text language plpgsql as $$
@@ -98,6 +107,15 @@ from unnest(array['audit_logs', 'allocations', 'requests', 'request_submissions'
 select is_empty($q$ select tbl from tests.compared group by tbl
                     having count(distinct new) < 2 or not bool_or(new !~ '^0:') $q$,
   '10 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
+-- シフト・作業（T20）
+select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
+  format('%s：D-47 の形のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態。T20）', t))
+from unnest(array['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']) t;
+select is((select count(distinct tbl)::int from tests.compared
+           where tbl in ('shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks')
+             and new !~ '^0:'
+             and tbl in (select tbl from tests.compared group by tbl having count(distinct new) >= 3)), 5,
+  'シフト・作業の5表とも、見える行のある組があり、ペルソナで見える行が分かれる（Y1 の総務・Y2 の総務・何も見えない人の3通り以上）');
 
 -- ---------------------------------------------------------------- ② 新しい関数は呼んだ人についてだけ答える
 select tests.login_as('admin');
@@ -324,6 +342,27 @@ select tests.login_as('outsider');
 select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.events')) x(l))
           !~ '(?n)Filter: .*private\.',
   'events の読みの計画の Filter に、行ごとの判定関数が出ない（hashed SubPlan だけ）');
+select tests.logout();
+
+-- シフト・作業（T20）：5表の select のポリシーも集合を1回作る形で、総務の年度の集合（my_role_year_ids）だけを使う（閲覧のみ・店長・副店長の
+-- 枝はない。段の配列に viewer を足すと閲覧のみに見えてしまう）
+select is_empty($q$ select tablename::text || ': ' || qual from pg_policies
+                   where schemaname = 'public' and cmd = 'SELECT'
+                     and tablename in ('shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks')
+                     and qual ~ '(?<!SELECT )private\.[a-z_]+\((year_id|group_id|id|user_id|slot_id|duty_id|assignee_id|private\.)' $q$,
+  'シフト・作業の5表の select のポリシーは、行の列を判定関数に渡さない（集合を1回作る形）');
+select is((select string_agg(tablename || '=' || qual, ' / ' order by tablename collate "C") from pg_policies
+           where schemaname = 'public' and cmd = 'SELECT'
+             and tablename in ('shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks')),
+  (select string_agg(t || '=(year_id IN ( SELECT private.my_role_year_ids(''{admin,head,deputy_head,staff}''::app_role[]) AS my_role_year_ids))', ' / '
+                     order by t collate "C")
+   from unnest(array['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']) t),
+  'シフト・作業の5表の select のポリシーは、どれも year_id in (総務〔admin・head・deputy_head・staff〕の年度の集合) だけ');
+select tests.login_as('outsider');
+select is((select string_agg(t, ' ' order by t collate "C")
+           from unnest(array['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']) t
+           where (select string_agg(l, E'\n') from tests.explain_lines('select * from public.' || t) l) ~ '(?n)Filter: .*private\.'), null,
+  'シフト・作業の5表の読みの計画の Filter に、行ごとの判定関数が出ない（hashed SubPlan だけ）');
 select tests.logout();
 
 select * from finish();

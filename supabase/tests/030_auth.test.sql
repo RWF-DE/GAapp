@@ -266,9 +266,10 @@ select is((select count(*)::int from public.profiles), 1, '招待のない人が
 select is((select display_name from public.profiles), '招待なし', '自分の表示名は読める');
 select is_empty($$ select t from unnest(array['years','rooms','room_years','items','stocks','groups','year_roles','group_members',
                      'invitations','request_submissions','requests','rules','substitution_consents','allocations',
-                     'distance_overrides','slots','deliveries','audit_logs','notices','notice_groups','events','v_remaining']) t
+                     'distance_overrides','slots','deliveries','audit_logs','notices','notice_groups','events',
+                     'shift_duties','shift_slots','shift_needs','shift_assignments','tasks','v_remaining']) t
                    where tests.count_visible(t) > 0 $$,
-  '招待のない人は、profiles の自分の行のほかに何も読めない（全表〔T17 のお知らせの2表と T18 の予定と締切を含む〕と v_remaining が0行）');
+  '招待のない人は、profiles の自分の行のほかに何も読めない（全表〔T17 のお知らせの2表、T18 の予定と締切、T20 のシフト・作業の5表を含む〕と v_remaining が0行）');
 select tests.logout();
 -- 同じ人をあとから招待すると、その場でロールが付き、読めるようになる
 select tests.login_as('admin');

@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(265);
+select plan(340);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -23,11 +23,14 @@ select enum_has_labels('public', 'notice_audience', array['soumu','all_groups','
 -- event_kind・event_audience：予定と締切の種類（締切・予定）と対象（総務・団体・全員。T18）
 select enum_has_labels('public', 'event_kind', array['deadline','event']);
 select enum_has_labels('public', 'event_audience', array['soumu','groups','all']);
+-- task_status：作業の状態（未着手・作業中・完了。T20）
+select enum_has_labels('public', 'task_status', array['todo','doing','done']);
 
--- 表が 22 個（T17 でお知らせの notices・notice_groups を、T18 で予定と締切の events を足した）、ビューが v_remaining
+-- 表が 27 個（T17 でお知らせの notices・notice_groups を、T18 で予定と締切の events を、T20 でシフト・作業の5表を足した）、ビューが v_remaining
 select tables_are('public', array['years','rooms','room_years','items','stocks','groups','year_roles','group_members',
   'invitations','request_submissions','requests','rules','substitution_consents','allocations',
-  'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events'], 'public の表は 22 個');
+  'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events',
+  'shift_duties','shift_slots','shift_needs','shift_assignments','tasks'], 'public の表は 27 個');
 select views_are('public', array['v_remaining'], 'public のビューは v_remaining だけ');
 
 -- 列（表ごとに列の集合が一致する）
@@ -53,6 +56,11 @@ select columns_are('public', 'audit_logs', array['id','table_name','row_pk','act
 select columns_are('public', 'notices', array['id','year_id','audience','title','body','pinned','created_by','updated_by','created_at','updated_at']);
 select columns_are('public', 'notice_groups', array['notice_id','year_id','group_id','created_at','updated_at']);
 select columns_are('public', 'events', array['id','year_id','kind','audience','title','starts_at','ends_at','all_day','note','created_by','updated_by','created_at','updated_at']);
+select columns_are('public', 'shift_duties', array['id','year_id','name','place','note','sort_order','created_at','updated_at']);
+select columns_are('public', 'shift_slots', array['id','year_id','starts_at','ends_at','created_at','updated_at']);
+select columns_are('public', 'shift_needs', array['year_id','slot_id','duty_id','required_count','created_at','updated_at']);
+select columns_are('public', 'shift_assignments', array['year_id','slot_id','duty_id','user_id','created_at','updated_at']);
+select columns_are('public', 'tasks', array['id','year_id','title','note','assignee_id','due_at','status','created_by','updated_by','created_at','updated_at']);
 select columns_are('public', 'v_remaining', array['year_id','room_id','item_id','stock','allocated','remaining']);
 
 -- 主な列の型・既定値
@@ -121,6 +129,33 @@ select ok((select bool_and(data_type = 'uuid' and is_nullable = 'YES' and column
           and (select count(*) = 2 from information_schema.columns
                where table_schema = 'public' and table_name = 'events' and column_name in ('created_by', 'updated_by')),
   'events.created_by・updated_by は uuid・null 可・既定なし');
+-- シフト・作業（T20）：列の型。null にできるのは持ち場の場所・説明と、作業の説明・担当者・締切・書いた人・直した人だけ（年度・時刻・
+-- ます・人は not null）。既定値は id・持ち場の並び（0）・必要人数（0）・作業の状態（未着手）だけ（年度・時刻・人・題名には既定値がない。
+-- 画面が決めて送る。書いた人・直した人はトリガー set_actor が入れる）
+select is((select string_agg(table_name || '.' || column_name || ':' || udt_name, ' ' order by table_name, ordinal_position)
+           from information_schema.columns
+           where table_schema = 'public' and table_name in ('shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks')
+             and column_name not in ('created_at', 'updated_at')),
+  'shift_assignments.year_id:uuid shift_assignments.slot_id:uuid shift_assignments.duty_id:uuid shift_assignments.user_id:uuid '
+  || 'shift_duties.id:uuid shift_duties.year_id:uuid shift_duties.name:text shift_duties.place:text shift_duties.note:text shift_duties.sort_order:int4 '
+  || 'shift_needs.year_id:uuid shift_needs.slot_id:uuid shift_needs.duty_id:uuid shift_needs.required_count:int4 '
+  || 'shift_slots.id:uuid shift_slots.year_id:uuid shift_slots.starts_at:timestamptz shift_slots.ends_at:timestamptz '
+  || 'tasks.id:uuid tasks.year_id:uuid tasks.title:text tasks.note:text tasks.assignee_id:uuid tasks.due_at:timestamptz tasks.status:task_status '
+  || 'tasks.created_by:uuid tasks.updated_by:uuid',
+  'シフト・作業の5表の列の型（時刻は timestamptz、状態は task_status）');
+select is((select string_agg(table_name || '.' || column_name, ' ' order by table_name, ordinal_position)
+           from information_schema.columns
+           where table_schema = 'public' and table_name in ('shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks')
+             and is_nullable = 'YES'),
+  'shift_duties.place shift_duties.note tasks.note tasks.assignee_id tasks.due_at tasks.created_by tasks.updated_by',
+  'シフト・作業の5表で null にできるのは、持ち場の場所・説明と、作業の説明・担当者・締切・書いた人・直した人だけ');
+select is((select string_agg(table_name || '.' || column_name || '=' || column_default, ' ' order by table_name, ordinal_position)
+           from information_schema.columns
+           where table_schema = 'public' and table_name in ('shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks')
+             and column_default is not null and column_name not in ('created_at', 'updated_at')),
+  'shift_duties.id=gen_random_uuid() shift_duties.sort_order=0 shift_needs.required_count=0 shift_slots.id=gen_random_uuid() '
+  || 'tasks.id=gen_random_uuid() tasks.status=''todo''::task_status',
+  'シフト・作業の5表の既定値は id・持ち場の並び（0）・必要人数（0）・作業の状態（未着手）だけ');
 select ok((select bool_and(is_nullable = 'NO' and column_default is not null)
            from information_schema.columns
            where table_schema = 'public' and column_name in ('created_at', 'updated_at')
@@ -142,6 +177,12 @@ select col_is_pk('audit_logs', 'id');
 select col_is_pk('notices', 'id');
 select col_is_pk('notice_groups', array['notice_id','group_id']);
 select col_is_pk('events', 'id');
+-- シフト・作業（T20）：割り当ての主キー (slot_id, user_id) が、同じ時間枠に同じ人を2か所に入れることを止める（二重の割り当て）
+select col_is_pk('shift_duties', 'id');
+select col_is_pk('shift_slots', 'id');
+select col_is_pk('shift_needs', array['slot_id','duty_id']);
+select col_is_pk('shift_assignments', array['slot_id','user_id']);
+select col_is_pk('tasks', 'id');
 
 -- 一意制約
 select col_is_unique('years', 'label');
@@ -156,6 +197,11 @@ select col_is_unique('rules', array['year_id','code']);
 select col_is_unique('notices', array['id','year_id']);
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_id_year_id_key'), 'UNIQUE (id, year_id)',
   'notices_id_year_id_key は unique (id, year_id)');
+-- シフト・作業（T20）：持ち場の名前は年度ごとに一意。(id, year_id) と (slot_id, duty_id, year_id) は複合外部キーの参照先
+select col_is_unique('shift_duties', array['year_id','name']);
+select col_is_unique('shift_duties', array['id','year_id']);
+select col_is_unique('shift_slots', array['id','year_id']);
+select col_is_unique('shift_needs', array['slot_id','duty_id','year_id']);
 
 -- 外部キー（年度の一致は複合外部キー）
 select fk_ok('public', 'allocations', array['group_id','year_id'], 'public', 'groups', array['id','year_id']);
@@ -179,6 +225,27 @@ select is((select string_agg(conname || ': ' || pg_get_constraintdef(oid), ' / '
 select fk_ok('public', 'events', 'year_id', 'public', 'years', 'id');
 select fk_ok('public', 'events', 'created_by', 'auth', 'users', 'id');
 select fk_ok('public', 'events', 'updated_by', 'auth', 'users', 'id');
+-- シフト・作業（T20）：年度へは cascade。ますは時間枠・持ち場と年度ごと結び（cascade）、割り当てはますと年度ごと結ぶ（cascade）。
+-- 割り当ての人は (year_id, user_id) で year_roles へ cascade（ロールを外すと割り当ても消える）、作業の担当者は set null (assignee_id)
+-- （担当者の列だけを空にし、year_id は残す）。書いた人・直した人は set null
+select is((select string_agg(conrelid::regclass::text || '.' || conname || ': ' || pg_get_constraintdef(oid), ' / '
+                             order by conrelid::regclass::text, conname collate "C")
+           from pg_constraint
+           where contype = 'f' and conrelid in ('public.shift_duties'::regclass, 'public.shift_slots'::regclass, 'public.shift_needs'::regclass,
+                                                'public.shift_assignments'::regclass, 'public.tasks'::regclass)),
+  'shift_assignments.shift_assignments_member_fkey: FOREIGN KEY (year_id, user_id) REFERENCES year_roles(year_id, user_id) ON DELETE CASCADE / '
+  || 'shift_assignments.shift_assignments_need_fkey: FOREIGN KEY (slot_id, duty_id, year_id) REFERENCES shift_needs(slot_id, duty_id, year_id) ON DELETE CASCADE / '
+  || 'shift_assignments.shift_assignments_year_id_fkey: FOREIGN KEY (year_id) REFERENCES years(id) ON DELETE CASCADE / '
+  || 'shift_duties.shift_duties_year_id_fkey: FOREIGN KEY (year_id) REFERENCES years(id) ON DELETE CASCADE / '
+  || 'shift_needs.shift_needs_duty_fkey: FOREIGN KEY (duty_id, year_id) REFERENCES shift_duties(id, year_id) ON DELETE CASCADE / '
+  || 'shift_needs.shift_needs_slot_fkey: FOREIGN KEY (slot_id, year_id) REFERENCES shift_slots(id, year_id) ON DELETE CASCADE / '
+  || 'shift_needs.shift_needs_year_id_fkey: FOREIGN KEY (year_id) REFERENCES years(id) ON DELETE CASCADE / '
+  || 'shift_slots.shift_slots_year_id_fkey: FOREIGN KEY (year_id) REFERENCES years(id) ON DELETE CASCADE / '
+  || 'tasks.tasks_assignee_fkey: FOREIGN KEY (year_id, assignee_id) REFERENCES year_roles(year_id, user_id) ON DELETE SET NULL (assignee_id) / '
+  || 'tasks.tasks_created_by_fkey: FOREIGN KEY (created_by) REFERENCES auth.users(id) ON DELETE SET NULL / '
+  || 'tasks.tasks_updated_by_fkey: FOREIGN KEY (updated_by) REFERENCES auth.users(id) ON DELETE SET NULL / '
+  || 'tasks.tasks_year_id_fkey: FOREIGN KEY (year_id) REFERENCES years(id) ON DELETE CASCADE',
+  'シフト・作業の外部キー 12 本（年度・ます・時間枠・持ち場・year_roles への cascade と、担当者・書いた人・直した人の set null）');
 
 -- on delete の動作（c＝cascade、r＝restrict、n＝set null）
 with fk as (
@@ -195,12 +262,14 @@ with fk as (
            where a.attrelid = c.conrelid and a.attnum = any (c.conkey)) as cols
   from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace)
 select is((select string_agg(tbl || '.' || cols, ' ' order by tbl, cols) from fk where del = 'n'),
-  'deliveries.checked_by deliveries.year_id,slot_id events.created_by events.updated_by notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by years.prev_year_id',
-  '記録のためのユーザー参照（お知らせ・予定と締切の書いた人・直した人を含む）・時間枠・複製元は set null');
--- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー。T18 で events.year_id を足した
+  'deliveries.checked_by deliveries.year_id,slot_id events.created_by events.updated_by notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by '
+  || 'tasks.created_by tasks.updated_by tasks.year_id,assignee_id years.prev_year_id',
+  '記録のためのユーザー参照（お知らせ・予定と締切・作業の書いた人・直した人を含む）・時間枠・作業の担当者（T20）・複製元は set null');
+-- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー。T18 で events.year_id を足した。
+-- T20 で9本足した：5表の year_id と、ます・割り当ての複合外部キー3本、割り当ての year_roles への参照
 select is((select count(*)::int from pg_constraint c
-           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 23,
-  '年度・団体・ユーザー・お知らせへの参照は cascade（23 本）');
+           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 32,
+  '年度・団体・ユーザー・お知らせ・シフト（ます・時間枠・持ち場・ロール）への参照は cascade（32 本）');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'deliveries_slot_id_year_id_fkey'),
   'FOREIGN KEY (slot_id, year_id) REFERENCES slots(id, year_id) ON DELETE SET NULL (slot_id)',
   '時間枠を消しても受け渡しの year_id は残す（列を指定した set null）');
@@ -379,6 +448,122 @@ select lives_ok(format($$ insert into public.events (year_id, kind, audience, ti
   '2200-12-31 23:59（Asia/Tokyo）の終わりは入る');
 select throws_ok(format($$ insert into public.events (year_id, kind, audience, title, starts_at, ends_at) values (%L, 'event', 'soumu', '範囲', now(), '2201-01-01 00:00+09') $$, tests.id('Y1')),
   '23514', null, '終わりの日付は 2200-12-31（Asia/Tokyo）まで');
+-- シフト・作業（T20）：持ち場の名前と作業の題名は、お知らせの題名と同じ式（同じ 25 文字の空白を除いた形。持ち場は 50 字、作業は 100 字まで。
+-- DB では除かず、前後の空白・空白だけを拒む）。場所 100 字・持ち場の説明 1000 字・作業の説明 2000 字まで。時間枠は開始が終わりより前で
+-- 24 時間まで、開始・終わりの日付（Asia/Tokyo）は 2000-01-01〜2200-12-31（CHECK は名前の順に確かめられ、date_range が length より先）。
+-- 必要人数は 0〜100。作業の締切の日付も 2000-01-01〜2200-12-31（null は任意の締切なし）
+select is((select string_agg(conrelid::regclass::text || '.' || conname, ' ' order by conrelid::regclass::text collate "C", conname collate "C")
+           from pg_constraint where contype = 'c' and conrelid in ('public.shift_duties'::regclass, 'public.shift_slots'::regclass, 'public.shift_needs'::regclass, 'public.shift_assignments'::regclass, 'public.tasks'::regclass)),
+  'shift_duties.shift_duties_name_check shift_duties.shift_duties_note_check shift_duties.shift_duties_place_check '
+  || 'shift_needs.shift_needs_required_count_check shift_slots.shift_slots_date_range_check shift_slots.shift_slots_length_check '
+  || 'shift_slots.shift_slots_order_check tasks.tasks_due_at_check tasks.tasks_note_check tasks.tasks_title_check',
+  'シフト・作業の CHECK は 10 個（時間枠は date_range → length → order の名前の順に確かめられる）');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'tasks_title_check'),
+  (select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_title_check'),
+  'tasks_title_check は notices_title_check と同じ式（同じ 25 文字の空白・100 字まで）');
+select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'shift_duties_name_check'),
+  (select replace(replace(pg_get_constraintdef(oid), 'title', 'name'), '<= 100', '<= 50') from pg_constraint where conname = 'notices_title_check'),
+  'shift_duties_name_check は notices_title_check と同じ式で、列が name・50 字まで');
+select is((select string_agg(conname || ' ' || pg_get_constraintdef(oid), ' / ' order by conname collate "C") from pg_constraint
+           where conname in ('shift_duties_place_check', 'shift_duties_note_check', 'tasks_note_check', 'shift_needs_required_count_check',
+                             'shift_slots_length_check', 'shift_slots_order_check')),
+  'shift_duties_note_check CHECK ((length(note) <= 1000)) / shift_duties_place_check CHECK ((length(place) <= 100)) / '
+  || 'shift_needs_required_count_check CHECK (((required_count >= 0) AND (required_count <= 100))) / '
+  || 'shift_slots_length_check CHECK (((ends_at - starts_at) <= ''24:00:00''::interval)) / shift_slots_order_check CHECK ((starts_at < ends_at)) / '
+  || 'tasks_note_check CHECK ((length(note) <= 2000))',
+  '場所・説明・必要人数・時間枠の長さと順の CHECK の式');
+-- 持ち場の名前
+select throws_ok(format($$ insert into public.shift_duties (year_id, name) values (%L, '') $$, tests.id('Y1')), '23514', null, '持ち場の名前が空');
+select throws_ok(format($$ insert into public.shift_duties (year_id, name) values (%L, %L) $$, tests.id('Y1'), chr(12288) || chr(9)),
+  '23514', null, '持ち場の名前が空白だけ（全角の空白とタブ）');
+select throws_ok(format($$ insert into public.shift_duties (year_id, name) values (%L, ' 受付') $$, tests.id('Y1')),
+  '23514', null, '持ち場の名前の前に半角の空白（DB は除かずに拒む）');
+select throws_ok(format($$ insert into public.shift_duties (year_id, name) values (%L, %L) $$, tests.id('Y1'), '受付' || chr(65279)),
+  '23514', null, '持ち場の名前の後ろに U+FEFF');
+select throws_ok(format($$ insert into public.shift_duties (year_id, name) values (%L, repeat('あ', 51)) $$, tests.id('Y1')),
+  '23514', null, '持ち場の名前は 50 字まで');
+select lives_ok(format($$ insert into public.shift_duties (year_id, name) values (%L, repeat('あ', 50)) $$, tests.id('Y1')),
+  '50 字の持ち場の名前は入る');
+select lives_ok(format($$ insert into public.shift_duties (year_id, name) values (%L, %L) $$, tests.id('Y1'), '本部' || chr(12288) || '見回り'),
+  '持ち場の名前の中の空白はそのまま入る');
+select throws_ok(format($$ insert into public.shift_duties (year_id, name) values (%L, 'T-受付') $$, tests.id('Y1')),
+  '23505', null, '同じ年度に同じ名前の持ち場は置けない');
+select is((select count(*)::int from public.shift_duties where name = 'T-受付'), 2, '年度が違えば同じ名前の持ち場を置ける（fixture の Y1・Y2 の T-受付）');
+select throws_ok(format($$ insert into public.shift_duties (year_id, name, place) values (%L, '場所', repeat('あ', 101)) $$, tests.id('Y1')),
+  '23514', null, '持ち場の場所は 100 字まで');
+select lives_ok(format($$ insert into public.shift_duties (year_id, name, place, note) values (%L, '場所と説明', repeat('あ', 100), repeat('い', 1000)) $$, tests.id('Y1')),
+  '100 字の場所と 1000 字の説明は入る');
+select throws_ok(format($$ insert into public.shift_duties (year_id, name, note) values (%L, '説明', repeat('あ', 1001)) $$, tests.id('Y1')),
+  '23514', null, '持ち場の説明は 1000 字まで');
+-- 時間枠（fixture の Y1 の時間枠は 2027-10-15 の 9:00〜11:00。ここで足す時間枠はどれとも重ならない日にする）
+select throws_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2027-11-01 09:00+09', '2027-11-01 09:00+09') $$, tests.id('Y1')),
+  '23514', null, '時間枠の開始と終わりが同じ');
+select throws_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2027-11-01 10:00+09', '2027-11-01 09:00+09') $$, tests.id('Y1')),
+  '23514', null, '時間枠の終わりが開始より前（重なりの確かめでなく CHECK で止まる）');
+select lives_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2027-11-01 00:00+09', '2027-11-02 00:00+09') $$, tests.id('Y1')),
+  'ちょうど 24 時間の時間枠は入る');
+select throws_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2027-11-05 00:00+09', '2027-11-06 00:00:00.000001+09') $$, tests.id('Y1')),
+  '23514', null, '時間枠は 24 時間まで（1 マイクロ秒でも長ければ止める）');
+select lives_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2027-11-03 23:00+09', '2027-11-04 01:00+09') $$, tests.id('Y1')),
+  '0 時をまたぐ時間枠は入る');
+select throws_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '-infinity', 'infinity') $$, tests.id('Y1')),
+  '23514', null, '時間枠に -infinity・infinity は入れられない（引き算の前に date_range で止まる）');
+select throws_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2027-11-07 09:00+09', 'infinity') $$, tests.id('Y1')),
+  '23514', null, '時間枠の終わりに infinity は入れられない');
+select throws_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '1999-12-31 23:59+09', '2000-01-01 00:30+09') $$, tests.id('Y1')),
+  '23514', null, '時間枠の開始の日付は 2000-01-01（Asia/Tokyo）から');
+select lives_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2000-01-01 00:00+09', '2000-01-01 01:00+09') $$, tests.id('Y1')),
+  '2000-01-01 00:00（Asia/Tokyo）に始まる時間枠は入る');
+select lives_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2200-12-31 23:00+09', '2200-12-31 23:59+09') $$, tests.id('Y1')),
+  '2200-12-31 23:59（Asia/Tokyo）に終わる時間枠は入る');
+select throws_ok(format($$ insert into public.shift_slots (year_id, starts_at, ends_at) values (%L, '2200-12-31 23:30+09', '2201-01-01 00:00+09') $$, tests.id('Y1')),
+  '23514', null, '時間枠の終わりの日付は 2200-12-31（Asia/Tokyo）まで');
+-- ます（必要人数・複合外部キー・主キー）。SL2 × DU2 は fixture にないます
+select lives_ok(format($$ insert into public.shift_needs (year_id, slot_id, duty_id, required_count) values (%L, %L, %L, 0) $$,
+  tests.id('Y1'), tests.id('SL2'), tests.id('DU2')), '必要人数 0（人数を決めない）のますは入る');
+select lives_ok(format($$ update public.shift_needs set required_count = 100 where slot_id = %L and duty_id = %L $$, tests.id('SL2'), tests.id('DU2')),
+  '必要人数 100 は入る');
+select throws_ok(format($$ update public.shift_needs set required_count = 101 where slot_id = %L and duty_id = %L $$, tests.id('SL2'), tests.id('DU2')),
+  '23514', null, '必要人数は 100 まで');
+select throws_ok(format($$ update public.shift_needs set required_count = -1 where slot_id = %L and duty_id = %L $$, tests.id('SL2'), tests.id('DU2')),
+  '23514', null, '必要人数は 0 以上');
+select throws_ok(format($$ insert into public.shift_needs (year_id, slot_id, duty_id) values (%L, %L, %L) $$, tests.id('Y1'), tests.id('SL1'), tests.id('DU1')),
+  '23505', null, '同じ時間枠と持ち場のますは1つだけ');
+select throws_ok(format($$ insert into public.shift_needs (year_id, slot_id, duty_id) values (%L, %L, %L) $$, tests.id('Y1'), tests.id('SL1'), tests.id('DU_Y2')),
+  '23503', null, 'ますの持ち場は同じ年度のものだけ（ほかの年度の持ち場は複合外部キーのエラー）');
+select throws_ok(format($$ insert into public.shift_needs (year_id, slot_id, duty_id) values (%L, %L, %L) $$, tests.id('Y2'), tests.id('SL1'), tests.id('DU_Y2')),
+  '23503', null, 'ますの時間枠も同じ年度のものだけ');
+-- 割り当て（主キー・ますへの複合外部キー）
+select throws_ok(format($$ insert into public.shift_assignments (year_id, slot_id, duty_id, user_id) values (%L, %L, %L, %L) $$,
+  tests.id('Y1'), tests.id('SL1'), tests.id('DU2'), tests.id('staff')), '23505', null,
+  '同じ時間枠に同じ人をほかの持ち場で入れられない（主キー (slot_id, user_id)。二重の割り当て）');
+select throws_ok(format($$ insert into public.shift_assignments (year_id, slot_id, duty_id, user_id) values (%L, %L, %L, %L) $$,
+  tests.id('Y1'), tests.id('SL2'), tests.id('DU3'), tests.id('deputy')), '23503', null, 'ますのない所（SL2 × DU3）には割り当てられない');
+select throws_ok(format($$ insert into public.shift_assignments (year_id, slot_id, duty_id, user_id) values (%L, %L, %L, %L) $$,
+  tests.id('Y2'), tests.id('SL1'), tests.id('DU1'), tests.id('admin2')), '23503', null, '割り当ての年度はますの年度と同じ（複合外部キー）');
+-- 作業（題名・説明・締切）
+select throws_ok(format($$ insert into public.tasks (year_id, title) values (%L, '') $$, tests.id('Y1')), '23514', null, '作業の題名が空');
+select throws_ok(format($$ insert into public.tasks (year_id, title) values (%L, %L) $$, tests.id('Y1'), chr(160) || chr(12288)),
+  '23514', null, '作業の題名が空白だけ（U+00A0 と全角の空白）');
+select throws_ok(format($$ insert into public.tasks (year_id, title) values (%L, %L) $$, tests.id('Y1'), '作業' || chr(10)),
+  '23514', null, '作業の題名の後ろに改行');
+select throws_ok(format($$ insert into public.tasks (year_id, title) values (%L, repeat('あ', 101)) $$, tests.id('Y1')), '23514', null, '作業の題名は 100 字まで');
+select lives_ok(format($$ insert into public.tasks (year_id, title, note) values (%L, repeat('あ', 100), repeat('い', 2000)) $$, tests.id('Y1')),
+  '100 字の題名と 2000 字の説明の作業は入る');
+select throws_ok(format($$ insert into public.tasks (year_id, title, note) values (%L, '説明', repeat('あ', 2001)) $$, tests.id('Y1')),
+  '23514', null, '作業の説明は 2000 字まで');
+select throws_ok(format($$ insert into public.tasks (year_id, title, due_at) values (%L, '締切', 'infinity') $$, tests.id('Y1')),
+  '23514', null, '作業の締切に infinity は入れられない');
+select throws_ok(format($$ insert into public.tasks (year_id, title, due_at) values (%L, '締切', '-infinity') $$, tests.id('Y1')),
+  '23514', null, '作業の締切に -infinity は入れられない');
+select throws_ok(format($$ insert into public.tasks (year_id, title, due_at) values (%L, '締切', '1999-12-31 23:59+09') $$, tests.id('Y1')),
+  '23514', null, '作業の締切の日付は 2000-01-01（Asia/Tokyo）から');
+select lives_ok(format($$ insert into public.tasks (year_id, title, due_at) values (%L, '締切', '2000-01-01 00:00+09'), (%L, '締切2', '2200-12-31 23:59+09') $$,
+  tests.id('Y1'), tests.id('Y1')), '2000-01-01 00:00 と 2200-12-31 23:59（Asia/Tokyo）の締切は入る');
+select throws_ok(format($$ insert into public.tasks (year_id, title, due_at) values (%L, '締切', '2201-01-01 00:00+09') $$, tests.id('Y1')),
+  '23514', null, '作業の締切の日付は 2200-12-31（Asia/Tokyo）まで');
+select lives_ok(format($$ insert into public.tasks (year_id, title, due_at, assignee_id) values (%L, '締切なし', null, null) $$, tests.id('Y1')),
+  '締切も担当者もない作業は入る（任意）');
 
 -- 部分一意 index：未使用の招待は二重にできない
 select throws_ok(format($$ insert into public.invitations (year_id, email, role) values (%L, 'someone@pgtap.test', 'viewer') $$,
@@ -406,6 +591,17 @@ select is((select pg_get_indexdef('public.notice_groups_group_id_idx'::regclass)
 -- 予定と締切（T18）：年度ごとの一覧（早い順）とポリシーの year_id in (…) 用
 select is((select pg_get_indexdef('public.events_year_id_idx'::regclass)),
   'CREATE INDEX events_year_id_idx ON public.events USING btree (year_id, starts_at)', 'events_year_id_idx は (year_id, starts_at)');
+-- シフト・作業（T20）：一覧とポリシーの year_id in (…) 用に year_id から始め、外部キーの連鎖で引く (year_id, user_id)・(year_id, assignee_id)・
+-- (slot_id, duty_id) を持つ。ますは主キーだけ（一意の索引は主キー・一意制約のもの）
+select is((select string_agg(pg_get_indexdef(i.indexrelid), ' / ' order by i.indexrelid::regclass::text collate "C")
+           from pg_index i where i.indrelid in ('public.shift_duties'::regclass, 'public.shift_slots'::regclass, 'public.shift_needs'::regclass, 'public.shift_assignments'::regclass, 'public.tasks'::regclass) and not i.indisunique),
+  'CREATE INDEX shift_assignments_slot_id_duty_id_idx ON public.shift_assignments USING btree (slot_id, duty_id) / '
+  || 'CREATE INDEX shift_assignments_year_id_user_id_idx ON public.shift_assignments USING btree (year_id, user_id) / '
+  || 'CREATE INDEX shift_duties_year_id_idx ON public.shift_duties USING btree (year_id, sort_order) / '
+  || 'CREATE INDEX shift_slots_year_id_idx ON public.shift_slots USING btree (year_id, starts_at) / '
+  || 'CREATE INDEX tasks_year_id_assignee_id_idx ON public.tasks USING btree (year_id, assignee_id) / '
+  || 'CREATE INDEX tasks_year_id_due_at_idx ON public.tasks USING btree (year_id, due_at)',
+  'シフト・作業の索引（一意でないもの）は6つ');
 
 -- ビュー：security_invoker（RLS を素通りしない）
 select ok((select 'security_invoker=true' = any (reloptions) from pg_class where oid = 'public.v_remaining'::regclass),
@@ -449,11 +645,13 @@ select ok(not has_schema_privilege('anon', 'private', 'usage') and not has_schem
           and not has_schema_privilege('anon', 'private', 'create') and not has_schema_privilege('authenticated', 'private', 'create'),
   'private スキーマは anon・PUBLIC から使えず、だれも create できない（authenticated の usage は T03 の 010）');
 
--- 年度・団体の付け替えを止めるトリガーが 15 表にある（T17 で notices の year_id と notice_groups の鍵の列を、T18 で events の year_id を足した）
+-- 年度・団体の付け替えを止めるトリガーが 20 表にある（T17 で notices の year_id と notice_groups の鍵の列を、T18 で events の year_id を、
+-- T20 でシフト・作業の5表〔ますは時間枠・持ち場も〕を足した）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'check_immutable' and c.relnamespace = 'public'::regnamespace),
-  'allocations deliveries events group_members groups invitations notice_groups notices request_submissions requests room_years slots stocks substitution_consents year_roles',
-  'check_immutable が 15 表にある');
+  'allocations deliveries events group_members groups invitations notice_groups notices request_submissions requests room_years '
+  || 'shift_assignments shift_duties shift_needs shift_slots slots stocks substitution_consents tasks year_roles',
+  'check_immutable が 20 表にある');
 select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'check_immutable' and t.tgrelid = 'public.events'::regclass),
   'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.events FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'')',
   'events は year_id を変えられない');
@@ -514,6 +712,59 @@ select is((select case when p.prosecdef then 'definer' else 'invoker' end from p
            where p.oid = 'private.tg_events_set_actor()'::regprocedure),
   'invoker', 'tg_events_set_actor は INVOKER（auth.uid() を読むだけ。直接の書き込みでは authenticated で動く）');
 
+-- シフト・作業（T20）のトリガー：5表に set_timestamps・audit・check_immutable。時間枠に no_overlap（重なり）、割り当てと作業に member_check
+-- （その年度の総務だけ）、作業に set_actor。版の増分（bump_version_*）と確定中・終了の守りはない（振り分けの入力でない。終了の年度の読み取り
+-- 専用は RLS〔can_lead〕と RPC が守る）。BEFORE ROW のトリガーは名前の順に動く（年度の付け替えを先に止める）
+select is((select string_agg(c.relname || ': ' || x.names, ' / ' order by c.relname) from pg_class c
+           cross join lateral (select string_agg(t.tgname, ' ' order by t.tgname) as names from pg_trigger t
+                               where t.tgrelid = c.oid and not t.tgisinternal) x
+           where c.oid in ('public.shift_duties'::regclass, 'public.shift_slots'::regclass, 'public.shift_needs'::regclass, 'public.shift_assignments'::regclass, 'public.tasks'::regclass)),
+  'shift_assignments: audit check_immutable member_check set_timestamps / shift_duties: audit check_immutable set_timestamps / '
+  || 'shift_needs: audit check_immutable set_timestamps / shift_slots: audit check_immutable no_overlap set_timestamps / '
+  || 'tasks: audit check_immutable member_check set_actor set_timestamps',
+  'シフト・作業の5表のトリガー（版の増分・確定中の守りはない）');
+select is((select string_agg(c.relname || ': ' || x.names, ' / ' order by c.relname) from pg_class c
+           cross join lateral (select string_agg(t.tgname, ' ' order by t.tgname) as names from pg_trigger t
+                               where t.tgrelid = c.oid and not t.tgisinternal and (t.tgtype & 3) = 3) x
+           where c.oid in ('public.shift_duties'::regclass, 'public.shift_slots'::regclass, 'public.shift_needs'::regclass, 'public.shift_assignments'::regclass, 'public.tasks'::regclass)),
+  'shift_assignments: check_immutable member_check set_timestamps / shift_duties: check_immutable set_timestamps / '
+  || 'shift_needs: check_immutable set_timestamps / shift_slots: check_immutable no_overlap set_timestamps / '
+  || 'tasks: check_immutable member_check set_actor set_timestamps',
+  'シフト・作業の BEFORE ROW のトリガーの順（check_immutable → 重なり・総務だけ → set_actor → set_timestamps）');
+select is((select string_agg(pg_get_triggerdef(t.oid), ' / ' order by c.relname, t.tgname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where c.oid in ('public.shift_duties'::regclass, 'public.shift_slots'::regclass, 'public.shift_needs'::regclass, 'public.shift_assignments'::regclass, 'public.tasks'::regclass) and t.tgname in ('audit', 'check_immutable')),
+  'CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.shift_assignments FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''slot_id,user_id'') / '
+  || 'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.shift_assignments FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'') / '
+  || 'CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.shift_duties FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''id'') / '
+  || 'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.shift_duties FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'') / '
+  || 'CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.shift_needs FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''slot_id,duty_id'') / '
+  || 'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id, slot_id, duty_id ON public.shift_needs FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'', ''slot_id'', ''duty_id'') / '
+  || 'CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.shift_slots FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''id'') / '
+  || 'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.shift_slots FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'') / '
+  || 'CREATE TRIGGER audit AFTER INSERT OR DELETE OR UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION private.tg_audit(''id'') / '
+  || 'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id ON public.tasks FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'')',
+  '監査の row_pk（持ち場・時間枠・作業は id、ますは (slot_id, duty_id)、割り当ては (slot_id, user_id)）と、変えられない列（ますは年度・時間枠・持ち場、ほかは年度）');
+select is((select string_agg(pg_get_triggerdef(t.oid), ' / ' order by c.relname, t.tgname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where c.oid in ('public.shift_duties'::regclass, 'public.shift_slots'::regclass, 'public.shift_needs'::regclass, 'public.shift_assignments'::regclass, 'public.tasks'::regclass) and t.tgname in ('no_overlap', 'member_check', 'set_actor')),
+  'CREATE TRIGGER member_check BEFORE INSERT OR UPDATE OF user_id ON public.shift_assignments FOR EACH ROW EXECUTE FUNCTION private.tg_soumu_member_check(''user_id'') / '
+  || 'CREATE TRIGGER no_overlap BEFORE INSERT OR UPDATE OF starts_at, ends_at ON public.shift_slots FOR EACH ROW EXECUTE FUNCTION private.tg_shift_slots_no_overlap() / '
+  || 'CREATE TRIGGER member_check BEFORE INSERT OR UPDATE OF assignee_id ON public.tasks FOR EACH ROW EXECUTE FUNCTION private.tg_soumu_member_check(''assignee_id'') / '
+  || 'CREATE TRIGGER set_actor BEFORE INSERT OR UPDATE ON public.tasks FOR EACH ROW EXECUTE FUNCTION private.tg_tasks_set_actor()',
+  '重なり（insert と開始・終わりの update）・総務だけ（insert と人の列の update）・書いた人のトリガーの定義');
+select is((select count(*)::int from pg_trigger t join pg_class c on c.oid = t.tgrelid
+           where c.oid in ('public.shift_duties'::regclass, 'public.shift_slots'::regclass, 'public.shift_needs'::regclass, 'public.shift_assignments'::regclass, 'public.tasks'::regclass) and t.tgname = 'set_timestamps'
+             and pg_get_triggerdef(t.oid) = format('CREATE TRIGGER set_timestamps BEFORE INSERT OR UPDATE ON public.%s FOR EACH ROW EXECUTE FUNCTION private.tg_set_timestamps()', c.relname)),
+  5, 'シフト・作業の5表とも set_timestamps（BEFORE INSERT OR UPDATE・行ごと）');
+-- トリガー関数と「総務か」の補助：重なり・総務だけは private.fail を呼ぶので DEFINER、set_actor は auth.uid() を読むだけなので INVOKER。
+-- 補助は year_roles の行を for share で読むので VOLATILE（STABLE では for share を使えない）
+select is((select string_agg(p.proname || '=' || case when p.prosecdef then 'definer' else 'invoker' end || '/' || p.provolatile::text
+                             || '/' || pg_get_function_identity_arguments(p.oid) || '/' || pg_get_function_result(p.oid), ' ' order by p.proname)
+           from pg_proc p where p.pronamespace = 'private'::regnamespace
+             and p.proname in ('tg_shift_slots_no_overlap', 'tg_soumu_member_check', 'tg_tasks_set_actor', 'year_member_is_soumu')),
+  'tg_shift_slots_no_overlap=definer/v//trigger tg_soumu_member_check=definer/v//trigger tg_tasks_set_actor=invoker/v//trigger '
+  || 'year_member_is_soumu=definer/v/p_year_id uuid, p_user_id uuid/boolean',
+  'シフト・作業のトリガー関数と補助の SECURITY・VOLATILE・引数・返り値');
+
 -- 兼任の禁止（T15。0013）：check_role_overlap が year_roles・group_members にだけあり、BEFORE・ROW・列が約束どおり。
 -- 店長⇄副店長（group_members の role だけの更新）では動かない（列に role がない）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
@@ -533,16 +784,17 @@ select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
            where t.tgrelid = 'public.group_members'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
   'check_immutable check_role_overlap set_timestamps', 'group_members の BEFORE ROW のトリガーの順');
 
--- 時刻のトリガーが audit_logs 以外の 21 表にある（T17 で notices・notice_groups を、T18 で events を足した）
+-- 時刻のトリガーが audit_logs 以外の 26 表にある（T17 で notices・notice_groups を、T18 で events を、T20 でシフト・作業の5表を足した）
 select is((select count(distinct c.relname)::int from pg_trigger t join pg_class c on c.oid = t.tgrelid
-           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 21,
-  'set_timestamps が 21 表にある');
+           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 26,
+  'set_timestamps が 26 表にある');
 
 -- トリガーの一覧（表ごとの名前の集合）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'audit' and c.relnamespace = 'public'::regnamespace),
-  'allocations distance_overrides events group_members groups items notice_groups notices request_submissions requests room_years rooms rules stocks substitution_consents year_roles years',
-  'audit が 17 表にある（invitations・profiles は個人情報のため記録しない。T17 でお知らせの2表を、T18 で予定と締切を足した）');
+  'allocations distance_overrides events group_members groups items notice_groups notices request_submissions requests room_years rooms rules '
+  || 'shift_assignments shift_duties shift_needs shift_slots stocks substitution_consents tasks year_roles years',
+  'audit が 22 表にある（invitations・profiles は個人情報のため記録しない。T17 でお知らせの2表を、T18 で予定と締切を、T20 でシフト・作業の5表を足した）');
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'bump_version_upd' and c.relnamespace = 'public'::regnamespace),
   'allocations distance_overrides groups items request_submissions requests room_years rooms rules stocks substitution_consents',
