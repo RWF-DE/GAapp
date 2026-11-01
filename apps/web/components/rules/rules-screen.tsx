@@ -166,13 +166,14 @@ function RulesView({
   const writeDeps: RuleWriteDeps = { afterSaved, onAuthError, onReload, reloadMembership };
 
   // 書き込みは runRuleWrite（2.6 の (B1)）：応答が届かなかったとき・conflict・not_found・23505 は、
-  // 追加は (year_id, code)、更新は id で行を読み直して決める。確かめるためだけの状態は持たない
+  // 追加は (year_id, code)、更新は id で行を読み直して決める。確かめるためだけの状態は持たない。
+  // 追加の reread は、止められた後に読み直せなかったときの「読み直す」が押したときの入力のコードを渡す（省くと送ったコード）
   const onInsert = (row: RuleWrite) =>
     runRuleWrite(
       {
         mode: 'insert',
         send: () => insertRule(yearId, row),
-        reread: () => findRuleByCode(yearId, row.code),
+        reread: (code = row.code) => findRuleByCode(yearId, code),
         input: row,
         baseVersion: null,
         okMessage: `ルール ${row.code} を追加しました`,

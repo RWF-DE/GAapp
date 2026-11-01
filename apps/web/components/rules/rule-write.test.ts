@@ -13,6 +13,7 @@ import {
   runRuleWrite,
   TOGGLE_NOTICES,
   toggleFailureMessage,
+  type RuleRereadOutcome,
   type RuleWriteRequest,
   type SaveOutcome,
 } from './rule-write';
@@ -47,18 +48,26 @@ function deps() {
 const memoPatch: Partial<RuleWrite> = { memo: 'わたしのメモ' };
 const row = (patch: Partial<RuleDbRow>): RuleDbRow => ({ ...s05, ...patch });
 
-function update(send: () => Promise<unknown>, reread: () => Promise<RuleDbRow | null>): RuleWriteRequest {
+/** 対象の行を読む（insert は code〔省くと送ったコード〕の行、update は id の行） */
+type Reread = (code?: string) => Promise<RuleDbRow | null>;
+
+function update(send: () => Promise<unknown>, reread: Reread): RuleWriteRequest {
   return { mode: 'update', send, reread, input: memoPatch, baseVersion: T0, okMessage: 'ルール S05 を保存しました' };
 }
 
 const insertInput: RuleWrite = { code: 'S09', kind: s05.kind, params: s05.params, enabled: true, memo: null } as RuleWrite;
-function insert(send: () => Promise<unknown>, reread: () => Promise<RuleDbRow | null>): RuleWriteRequest {
+function insert(send: () => Promise<unknown>, reread: Reread): RuleWriteRequest {
   return { mode: 'insert', send, reread, input: insertInput, baseVersion: null, okMessage: 'ルール S09 を追加しました' };
 }
 
 const failed = (out: SaveOutcome) => {
   if (out.ok) throw new Error('成功した');
   return out;
+};
+/** 「読み直す」の結果が、止められた後と同じ出し方の失敗であること（'not-saved'・null でない） */
+const failedReread = (out: RuleRereadOutcome) => {
+  if (out === null || out === 'not-saved') throw new Error(`失敗の結果でない：${String(out)}`);
+  return failed(out);
 };
 
 describe('runRuleWrite：成功と 401', () => {
@@ -250,9 +259,9 @@ describe('runRuleWrite：conflict・not_found・23505 で止められた（isLoc
 describe('runRuleWrite：止められた後に読み直せなかった（unread）ときの「読み直す」（reread。締切と予定〔T18〕の rereadRejectedSave と同じ決め方）', () => {
   const conflict = () => appError('conflict', 'lock_conflict', { table: 'rules' });
   /** 止められ（conflict・23505）、その後の読み直しが通信で失敗した結果。reread の2回目からは rereads のとおり */
-  async function unreadOf(req: (reread: () => Promise<RuleDbRow | null>) => RuleWriteRequest, ...rereads: Array<() => Promise<RuleDbRow | null>>) {
+  async function unreadOf(req: (reread: Reread) => RuleWriteRequest, ...rereads: Reread[]) {
     const d = deps();
-    const reread = vi.fn<() => Promise<RuleDbRow | null>>().mockRejectedValueOnce(network());
+    const reread = vi.fn<Reread>().mockRejectedValueOnce(network());
     for (const r of rereads) reread.mockImplementationOnce(r);
     const out = failed(await runRuleWrite(req(reread), d));
     expect(out.notice).toBe(REREAD_FAILED_MESSAGE);
@@ -261,8 +270,8 @@ describe('runRuleWrite：止められた後に読み直せなかった（unread�
     d.onReload.mockClear();
     return { out, d, reread };
   }
-  const updateReq = (reread: () => Promise<RuleDbRow | null>) => update(() => Promise.reject(conflict()), reread);
-  const insertReq = (reread: () => Promise<RuleDbRow | null>) => insert(() => Promise.reject(pg('23505', 'duplicate key')), reread);
+  const updateReq = (reread: Reread) => update(() => Promise.reject(conflict()), reread);
+  const insertReq = (reread: Reread) => insert(() => Promise.reject(pg('23505', 'duplicate key')), reread);
 
   it('更新：また読めない → null（一覧を読み直さず、読み直した行を返さない。シートは知らせて版を進めない）', async () => {
     const { out, d, reread } = await unreadOf(updateReq, () => Promise.reject(network()));
@@ -282,9 +291,7 @@ describe('runRuleWrite：止められた後に読み直せなかった（unread�
   it('更新：版が進み入力と違う → conflict の文言と読み直した行（rebase。シートはこの版を入力の元にする）。一覧も読み直す', async () => {
     const other = row({ memo: 'ほかの人のメモ', updated_at: T1 });
     const { out, d } = await unreadOf(updateReq, async () => other);
-    const again = await out.reread!(memoPatch);
-    expect(again).not.toBeNull();
-    const f = failed(again!);
+    const f = failedReread(await out.reread!(memoPatch));
     expect(f.rebase).toBe(other);
     expect(classifyError(f.error).kind).toBe('conflict');
     expect(f.notice).toBeUndefined();
@@ -294,7 +301,7 @@ describe('runRuleWrite：止められた後に読み直せなかった（unread�
 
   it('更新：行がなくなっていた → not_found（rebase は null）', async () => {
     const { out, d } = await unreadOf(updateReq, async () => null);
-    const f = failed((await out.reread!(memoPatch))!);
+    const f = failedReread(await out.reread!(memoPatch));
     expect(f.rebase).toBeNull();
     expect(classifyError(f.error).kind).toBe('not_found');
     expect(d.onReload).toHaveBeenCalledTimes(1);
@@ -303,19 +310,76 @@ describe('runRuleWrite：止められた後に読み直せなかった（unread�
   it('入力が確かめを通らない（null）なら、読み直した行が同じ中身でも「保存されていました」にしない', async () => {
     const same = row({ memo: 'わたしのメモ', updated_at: T1 });
     const { out } = await unreadOf(updateReq, async () => same);
-    const f = failed((await out.reread!(null))!);
+    const f = failedReread(await out.reread!(null));
     expect(f.rebase).toBe(same);
     expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('更新（ほかのルールのコードに変えて 23505）：その行の版が入力の元のまま（誰も変えていない）なら、衝突とは言わず not-saved（版を進めない）', async () => {
+    const codeReq = (reread: Reread): RuleWriteRequest => ({
+      mode: 'update',
+      send: () => Promise.reject(pg('23505', 'duplicate key')),
+      reread,
+      input: { code: 'S06' },
+      baseVersion: T0,
+      okMessage: '',
+    });
+    const { out, d } = await unreadOf(codeReq, async () => row({}));
+    expect(await out.reread!({ code: 'S06' })).toBe('not-saved');
+    expect(d.onReload).toHaveBeenCalledTimes(1);
+    expect(toast.success).not.toHaveBeenCalled();
+    // 版が進んでいれば（ほかの人がこのルールを変えた）今までどおり conflict と読み直した行
+    const other = row({ memo: 'ほかの人のメモ', updated_at: T1 });
+    const moved = await unreadOf(codeReq, async () => other);
+    expect(failedReread(await moved.out.reread!({ code: 'S06' })).rebase).toBe(other);
   });
 
   it('追加（23505 の後）：同じ値なら「保存されていました」、同じコードのほかの行ならコードの欄に「同じコードのルールがあります」', async () => {
     const { out } = await unreadOf(insertReq, async () => row({ ...insertInput, updated_at: T1 }));
     expect(await out.reread!(insertInput)).toEqual({ ok: true });
     const other = await unreadOf(insertReq, async () => row({ code: 'S09', memo: 'ほかの人', updated_at: T1 }));
-    const f = failed((await other.out.reread!(insertInput))!);
+    const f = failedReread(await other.out.reread!(insertInput));
     expect(f.fieldErrors).toEqual({ code: [DUPLICATE_CODE_MESSAGE] });
     expect(f.rebase).toBeUndefined();
     expect(other.d.onReload).toHaveBeenCalledTimes(1);
+    expect(other.reread).toHaveBeenLastCalledWith('S09');
+  });
+
+  // 追加の「読み直す」は、押したときの入力のコードの行を読む（コードを変えていれば、止められた結果は前のコードの行のもので、
+  // いまの入力には当たらない）。重複と言うのは、そのコードに入力と違うルールがあるときだけ（FU2 のレビューの F1）
+  it('追加（23505 の後）：コードを変えてから「読み直す」→ 新しいコードで読み直し、その行がなければ重複とは言わず not-saved（一覧は読み直す）', async () => {
+    const { out, d, reread } = await unreadOf(insertReq, async () => null);
+    expect(await out.reread!({ ...insertInput, code: 'S10' })).toBe('not-saved');
+    expect(reread).toHaveBeenLastCalledWith('S10');
+    expect(d.onReload).toHaveBeenCalledTimes(1);
+    expect(d.afterSaved).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('追加（23505 の後）：コードを変えてから「読み直す」→ 新しいコードにほかのルールがあればコードの重複、同じ中身なら「保存されていました」', async () => {
+    const changed: RuleWrite = { ...insertInput, code: 'S10' };
+    const other = await unreadOf(insertReq, async () => row({ code: 'S10', memo: 'ほかの人', updated_at: T1 }));
+    const f = failedReread(await other.out.reread!(changed));
+    expect(f.fieldErrors).toEqual({ code: [DUPLICATE_CODE_MESSAGE] });
+    expect(other.reread).toHaveBeenLastCalledWith('S10');
+    const same = await unreadOf(insertReq, async () => row({ ...changed, updated_at: T1 }));
+    expect(await same.out.reread!(changed)).toEqual({ ok: true });
+    expect(same.reread).toHaveBeenLastCalledWith('S10');
+    expect(toast.success).toHaveBeenCalledWith(SAVED_BEFORE_MESSAGE);
+  });
+
+  it('追加（23505 の後）：同じコードで、読み直すとその行がない（ほかの人がコードを変えた）→ 重複とは言わず not-saved', async () => {
+    const { out, d } = await unreadOf(insertReq, async () => null);
+    expect(await out.reread!(insertInput)).toBe('not-saved');
+    expect(d.onReload).toHaveBeenCalledTimes(1);
+  });
+
+  it('追加（23505 の後）：入力が確かめを通らない（null）→ 送ったコードの行を読み、行があっても重複とも「保存されていました」とも言わず not-saved', async () => {
+    const { out, reread } = await unreadOf(insertReq, async () => row({ ...insertInput, updated_at: T1 }));
+    expect(await out.reread!(null)).toBe('not-saved');
+    // コードを渡さない（送ったコードの行を読む）
+    expect(reread.mock.lastCall?.[0]).toBeUndefined();
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
 

@@ -3,13 +3,21 @@ import { fixturePath, readFixtureDir } from '@gaapp/shared/testing';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { ruleToForm, type RulesData } from '@/lib/data/rules';
+import { ruleToForm, type RulesData, type RuleWrite } from '@/lib/data/rules';
 import type { RuleDbRow, YearRow } from '@/lib/db/types';
 import { appError, unknownOutcomeMessage } from '@/lib/errors';
 import { NOTE_MAX } from '@/lib/schemas/common';
 import { FIXTURE_UPDATED_AT, fixtureToTables } from '@/lib/testing/fixture-rows';
 import { RuleFormSheet, type RuleFormSheetProps, type RuleSheetTarget, type SaveOutcome } from './rule-form-sheet';
-import { REREAD_AGAIN_FAILED_MESSAGE, REREAD_FAILED_MESSAGE, type RuleReread } from './rule-write';
+import {
+  DUPLICATE_CODE_MESSAGE,
+  REREAD_AGAIN_FAILED_MESSAGE,
+  REREAD_FAILED_MESSAGE,
+  REREAD_NOT_SAVED_MESSAGE,
+  runRuleWrite,
+  type RuleReread,
+  type RuleWriteDeps,
+} from './rule-write';
 
 // ルールのシートの「変更がなければ送らずに閉じる」分かれ道と、保存の失敗の後（conflict・2.6 の (B1)）の扱い（T12）。保存は onInsert・onUpdate の差し替えで見る。
 const toast = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn(), success: vi.fn() }));
@@ -54,9 +62,16 @@ const s05 = base.rules.find((r) => r.code === 'S05')!;
 const editS05: RuleSheetTarget = { type: 'edit', ruleId: s05.id, initial: ruleToForm(s05), baseUpdatedAt: s05.updated_at };
 
 type UpdateMock = ReturnType<typeof vi.fn<RuleFormSheetProps['onUpdate']>>;
+type InsertMock = ReturnType<typeof vi.fn<RuleFormSheetProps['onInsert']>>;
 
 function setup(
-  opts: { editMode?: RuleFormSheetProps['editMode']; onUpdate?: UpdateMock; target?: RuleSheetTarget; canEditGroups?: boolean } = {},
+  opts: {
+    editMode?: RuleFormSheetProps['editMode'];
+    onUpdate?: UpdateMock;
+    onInsert?: InsertMock;
+    target?: RuleSheetTarget;
+    canEditGroups?: boolean;
+  } = {},
 ) {
   const onUpdate: UpdateMock = opts.onUpdate ?? vi.fn<RuleFormSheetProps['onUpdate']>(async () => ({ ok: true }) satisfies SaveOutcome);
   const onClose = vi.fn();
@@ -65,7 +80,7 @@ function setup(
     onClose,
     data: base,
     editMode: opts.editMode ?? 'full',
-    onInsert: vi.fn(async () => ({ ok: true }) satisfies SaveOutcome),
+    onInsert: opts.onInsert ?? vi.fn(async () => ({ ok: true }) satisfies SaveOutcome),
     onUpdate,
     onReload: vi.fn(),
     canEditGroups: opts.canEditGroups ?? true,
@@ -436,6 +451,103 @@ describe('RuleFormSheet：応答が届かなかった・止められた後（2.6
     expect(await screen.findByRole('button', { name: '読み直す' })).toBeTruthy();
     expect((memoBox() as HTMLTextAreaElement).disabled).toBe(false);
     expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // 次の2件は本物の runRuleWrite を通し、「読み直す」の判定（rule-write.ts の rereadRejectedRuleWrite）からシートの出し方までを見る
+  // （FU2 のレビューの F1：押したときの入力に当たらない重複・衝突を出さない）
+  const writeDeps = (): RuleWriteDeps => ({
+    afterSaved: vi.fn(async () => undefined),
+    onAuthError: vi.fn(async () => 'other' as const),
+    onReload: vi.fn(),
+    reloadMembership: vi.fn(),
+  });
+  /** 一意のキーの重複（supabase-js の error の形） */
+  const duplicateKey = () => ({ code: '23505', message: 'duplicate key value violates unique constraint', details: '', hint: null });
+  /** 応答が届かなかった（fetch の失敗） */
+  const offline = () => new TypeError('Failed to fetch');
+
+  it('追加：止められた（23505）後に読み直せず、コードを変えてから「読み直す」：押したときのコードで読み直し、その行がなければ重複とは言わず、知らせを消して「まだ保存されていません」と知らせる。次の保存は新しいコードで送る', async () => {
+    const user = userEvent.setup();
+    // 1回目は止められた後の読み直し（S09。通信で失敗）、2回目は「読み直す」（S10 の行はない）
+    const reread = vi.fn<(code: string) => Promise<RuleDbRow | null>>().mockRejectedValueOnce(offline()).mockResolvedValueOnce(null);
+    const send = vi.fn<(row: RuleWrite) => Promise<unknown>>().mockRejectedValueOnce(duplicateKey()).mockResolvedValue(undefined);
+    const deps = writeDeps();
+    const onInsert = vi.fn<RuleFormSheetProps['onInsert']>((row) =>
+      runRuleWrite(
+        {
+          mode: 'insert',
+          send: () => send(row),
+          reread: (code = row.code) => reread(code),
+          input: row,
+          baseVersion: null,
+          okMessage: `ルール ${row.code} を追加しました`,
+        },
+        deps,
+      ),
+    );
+    // 無効のまま追加する（ほかの有効なルールとの重なりを見ない）
+    const { onClose } = setup({ target: { type: 'new', initial: { ...ruleToForm(s05), code: 'S09', enabled: false } }, onInsert });
+    await user.click(saveButton());
+    expect((await screen.findByTestId('unknown-outcome')).textContent).toContain(REREAD_FAILED_MESSAGE);
+    expect(reread).toHaveBeenLastCalledWith('S09');
+
+    const codeBox = screen.getByLabelText('コード');
+    await user.clear(codeBox);
+    await user.type(codeBox, 'S10');
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith(REREAD_NOT_SAVED_MESSAGE));
+    expect(REREAD_NOT_SAVED_MESSAGE).toBe('読み直しました。まだ保存されていません（もう一度「保存」を押してください）');
+    expect(reread).toHaveBeenLastCalledWith('S10');
+    expect(screen.queryByTestId('unknown-outcome')).toBeNull();
+    expect(screen.queryByText(DUPLICATE_CODE_MESSAGE)).toBeNull();
+    expect(codeBox.getAttribute('aria-invalid')).toBeNull();
+    expect(deps.onReload).toHaveBeenCalledTimes(1);
+
+    await user.click(saveButton());
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]![0].code).toBe('S10');
+  });
+
+  it('更新：ほかのルールのコードに変えて止められ（23505）、読み直せなかった後の「読み直す」：その行の版が入力の元のまま（誰も変えていない）なら、衝突とは言わず知らせを消して「まだ保存されていません」と知らせ、版は進めない', async () => {
+    const user = userEvent.setup();
+    // 1回目は止められた後の読み直し（通信で失敗）、2回目は「読み直す」（開いたときのままの行）
+    const reread = vi.fn<() => Promise<RuleDbRow | null>>().mockRejectedValueOnce(offline()).mockResolvedValueOnce(s05);
+    const send = vi
+      .fn<(rule: RuleDbRow, patch: Partial<RuleWrite>) => Promise<unknown>>()
+      .mockRejectedValueOnce(duplicateKey())
+      .mockResolvedValue(undefined);
+    const onUpdate = vi.fn<RuleFormSheetProps['onUpdate']>((rule, patch) =>
+      runRuleWrite(
+        {
+          mode: 'update',
+          send: () => send(rule, patch),
+          reread: () => reread(),
+          input: patch,
+          baseVersion: rule.updated_at,
+          okMessage: `ルール ${patch.code ?? rule.code} を保存しました`,
+        },
+        writeDeps(),
+      ),
+    );
+    const { onClose } = setup({ onUpdate });
+    // 一覧を読んだ後に、ほかの人が S99 のルールを足した（一覧にはないので、画面の確かめは通る）
+    const codeBox = screen.getByLabelText('コード');
+    await user.clear(codeBox);
+    await user.type(codeBox, 'S99');
+    await user.click(saveButton());
+    expect((await screen.findByTestId('unknown-outcome')).textContent).toContain(REREAD_FAILED_MESSAGE);
+    await user.click(screen.getByRole('button', { name: '読み直す' }));
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith(REREAD_NOT_SAVED_MESSAGE));
+    expect(screen.queryByTestId('unknown-outcome')).toBeNull();
+    expect(screen.queryByTestId('error-banner')).toBeNull();
+
+    await user.click(saveButton());
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledTimes(2);
+    // 版は進めていない（開いたときの版で送る）
+    expect(send.mock.calls[1]![0].updated_at).toBe(s05.updated_at);
+    expect(send.mock.calls[1]![1].code).toBe('S99');
   });
 
   it('止められた後に読み直せなかった（unread）ときは、一覧が新しい版を持っていても版を進めない。次の保存も開いたときの版で送る（DB が conflict で止め、読み直して決める）', async () => {

@@ -7,9 +7,11 @@
 // シートが新しい行を受け取る道（保存の後・止められた後の読み直し、unread の後の「読み直す」、裏の読み直し・invalidate）のうち、
 // 入力の元を付け替えるのは、その行を読み直した判定の結果が changed（SaveOutcome の rebase に読み直した行がある）ときだけ。一覧の読み直し
 // （エラーの帯の「読み直す」・裏の読み直し）では版を進めない（利用者が見ていない版で次の保存が通ると、ほかの人の変更を確かめずに上書きする）。
-// 止められた後に読み直せなかった（unread）ときの「読み直す」は、その行を読み直して止められた後と同じに決める（SaveOutcome の reread。
-// 締切と予定〔T18〕の rereadRejectedSave と同じ形。マージの後の直し）：入力と同じなら閉じる、変わっていれば conflict の知らせにして版を進める、
-// なくなっていれば「保存」を押せなくする、また読めなければ知らせて版を進めない。読み直す間は欄・保存・閉じるを止める。
+// 止められた後に読み直せなかった（unread）ときの「読み直す」は、押したときの入力が書く行（追加は押したときのコードの行）を読み直して
+// 止められた後と同じに決める（SaveOutcome の reread。締切と予定〔T18〕の rereadRejectedSave と同じ形。マージの後の直し）：入力と同じなら閉じる、
+// 変わっていれば conflict の知らせにして版を進める、なくなっていれば「保存」を押せなくする、追加でそのコードにほかのルールがあればコードの重複、
+// 止めるものが分からなければ（追加でそのコードの行がない・更新で版が入力の元のまま）知らせを消して toast で「まだ保存されていません」と
+// 知らせる（版は進めない。FU2 のレビューの F1）、また読めなければ知らせて版を進めない。読み直す間は欄・保存・閉じるを止める。
 // ほかの人の変更の知らせ（ErrorBanner）・「保存されていました」も、その行を読み直した結果からだけ出す。
 // 確かめるためだけの状態は持たず、保存のボタンは押せるまま。
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
@@ -37,7 +39,7 @@ import { classifyError, unknownOutcomeMessage } from '@/lib/errors';
 import { RULE_KIND_LABELS } from '@/lib/labels';
 import { NOTE_MAX, optionalText } from '@/lib/schemas/common';
 import { CheckOne, FieldErrors, RuleParamsFields } from './rule-fields';
-import { REREAD_AGAIN_FAILED_MESSAGE, type RuleReread, type SaveOutcome } from './rule-write';
+import { REREAD_AGAIN_FAILED_MESSAGE, REREAD_NOT_SAVED_MESSAGE, type RuleReread, type SaveOutcome } from './rule-write';
 
 /**
  * 開いているシート（新規はひな形のコードを持つことがある）。
@@ -242,8 +244,10 @@ function RuleFormSheetBody({
   };
 
   /**
-   * 止められた後に読み直せなかった（unread）ときの「読み直す」：その行を読み直し、止められた後と同じに決める（SaveOutcome の reread）。
-   * 入力と同じなら（保存されていました）閉じる、変わっていれば conflict の知らせにして入力の元を進める、なければ「保存」を押せなくする。
+   * 止められた後に読み直せなかった（unread）ときの「読み直す」：押したときの入力が書く行を読み直し、止められた後と同じに決める
+   * （SaveOutcome の reread）。入力と同じなら（保存されていました）閉じる、変わっていれば conflict の知らせにして入力の元を進める、
+   * なければ「保存」を押せなくする、追加でそのコードにほかのルールがあればコードの欄に重複を出す。止めるものが分からなければ（'not-saved'）
+   * 知らせを消して toast で知らせるだけ（入力・欄のエラー・版はそのまま。次の保存はふつうに送る）。
    * また読み直せなければ知らせと「読み直す」を残す（版は進めない）。読み直す間は送る・閉じる・入力を止める（届いた行を押したときの入力と比べる）。
    * reread のない結果（ほかの呼び方）は、一覧を読み直すだけ
    */
@@ -260,6 +264,11 @@ function RuleFormSheetBody({
       const out = await reread(input);
       if (out === null) {
         toast.error(REREAD_AGAIN_FAILED_MESSAGE);
+        return;
+      }
+      if (out === 'not-saved') {
+        setSubmitError(null);
+        toast.info(REREAD_NOT_SAVED_MESSAGE);
         return;
       }
       if (out.ok) {
