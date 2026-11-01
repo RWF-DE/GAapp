@@ -90,3 +90,14 @@ export function shiftDayLabel(date: string, festivalStart: string | null | undef
   }
   return formatShortDateWeekday(date, year);
 }
+
+/**
+ * 印刷の日の見出し（04「シフト表の印刷」の「日付（曜日つき）」）：祭の日なら「前日 10/15（金）」、ほかは「10/18（土）」。年が今年
+ * （Asia/Tokyo）と違えば年も付ける（「前日 2028/10/15（日）」）。読めなければ空文字。
+ */
+export function shiftDayPrintLabel(date: string, festivalStart: string | null | undefined, now: number): string {
+  const d = formatShortDateWeekday(date, thisYearOf(now));
+  if (!d) return '';
+  const festival = festivalDayName(date, festivalStart);
+  return festival ? `${festival} ${d}` : d;
+}

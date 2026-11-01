@@ -29,12 +29,13 @@ import {
   slotLabelLookup,
   slotsOfDayPlan,
   slotsOverlap,
+  sumTotals,
   totalText,
   type BoardDuty,
   type BoardSlot,
   type ShiftBoard,
 } from './board';
-import { festivalDayName, isSlotNow, isSlotPast, isSlotUpcoming, shiftDayLabel, slotDayOf, slotTimeLabel } from './time';
+import { festivalDayName, isSlotNow, isSlotPast, isSlotUpcoming, shiftDayLabel, shiftDayPrintLabel, slotDayOf, slotTimeLabel } from './time';
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const D_RECEPTION = uuid(1);
@@ -111,6 +112,12 @@ describe('T20 時刻と日（time.ts）', () => {
     const in2026 = Date.parse('2026-12-31T03:00:00Z');
     expect(shiftDayLabel('2027-10-15', FESTIVAL, in2026)).toBe('前日（2027/10/15）');
     expect(shiftDayLabel('2027-10-18', FESTIVAL, in2026)).toBe('2027/10/18（月）');
+    // 印刷の見出しは曜日つき（祭の日は名前も。04「シフト表の印刷」）
+    expect(shiftDayPrintLabel('2027-10-15', FESTIVAL, NOW)).toBe('前日 10/15（金）');
+    expect(shiftDayPrintLabel('2027-10-18', FESTIVAL, NOW)).toBe('10/18（月）');
+    expect(shiftDayPrintLabel('2027-10-15', FESTIVAL, in2026)).toBe('前日 2027/10/15（金）');
+    expect(shiftDayPrintLabel('2027-10-15', null, NOW)).toBe('10/15（金）');
+    expect(shiftDayPrintLabel('2027-02-30', FESTIVAL, NOW)).toBe('');
   });
 });
 
@@ -178,10 +185,13 @@ describe('T20 表（buildShiftTable）', () => {
     expect(unknown.members.map((m) => m.name)).toEqual([null]);
   });
 
-  it('合計：行の終わりと列の下（必要人数 0 のますは数だけを足す）', () => {
+  it('合計：行の終わりと列の下（必要人数 0 のますは数だけを足す。ますが1つもない列は「—」）', () => {
     const t = buildShiftTable(board(), '2027-10-15', opts);
     expect(t.rows.map((r) => totalText(r.total))).toEqual(['3/3', '2/1']);
-    expect(t.columnTotals.map(totalText)).toEqual(['4/4', '1人', '0人']);
+    expect(t.columnTotals.map(totalText)).toEqual(['4/4', '1人', '—']);
+    expect(totalText(sumTotals(t.columnTotals))).toBe('5/4');
+    expect(totalText(sumTotals([]))).toBe('—');
+    expect(totalText({ count: 0, required: 0, cells: 1 })).toBe('0人');
   });
 
   it('部門長以上（ロールが分かる）は閲覧のみに変わった人を数えない（総務でない人）。部門員（ロールなし）は数える', () => {

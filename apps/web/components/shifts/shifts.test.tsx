@@ -577,13 +577,15 @@ describe('T20 シフト表の印刷（/shifts/print）', () => {
     renderWith(<ShiftsPrintScreen />, 'staff', { search: 'day=2027-10-15' });
     await waitFor(() => expect(screen.getAllByTestId('shifts-print-table')).toHaveLength(1));
     const t = screen.getByTestId('shifts-print-table');
-    expect(t.textContent).toContain('R9 シフト表 前日（10/15）');
+    // 見出しの日付は曜日つき（祭の日は名前も。04「シフト表の印刷」）
+    expect(t.textContent).toContain('R9 シフト表 前日 10/15（金）');
     expect(t.textContent).toContain('あと1人');
     expect(within(t).getAllByRole('columnheader').map((x) => x.textContent)).toEqual(['時間枠', '受付正門', '運搬']);
     cleanup();
     renderWith(<ShiftsPrintScreen />, 'staff', { search: 'day=2027-10-15&view=people' });
     await waitFor(() => expect(screen.getAllByTestId('shifts-print-person').length).toBe(3));
     expect(screen.getAllByTestId('shifts-print-person').map((p) => p.querySelector('h2')?.textContent)).toEqual(['部門員A', '部門員B', '部門長A']);
+    expect(screen.getAllByTestId('shifts-print-person')[0]!.textContent).toContain('R9 前日 10/15（金）');
   });
 
   it('持ち場が 8 を超える日は 8 ずつ別の表にする', async () => {

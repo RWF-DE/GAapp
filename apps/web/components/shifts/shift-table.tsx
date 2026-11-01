@@ -13,6 +13,7 @@ import {
   cellCountText,
   cellDiffText,
   isShortCell,
+  sumTotals,
   totalText,
   type BoardDuty,
   type BoardSlot,
@@ -136,9 +137,7 @@ export function ShiftTable({ table, now, filterShort, writable, onCell, onEditSl
               </td>
             ))}
             <td className="border-l px-3 py-2 text-right tabular-nums">
-              {totalText(
-                table.columnTotals.reduce((t, c) => ({ count: t.count + c.count, required: t.required + c.required }), { count: 0, required: 0 }),
-              )}
+              {totalText(sumTotals(table.columnTotals))}
             </td>
           </tr>
         </tfoot>

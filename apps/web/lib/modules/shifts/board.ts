@@ -130,6 +130,8 @@ export interface CellMember {
 export interface CellTotal {
   count: number;
   required: number;
+  /** 足したますの数（0 なら「—」。ますが1つもない行・列。T20 の撮影で見つけた「0人」と出す誤解を避ける） */
+  cells: number;
 }
 
 /** ます（時間枠 × 持ち場） */
@@ -215,9 +217,9 @@ export function buildShiftTable(board: ShiftBoard, day: string, opts: ShiftTable
   const slots = slotsOfDay(board.slots, day);
   const used = new Set(slots.flatMap((s) => s.shift_needs.map((n) => n.duty_id)));
   const columns = sortDuties(opts.allDuties ? board.duties : board.duties.filter((d) => used.has(d.id)));
-  const columnTotals: CellTotal[] = columns.map(() => ({ count: 0, required: 0 }));
+  const columnTotals: CellTotal[] = columns.map(() => ({ count: 0, required: 0, cells: 0 }));
   const rows = slots.map((slot) => {
-    const total: CellTotal = { count: 0, required: 0 };
+    const total: CellTotal = { count: 0, required: 0, cells: 0 };
     const cells = columns.map((duty, k) => {
       const need = slot.shift_needs.find((n) => n.duty_id === duty.id) ?? null;
       const { members, count } = cellMembers(need, opts);
@@ -225,8 +227,10 @@ export function buildShiftTable(board: ShiftBoard, day: string, opts: ShiftTable
       if (need) {
         total.count += count;
         total.required += required;
+        total.cells += 1;
         columnTotals[k]!.count += count;
         columnTotals[k]!.required += required;
+        columnTotals[k]!.cells += 1;
       }
       return { slot, duty, need, members, count, required, state: cellStateOf(need, count) };
     });
@@ -235,9 +239,19 @@ export function buildShiftTable(board: ShiftBoard, day: string, opts: ShiftTable
   return { day, columns, rows, columnTotals };
 }
 
-/** 合計の文（「2/3」。必要人数が 0 なら「2人」） */
+/** 合計の文（「2/3」。必要人数が 0 なら「2人」。ますが1つもない行・列は「—」） */
 export function totalText(t: CellTotal): string {
+  if (t.cells === 0) return '—';
   return t.required === 0 ? `${t.count}人` : `${t.count}/${t.required}`;
+}
+
+/** 合計を足し合わせる（表の右下の合計） */
+export function sumTotals(totals: readonly CellTotal[]): CellTotal {
+  return totals.reduce((t, c) => ({ count: t.count + c.count, required: t.required + c.required, cells: t.cells + c.cells }), {
+    count: 0,
+    required: 0,
+    cells: 0,
+  });
 }
 
 /** ますの数の文（「2/3」・必要人数 0 は「2人」・ますがなければ「—」） */

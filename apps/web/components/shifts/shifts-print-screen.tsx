@@ -33,6 +33,7 @@ import {
 import { NAME_UNKNOWN, nameMapOf } from '@/lib/modules/shifts/names';
 import { shiftBoardOptions } from '@/lib/modules/shifts/board-read';
 import { soumuNamesOptions } from '@/lib/modules/shifts/reads';
+import { shiftDayPrintLabel } from '@/lib/modules/shifts/time';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { selectClass } from './write-notice';
 
@@ -144,10 +145,12 @@ function ShiftsPrint({ yearId, yearLabel, festivalStart }: { yearId: string; yea
           if (!openDay) {
             return <EmptyState title="シフトの時間枠はまだありません" />;
           }
+          // 見出しの日付は曜日つき（祭の日は「前日 10/15（金）」。04「シフト表の印刷」）
+          const dayTitle = shiftDayPrintLabel(openDay.date, fs, now) || openDay.label;
           return view === 'table' ? (
-            <PrintTables board={board} day={openDay} yearLabel={yearLabel} names={names} />
+            <PrintTables board={board} day={openDay} dayTitle={dayTitle} yearLabel={yearLabel} names={names} />
           ) : (
-            <PrintPeople board={board} day={openDay} yearLabel={yearLabel} names={names} />
+            <PrintPeople board={board} day={openDay} dayTitle={dayTitle} yearLabel={yearLabel} names={names} />
           );
         }}
       </QueryState>
@@ -155,7 +158,19 @@ function ShiftsPrint({ yearId, yearLabel, festivalStart }: { yearId: string; yea
   );
 }
 
-function PrintTables({ board, day, yearLabel, names }: { board: ShiftBoard; day: ShiftDay; yearLabel: string; names: ReadonlyMap<string, string> }) {
+function PrintTables({
+  board,
+  day,
+  dayTitle,
+  yearLabel,
+  names,
+}: {
+  board: ShiftBoard;
+  day: ShiftDay;
+  dayTitle: string;
+  yearLabel: string;
+  names: ReadonlyMap<string, string>;
+}) {
   // 印刷は総務部門員の表と同じ（その日にますのある持ち場だけ、ロールで分けない）
   const table = buildShiftTable(board, day.date, { allDuties: false, roles: null, names, userId: null });
   const groups = chunk(
@@ -168,7 +183,7 @@ function PrintTables({ board, day, yearLabel, names }: { board: ShiftBoard; day:
       {groups.map((g, gi) => (
         <section key={gi} data-testid="shifts-print-table" className="break-inside-avoid space-y-2 [break-inside:avoid] print:break-after-page last:print:break-after-auto">
           <h2 className="text-lg font-bold">
-            {yearLabel} シフト表 {day.label}
+            {yearLabel} シフト表 {dayTitle}
             {groups.length > 1 ? `（${gi + 1}／${groups.length}）` : ''}
           </h2>
           <table className="w-full border-collapse text-sm">
@@ -218,7 +233,19 @@ function PrintTables({ board, day, yearLabel, names }: { board: ShiftBoard; day:
   );
 }
 
-function PrintPeople({ board, day, yearLabel, names }: { board: ShiftBoard; day: ShiftDay; yearLabel: string; names: ReadonlyMap<string, string> }) {
+function PrintPeople({
+  board,
+  day,
+  dayTitle,
+  yearLabel,
+  names,
+}: {
+  board: ShiftBoard;
+  day: ShiftDay;
+  dayTitle: string;
+  yearLabel: string;
+  names: ReadonlyMap<string, string>;
+}) {
   const people = peopleOfDay(board, day.date, names);
   if (people.length === 0) return <EmptyState title="この日に割り当てのある人はいません" />;
   return (
@@ -227,7 +254,7 @@ function PrintPeople({ board, day, yearLabel, names }: { board: ShiftBoard; day:
         <section key={p.userId} data-testid="shifts-print-person" className="break-inside-avoid space-y-2 rounded-lg border p-4 [break-inside:avoid]">
           <h2 className="text-lg font-bold [overflow-wrap:anywhere]">{p.name ?? NAME_UNKNOWN}</h2>
           <p className="text-sm">
-            {yearLabel} {day.label}
+            {yearLabel} {dayTitle}
           </p>
           <ul className="space-y-1 text-sm">
             {p.items.map((i) => (

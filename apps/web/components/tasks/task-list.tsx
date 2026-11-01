@@ -1,8 +1,10 @@
 'use client';
 
 // 作業の一覧（/tasks の中身。04「作業一覧」の1件に出すもの・形、notes/T20.md「画面の約束」7・13。T20・D-56）。
-// 広い PC（lg 以上）は CSS grid の表のような並び（列：状態・題名と説明・担当者・締切・更新・操作。列の見出しの行は aria-hidden）、それより
-// 狭い幅（スマホと md）は1件ずつのカードを縦に重ねる。同じ <ul> を幅で並べ替え、DOM を2つ作らない（お知らせ一覧と同じ）。
+// 広い PC（xl 以上。左のナビを除いて約 1,000px）は CSS grid の表のような並び（列：状態・題名と説明・担当者・締切・更新・操作。列の見出しの
+// 行は aria-hidden）、それより狭い幅（スマホから lg まで）は1件ずつのカードを縦に重ねる。同じ <ul> を幅で並べ替え、DOM を2つ作らない
+// （お知らせ一覧と同じ）。操作の列は状態のボタンの幅にし、編集・削除は次の行に折り返す（題名の列を狭めない。lg〔左のナビを除いて約
+// 750px〕では6つの列が入らないので、カードにする。T20 の撮影で見つけた）。
 // 説明は書いたとおりの文字で出す（改行を残し、長い語も折り返す。リンクにしない・HTML として読まない）。
 import { useEffect, useRef } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -57,11 +59,11 @@ export function TaskList(props: TaskListProps) {
   const { tasks, canEdit } = props;
   const showActions = canEdit || tasks.some((t) => props.canSetStatus(t));
   const cols = showActions
-    ? 'lg:grid-cols-[6rem_minmax(0,1fr)_9rem_10rem_10rem_minmax(14rem,auto)]'
-    : 'lg:grid-cols-[6rem_minmax(0,1fr)_9rem_10rem_10rem]';
+    ? 'xl:grid-cols-[5.5rem_minmax(0,1fr)_8rem_8rem_7.5rem_13.5rem]'
+    : 'xl:grid-cols-[5.5rem_minmax(0,1fr)_8rem_8rem_7.5rem]';
   return (
     <div className="rounded-lg border bg-card">
-      <div aria-hidden className={cn('hidden gap-4 border-b bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground lg:grid', cols)}>
+      <div aria-hidden className={cn('hidden gap-3 border-b bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground xl:grid', cols)}>
         <span>状態</span>
         <span>題名と説明</span>
         <span>担当者</span>
@@ -113,7 +115,7 @@ function TaskItem({
       data-id={t.id}
       data-status={t.status}
       data-highlighted={highlighted ? 'true' : undefined}
-      className={cn('grid gap-2 px-4 py-3 lg:items-start lg:gap-4', cols, highlighted && 'bg-amber-50 ring-2 ring-inset ring-amber-300')}
+      className={cn('grid gap-2 px-4 py-3 xl:items-start xl:gap-3', cols, highlighted && 'bg-amber-50 ring-2 ring-inset ring-amber-300')}
     >
       <div>
         <Badge data-testid="tasks-item-status" variant="outline" className={STATUS_CLASS[t.status]}>
@@ -131,7 +133,7 @@ function TaskItem({
         ) : null}
       </div>
       <div className="text-sm">
-        <span className="text-xs text-muted-foreground lg:hidden">担当者：</span>
+        <span className="text-xs text-muted-foreground xl:hidden">担当者：</span>
         <span data-testid="tasks-item-assignee" className="[overflow-wrap:anywhere]">
           {t.assignee_id ? (names.get(t.assignee_id) ?? NAME_UNKNOWN) : TASK_ITEM_TEXTS.unassigned}
         </span>
@@ -142,7 +144,7 @@ function TaskItem({
         ) : null}
       </div>
       <div className="text-sm">
-        <span className="text-xs text-muted-foreground lg:hidden">締切：</span>
+        <span className="text-xs text-muted-foreground xl:hidden">締切：</span>
         <span data-testid="tasks-item-due" data-overdue={overdue ? 'true' : undefined} className={cn('tabular-nums', overdue && 'font-semibold text-destructive')}>
           {t.due_at ? formatShortDateTimeWeekday(t.due_at, thisYear) || '—' : TASK_ITEM_TEXTS.noDue}
           {overdue ? <span className="block text-xs">{TASK_ITEM_TEXTS.overdue}</span> : null}
@@ -156,7 +158,7 @@ function TaskItem({
         に更新
       </p>
       {showActions ? (
-        <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+        <div className="flex flex-wrap items-center gap-2 xl:justify-end">
           {statusOk ? <TaskStatusButtons title={t.title} status={t.status} pending={pendingIds.has(t.id)} onChange={(s) => onStatus(t, s)} /> : null}
           {canEdit ? (
             <>
