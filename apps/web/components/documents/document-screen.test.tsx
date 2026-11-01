@@ -950,8 +950,9 @@ describe('T19 自団体の提出物：外す・開く・保存', () => {
     await waitFor(() => expect(assign).toHaveBeenCalledTimes(1));
     const [sign] = storageOf('createSignedUrl');
     expect(sign!.args[1]).toBe(60);
-    expect(sign!.args[2]).toEqual({ download: '電気の申請_模擬店01_1.png' });
-    expect(assign.mock.calls[0]![0]).toContain('download=');
+    // 名前は storage-js に渡さず、返った URL に一度だけ符号化して足す（storage-js 2.118 は download を二重に符号化するため）
+    expect(sign!.args[2]).toBeUndefined();
+    expect(new URL(assign.mock.calls[0]![0] as string).searchParams.getAll('download')).toEqual(['電気の申請_模擬店01_1.png']);
   });
 });
 

@@ -382,20 +382,34 @@ export async function cleanupDocumentOrphans(yearId: string, client: AppSupabase
 }
 
 /**
- * 開く・保存の署名つき URL（押したときに作る。60 秒だけ使える。download を渡すと保存の名前つき〔Content-Disposition: attachment〕）。
- * URL はキャッシュ・下書き・ログ・画面の URL に入れない（返すだけ）。失敗したら toStorageAppError の AppError（読めない・ないは not_found の
- * storage_missing）を投げる。
+ * 署名つき URL に保存の名前（Storage の download。Content-Disposition: attachment の名前になる）を、一度だけ符号化して足す。
+ * storage-js 2.118 の createSignedUrl に download を渡すと、URLSearchParams で符号化した後に URL 全体を encodeURI するので名前が二重に
+ * 符号化され、Storage は「E2E %E5%87%BA…」のような名前で返す（日本語の名前が読めなくなる。E2E で見つけた）。そのため download は
+ * storage-js に渡さず、返った URL に足す（Storage はクエリを1回だけ戻す）。
+ *
+ * @example
+ * withDownloadName('https://x/storage/v1/object/sign/documents/a.pdf?token=t', '出店計画書_模擬店01_1.pdf')
+ * // 'https://x/storage/v1/object/sign/documents/a.pdf?token=t&download=%E5%87%BA…'
+ */
+export function withDownloadName(signedUrl: string, download: string): string {
+  return `${signedUrl}${signedUrl.includes('?') ? '&' : '?'}download=${encodeURIComponent(download)}`;
+}
+
+/**
+ * 開く・保存の署名つき URL（押したときに作る。60 秒だけ使える。download を渡すと保存の名前つき〔Content-Disposition: attachment〕。
+ * 名前は withDownloadName で足す）。URL はキャッシュ・下書き・ログ・画面の URL に入れない（返すだけ）。失敗したら toStorageAppError の
+ * AppError（読めない・ないは not_found の storage_missing）を投げる。
  */
 export async function signDocumentFile(objectPath: string, download?: string, client: AppSupabaseClient = getSupabase()): Promise<string> {
   let res: { data: { signedUrl: string } | null; error: unknown };
   try {
-    res = await bucket(client).createSignedUrl(objectPath, SIGNED_URL_SECONDS, download ? { download } : undefined);
+    res = await bucket(client).createSignedUrl(objectPath, SIGNED_URL_SECONDS);
   } catch (e) {
     throw toStorageAppError(e);
   }
   if (res.error) throw toStorageAppError(res.error);
   if (!res.data?.signedUrl) throw storageError('unknown', 'storage_failed', null, null);
-  return res.data.signedUrl;
+  return download ? withDownloadName(res.data.signedUrl, download) : res.data.signedUrl;
 }
 
 // ---------------------------------------------------------------- 提出物（直接の書き込み）

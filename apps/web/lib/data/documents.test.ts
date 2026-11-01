@@ -4,6 +4,7 @@
 // - 予約 → 上げる（upsert: false。本文の statusCode "409" はもう届いていた）→ 失敗と「もう一度」（同じ file_id）、too_many_orphans の片付けと
 //   1回だけの予約し直し、外す（すぐ remove・応答が届かなかったときの読み直し）、Storage のエラーの分け方（HTTP の status は見ない）
 // - 提出物の直接の書き込み（題名の 23505・主キーの 23505・0 行）、提出・取り消し・承認・差し戻しの引数（版と理由・メモ）と送る前の確かめ
+import { createClient } from '@supabase/supabase-js';
 import type { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import { AppError, classifyError, isUnknownOutcome, messageFor } from '@/lib/errors';
@@ -307,16 +308,42 @@ describe('T19 上げる・消す・署名つき URL', () => {
     expect((await caught(cleanupDocumentOrphans(Y, failed.client))).kind).toBe('forbidden');
   });
 
-  it('署名つき URL：押したときに 60 秒で作る。保存は download に名前。404 は not_found（storage_missing）', async () => {
+  it('署名つき URL：押したときに 60 秒で作る。保存は返った URL に download の名前を足す。404 は not_found（storage_missing）', async () => {
     const f = fake(() => ({ data: null }));
     expect(await signDocumentFile(PATH, undefined, f.client)).toBe('https://x/sign?token=t');
-    expect(await signDocumentFile(PATH, '出店計画_模擬店01_1.pdf', f.client)).toBe('https://x/sign?token=t');
+    expect(await signDocumentFile(PATH, '出店計画_模擬店01_1.pdf', f.client)).toBe(
+      `https://x/sign?token=t&download=${encodeURIComponent('出店計画_模擬店01_1.pdf')}`,
+    );
     expect(f.storageCalls).toEqual([
-      { op: 'createSignedUrl', args: [PATH, 60, undefined] },
-      { op: 'createSignedUrl', args: [PATH, 60, { download: '出店計画_模擬店01_1.pdf' }] },
+      { op: 'createSignedUrl', args: [PATH, 60] },
+      { op: 'createSignedUrl', args: [PATH, 60] },
     ]);
     const missing = fake(() => ({ data: null }), { createSignedUrl: () => ({ data: null, error: storageApiError('404', 'not_found') }) });
     expect(await caught(signDocumentFile(PATH, undefined, missing.client))).toMatchObject({ kind: 'not_found', reason: 'storage_missing' });
+  });
+
+  it('保存の名前は返った URL に一度だけ符号化して足す（storage-js 2.118 の createSignedUrl の download は URLSearchParams の後に encodeURI で二重に符号化され、Storage が「%E5…」のままの名前で返すため。本物の supabase-js で確かめる）', async () => {
+    const calls: string[] = [];
+    const fetchMock = async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ signedURL: `/object/sign/documents/${PATH}?token=t` }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+    const real = createClient('https://storage.example.test', 'sb_publishable_test', {
+      global: { fetch: fetchMock },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    }) as unknown as AppSupabaseClient;
+    const name = 'E2E 出店計画書_模擬店01_1.pdf';
+    const saved = new URL(await signDocumentFile(PATH, name, real));
+    expect(saved.pathname).toBe(`/storage/v1/object/sign/documents/${PATH}`);
+    expect(saved.searchParams.get('token')).toBe('t');
+    // Storage はクエリを1回だけ戻して Content-Disposition の名前にする
+    expect(saved.searchParams.get('download')).toBe(name);
+    // 開く（名前なし）は download を付けない
+    expect(new URL(await signDocumentFile(PATH, undefined, real)).searchParams.has('download')).toBe(false);
+    expect(calls.map((c) => new URL(c).pathname)).toEqual([`/storage/v1/object/sign/documents/${PATH}`, `/storage/v1/object/sign/documents/${PATH}`]);
   });
 });
 

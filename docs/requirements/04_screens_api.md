@@ -366,7 +366,7 @@
 - ファイル（Storage。supabase-js の storage でブラウザから直接。守るのは storage.objects のポリシー）：
   - path は `{year_id}/{group_id}/{document_id}/{file_id}.{pdf|jpg|png}` で、DB が作る（reserve_document_file の返り値の object_path）。日本語や個人名を入れない。元のファイル名は持たず、「ファイル 1（PDF・1.2 MB）」と出す（Q16）
   - 上げる：画面で形（PDF・JPEG・PNG）・先頭のバイト・大きさ（10 MiB まで）・数（5 つまで）を確かめ、JPEG は長い辺 2500px までに作り直して EXIF（位置情報など）を消す（Q1）。file_id（uuid）を作って reserve_document_file で予約し、`storage.from('documents').upload(object_path, blob, { contentType, upsert: false })` で上げ、一覧を読み直す。通信が切れたら同じ file_id で予約し直し（同じ行が返る）、同じ path へ上げ直す（409 なら、もう届いていた）
-  - 開く・保存（部門長以上と自団体の店長・副店長）：押したときに `createSignedUrl(object_path, 60)`（60 秒だけ使える）。ポップアップで止められないよう、押したときに先にタブを開いてから URL を入れる。保存は `download` に「{提出物}_{団体}_{n}.{拡張子}」を渡す（個人名を入れない）。URL はキャッシュ・下書き・ログに残さない
+  - 開く・保存（部門長以上と自団体の店長・副店長）：押したときに `createSignedUrl(object_path, 60)`（60 秒だけ使える）。ポップアップで止められないよう、押したときに先にタブを開いてから URL を入れる。保存は Storage の `download`（クエリ）に「{提出物}_{団体}_{n}.{拡張子}」を渡す（個人名を入れない。渡し方は下の「保存」）。URL はキャッシュ・下書き・ログに残さない
   - 外す：discard_document_file の後、すぐ `remove([object_path])`
   - どの提出にも属さないファイル（DB の行がない Storage の物。外した・消した提出物や団体の物）：document_orphan_paths が返す path を `remove` で消す（部門長以上は提出状況を開いたとき、店長・副店長は外した直後）。Storage の物は SQL では消せない
   - 終了した年度：ファイルは読める・開ける。管理者が delete_year_document_files で行を消し、続けて document_orphan_paths の path を `remove` で消す（状態・日時・理由は残る。Q3）
@@ -397,7 +397,7 @@
 - ファイルの並びと名前：その提出のファイルを created_at → id の順に「ファイル 1」「ファイル 2」…と呼ぶ（元のファイル名は持たない。Q16）。1件は「ファイル 1（PDF・1.2 MB・10/5 17:00）」（形・大きさ・予約した日時。大きさは、届いたものは実際の大きさ stored_size、届いていないものは申告の size）。大きさは、1 MB 未満は「{n} KB」（切り上げ）、10 MB 未満は小数1桁の「{x.x} MB」、ほかは整数の「{n} MB」（1 KB は 1,024 バイト、1 MB は 1,048,576 バイト。上限の 10 MB・900 MB と同じ数え方）
 - 届いていないファイル（v_document_files の uploaded が偽）：そのタブで上げているものは「アップロード中…」、そのタブで失敗したものは「アップロードできませんでした」と「もう一度」「外す」、ほか（ほかの人・ほかのタブの予約や、開き直したとき）は「届いていません（アップロードの途中か、失敗しました）」と「外す」。届いていないファイルは、提出の状態によらず外せる（DB と同じ）
 - 開く（届いたファイル）：押したときに先に空のタブを開き（`window.open('', '_blank')`。ポップアップで止められないように）、`createSignedUrl(object_path, 60)` の URL をそのタブに入れる（新しいタブの opener は外す）。タブを開けなければ「新しいタブを開けませんでした。ポップアップを許可してから、もう一度「開く」を押してください」、URL を作れなければタブを閉じて知らせる
-- 保存（届いたファイル）：押したときに `createSignedUrl(object_path, 60, { download: '{提出物}_{団体}_{n}.{拡張子}' })` を作り、その URL へ移る（Storage が Content-Disposition: attachment〔filename* は UTF-8〕で返すので、画面は離れない）。名前は提出物の題名・団体の名前・ファイルの番号と、形の拡張子（pdf・jpg・png）。ファイル名に使えない文字（`\ / : * ? " < > |` と制御文字）は `_` にし、題名と団体の名前はそれぞれ 40 字まで。個人の名前は足さない
+- 保存（届いたファイル）：押したときに `createSignedUrl(object_path, 60)` を作り、返った URL に `download={名前}`（`encodeURIComponent` で一度だけ符号化した「{提出物}_{団体}_{n}.{拡張子}」）を足して、その URL へ移る（Storage が Content-Disposition: attachment〔filename* は UTF-8〕で返すので、画面は離れない）。名前は storage-js の createSignedUrl の `download` に渡さない（storage-js 2.118 は download を URLSearchParams で符号化した後に URL 全体を encodeURI するので名前が二重に符号化され、Storage が「E2E %E5%87%BA…」のような名前で返す。パート C の E2E で見つけた）。名前は提出物の題名・団体の名前・ファイルの番号と、形の拡張子（pdf・jpg・png）。ファイル名に使えない文字（`\ / : * ? " < > |` と制御文字）は `_` にし、題名と団体の名前はそれぞれ 40 字まで。個人の名前は足さない
 - 署名つき URL は押したときに作り、60 秒だけ使う。キャッシュ（TanStack Query）・下書き・ログ・画面の URL に入れない。署名つきアップロード（createSignedUploadUrl）は使わない
 - 外す（届いたファイル）：確かめのダイアログ（「ファイル {n} を外しますか」「外したファイルは消えます。元に戻せません。」、ボタン「外す」）→ discard_document_file → 返った object_path をすぐ `remove([object_path])`（失敗しても知らせない。どの提出にも属さないファイルとして、下の片付けで消える）→ 読み直す。届いていないファイルは確かめずに外す
 - 片付け（どの提出にも属さないファイル）：document_orphan_paths（GET）の path を 100 ずつ `remove` する。失敗しても知らせない（部門長以上には、ダッシュボードの要対応「片付けていないファイル」に残る）。するのは、部門長以上が提出状況を開いたとき（その年度で1回）、提出物を削除した後、年度のファイルを削除した後と、予約が too_many_orphans のとき（店長・副店長は自団体の分、部門長以上は年度の全部が返る）

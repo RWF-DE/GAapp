@@ -1057,7 +1057,7 @@ describe('T19 提出状況：セルのシート', () => {
     await waitFor(() => expect(tab.location.href).toContain('https://storage.test/sign/'));
     await user.click(within(sheet()).getAllByTestId('documents-sheet-file-save')[0]!);
     await waitFor(() => expect(assign).toHaveBeenCalled());
-    expect(decodeURIComponent(assign.mock.calls[0]![0])).toContain('download=出店計画書_学科A_1.pdf');
+    expect(new URL(assign.mock.calls[0]![0] as string).searchParams.getAll('download')).toEqual(['出店計画書_学科A_1.pdf']);
     // 外す（確かめ）
     await user.click(within(sheet()).getAllByTestId('documents-sheet-file-remove')[0]!);
     const confirm = screen.getByRole('alertdialog');
