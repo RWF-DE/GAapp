@@ -3,15 +3,17 @@
 // 「画面の約束」4〜6・13。T20）：部門長以上は操作あり（ダイアログは動的 import）、部門員は読むだけで自分の名前を目立たせる、終了は帯、
 // `?day=`・`?filter=short`、ますのダイアログ（必要人数は送る前に読み直す〔(A)〕・人を選ぶ一覧の in・busy・free と入れる）、1日分（並ぶ
 // 時間枠・重なりで押せない・RPC の引数）、自分のシフト（今・次・同じますの人・空・終わった日）、印刷（表を 8 列で分ける・人ごと）。
-// Supabase は偽のクライアントで、5表の読み書きと RPC を小さくまねる。立場は useAuth の差し替え。時計は Date だけを止める。
+// Supabase は偽のクライアントで、5表の読み書きと RPC を小さくまねる。立場は useAuth の差し替え。時計は Date だけを止める（シフト表の
+// 読み直し〔60 秒ごと・画面に戻ったとき〕の確かめだけ、setInterval も止めて進める）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MembershipState } from '@/lib/auth/auth-provider';
 import type { AppRole, Membership, YearStatus } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
 import type { BoardDuty, BoardSlot } from '@/lib/modules/shifts/board';
-import { queryKeys } from '@/lib/query';
+import { SHIFT_BOARD_REFETCH_MS } from '@/lib/modules/shifts/board-read';
+import { createQueryClient, queryKeys, STALE_TIME_MS } from '@/lib/query';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 import { staticImportGraph } from '@/lib/testing/import-graph';
 import { MY_SHIFT_TEXTS, MyShiftScreen } from './my-shift-screen';
@@ -251,13 +253,14 @@ function member(role: AppRole, status: YearStatus): Membership {
   return { displayName: 'テスト', year, role, groups: [], years: [year], latestYear: year, adminOfOpenYear: role === 'admin' };
 }
 
-function renderWith(node: React.ReactNode, role: AppRole, opts: { status?: YearStatus; search?: string; userId?: string } = {}) {
+/** client：アプリと同じ既定値の QueryClient（createQueryClient）で確かめるとき（読み直しのテスト） */
+function renderWith(node: React.ReactNode, role: AppRole, opts: { status?: YearStatus; search?: string; userId?: string; client?: QueryClient } = {}) {
   const status = opts.status ?? 'requesting';
   h.role = role;
   h.userId = opts.userId ?? (role === 'staff' ? U_STAFF : U_HEAD);
   h.params = new URLSearchParams(opts.search ?? '');
   h.membership = { status: 'ready', membership: member(role, status) };
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000, refetchOnWindowFocus: false } } });
+  const qc = opts.client ?? new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000, refetchOnWindowFocus: false } } });
   qc.setQueryData(queryKeys.yearRow(Y), yearRow(status));
   render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
   return qc;
@@ -534,6 +537,91 @@ describe('T20 シフト表：部門長以上の書き込み（持ち場・時間
     const del = issued.find((c) => c.table === 'shift_assignments' && has(c, 'delete'))!;
     expect(opArgs(del, 'match')).toEqual([[{ slot_id: S1, user_id: U_STAFF }]]);
     expect(opArgs(del, 'eq')).toEqual([['updated_at', V0]]);
+  });
+});
+
+describe('T20 シフト表：読み直し（60 秒ごと・画面に戻ったとき。開いているダイアログの入力は消さない）', () => {
+  /** シフト表の読み取りの数（時間枠〔ますと割り当てを埋め込む〕と持ち場。fetchAll は range をつけて読む） */
+  const boardReads = () => ({
+    slots: issued.filter((c) => c.table === 'shift_slots' && has(c, 'range')).length,
+    duties: issued.filter((c) => c.table === 'shift_duties' && has(c, 'range')).length,
+  });
+  const receptionCount = () => within(cellOf(S1, D_RECEPTION)).getByTestId('shift-cell-count').textContent;
+  /** 画面に戻った（タブが見えるようになった。TanStack Query の focusManager は window の visibilitychange を聞く） */
+  const tabShown = () =>
+    act(() => {
+      window.dispatchEvent(new Event('visibilitychange'));
+    });
+
+  beforeEach(() => {
+    // React Query の 60 秒ごとの読み直し（refetchInterval は setInterval）を時計で進めて確かめる。Date も同じ時計で進む
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(new Date(NOW));
+  });
+
+  it('60 秒ごと（SHIFT_BOARD_REFETCH_MS）に時間枠と持ち場を読み直し、表を新しくする（Realtime は使わない）', async () => {
+    expect(SHIFT_BOARD_REFETCH_MS).toBe(60_000);
+    renderWith(<ShiftsScreen />, 'staff', { client: createQueryClient() });
+    await tableLoaded();
+    expect(boardReads()).toEqual({ slots: 1, duties: 1 });
+    expect(receptionCount()).toBe('2/3');
+    // ほかの人が必要人数を変えた
+    slots[0]!.shift_needs[0]!.required_count = 4;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SHIFT_BOARD_REFETCH_MS - 1_000);
+    });
+    expect(boardReads()).toEqual({ slots: 1, duties: 1 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    await waitFor(() => expect(receptionCount()).toBe('2/4'));
+    expect(boardReads()).toEqual({ slots: 2, duties: 2 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SHIFT_BOARD_REFETCH_MS);
+    });
+    await waitFor(() => expect(boardReads()).toEqual({ slots: 3, duties: 3 }));
+  });
+
+  it('画面に戻ったとき（タブが見えるようになったとき）、読んでから既定の鮮度（30 秒）を過ぎていれば読み直す', async () => {
+    renderWith(<ShiftsScreen />, 'staff', { client: createQueryClient() });
+    await tableLoaded();
+    expect(boardReads()).toEqual({ slots: 1, duties: 1 });
+    // 読んだばかりなら読み直さない（アプリの既定の鮮度。ほかの画面と同じ）
+    tabShown();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(boardReads()).toEqual({ slots: 1, duties: 1 });
+    slots[0]!.shift_needs[0]!.required_count = 4;
+    // ほかのタブにいた間（60 秒ごとの読み直しより前に戻った）。時計だけを進める（setInterval は動かさない）
+    vi.setSystemTime(Date.now() + STALE_TIME_MS + 1_000);
+    tabShown();
+    await waitFor(() => expect(receptionCount()).toBe('2/4'));
+    expect(boardReads()).toEqual({ slots: 2, duties: 2 });
+  });
+
+  it('開いているますのダイアログの入力（必要人数）は、読み直しの後も残る（表とダイアログの一覧は新しくなる）', async () => {
+    renderWith(<ShiftsScreen />, 'head', { client: createQueryClient() });
+    await tableLoaded();
+    fireEvent.click(within(cellOf(S1, D_RECEPTION)).getByRole('button'));
+    const dialog = await screen.findByTestId('shift-cell-dialog');
+    const input = () => within(dialog).getByRole('textbox', { name: '必要人数' }) as HTMLInputElement;
+    expect(input().value).toBe('3');
+    fireEvent.click(within(within(dialog).getByTestId('shift-need-count')).getByRole('button', { name: '必要人数を1増やす' }));
+    expect(input().value).toBe('4');
+    // ほかの人が必要人数を 5 にし、部門員B を運搬から外した（その時間枠で選べるようになる）
+    slots[0]!.shift_needs[0]!.required_count = 5;
+    slots[0]!.shift_needs[1]!.shift_assignments = [];
+    const optionOfB = () => within(dialog).getAllByTestId('shift-member-option').find((o) => o.getAttribute('data-user-id') === U_B)!;
+    await waitFor(() => expect(optionOfB().getAttribute('data-state')).toBe('busy'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SHIFT_BOARD_REFETCH_MS);
+    });
+    await waitFor(() => expect(receptionCount()).toBe('2/5'));
+    await waitFor(() => expect(optionOfB().getAttribute('data-state')).toBe('free'));
+    expect(screen.getByTestId('shift-cell-dialog')).toBe(dialog);
+    expect(input().value).toBe('4');
   });
 });
 
