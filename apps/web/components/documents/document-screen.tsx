@@ -34,7 +34,7 @@ import { buildRepDocumentCards, highlightedCard, pickDocumentGroup, type RepDocu
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
 import { DocumentCard, type CardNote } from './document-card';
-import { fileEntriesOf, type FileEntry } from './document-file-list';
+import { fileEntriesOf, REMOVE_CONFIRM_TEXT, type FileEntry } from './document-file-list';
 import { openDocumentFile, POPUP_BLOCKED_MESSAGE, saveDocumentFile, type FileOpenResult } from './file-open';
 import {
   REREAD_AGAIN_FAILED_MESSAGE,
@@ -45,7 +45,7 @@ import {
   SUBMISSION_UNKNOWN,
   type SubmissionAction,
 } from './submission-write';
-import { DISCARD_UNKNOWN_MESSAGE, useDocumentUploader, type DocumentFileTarget } from './use-document-uploader';
+import { DISCARD_UNKNOWN_MESSAGE, uploadSlot, useDocumentUploader, type DocumentFileTarget } from './use-document-uploader';
 
 /** 終了した年度の帯（04「自団体の提出物」） */
 export const CLOSED_DOCUMENT_REP = '終了した年度のため、提出物は読むだけです（ファイルは、総務が年度の終わりに削除します）';
@@ -57,8 +57,8 @@ export const NO_GROUP_TITLE = '店長・副店長を務める団体がありま�
 export const SUBMIT_CONFIRM_TEXT = '提出すると、総務が確かめるまでファイルを変えられません（確かめる前なら「提出を取り消す」で戻せます）。';
 /** 「提出を取り消す」の確かめの説明（2つの文） */
 export const WITHDRAW_CONFIRM_TEXTS = ['未提出に戻ります。', '直してから、もう一度「提出した」を押してください。'] as const;
-/** 届いたファイルを外す確かめの説明 */
-export const REMOVE_CONFIRM_TEXT = '外したファイルは消えます。元に戻せません。';
+// 届いたファイルを外す確かめの説明（/documents のシートと同じ。document-file-list.tsx に置き、ここから同じ名前で出し直す）
+export { REMOVE_CONFIRM_TEXT } from './document-file-list';
 
 /** 提出するファイルの数の文 */
 export function submitFilesText(n: number): string {
@@ -193,6 +193,8 @@ function DocumentBoard({
   const cards = useMemo(() => (data ? buildRepDocumentCards(data, now) : []), [data, now]);
   const highlight = highlightedCard(cards, documentParam);
   const target = (card: RepDocumentCard): DocumentFileTarget => ({ documentId: card.doc.document_id, groupId: group.id });
+  /** そのカードのタブの状態の鍵（提出物 × この団体） */
+  const slotOf = (card: RepDocumentCard) => uploadSlot(target(card));
 
   // ---------------------------------------------------------------- 提出した・取り消す
 
@@ -267,27 +269,27 @@ function DocumentBoard({
   // ---------------------------------------------------------------- ファイル
 
   const showOpenResult = (card: RepDocumentCard, r: FileOpenResult) => {
-    const documentId = card.doc.document_id;
+    const slot = slotOf(card);
     if (r.type === 'opened') return;
     if (r.type === 'blocked') {
-      uploader.setError(documentId, POPUP_BLOCKED_MESSAGE);
+      uploader.setError(slot, POPUP_BLOCKED_MESSAGE);
       return;
     }
     const c = classifyError(r.error);
-    uploader.setError(documentId, messageFor(c));
+    uploader.setError(slot, messageFor(c));
     reloadYear(r.error);
     if (c.kind === 'not_found') void rereadList();
   };
 
   const onOpen = async (card: RepDocumentCard, entry: FileEntry) => {
     if (!entry.row) return;
-    uploader.setError(card.doc.document_id, null);
+    uploader.setError(slotOf(card), null);
     showOpenResult(card, await openDocumentFile(entry.row.object_path));
   };
 
   const onSave = async (card: RepDocumentCard, entry: FileEntry) => {
     if (!entry.row) return;
-    uploader.setError(card.doc.document_id, null);
+    uploader.setError(slotOf(card), null);
     const name = downloadNameFor(card.doc.title, group.name, entry.n, entry.row.content_type);
     showOpenResult(card, await saveDocumentFile(entry.row.object_path, name));
   };
@@ -306,7 +308,7 @@ function DocumentBoard({
     }
     // 届いていないファイルは確かめずに外す（提出の状態によらない）
     const r = await uploader.remove(target(card), entry.id, entry.row);
-    if (r.type === 'unknown') uploader.setError(card.doc.document_id, DISCARD_UNKNOWN_MESSAGE);
+    if (r.type === 'unknown') uploader.setError(slotOf(card), DISCARD_UNKNOWN_MESSAGE);
   };
 
   const confirmRemove = async () => {
@@ -364,10 +366,11 @@ function DocumentBoard({
             <div className="space-y-4">
               {cards.map((card) => {
                 const documentId = card.doc.document_id;
+                const slot = slotOf(card);
                 const rowIds = new Set(card.files.map((f) => f.file.id));
-                const localOnly = uploader.localOnly(documentId, rowIds);
+                const localOnly = uploader.localOnly(slot, rowIds);
                 const entries = fileEntriesOf(card.files, localOnly, uploader.uploading, uploader.failed);
-                const uploadBusy = uploader.busy(documentId);
+                const uploadBusy = uploader.busy(slot);
                 const blocker = submitBlocker(
                   card.doc.requires_file === true,
                   [...card.files.map((f) => f.file), ...localOnly.map(() => ({ uploaded: false }))],
@@ -383,8 +386,8 @@ function DocumentBoard({
                     entries={entries}
                     fileCount={card.files.length + localOnly.length}
                     busy={uploadBusy || pendingDoc === documentId}
-                    progress={uploader.progress(documentId)}
-                    fileError={uploader.error(documentId)}
+                    progress={uploader.progress(slot)}
+                    fileError={uploader.error(slot)}
                     note={notes.get(documentId)?.note ?? null}
                     submitBlocker={blocker}
                     rereading={rereading}

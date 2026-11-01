@@ -26,9 +26,13 @@ import { CONTENT_TYPE_LABELS } from '@/lib/modules/documents/labels';
 import { cn } from '@/lib/utils';
 import { FILE_STATE_TEXTS, UPLOADING_LEAVE_MESSAGE, uploadingText, type FailedUpload, type UploadProgress } from './use-document-uploader';
 
+/** 届いたファイルを外す確かめの説明（/document のカードと /documents のシートで同じ。04「ファイルの扱い」の外す） */
+export const REMOVE_CONFIRM_TEXT = '外したファイルは消えます。元に戻せません。';
+
 /** 一覧の testid（04 の testid の表。/document は document-file…、シートは documents-sheet-file…） */
 export interface FileListTestIds {
-  list: string;
+  /** 一覧（ul）。シートは一覧を包む欄〔documents-sheet-files〕に付けるので省く */
+  list?: string;
   item: string;
   /** 名前（/document だけ） */
   label?: string;
@@ -64,6 +68,22 @@ export const REP_ADDER_TESTIDS: FileAdderTestIds = {
   hint: 'document-file-hint',
   error: 'document-file-error',
   uploading: 'document-uploading',
+};
+
+/** /documents のシート（部門長以上の代理）の一覧の testid（一覧を包む欄が documents-sheet-files） */
+export const SHEET_FILE_TESTIDS: FileListTestIds = {
+  item: 'documents-sheet-file',
+  open: 'documents-sheet-file-open',
+  save: 'documents-sheet-file-save',
+  remove: 'documents-sheet-file-remove',
+  retry: 'documents-sheet-file-retry',
+};
+
+export const SHEET_ADDER_TESTIDS: FileAdderTestIds = {
+  add: 'documents-sheet-file-add',
+  input: 'documents-sheet-file-input',
+  error: 'documents-sheet-file-error',
+  uploading: 'documents-sheet-uploading',
 };
 
 /** 一覧の1件 */
