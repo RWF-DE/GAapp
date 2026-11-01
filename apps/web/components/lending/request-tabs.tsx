@@ -3,10 +3,12 @@
 // 申請（/request）の「机・椅子」「テント等」のタブ（04「申請の「テント等」のタブ」、notes/T21.md「画面の約束」6。T21・D-57）。
 // app/(app)/request/page.tsx が机椅子の RequestScreen をこれで包む（D-52 の例外。RequestScreen と、その testid・提出の流れは変えない）。
 // - 団体の選び方は RequestScreen と同じ（`?group=` が代表する団体ならそれ、なければ最初の団体）。その団体の区分で申請できるテント等の
-//   備品が1つ以上あるときだけタブを出す（`?tab=lending` でテント等。知らない値・申請できる備品がないときは机・椅子）。
-// - タブを出すかを決める備品の読み取り（lendingRequestItemsOptions）は、RequestScreen の読み込みと並行に1本だけ。団体の区分は
-//   RequestScreen と同じクエリ（repRequestOptions。リクエストは1回）から読む。読み込み中と失敗のときはタブを出さずに机・椅子のまま
-//   （失敗のときはタブの場所に「テント等の申請を読み込めませんでした」と「もう一度」）。
+//   備品が1つ以上あるか、その団体に読める割り当て（数が1以上。店長・副店長は確定後だけ）か渡した記録（渡した数が1以上）のある備品が
+//   1つ以上あるときだけタブを出す（showLendingTab。2026-11-01 のリードの決定。D-57。`?tab=lending` でテント等。知らない値・タブを
+//   出さないときは机・椅子）。割り当てか記録だけでタブを出す団体は申請しない（パネルが欄と保存を出さない）。
+// - タブを出すかを決める読み取り（lendingRequestItemsOptions。備品に、その団体の割り当てと記録を埋め込む）は、RequestScreen の
+//   読み込みと並行に1本だけ。団体の区分は RequestScreen と同じクエリ（repRequestOptions。リクエストは1回）から読む。読み込み中と
+//   失敗のときはタブを出さずに机・椅子のまま（失敗のときはタブの場所に「テント等の申請を読み込めませんでした」と「もう一度」）。
 // - 机・椅子のパネル（children）はいつも同じ位置に置き、タブを出す前後・テント等を開いている間も作り直さない（hidden で隠す。入力・
 //   下書き・確かめを残す）。`?tab=lending` で開いたときだけ、テント等のパネルを出した後に作る（隠したまま。描く順だけ）。
 //   テント等のパネルは初めて開いたときに作り、その後は残す。パネルの JS は、`?tab=lending` で開いたときは
@@ -37,6 +39,14 @@ export const REQUEST_TABS_ERROR = 'テント等の申請を読み込めません
 /** その区分で申請できる備品（申請できる区分に区分がある） */
 export function requestableItems<T extends Pick<LendingRequestItem, 'requestable_categories'>>(items: readonly T[], category: string | null | undefined): T[] {
   return category ? items.filter((i) => (i.requestable_categories as readonly string[]).includes(category)) : [];
+}
+
+/**
+ * テント等のタブを出すか（2026-11-01 のリードの決定。D-57）：その区分で申請できる備品があるか、その団体に読める割り当て（数が1以上。
+ * 店長・副店長は確定後だけ）か渡した記録（渡した数が1以上）のある備品があるとき。どれもなければ出さない（空のタブを出さない）
+ */
+export function showLendingTab(items: readonly Pick<LendingRequestItem, 'requestable_categories' | 'assigned' | 'lent'>[], category: string | null | undefined): boolean {
+  return requestableItems(items, category).length > 0 || items.some((i) => i.assigned || i.lent);
 }
 
 /** `?tab=` を変えた /request の URL（ほかのクエリ〔group〕は残す） */
@@ -85,11 +95,10 @@ function TabsFrame({
 }) {
   const router = useGuardedRouter();
   const enabled = !!yearId && !!group;
-  const itemsQ = useQuery({ ...lendingRequestItemsOptions(yearId ?? ''), enabled });
+  const itemsQ = useQuery({ ...lendingRequestItemsOptions(yearId ?? '', group?.id ?? ''), enabled });
   const groupQ = useQuery({ ...repRequestOptions(yearId, group?.id ?? null), enabled });
   const category = groupQ.data?.group.category ?? null;
-  const requestable = itemsQ.data ? requestableItems(itemsQ.data, category) : [];
-  const showTabs = enabled && !!itemsQ.data && !!groupQ.data && requestable.length > 0;
+  const showTabs = enabled && !!itemsQ.data && !!groupQ.data && showLendingTab(itemsQ.data, category);
   const wantLending = params.get('tab') === 'lending';
   const tab: RequestTab = showTabs && wantLending ? 'lending' : 'furniture';
   // テント等のパネルは初めて開いたときに作り、その後は残す（入力を消さない）。団体・年度が変わったら作り直す

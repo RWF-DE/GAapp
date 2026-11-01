@@ -48,7 +48,8 @@ import { SEED_USER_IDS } from './support/users';
 import { pinYear } from './support/year';
 
 // T21 テント等の貸し出し（/lending・/lending/records・/request のテント等のタブとダッシュボード。04「テント等の貸し出し」、D-57、
-// notes/T21.md の「承認した計画」6 の E2E の 1〜8）。シナリオの年度（small。1日目は 2001 年なので、祭の2日目も祭の後も過ぎている）で
+// notes/T21.md の「承認した計画」6 の E2E の 1〜8 と、2026-11-01 のリードの決定〔申請できる備品のない区分の団体のタブ〕の 4b）。
+// シナリオの年度（small。1日目は 2001 年なので、祭の2日目も祭の後も過ぎている）で
 // 閉じる。テント等の行は e2e/support/lending.ts で SQL から入れる（年度をまたぐ表には書かない。書いた人は入れた値のまま）。
 // 団体は A＝E2E模擬店1（使用場所 E2E教室1。seed の店長が代表する団体）、B＝E2E部門1（E2E教室2）、C＝E2E企業1（使用場所なし）。
 // シナリオの年度は seed の利用者の最新の年度（R8）より前なので、受け渡し・返却とテント等のタブの保存の前に「最新でない年度」の確かめが
@@ -634,6 +635,58 @@ test('T21 確定後：閲覧のみは確定前は「割り当ては確定後に�
     await expect(rep.getByTestId('lending-request-assigned')).toBeVisible();
   } finally {
     for (const p of [viewer, staff, rep]) await p.context().close().catch(() => undefined);
+    await s.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------- 4b. 申請できる備品のない区分の団体のタブ（2026-11-01 のリードの決定）
+
+test('T21 申請できる備品のない区分の団体（企業）：総務が申請なしに割り当てても、確定前はタブを出さない。確定後は店長に「テント等」のタブ（申請の欄と保存はなく、数は総務が決める旨の1行）で割り当てが出て、ダッシュボードの「割り当てが決まりました」がそのタブを開く', async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const s = await createScenario({ status: 'requesting', requestWindow: 'closed', dataset: 'small', repGroup: C });
+  const rep = await openAs(browser, 'rep', s, MOBILE);
+  try {
+    const c = s.ids.groups[C]!;
+    // テントと重しは模擬店・部門だけが申請できる（企業は申請しない）。総務が企業1 にテント 1 を申請なしに割り当てる
+    const { tent } = await tentAndWeight(s);
+    await insertLendingAssignments(s.yearId, [{ groupId: c, itemId: tent, count: 1, updatedBy: H }]);
+
+    // 確定前：店長は割り当てを読めない（RLS）ので、`?tab=lending` でもタブを出さずに机・椅子のまま。ホームにも出ない
+    await rep.goto(`/request/?group=${c}&tab=lending`);
+    await expect(rep.getByTestId('request-group-name')).toHaveText(C);
+    await expect(rep.getByTestId('request-tabs')).toHaveCount(0);
+    await expect(rep.getByTestId('lending-request')).toHaveCount(0);
+    await openPortal(rep, 'ホーム');
+    expect(await lendingTodoIds(rep)).toEqual([]);
+
+    // 確定 → ホームに「割り当てが決まりました（テント 1）」（参考）→ 行き先でテント等のタブが開く（読むだけ）
+    await confirmLending(s.yearId, H);
+    await openPortal(rep, 'ホーム');
+    expect(await lendingTodoIds(rep)).toEqual([`lending:rep:${c}:assigned`]);
+    const todo = portalTodo(rep, `lending:rep:${c}:assigned`);
+    await expect(todo).toHaveAttribute('data-severity', 'info');
+    await expect(todo).toContainText(`${C}：テント等の割り当てが決まりました（テント 1）`);
+    await todo.getByRole('link').click();
+    await expect(rep).toHaveURL(new RegExp(`/request/?\\?group=${c}&tab=lending$`));
+    await expect(rep.getByTestId('request-tab-lending')).toHaveAttribute('aria-selected', 'true');
+    const panel = rep.getByTestId('lending-request');
+    await expect(panel).toBeVisible();
+    await expect(panel).toContainText(C);
+    await expect(panel.getByTestId('lending-request-not-requestable')).toHaveText('企業の団体はテント等を申請しません。数は総務が決めます');
+    await expect(panel.getByTestId('lending-request-assigned').getByRole('listitem')).toHaveText(['割り当て：テント 1 張']);
+    for (const id of ['lending-request-item', 'lending-request-save', 'lending-request-saved-at', 'lending-request-readonly']) {
+      await expect(panel.getByTestId(id)).toHaveCount(0);
+    }
+    await expect(rep.getByRole('button', { name: 'テントの数を1増やす' })).toHaveCount(0);
+    await expectNoOverflow(rep);
+    // 机・椅子のタブはこれまでどおり
+    await rep.getByTestId('request-tab-furniture').click();
+    await expect(rep).toHaveURL(new RegExp(`/request/?\\?group=${c}$`));
+    await expect(rep.getByTestId('request-group-name')).toHaveText(C);
+  } finally {
+    await rep.context().close().catch(() => undefined);
     await s.cleanup();
   }
 });

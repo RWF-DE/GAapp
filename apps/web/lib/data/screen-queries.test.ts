@@ -93,15 +93,17 @@ describe('T21 テント等の先読み（/request のタブ・/lending/records�
   it('/request：申請と、テント等のタブを出すかを決める備品（いつも）。`?tab=lending` ならその団体のテント等のタブも', () => {
     expect(keys(planRequestPrefetch(ctx(`group=${G2}`, [G1, G2])))).toEqual([
       queryKeys.yearPart(Y, 'request', G2),
-      lendingRequestItemsOptions(Y).queryKey,
+      lendingRequestItemsOptions(Y, G2).queryKey,
     ]);
     expect(keys(planRequestPrefetch(ctx(`group=${G2}&tab=lending`, [G1, G2])))).toEqual([
       queryKeys.yearPart(Y, 'request', G2),
-      lendingRequestItemsOptions(Y).queryKey,
+      lendingRequestItemsOptions(Y, G2).queryKey,
       lendingRequestTabOptions(Y, G2).queryKey,
     ]);
+    // タブを出すかを決める読み取りは、その団体の割り当てと記録を埋め込むので団体ごとのキー（2026-11-01 のリードの決定）
+    expect(lendingRequestItemsOptions(Y, G2).queryKey).toEqual(['year', Y, 'lending', 'request-items', G2]);
     // 知らないタブは机・椅子（テント等のタブの読み取りはしない）
-    expect(keys(planRequestPrefetch(ctx('tab=other', [G1])))).toEqual([queryKeys.yearPart(Y, 'request', G1), lendingRequestItemsOptions(Y).queryKey]);
+    expect(keys(planRequestPrefetch(ctx('tab=other', [G1])))).toEqual([queryKeys.yearPart(Y, 'request', G1), lendingRequestItemsOptions(Y, G1).queryKey]);
   });
 
   it('/lending/records：ロールが総務なら受け渡し・返却の読み取り（総務のままのときだけ使う）。ほかは読まない', () => {

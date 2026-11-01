@@ -213,8 +213,9 @@ export function planRequestPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] 
   if (!groupId) return [];
   return [
     { groupId, options: repRequestOptions(ctx.yearId, groupId) },
-    // テント等のタブ（T21）：タブを出すかを決める備品はいつも、`?tab=lending` で開いたときはテント等のタブの読み取りも
-    { groupId, options: lendingRequestItemsOptions(ctx.yearId) },
+    // テント等のタブ（T21）：タブを出すかを決める備品（その団体の割り当てと記録を埋め込む）はいつも、`?tab=lending` で開いたときは
+    // テント等のタブの読み取りも
+    { groupId, options: lendingRequestItemsOptions(ctx.yearId, groupId) },
     ...(ctx.params.get('tab') === 'lending' ? [{ groupId, options: lendingRequestTabOptions(ctx.yearId, groupId) }] : []),
   ];
 }

@@ -1,7 +1,8 @@
 // テスト専用：テント等の貸し出しの表を小さくまねる偽の DB（T21。components/lending の部品のテストだけが使う。アプリのコードから import しない）。
-// lib/testing/fake-supabase.ts の問い合わせ（from(表)…・rpc）を受け、eq・in・gt で絞った行を返す。書き込みは RLS の段（部門長以上・総務・
-// 店長・副店長の受付期間）と楽観ロック（updated_at）・一意のキー（23505）・外部キー（23503）と、RPC（save_lending_assignments・
-// set_lending_confirmed・previous_year_lending_items）の決め方を小さくまねる。
+// lib/testing/fake-supabase.ts の問い合わせ（from(表)…・rpc）を受け、eq・in・gt で絞った行を返す（団体・備品への埋め込みは select にある
+// 表だけで、`表.列` の絞りは埋め込みの行だけを絞る）。読み取りの RLS は割り当て（店長・副店長は確定後だけ。FakeActor.seesAssignments）
+// だけをまねる。書き込みは RLS の段（部門長以上・総務・店長・副店長の受付期間）と楽観ロック（updated_at）・一意のキー（23505）・
+// 外部キー（23503）と、RPC（save_lending_assignments・set_lending_confirmed・previous_year_lending_items）の決め方を小さくまねる。
 import { opArgs, type FakeCall, type FakeResult } from './fake-supabase';
 
 export interface FakeItem {
@@ -66,6 +67,11 @@ export interface FakeActor {
   canRequest: (groupId: string) => boolean;
   /** 年度が終了か（RPC の invalid_state） */
   closed: () => boolean;
+  /**
+   * 割り当てを読めるか（RLS。店長・副店長は確定後だけ読める。既定はいつも読める〔総務〕）。割り当ての読み取りと、団体・備品への
+   * 埋め込みに効く
+   */
+  seesAssignments?: () => boolean;
 }
 
 export const NETWORK: FakeResult = { error: { code: '', message: 'TypeError: Failed to fetch' }, status: 0 };
@@ -80,19 +86,50 @@ export const nextAt = () => `2026-10-20T00:00:00.${String(++clock).padStart(6, '
 
 const has = (call: FakeCall, op: string) => call.ops.some((o) => o.op === op);
 
-/** eq・in・gt で絞る */
-function filterRows<T extends object>(call: FakeCall, rows: readonly T[]): T[] {
+/**
+ * eq・in・gt で絞る。embedded を渡すと、その埋め込みの表の絞り（`表.列`）だけを使い、渡さなければ `.` のない列（上の表）だけを使う
+ * （PostgREST と同じく、埋め込みの絞りは埋め込みの行だけを絞り、上の行は減らさない）
+ */
+function filterRows<T extends object>(call: FakeCall, rows: readonly T[], embedded?: string): T[] {
+  const colOf = (col: unknown): string | null => {
+    const c = col as string;
+    if (embedded) return c.startsWith(`${embedded}.`) ? c.slice(embedded.length + 1) : null;
+    return c.includes('.') ? null : c;
+  };
+  const val = (r: T, c: string) => (r as Record<string, unknown>)[c];
   let out = [...rows];
-  for (const [col, v] of opArgs(call, 'eq')) out = out.filter((r) => (r as Record<string, unknown>)[col as string] === v);
-  for (const [col, vs] of opArgs(call, 'in')) out = out.filter((r) => (vs as unknown[]).includes((r as Record<string, unknown>)[col as string]));
-  for (const [col, v] of opArgs(call, 'gt')) out = out.filter((r) => ((r as Record<string, unknown>)[col as string] as number) > (v as number));
+  for (const [col, v] of opArgs(call, 'eq')) {
+    const c = colOf(col);
+    if (c) out = out.filter((r) => val(r, c) === v);
+  }
+  for (const [col, vs] of opArgs(call, 'in')) {
+    const c = colOf(col);
+    if (c) out = out.filter((r) => (vs as unknown[]).includes(val(r, c)));
+  }
+  for (const [col, v] of opArgs(call, 'gt')) {
+    const c = colOf(col);
+    if (c) out = out.filter((r) => (val(r, c) as number) > (v as number));
+  }
   return out;
 }
+
+/** select の中の埋め込みの列（`表(列, 列)`。その表を埋め込んでいなければ null） */
+function embeddedColumns(call: FakeCall, table: string): string[] | null {
+  const select = String(opArgs(call, 'select')[0]?.[0] ?? '');
+  const m = new RegExp(`(?:^|[\\s,])${table}\\(([^()]*)\\)`).exec(select);
+  return m ? m[1]!.split(',').map((c) => c.trim()) : null;
+}
+
+/** 行から選んだ列だけを残す */
+const pickColumns = (row: object, cols: readonly string[]): Record<string, unknown> =>
+  Object.fromEntries(cols.map((c) => [c, (row as Record<string, unknown>)[c]]));
 
 const single = (call: FakeCall, rows: unknown[]): FakeResult => (has(call, 'maybeSingle') || has(call, 'single') ? { data: rows[0] ?? null } : { data: rows });
 
 /** 偽の DB の問い合わせの受け手 */
 export function lendingHandler(db: FakeLendingDb, actor: FakeActor) {
+  /** 呼んだ人が読める割り当て（RLS） */
+  const visibleAssignments = (): FakePair[] => ((actor.seesAssignments?.() ?? true) ? db.assignments : []);
   return (call: FakeCall): FakeResult | undefined => {
     switch (call.table) {
       case 'groups':
@@ -104,7 +141,7 @@ export function lendingHandler(db: FakeLendingDb, actor: FakeActor) {
       case 'lending_requests':
         return pairs(call, db.requests, 'request');
       case 'lending_assignments':
-        return single(call, filterRows(call, db.assignments).map((a) => ({ ...a, lending_items: itemEmbed(a.lending_item_id) })));
+        return single(call, filterRows(call, visibleAssignments()).map((a) => ({ ...a, lending_items: itemEmbed(a.lending_item_id) })));
       case 'lending_records':
         return records(call);
       case 'rpc:save_lending_assignments':
@@ -125,7 +162,7 @@ export function lendingHandler(db: FakeLendingDb, actor: FakeActor) {
     return {
       ...g,
       ...(select.includes('lending_requests(') ? { lending_requests: mine(db.requests) } : {}),
-      ...(select.includes('lending_assignments(') ? { lending_assignments: withItem(mine(db.assignments)) } : {}),
+      ...(select.includes('lending_assignments(') ? { lending_assignments: withItem(mine(visibleAssignments())) } : {}),
       ...(select.includes('lending_records(') ? { lending_records: withItem(mine(db.records)) } : {}),
       ...(select.includes('years(lending_years(') ? { years: { lending_years: db.confirmedAt ? { confirmed_at: db.confirmedAt } : null } } : {}),
     };
@@ -134,6 +171,20 @@ export function lendingHandler(db: FakeLendingDb, actor: FakeActor) {
   function itemEmbed(id: string) {
     const it = db.items.find((i) => i.id === id);
     return it ? { name: it.name, unit: it.unit, sort_order: it.sort_order } : null;
+  }
+
+  /**
+   * 備品に埋め込む表（select にあるものだけ。選んだ列だけを返す）。`表.列` の eq・gt で埋め込みの行を絞る（申請のテント等のタブを
+   * 出すかの読み取り：その団体の割り当て〔数が1以上〕と記録〔渡した数が1以上〕）。割り当ては呼んだ人が読める行だけ（RLS）
+   */
+  function embedInItem(call: FakeCall, it: FakeItem): object {
+    const embed = (table: 'lending_assignments' | 'lending_records', rows: readonly (FakePair | FakeRecord)[]) => {
+      const cols = embeddedColumns(call, table);
+      if (!cols) return {};
+      const mine = filterRows(call, rows.filter((r) => r.lending_item_id === it.id), table);
+      return { [table]: mine.map((r) => pickColumns(r, cols)) };
+    };
+    return { ...it, ...embed('lending_assignments', visibleAssignments()), ...embed('lending_records', db.records) };
   }
 
   function items(call: FakeCall): FakeResult {
@@ -167,7 +218,7 @@ export function lendingHandler(db: FakeLendingDb, actor: FakeActor) {
     if (opArgs(call, 'select')[0]?.[0] === 'updated_at') {
       return single(call, db.items.filter((i) => i.id === id).map((i) => ({ updated_at: i.updated_at })));
     }
-    return single(call, filterRows(call, db.items));
+    return single(call, filterRows(call, db.items).map((i) => embedInItem(call, i)));
   }
 
   function pairs(call: FakeCall, list: FakePair[], kind: 'request'): FakeResult {

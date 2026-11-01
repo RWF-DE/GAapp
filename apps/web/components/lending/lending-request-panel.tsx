@@ -6,6 +6,9 @@
 //   残っていれば読み取り専用の行。「テント等の申請を保存」（確かめのダイアログ）と保存した日時。申請の備考はない。
 // - 受付の前・締切後・振り分け中以降・終了は読み取り専用（文は机・椅子と同じ）。割り当ての確定後は備品ごとの割り当て（0・未定も）、
 //   記録があれば（確定の前でも）渡した・返った、2日目から未返却（判断したことの 20・21）。
+// - その団体の区分で申請できる備品がない（割り当てか記録だけでタブを出した。2026-11-01 のリードの決定）ときは申請できない：申請の欄・
+//   保存・締切・保存した日時・受付の状態の文・下書きを出さず、数は総務が決める旨の1行と、割り当て（申請の数は1以上のときだけ添える）・
+//   記録を読むだけで出す。申請できる備品のある団体は今までどおり。
 // - 保存（設計 2.6 の (A)）：送る前にその団体の申請を読み直し、入力と同じなら「保存されていました」、入力を始めた後にほかの人が変えて
 //   いれば変わった備品（前 → 今）を出して上書きしてよいか確かめる。送るのは申請できる備品の全部の行（0 を含む）の upsert。
 //   42501 で年度を読み直しても受付中のままなら、読み取り専用にして端末の時計のずれの文を出す。下書き・離れるときの確かめ・最新でない
@@ -41,6 +44,7 @@ import { useYearRow, type YearRow } from '@/lib/data/year';
 import { formatDateTime, formatShortDateTime } from '@/lib/datetime';
 import { createDraftWriter, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
 import { classifyError, effectOf, isUnknownOutcome, messageFor, unknownOutcomeMessage } from '@/lib/errors';
+import { CATEGORY_LABELS } from '@/lib/labels';
 import { cellKey, festivalDay2Started, sortLendingItems } from '@/lib/modules/lending/counts';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
@@ -51,6 +55,11 @@ import { useNow } from '@/components/requests/use-now';
 export const LENDING_REQUEST_ZERO = 'テント等を借りない申請として保存しますか';
 /** 端末の時計のずれ（DB が受付期間の外と判断した） */
 export const LENDING_REQUEST_OUTSIDE = '締切を過ぎました（または受付の前です）。端末の時計がずれている可能性があります';
+
+/** 区分で申請できる備品がない団体（割り当てか記録だけでタブを出した団体）の文 */
+export function lendingNotRequestableText(category: string): string {
+  return `${CATEGORY_LABELS[category as keyof typeof CATEGORY_LABELS] ?? category}の団体はテント等を申請しません。数は総務が決めます`;
+}
 
 /** 読み取り専用の文（机・椅子の申請の画面と同じ文） */
 function windowNotice(win: RequestWindow, year: YearRow, outside: boolean): string | null {
@@ -166,10 +175,13 @@ export function LendingRequestPanel({ yearId, group, groupCategory, locationName
     );
   }
 
+  // 区分で申請できる備品がない団体（割り当てか記録だけでタブを出した。2026-11-01 のリードの決定）は申請しない：欄・保存・締切・
+  // 受付の状態の文・下書きを出さず、数は総務が決める旨の1行と割り当て・記録だけ
+  const canRequest = requestable.length > 0;
   const win = requestWindowOf(year, now);
   const flagged = isOutsideFlagActive(outside, year);
-  const writable = win === 'open' && !flagged;
-  const notice = windowNotice(win, year, flagged);
+  const writable = canRequest && win === 'open' && !flagged;
+  const notice = canRequest ? windowNotice(win, year, flagged) : null;
   const left = remainingText(year.request_close_at, now);
   const latestRows = data.requests;
   const savedAt = latestRows.reduce<string | null>((m, r) => (!m || Date.parse(r.updated_at) > Date.parse(m) ? r.updated_at : m), null);
@@ -317,20 +329,29 @@ export function LendingRequestPanel({ yearId, group, groupCategory, locationName
         <dd className="font-medium">{group.name}</dd>
         <dt className="text-muted-foreground">使用場所</dt>
         <dd>{locationName ?? '校内に分散'}</dd>
-        <dt className="text-muted-foreground">締切</dt>
-        <dd>
-          {year.request_close_at ? (
-            <>
-              <TokyoTime value={year.request_close_at} />
-              {left ? <span className="ml-1 text-muted-foreground">（{left}）</span> : null}
-            </>
-          ) : (
-            '未定'
-          )}
-        </dd>
-        <dt className="text-muted-foreground">保存</dt>
-        <dd data-testid="lending-request-saved-at">{savedAt ? `保存済み（${formatShortDateTime(savedAt)}）` : 'まだ保存していません'}</dd>
+        {canRequest ? (
+          <>
+            <dt className="text-muted-foreground">締切</dt>
+            <dd>
+              {year.request_close_at ? (
+                <>
+                  <TokyoTime value={year.request_close_at} />
+                  {left ? <span className="ml-1 text-muted-foreground">（{left}）</span> : null}
+                </>
+              ) : (
+                '未定'
+              )}
+            </dd>
+            <dt className="text-muted-foreground">保存</dt>
+            <dd data-testid="lending-request-saved-at">{savedAt ? `保存済み（${formatShortDateTime(savedAt)}）` : 'まだ保存していません'}</dd>
+          </>
+        ) : null}
       </dl>
+      {!canRequest ? (
+        <div data-testid="lending-request-not-requestable" className="mb-3">
+          <ReadOnlyNotice>{lendingNotRequestableText(groupCategory)}</ReadOnlyNotice>
+        </div>
+      ) : null}
       {notice ? (
         <div data-testid="lending-request-readonly" className="mb-3">
           <ReadOnlyNotice>{notice}</ReadOnlyNotice>
@@ -358,25 +379,29 @@ export function LendingRequestPanel({ yearId, group, groupCategory, locationName
         </p>
       ) : null}
       <UnsavedChangesGuard when={dirty && writable} />
-      <h2 className="mb-2 text-base font-semibold">テント等の数</h2>
-      <ul className="divide-y rounded-lg border" aria-label="テント等の申請">
-        {requestable.map((it) => (
-          <li key={it.id} data-testid="lending-request-item" data-item-id={it.id} className="flex items-center gap-3 px-3 py-3">
-            <div className="min-w-0 flex-1">
-              <p className="font-medium [overflow-wrap:anywhere]">{it.name}</p>
-              <p className="text-xs text-muted-foreground">単位：{it.unit}</p>
-            </div>
-            <div data-testid="lending-request-count">
-              <CountStepper size="lg" label={`${it.name}の数`} value={countOf(it.id)} onChange={(n) => change(it.id, n)} disabled={!writable || pending} />
-            </div>
-          </li>
-        ))}
-        {stale.map((it) => (
-          <li key={it.id} data-testid="lending-request-stale" data-item-id={it.id} className="px-3 py-3 text-sm text-muted-foreground">
-            {it.name} {reqCount(it.id)} {it.unit}（今は申請できない備品です。変えるときは総務へ）
-          </li>
-        ))}
-      </ul>
+      {canRequest || stale.length > 0 ? (
+        <>
+          <h2 className="mb-2 text-base font-semibold">テント等の数</h2>
+          <ul className="divide-y rounded-lg border" aria-label="テント等の申請">
+            {requestable.map((it) => (
+              <li key={it.id} data-testid="lending-request-item" data-item-id={it.id} className="flex items-center gap-3 px-3 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium [overflow-wrap:anywhere]">{it.name}</p>
+                  <p className="text-xs text-muted-foreground">単位：{it.unit}</p>
+                </div>
+                <div data-testid="lending-request-count">
+                  <CountStepper size="lg" label={`${it.name}の数`} value={countOf(it.id)} onChange={(n) => change(it.id, n)} disabled={!writable || pending} />
+                </div>
+              </li>
+            ))}
+            {stale.map((it) => (
+              <li key={it.id} data-testid="lending-request-stale" data-item-id={it.id} className="px-3 py-3 text-sm text-muted-foreground">
+                {it.name} {reqCount(it.id)} {it.unit}（今は申請できない備品です。変えるときは総務へ）
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
       {confirmed ? (
         <section data-testid="lending-request-assigned" aria-label="割り当て" className="mt-4 space-y-1 rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm text-sky-950">
           <h2 className="font-semibold">割り当て（確定）</h2>
@@ -385,9 +410,11 @@ export function LendingRequestPanel({ yearId, group, groupCategory, locationName
               .filter((it) => reqCount(it.id) > 0 || assigned.has(cellKey(group.id, it.id)))
               .map((it) => {
                 const a = assigned.get(cellKey(group.id, it.id));
+                // 申請しない団体（区分で申請できる備品がない）には、申請がなければ「（申請 0）」を添えない
                 return (
                   <li key={it.id}>
-                    割り当て：{it.name} {a === undefined ? '未定' : `${a} ${it.unit}`}（申請 {reqCount(it.id)}）
+                    割り当て：{it.name} {a === undefined ? '未定' : `${a} ${it.unit}`}
+                    {canRequest || reqCount(it.id) > 0 ? `（申請 ${reqCount(it.id)}）` : null}
                   </li>
                 );
               })}

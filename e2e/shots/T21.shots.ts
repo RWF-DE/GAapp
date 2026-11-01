@@ -328,7 +328,7 @@ test.describe('T21 受け渡し・返却', () => {
 // ---------------------------------------------------------------- 申請のテント等のタブとホーム（店長・スマホ）
 
 test.describe('T21 申請のテント等のタブ', () => {
-  test('T21 申請のテント等のタブ（店長・390px：受付中・締切後・確定後）とホーム（割り当てが決まった・返してください）', async ({ browser }) => {
+  test('T21 申請のテント等のタブ（店長・390px：受付中・締切後・確定後・申請しない区分の団体）とホーム（割り当てが決まった・返してください）', async ({ browser }) => {
     test.setTimeout(300_000);
     const s = await createScenario({ status: 'requesting', dataset: 'synthetic', roles: { head: true }, repGroup: '模擬店10' });
     const pages: Page[] = [];
@@ -392,6 +392,24 @@ test.describe('T21 申請のテント等のタブ', () => {
       expect(await lendingTodoIds(rep)).toEqual([`lending:rep:${g}:unreturned`, `lending:rep:${gid(s, '部門01')}:assigned`]);
       await expectNoOverflow(rep);
       await shoot(rep, 'T21', 'portal-rep', { fullPage: true });
+
+      // 申請できる備品のない区分の団体（企業1。4つの備品のどれも企業は申請できない。店長が副店長も務める）：総務が申請なしに割り当てて
+      // 渡した。確定後のテント等のタブは、数は総務が決める旨の1行と割り当て・記録を読むだけ（2026-11-01 のリードの決定。ホームの撮影の後に
+      // 足すので、portal-rep には出ない）
+      const company = gid(s, '企業1');
+      await sql("insert into public.group_members (group_id, user_id, role) values ($1, $2, 'deputy_manager')", [company, REP]);
+      await insertLendingAssignments(s.yearId, [
+        { groupId: company, itemId: it.tent, count: 2, updatedBy: H },
+        { groupId: company, itemId: it.weight, count: 8, updatedBy: H },
+      ]);
+      await insertLendingRecords(s.yearId, [{ groupId: company, itemId: it.tent, lent: 2, returned: 1, updatedBy: ST }]);
+      await openRequestLending(rep, `?group=${company}&tab=lending`);
+      await expect(rep.getByTestId('lending-request-not-requestable')).toBeVisible();
+      await expect(rep.getByTestId('lending-request-assigned')).toBeVisible();
+      await expect(rep.getByTestId('lending-request-unreturned')).toBeVisible();
+      await expect(rep.getByTestId('lending-request-item')).toHaveCount(0);
+      await expectNoOverflow(rep);
+      await shoot(rep, 'T21', 'request-lending-assigned-only', { fullPage: true });
     } finally {
       for (const p of pages) await p.context().close().catch(() => undefined);
       await s.cleanup();

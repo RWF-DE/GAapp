@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 // 申請（/request）のテント等のタブ（T21・D-57。04「申請の「テント等」のタブ」、notes/T21.md「画面の約束」6）：
-// - タブを出すか（その団体の区分で申請できる備品があるときだけ）、読み込みの失敗（机・椅子のまま）、机・椅子のパネルを作り直さない
-//   （入力が残る）、`?tab=lending`。
+// - タブを出すか（その団体の区分で申請できる備品があるか、その団体に読める割り当て〔数が1以上。確定後〕か渡した記録〔渡した数が
+//   1以上〕があるとき。2026-11-01 のリードの決定）、読み込みの失敗（机・椅子のまま）、机・椅子のパネルを作り直さない（入力が残る）、
+//   `?tab=lending`。
+// - 申請できる備品のない団体（企業）：タブを出すかの読み取り（1本。埋め込みの絞り）、確定前・数が 0 だけでは出さない、ダッシュボードの
+//   要対応（割り当てが決まりました・返してください）の行き先でタブを開く（同じ偽の DB を、ダッシュボードと同じ読み取りで読んで作った
+//   href）、申請の欄と保存を出さず、数は総務が決める旨の1行と割り当て・記録を読むだけで出す。
 // - テント等のパネル：申請できる備品の欄・保存（(A)。すべて 0 の確かめ・申請できる備品の全部の行の upsert・保存されていた・ほかの人の
 //   変更の確かめ）・受付の前と締切後の読み取り専用・時計のずれ（42501）・確定後の割り当て（0・未定）と記録・2日目からの未返却。
 // - 下書き・離れるときの確かめ（レビューの T21-R3）：アンマウントで下書きが残る → 開き直すと DraftNotice →「戻す」で入力と入力の元
@@ -21,8 +25,12 @@ import type { GroupSummary, Membership, YearStatus } from '@/lib/auth/membership
 import type { YearRow } from '@/lib/db/types';
 import { draftKey, saveDraft, type DraftKey } from '@/lib/drafts';
 import { queryKeys } from '@/lib/query';
+import { lendingPortal } from '@/lib/modules/lending/portal';
+import { LENDING_REQUEST_ITEMS_SELECT } from '@/lib/modules/lending/queries';
+import { loadLendingRep } from '@/lib/modules/lending/summary';
+import type { PortalContext } from '@/lib/modules/portal';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
-import { lendingHandler, nextAt, pgError, type FakeLendingDb } from '@/lib/testing/fake-lending-db';
+import { lendingHandler, nextAt, pgError, type FakeGroup, type FakeLendingDb } from '@/lib/testing/fake-lending-db';
 import { LEAVE_MESSAGES } from '@/lib/unsaved-changes';
 import { LENDING_REQUEST_OUTSIDE, LENDING_REQUEST_ZERO } from './lending-request-panel';
 import { REQUEST_TABS_ERROR, RequestTabs } from './request-tabs';
@@ -119,6 +127,10 @@ const CLOSE = '2026-10-05T08:00:00Z';
 const OPEN_NOW = '2026-10-01T00:00:00Z';
 
 const G1s: GroupSummary = { id: G1, name: '模擬店01', year_id: Y, role: 'manager' };
+/** 企業（テント・重し・三方幕のどれも申請できない区分。総務が申請なしに割り当てる） */
+const G3 = uuid(13);
+const G3s: GroupSummary = { id: G3, name: '企業01', year_id: Y, role: 'deputy_manager' };
+const G3_ROW: FakeGroup = { id: G3, year_id: Y, name: '企業01', display_name: null, aliases: [], category: 'company', sort_order: 3, location_room_id: null, location_room: null };
 
 const yearRow = (status: YearStatus, over: Partial<YearRow> = {}): YearRow => ({
   id: Y,
@@ -155,9 +167,9 @@ let issued: FakeCall[] = [];
 /** 偽の DB の前に差し込む応答（Promise を返すと、その間は応答を止められる） */
 let override: ((call: FakeCall) => FakeResult | PromiseLike<FakeResult> | undefined) | null = null;
 
-function member(status: YearStatus): Membership {
+function member(status: YearStatus, groups: GroupSummary[] = [G1s]): Membership {
   const year = { id: Y, label: 'R8', status, festival_start: '2026-10-17' };
-  return { displayName: 'テスト', year, role: null, groups: [G1s], years: [year], latestYear: year, adminOfOpenYear: false };
+  return { displayName: 'テスト', year, role: null, groups, years: [year], latestYear: year, adminOfOpenYear: false };
 }
 
 /** 机・椅子のパネルの代わり（入力が残るか＝作り直さないかを見る） */
@@ -191,20 +203,20 @@ function tree() {
   );
 }
 
-function renderTabs(opts: { status?: YearStatus; search?: string; now?: string } = {}) {
-  const status = opts.status ?? 'requesting';
-  h.status = status;
-  h.params = new URLSearchParams(opts.search ?? '');
-  h.membership = { status: 'ready', membership: member(status) };
-  vi.setSystemTime(new Date(opts.now ?? OPEN_NOW));
+/**
+ * 偽の Supabase の受け手（店長・副店長として読む：割り当ては確定後だけ読める〔RLS〕。申請は受付期間内だけ書ける）。
+ * ダッシュボードの読み取り（loadLendingRep）にも同じものを使う
+ */
+function handler(): (call: FakeCall) => FakeResult | PromiseLike<FakeResult> {
   const handle = lendingHandler(db, {
     userId: h.userId,
     canLead: () => false,
     canRecord: () => false,
     canRequest: () => h.status === 'requesting' && Date.now() < Date.parse(CLOSE),
     closed: () => h.status === 'closed',
+    seesAssignments: () => !!db.confirmedAt,
   });
-  const fake = createFakeSupabase((call) => {
+  return (call) => {
     const o = override?.(call);
     if (o) return o;
     if (call.table === 'years') return { data: yearRow(h.status) };
@@ -212,7 +224,16 @@ function renderTabs(opts: { status?: YearStatus; search?: string; now?: string }
     if (call.table === 'items' || call.table === 'requests') return { data: [] };
     if (call.table === 'request_submissions') return { data: null };
     return handle(call) ?? { error: { code: '42501', message: `読まない表：${call.table}` }, status: 403 };
-  });
+  };
+}
+
+function renderTabs(opts: { status?: YearStatus; search?: string; now?: string; groups?: GroupSummary[] } = {}) {
+  const status = opts.status ?? 'requesting';
+  h.status = status;
+  h.params = new URLSearchParams(opts.search ?? '');
+  h.membership = { status: 'ready', membership: member(status, opts.groups) };
+  vi.setSystemTime(new Date(opts.now ?? OPEN_NOW));
+  const fake = createFakeSupabase(handler());
   issued = fake.issued;
   h.client = fake.client;
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000, refetchOnWindowFocus: false } } });
@@ -560,5 +581,127 @@ describe('T21 テント等のパネルの JS の読み始め（レビューの T
     r.rerenderTree();
     expect(await screen.findByTestId('lending-request')).toBeTruthy();
     expect(loader.calls).toBeGreaterThan(0);
+  });
+});
+
+describe('T21 割り当てか記録のある団体のテント等のタブ（2026-11-01 のリードの決定。D-57）', () => {
+  /** 2日目（1日目 2026-10-17 の翌日の 0 時、Asia/Tokyo）の後 */
+  const DAY2 = '2026-10-17T15:30:00Z';
+  /** 締切の後（振り分け中） */
+  const AFTER_CLOSE = '2026-10-06T00:00:00Z';
+  const NOT_REQUESTABLE = '企業の団体はテント等を申請しません。数は総務が決めます';
+
+  /**
+   * ダッシュボード（店長・副店長）の要対応の行き先：同じ偽の DB を、ダッシュボードと同じ読み取り（loadLendingRep。割り当ては RLS で
+   * 確定後だけ）で読み、lendingPortal が作った要対応の href を返す
+   */
+  async function portalHref(todoId: string, opts: { status: YearStatus; now: string }): Promise<string> {
+    h.status = opts.status;
+    const { client } = createFakeSupabase(handler());
+    const raw = await loadLendingRep([G3], client);
+    const ctx: PortalContext = { kind: 'rep', year: yearRow(opts.status), role: null, groups: [G3s], audiences: ['rep'], now: Date.parse(opts.now) };
+    const todo = lendingPortal({ kind: 'rep', ...raw }, ctx).todos.find((t) => t.id === todoId);
+    expect(todo, `要対応 ${todoId}`).toBeDefined();
+    const url = new URL(todo!.href, 'http://localhost');
+    expect(url.pathname).toBe('/request');
+    return url.search.slice(1);
+  }
+
+  /** タブを出すかが決まった（机・椅子のパネルを作った）のを待つ */
+  const decided = async () => {
+    await waitFor(() => expect(issued.some((c) => c.table === 'lending_items')).toBe(true));
+    await screen.findByTestId('furniture-input');
+  };
+
+  beforeEach(() => {
+    db.groups.push(G3_ROW);
+  });
+
+  it('タブを出すかを決める読み取りは1本：備品に、その団体の割り当て（数が1以上）と記録（渡した数が1以上）の備品の id だけを埋め込む（埋め込みの列に count を選ばない）', async () => {
+    renderTabs({ search: `group=${G3}`, groups: [G1s, G3s] });
+    await decided();
+    const calls = issued.filter((c) => c.table === 'lending_items');
+    expect(calls).toHaveLength(1);
+    const call = calls[0]!;
+    expect(opArgs(call, 'select')[0]![0]).toBe(LENDING_REQUEST_ITEMS_SELECT);
+    expect(LENDING_REQUEST_ITEMS_SELECT).toBe(
+      'id, name, unit, requestable_categories, sort_order, lending_assignments(lending_item_id), lending_records(lending_item_id)',
+    );
+    const sorted = (xs: unknown[][]) => xs.map((x) => JSON.stringify(x)).sort();
+    expect(sorted(opArgs(call, 'eq'))).toEqual(sorted([['year_id', Y], ['lending_assignments.group_id', G3], ['lending_records.group_id', G3]]));
+    expect(sorted(opArgs(call, 'gt'))).toEqual(sorted([['lending_assignments.count', 0], ['lending_records.lent_count', 0]]));
+  });
+
+  it('申請できる備品のない区分の団体（企業）：確定前（割り当てを RLS が返さない）で記録もなければ、`?tab=lending` でもタブを出さない。確定後も割り当てが 0 だけ・渡した数が 0 の記録だけなら出さない', async () => {
+    db.assignments.push({ group_id: G3, lending_item_id: TENT, year_id: Y, count: 1, updated_by: 'u-head', updated_at: V0 });
+    renderTabs({ search: `group=${G3}&tab=lending`, groups: [G1s, G3s], status: 'allocating', now: AFTER_CLOSE });
+    await decided();
+    expect(screen.queryByTestId('request-tabs')).toBeNull();
+    expect(screen.queryByTestId('lending-request')).toBeNull();
+    expect(screen.getByTestId('furniture-input').closest('[hidden]')).toBeNull();
+    cleanup();
+
+    // 確定後：企業01 は割り当て 0・渡した数 0 の記録だけ。同じ人が代表する模擬店01 の割り当てと記録は企業01 のタブに数えない
+    db.confirmedAt = '2026-10-12T08:00:00Z';
+    db.assignments = [
+      { group_id: G3, lending_item_id: TENT, year_id: Y, count: 0, updated_by: 'u-head', updated_at: V0 },
+      { group_id: G1, lending_item_id: CURTAIN, year_id: Y, count: 1, updated_by: 'u-head', updated_at: V0 },
+    ];
+    db.records.push(
+      { group_id: G3, lending_item_id: WEIGHT, year_id: Y, lent_count: 0, returned_count: 0, damaged_count: 0, note: null, updated_by: 'u-staff', updated_at: V0 },
+      { group_id: G1, lending_item_id: CURTAIN, year_id: Y, lent_count: 1, returned_count: 0, damaged_count: 0, note: null, updated_by: 'u-staff', updated_at: V0 },
+    );
+    renderTabs({ search: `group=${G3}&tab=lending`, groups: [G1s, G3s], status: 'allocating', now: AFTER_CLOSE });
+    await decided();
+    expect(screen.queryByTestId('request-tabs')).toBeNull();
+    expect(screen.queryByTestId('lending-request')).toBeNull();
+  });
+
+  it('確定後に割り当て（1以上）があれば、ダッシュボードの「割り当てが決まりました」の行き先でテント等のタブを開く。申請の欄・保存・締切・保存した日時はなく、数は総務が決める旨の1行と割り当てを読むだけで出す', async () => {
+    db.confirmedAt = '2026-10-12T08:00:00Z';
+    db.assignments.push({ group_id: G3, lending_item_id: TENT, year_id: Y, count: 1, updated_by: 'u-head', updated_at: V0 });
+    const search = await portalHref(`lending:rep:${G3}:assigned`, { status: 'allocating', now: AFTER_CLOSE });
+    expect(search).toBe(`group=${G3}&tab=lending`);
+    renderTabs({ search, groups: [G1s, G3s], status: 'allocating', now: AFTER_CLOSE });
+    const panel = await screen.findByTestId('lending-request');
+    expect(screen.getByTestId('request-tab-lending').getAttribute('aria-selected')).toBe('true');
+    expect(panel.closest('[hidden]')).toBeNull();
+    expect(within(panel).getByTestId('lending-request-not-requestable').textContent).toBe(NOT_REQUESTABLE);
+    for (const id of ['lending-request-item', 'lending-request-save', 'lending-request-saved-at', 'lending-request-readonly']) {
+      expect(within(panel).queryByTestId(id)).toBeNull();
+    }
+    expect(within(panel).queryByText('締切')).toBeNull();
+    expect(within(panel).queryByText('テント等の数')).toBeNull();
+    // 割り当て（確定）：申請がないので「（申請 0）」を添えない
+    expect(within(within(panel).getByTestId('lending-request-assigned')).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['割り当て：テント 1 張']);
+    // 机・椅子のタブもそのまま使える
+    await user().click(screen.getByTestId('request-tab-furniture'));
+    expect(h.replace).toHaveBeenCalledWith(`/request?group=${G3}`);
+    // 申請できる備品のある団体（模擬店01）はこれまでどおり（欄と保存。数は総務が決める旨の1行は出さない）
+    cleanup();
+    renderTabs({ search: `group=${G1}&tab=lending`, groups: [G1s, G3s] });
+    const own = await screen.findByTestId('lending-request');
+    expect(within(own).getAllByTestId('lending-request-item')).toHaveLength(2);
+    expect(within(own).getByTestId('lending-request-save')).toBeTruthy();
+    expect(within(own).queryByTestId('lending-request-not-requestable')).toBeNull();
+  });
+
+  it('記録（渡した数が1以上）があれば確定の前でもタブを出し、2日目からの「返してください」の行き先もテント等のタブを開く（渡した・返った・未返却。割り当ては確定前なので出さない）', async () => {
+    // 割り当ては確定前（RLS で読めない）。記録は確定の前でも読める
+    db.assignments.push({ group_id: G3, lending_item_id: TENT, year_id: Y, count: 2, updated_by: 'u-head', updated_at: V0 });
+    db.records.push({ group_id: G3, lending_item_id: TENT, year_id: Y, lent_count: 2, returned_count: 1, damaged_count: 0, note: null, updated_by: 'u-staff', updated_at: V0 });
+    const search = await portalHref(`lending:rep:${G3}:unreturned`, { status: 'allocating', now: DAY2 });
+    expect(search).toBe(`group=${G3}&tab=lending`);
+    renderTabs({ search, groups: [G1s, G3s], status: 'allocating', now: DAY2 });
+    const panel = await screen.findByTestId('lending-request');
+    expect(screen.getByTestId('request-tab-lending').getAttribute('aria-selected')).toBe('true');
+    expect(within(panel).getByTestId('lending-request-not-requestable').textContent).toBe(NOT_REQUESTABLE);
+    expect(within(panel).queryByTestId('lending-request-assigned')).toBeNull();
+    expect(within(within(panel).getByTestId('lending-request-records')).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      '渡した：テント 2 張',
+      '返った：テント 1 張',
+      '未返却：テント 1 張',
+    ]);
+    expect(within(panel).queryByTestId('lending-request-save')).toBeNull();
   });
 });

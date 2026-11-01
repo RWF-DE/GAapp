@@ -24,21 +24,55 @@ function confirmedAtOf(res: Res): string | null {
 
 // ---------------------------------------------------------------- 申請のテント等のタブ
 
-/** タブを出すかを決める備品の列（申請できる区分を含む） */
-export const LENDING_REQUEST_ITEMS_SELECT = 'id, name, unit, requestable_categories, sort_order';
-export type LendingRequestItem = Pick<Tables<'lending_items'>, 'id' | 'name' | 'unit' | 'requestable_categories' | 'sort_order'>;
+/**
+ * タブを出すかを決める備品の列（申請できる区分を含む）と、その団体の割り当て・記録の埋め込み（備品の id だけ。2026-11-01 のリードの
+ * 決定：申請できる備品がなくても、割り当てか渡した記録があればタブを出す）。埋め込みの列に count を選ばない（PostgREST の件数の数え方と
+ * 取り違えないため。数は絞り〔count > 0・lent_count > 0〕にだけ使う）
+ */
+export const LENDING_REQUEST_ITEMS_SELECT =
+  'id, name, unit, requestable_categories, sort_order, lending_assignments(lending_item_id), lending_records(lending_item_id)';
+export type LendingRequestItem = Pick<Tables<'lending_items'>, 'id' | 'name' | 'unit' | 'requestable_categories' | 'sort_order'> & {
+  /** その団体にこの備品の割り当て（数が1以上）があり、読める（店長・副店長は確定後だけ RLS が返す） */
+  assigned: boolean;
+  /** その団体にこの備品を渡した記録（渡した数が1以上）がある */
+  lent: boolean;
+};
 
-/** 年度の備品（タブを出すか・タブの欄。店長・副店長は代表である年度の備品を RLS で読める） */
-export async function fetchLendingRequestItems(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRequestItem[]> {
-  const res = await client.from('lending_items').select(LENDING_REQUEST_ITEMS_SELECT).eq('year_id', yearId).order('sort_order').order('id');
-  return rowsOf<LendingRequestItem>(res);
+type RequestItemRow = Omit<LendingRequestItem, 'assigned' | 'lent'> & {
+  lending_assignments?: unknown[] | null;
+  lending_records?: unknown[] | null;
+};
+
+/**
+ * 年度の備品と、その団体に割り当て・渡した記録があるか（タブを出すか・タブの欄。1本で読む。店長・副店長は代表である年度の備品と、
+ * 自団体の記録・確定後の割り当てを RLS で読める）。埋め込みの絞りは埋め込みの行だけを絞る（備品はどれも返る）
+ */
+export async function fetchLendingRequestItems(yearId: string, groupId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRequestItem[]> {
+  const res = await client
+    .from('lending_items')
+    .select(LENDING_REQUEST_ITEMS_SELECT)
+    .eq('year_id', yearId)
+    .eq('lending_assignments.group_id', groupId)
+    .gt('lending_assignments.count', 0)
+    .eq('lending_records.group_id', groupId)
+    .gt('lending_records.lent_count', 0)
+    .order('sort_order')
+    .order('id');
+  return rowsOf<RequestItemRow>(res).map(({ lending_assignments: a, lending_records: r, ...item }) => ({
+    ...item,
+    assigned: (a?.length ?? 0) > 0,
+    lent: (r?.length ?? 0) > 0,
+  }));
 }
 
-/** 備品のクエリ（キーは `['year', yearId, 'lending', 'request-items']`）。申請の画面の読み込みと並行に読む */
-export function lendingRequestItemsOptions(yearId: string) {
+/**
+ * 備品のクエリ（キーは `['year', yearId, 'lending', 'request-items', groupId]`。その団体の割り当て・記録を埋め込むので団体ごと）。
+ * 申請の画面の読み込みと並行に読む
+ */
+export function lendingRequestItemsOptions(yearId: string, groupId: string) {
   return queryOptions({
-    queryKey: queryKeys.yearPart(yearId, 'lending', 'request-items'),
-    queryFn: () => fetchLendingRequestItems(yearId),
+    queryKey: queryKeys.yearPart(yearId, 'lending', 'request-items', groupId),
+    queryFn: () => fetchLendingRequestItems(yearId, groupId),
   });
 }
 
