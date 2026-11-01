@@ -2,7 +2,7 @@
 -- anon と PUBLIC に何もないことは 001_schema が確かめる。ここでは authenticated と supabase_auth_admin を一覧で比べる（supabase_auth_admin は T04 でフックを足した）。
 begin;
 \ir _helpers/personas.psql
-select plan(30);
+select plan(43);
 
 -- 一覧（T15 から版〔引数の型〕まで比べる。同じ名前の古い版〔4引数の invite など〕が残れば落ちる）
 create table tests.expected_fn (kind text not null, sig text primary key);
@@ -61,6 +61,26 @@ insert into tests.expected_fn values
   ('notice_trigger', 'private.tg_notices_check_groups()'),
   -- 予定と締切のトリガー関数（0015。T18。誰も実行できない。判定関数と RPC は足していない）
   ('event_trigger', 'private.tg_events_set_actor()');
+-- 提出物（0016。T19）：RPC 11 個、ポリシー（storage.objects を含む）が呼ぶ集合の関数3個、トリガー関数2つと RPC の補助2つ（誰も実行できない）
+insert into tests.expected_fn values
+  ('rpc', 'public.reserve_document_file(uuid, uuid, uuid, text, integer)'),
+  ('rpc', 'public.discard_document_file(uuid)'),
+  ('rpc', 'public.submit_document(uuid, uuid, timestamp with time zone)'),
+  ('rpc', 'public.withdraw_document(uuid, uuid, timestamp with time zone)'),
+  ('rpc', 'public.approve_document(uuid, uuid, text, timestamp with time zone)'),
+  ('rpc', 'public.return_document(uuid, uuid, text, timestamp with time zone)'),
+  ('rpc', 'public.previous_year_documents(uuid)'),
+  ('rpc', 'public.copy_previous_documents(uuid, uuid[])'),
+  ('rpc', 'public.delete_year_document_files(uuid, text)'),
+  ('rpc', 'public.document_orphan_paths(uuid)'),
+  ('rpc', 'public.document_storage_usage(uuid)'),
+  ('predicate', 'private.my_group_document_ids()'),
+  ('predicate', 'private.my_document_upload_paths()'),
+  ('predicate', 'private.my_document_orphan_paths()'),
+  ('document_helper', 'private.tg_documents_normalize_categories()'),
+  ('document_helper', 'private.tg_documents_set_actor()'),
+  ('document_helper', 'private.lock_document_year(uuid, uuid)'),
+  ('document_helper', 'private.target_document(uuid, uuid, uuid)');
 
 -- ---------------------------------------------------------------- 関数
 select is_empty($$ select sig from tests.expected_fn where to_regprocedure(sig) is null $$,
@@ -72,11 +92,11 @@ select is_empty($$ select p.oid::regprocedure::text from pg_proc p
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace = 'public'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   $$ select to_regprocedure(sig)::text from tests.expected_fn where kind = 'rpc' $$,
-  'authenticated が実行できる public の関数は RPC 20 個だけ（版まで比べる）');
+  'authenticated が実行できる public の関数は RPC 31 個だけ（版まで比べる。T19 で提出物の 11 個を足した）');
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   $$ select to_regprocedure(sig)::text from tests.expected_fn where kind = 'predicate' $$,
-  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 19 個だけ（0010 の集合の3個・can_lead・お知らせの集合の2個を含む。RPC の補助・トリガー関数・verified_email・兼任の補助は実行できない）');
+  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 22 個だけ（0010 の集合の3個・can_lead・お知らせの集合の2個・提出物の集合の3個を含む。RPC の補助・トリガー関数・verified_email・兼任の補助は実行できない）');
 -- 同じ名前の public の関数は版が1つだけ（2つあると、名前つきの引数で呼ぶ PostgREST が版を選べない。PGRST203）
 select is_empty($$ select p.proname::text from pg_proc p where p.pronamespace = 'public'::regnamespace
                    and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
@@ -131,6 +151,44 @@ select is_empty($$ select f.sig from tests.expected_fn f
                           or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
                                      where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
   '予定と締切のトリガー関数（set_actor）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T18）');
+select is_empty($$ select f.sig from tests.expected_fn f
+                   where f.kind = 'document_helper'
+                     and (has_function_privilege('authenticated', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('anon', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('supabase_auth_admin', to_regprocedure(f.sig), 'execute')
+                          or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                                     where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
+  '提出物のトリガー関数（set_actor・区分の並べ直し）と RPC の補助（lock_document_year・target_document）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T19）');
+select is((select string_agg(p.proname || '=' || case when p.prosecdef then 'definer' else 'invoker' end || ':' || p.provolatile::text, ' ' order by p.proname)
+           from tests.expected_fn f join pg_proc p on p.oid = to_regprocedure(f.sig) where f.kind = 'document_helper'),
+  'lock_document_year=definer:v target_document=definer:v tg_documents_normalize_categories=invoker:v tg_documents_set_actor=invoker:v',
+  '提出物の RPC の補助は DEFINER・VOLATILE（ロックの後を新しいスナップショットで読む）、トリガー関数は INVOKER');
+-- 提出物の RPC（T19。04 の DB 関数）：引数名・既定値・返り値。どれも名前つきで呼ぶ。既定値は delete_year_document_files の理由（null）だけ
+-- （base_updated_at は既定値なし：行がなければ null を名前つきで渡す）
+select is((select string_agg(p.proname || '(' || array_to_string(p.proargnames[1:p.pronargs], ',') || ') defaults=' || p.pronargdefaults
+                             || ' returns=' || pg_get_function_result(p.oid), ' | ' order by p.proname)
+           from tests.expected_fn f join pg_proc p on p.oid = to_regprocedure(f.sig)
+           where f.kind = 'rpc' and p.proname ~ 'document'),
+  'approve_document(p_document_id,p_group_id,p_note,p_base_updated_at) defaults=0 returns=document_submissions | '
+  || 'copy_previous_documents(p_year_id,p_document_ids) defaults=0 returns=SETOF documents | '
+  || 'delete_year_document_files(p_year_id,p_reason) defaults=1 returns=integer | '
+  || 'discard_document_file(p_file_id) defaults=0 returns=text | '
+  || 'document_orphan_paths(p_year_id) defaults=0 returns=SETOF text | '
+  || 'document_storage_usage(p_year_id) defaults=0 returns=TABLE(bucket_bytes bigint, limit_bytes bigint, file_count integer, file_bytes bigint, orphan_count integer) | '
+  || 'previous_year_documents(p_year_id) defaults=0 returns=TABLE(document_id uuid, title text, description text, deadline timestamp with time zone, '
+  || 'new_deadline timestamp with time zone, target_categories group_category[], food_only boolean, requires_file boolean, exists_in_year boolean) | '
+  || 'reserve_document_file(p_document_id,p_group_id,p_file_id,p_content_type,p_size) defaults=0 returns=document_files | '
+  || 'return_document(p_document_id,p_group_id,p_note,p_base_updated_at) defaults=0 returns=document_submissions | '
+  || 'submit_document(p_document_id,p_group_id,p_base_updated_at) defaults=0 returns=document_submissions | '
+  || 'withdraw_document(p_document_id,p_group_id,p_base_updated_at) defaults=0 returns=document_submissions',
+  '提出物の RPC 11 個の引数名・既定値の数・返り値');
+select is((select pg_get_function_arguments(p.oid) from pg_proc p where p.oid = to_regprocedure('public.delete_year_document_files(uuid, text)')),
+  'p_year_id uuid, p_reason text DEFAULT NULL::text', 'delete_year_document_files の理由は省ける（既定値 null。省けば「提出物のファイルの削除」）');
+select is((select string_agg(p.proname || '=' || p.provolatile::text, ' ' order by p.proname)
+           from tests.expected_fn f join pg_proc p on p.oid = to_regprocedure(f.sig)
+           where f.kind = 'rpc' and p.proname ~ 'document' and p.provolatile <> 'v'),
+  'document_orphan_paths=s document_storage_usage=s previous_year_documents=s',
+  '提出物の読み取りの RPC 3つは STABLE（ほかの 8 個は書く）');
 select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace = 'public'::regnamespace
                      and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
@@ -179,11 +237,13 @@ select set_eq($$ select format('%s %s', c.relname, p.p) from pg_class c
                    and has_table_privilege('authenticated', c.oid, p.p) $$,
   array(select format('%s %s', t, p) from unnest(array['years','rooms','room_years','items','stocks','groups','year_roles',
           'group_members','invitations','request_submissions','requests','rules','substitution_consents','allocations',
-          'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events','v_remaining']) t, unnest(array['select']) p
+          'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events','v_remaining',
+          'documents','document_submissions','document_files','v_document_status','v_document_files']) t, unnest(array['select']) p
         union all
         select format('%s %s', t, p) from unnest(array['rooms','items','room_years','distance_overrides','stocks','groups',
-          'request_submissions','requests','rules','slots','deliveries','events']) t, unnest(array['insert','update','delete']) p),
-  'authenticated の表の権限：全表の select と、W の 12 表（T18 の予定と締切を含む）の insert・update・delete だけ（RPC だけで書く表〔お知らせの2表を含む〕には書き込みの権限がない）');
+          'request_submissions','requests','rules','slots','deliveries','events',
+          'documents']) t, unnest(array['insert','update','delete']) p),
+  'authenticated の表の権限：全表の select と、W の 13 表（T18 の予定と締切、T19 の提出物を含む）の insert・update・delete だけ（RPC だけで書く表〔お知らせの2表、提出・ファイルを含む〕には書き込みの権限がない）');
 select is_empty($$ select c.relname::text from pg_class c
                    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
                      and (has_any_column_privilege('anon', c.oid, 'select') or has_any_column_privilege('anon', c.oid, 'insert')
@@ -195,6 +255,12 @@ select is_empty($$ select c.relname || ' ' || p.p from pg_class c
                    where c.oid in ('public.notices'::regclass, 'public.notice_groups'::regclass)
                      and has_any_column_privilege('authenticated', c.oid, p.p) $$,
   'authenticated は notices・notice_groups のどの列にも insert・update（・references）の権限がない');
+-- 提出とファイル（T19）も RPC だけで書く：列の単位でも authenticated に insert・update の権限がない
+select is_empty($$ select c.relname || ' ' || p.p from pg_class c
+                   cross join unnest(array['insert', 'update', 'references']) as p(p)
+                   where c.oid in ('public.document_submissions'::regclass, 'public.document_files'::regclass)
+                     and has_any_column_privilege('authenticated', c.oid, p.p) $$,
+  'authenticated は document_submissions・document_files のどの列にも insert・update（・references）の権限がない');
 select is_empty($$ select c.relname::text from pg_class c
                    where c.relnamespace in ('public'::regnamespace, 'private'::regnamespace) and c.relkind = 'S'
                      and (has_sequence_privilege('authenticated', c.oid, 'usage') or has_sequence_privilege('authenticated', c.oid, 'update')) $$,
@@ -207,17 +273,53 @@ select ok((select 'security_invoker=true' = any (reloptions) from pg_class where
   'v_remaining は security_invoker（RLS を素通りしない）');
 select set_eq($$ select format('%s %s', tablename, cmd) from pg_policies where schemaname = 'public' $$,
   array(select format('%s %s', t, c) from unnest(array['rooms','items','distance_overrides','room_years','slots','stocks','groups',
-          'request_submissions','requests','rules','deliveries','events']) t, unnest(array['SELECT','INSERT','UPDATE','DELETE']) c
+          'request_submissions','requests','rules','deliveries','events',
+          'documents']) t, unnest(array['SELECT','INSERT','UPDATE','DELETE']) c
         union all
         select format('%s SELECT', t) from unnest(array['years','year_roles','group_members','invitations','substitution_consents',
-          'allocations','profiles','audit_logs','notices','notice_groups']) t),
-  'ポリシーは 58 個（W の 12 表は4操作、RPC だけで書く 10 表は select だけ。T17 でお知らせの2表、T18 で予定と締切の4つを足した）');
+          'allocations','profiles','audit_logs','notices','notice_groups',
+          'document_submissions','document_files']) t),
+  'ポリシーは 64 個（W の 13 表は4操作、RPC だけで書く 12 表は select だけ。T17 でお知らせの2表、T18 で予定と締切の4つ、T19 で提出物の6つを足した）');
 -- 予定と締切（T18）の書き込みは、その年度の部門長以上で年度が終了でないとき（can_lead。room_years・slots・deliveries と同じ）
 select is((select string_agg(format('%s %s using=%s check=%s', policyname, cmd, coalesce(qual, '-'), coalesce(with_check, '-')), ' / ' order by policyname)
            from pg_policies where schemaname = 'public' and tablename = 'events' and cmd <> 'SELECT'),
   'events_delete DELETE using=private.can_lead(year_id) check=- / events_insert INSERT using=- check=private.can_lead(year_id) / '
   || 'events_update UPDATE using=private.can_lead(year_id) check=private.can_lead(year_id)',
   'events の書き込みのポリシーは3つとも can_lead(year_id)（部門長以上・終了でない年度）');
+-- 提出物（T19）の書き込みも、その年度の部門長以上で年度が終了でないとき（can_lead。予定と締切と同じ）
+select is((select string_agg(format('%s %s using=%s check=%s', policyname, cmd, coalesce(qual, '-'), coalesce(with_check, '-')), ' / ' order by policyname)
+           from pg_policies where schemaname = 'public' and tablename = 'documents' and cmd <> 'SELECT'),
+  'documents_delete DELETE using=private.can_lead(year_id) check=- / documents_insert INSERT using=- check=private.can_lead(year_id) / '
+  || 'documents_update UPDATE using=private.can_lead(year_id) check=private.can_lead(year_id)',
+  'documents の書き込みのポリシーは3つとも can_lead(year_id)（部門長以上・終了でない年度）');
+-- Storage（T19）：storage.objects のポリシーは bucket documents の3つ（select・insert・delete）だけで、どれも to authenticated・permissive。
+-- update のポリシーと anon 向けはない（上書き・移動・upsert はできない）。storage の表の権限（Supabase の既定）は変えない
+select is((select string_agg(format('%s %s %s %s', policyname, cmd, array_to_string(roles, ','), permissive), ' / ' order by policyname)
+           from pg_policies where schemaname = 'storage'),
+  'documents_objects_delete DELETE authenticated PERMISSIVE / documents_objects_insert INSERT authenticated PERMISSIVE / '
+  || 'documents_objects_select SELECT authenticated PERMISSIVE',
+  'storage のポリシーは storage.objects の bucket documents の3つだけ（update と anon 向けはない）');
+select ok((select bool_and(coalesce(qual, with_check) ~ '^\(\(bucket_id = ''documents''::text\) AND ')
+           from pg_policies where schemaname = 'storage' and tablename = 'objects'),
+  'storage.objects の3つのポリシーは、どれも bucket documents の物だけに効く（式の先頭で bucket を見る）');
+select is((select format('%s %s', (qual is null)::text, with_check) from pg_policies where schemaname = 'storage' and policyname = 'documents_objects_insert'),
+  'true ((bucket_id = ''documents''::text) AND (name IN ( SELECT private.my_document_upload_paths() AS my_document_upload_paths)))',
+  'documents_objects_insert：予約した、今書ける提出の path だけ（with check。集合を1回作る形）');
+select is((select format('%s %s', qual, (with_check is null)::text) from pg_policies where schemaname = 'storage' and policyname = 'documents_objects_delete'),
+  '((bucket_id = ''documents''::text) AND (name IN ( SELECT private.my_document_orphan_paths() AS my_document_orphan_paths))) true',
+  'documents_objects_delete：自分の範囲の、どの提出にも属さない物だけ（using。集合を1回作る形）');
+select ok((select relrowsecurity from pg_class where oid = 'storage.objects'::regclass)
+          and (select bool_and(has_table_privilege(r, 'storage.objects', p))
+               from unnest(array['authenticated', 'anon']) r, unnest(array['select', 'insert', 'update', 'delete']) p),
+  'storage.objects は RLS が有効で、authenticated・anon の表の権限は Supabase の既定のまま（ポリシーで守る）');
+select is_empty($$ select format('%s %s head=%s deputy_head=%s', tablename, policyname,
+                                 regexp_count(coalesce(qual, '') || ' ' || coalesce(with_check, ''), '\mhead\M'),
+                                 regexp_count(coalesce(qual, '') || ' ' || coalesce(with_check, ''), '\mdeputy_head\M'))
+                   from pg_policies
+                   where schemaname = 'storage'
+                     and regexp_count(coalesce(qual, '') || ' ' || coalesce(with_check, ''), '\mhead\M')
+                         <> regexp_count(coalesce(qual, '') || ' ' || coalesce(with_check, ''), '\mdeputy_head\M') $$,
+  'storage のポリシーの式でも、head と deputy_head はいつも組で出てくる（T19）');
 select is_empty($$ select policyname::text from pg_policies where schemaname = 'public' and roles <> '{authenticated}' $$,
   'ポリシーはすべて to authenticated');
 select is_empty($$ select policyname::text from pg_policies

@@ -227,6 +227,179 @@ export type Database = {
         };
         Relationships: [];
       };
+      document_files: {
+        Row: {
+          content_type: string;
+          created_at: string;
+          created_by: string | null;
+          document_id: string;
+          group_id: string;
+          id: string;
+          object_path: string;
+          size: number;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          content_type: string;
+          created_at?: string;
+          created_by?: string | null;
+          document_id: string;
+          group_id: string;
+          id: string;
+          object_path: string;
+          size: number;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          content_type?: string;
+          created_at?: string;
+          created_by?: string | null;
+          document_id?: string;
+          group_id?: string;
+          id?: string;
+          object_path?: string;
+          size?: number;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "document_files_submission_fkey";
+            columns: ["document_id", "group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "document_submissions";
+            referencedColumns: ["document_id", "group_id", "year_id"];
+          },
+        ];
+      };
+      document_submissions: {
+        Row: {
+          created_at: string;
+          document_id: string;
+          group_id: string;
+          proxy: boolean;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          status: Database["public"]["Enums"]["document_status"];
+          submitted_at: string | null;
+          submitted_by: string | null;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          document_id: string;
+          group_id: string;
+          proxy?: boolean;
+          review_note?: string | null;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
+          status?: Database["public"]["Enums"]["document_status"];
+          submitted_at?: string | null;
+          submitted_by?: string | null;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          document_id?: string;
+          group_id?: string;
+          proxy?: boolean;
+          review_note?: string | null;
+          reviewed_at?: string | null;
+          reviewed_by?: string | null;
+          status?: Database["public"]["Enums"]["document_status"];
+          submitted_at?: string | null;
+          submitted_by?: string | null;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "document_submissions_document_fkey";
+            columns: ["document_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "documents";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "document_submissions_document_fkey";
+            columns: ["document_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "v_document_status";
+            referencedColumns: ["document_id", "year_id"];
+          },
+          {
+            foreignKeyName: "document_submissions_group_fkey";
+            columns: ["group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id", "year_id"];
+          },
+        ];
+      };
+      documents: {
+        Row: {
+          created_at: string;
+          created_by: string | null;
+          deadline: string;
+          description: string | null;
+          files_deleted_at: string | null;
+          food_only: boolean;
+          id: string;
+          requires_file: boolean;
+          target_categories: Database["public"]["Enums"]["group_category"][];
+          title: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          created_by?: string | null;
+          deadline: string;
+          description?: string | null;
+          files_deleted_at?: string | null;
+          food_only?: boolean;
+          id?: string;
+          requires_file?: boolean;
+          target_categories: Database["public"]["Enums"]["group_category"][];
+          title: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          created_by?: string | null;
+          deadline?: string;
+          description?: string | null;
+          files_deleted_at?: string | null;
+          food_only?: boolean;
+          id?: string;
+          requires_file?: boolean;
+          target_categories?: Database["public"]["Enums"]["group_category"][];
+          title?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "documents_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       events: {
         Row: {
           all_day: boolean;
@@ -314,6 +487,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "groups";
             referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "group_members_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "v_document_status";
+            referencedColumns: ["group_id"];
           },
         ];
       };
@@ -605,6 +785,13 @@ export type Database = {
             referencedRelation: "groups";
             referencedColumns: ["id"];
           },
+          {
+            foreignKeyName: "request_submissions_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: true;
+            referencedRelation: "v_document_status";
+            referencedColumns: ["group_id"];
+          },
         ];
       };
       requests: {
@@ -637,6 +824,13 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "groups";
             referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "requests_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "v_document_status";
+            referencedColumns: ["group_id"];
           },
           {
             foreignKeyName: "requests_item_id_fkey";
@@ -924,6 +1118,13 @@ export type Database = {
             referencedColumns: ["id"];
           },
           {
+            foreignKeyName: "substitution_consents_group_id_fkey";
+            columns: ["group_id"];
+            isOneToOne: false;
+            referencedRelation: "v_document_status";
+            referencedColumns: ["group_id"];
+          },
+          {
             foreignKeyName: "substitution_consents_to_item_id_fkey";
             columns: ["to_item_id"];
             isOneToOne: false;
@@ -1018,6 +1219,61 @@ export type Database = {
       };
     };
     Views: {
+      v_document_files: {
+        Row: {
+          content_type: string;
+          created_at: string;
+          created_by: string | null;
+          document_id: string;
+          group_id: string;
+          id: string;
+          object_path: string;
+          size: number;
+          stored_size: number | null;
+          uploaded: boolean | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Relationships: [
+          {
+            foreignKeyName: "document_files_submission_fkey";
+            columns: ["document_id", "group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "document_submissions";
+            referencedColumns: ["document_id", "group_id", "year_id"];
+          },
+        ];
+      };
+      v_document_status: {
+        Row: {
+          deadline: string;
+          description: string | null;
+          document_id: string;
+          group_id: string;
+          late: boolean | null;
+          proxy: boolean | null;
+          requires_file: boolean;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          status: Database["public"]["Enums"]["document_status"] | null;
+          submitted_at: string | null;
+          submitted_by: string | null;
+          title: string;
+          updated_at: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Relationships: [
+          {
+            foreignKeyName: "documents_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       v_remaining: {
         Row: {
           allocated: number | null;
@@ -1055,6 +1311,34 @@ export type Database = {
     };
     Functions: {
       accept_my_invitations: { Args: Record<PropertyKey, never>; Returns: number };
+      approve_document: {
+        Args: {
+          p_base_updated_at: string;
+          p_document_id: string;
+          p_group_id: string;
+          p_note: string;
+        };
+        Returns: {
+          created_at: string;
+          document_id: string;
+          group_id: string;
+          proxy: boolean;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          status: Database["public"]["Enums"]["document_status"];
+          submitted_at: string | null;
+          submitted_by: string | null;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "document_submissions";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       check_delivery: {
         Args: {
           p_delivery_id: string;
@@ -1084,6 +1368,30 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      copy_previous_documents: {
+        Args: { p_document_ids: string[]; p_year_id: string };
+        Returns: {
+          created_at: string;
+          created_by: string | null;
+          deadline: string;
+          description: string | null;
+          files_deleted_at: string | null;
+          food_only: boolean;
+          id: string;
+          requires_file: boolean;
+          target_categories: Database["public"]["Enums"]["group_category"][];
+          title: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        }[];
+        SetofOptions: {
+          from: "*";
+          to: "documents";
+          isOneToOne: false;
+          isSetofReturn: true;
+        };
+      };
       create_year_from: {
         Args: { p_festival_start: string; p_label: string; p_prev_year_id: string };
         Returns: {
@@ -1110,6 +1418,22 @@ export type Database = {
         Args: { p_base_updated_at: string; p_notice_id: string };
         Returns: undefined;
       };
+      delete_year_document_files: {
+        Args: { p_reason?: string; p_year_id: string };
+        Returns: number;
+      };
+      discard_document_file: { Args: { p_file_id: string }; Returns: string };
+      document_orphan_paths: { Args: { p_year_id: string }; Returns: string[] };
+      document_storage_usage: {
+        Args: { p_year_id: string };
+        Returns: {
+          bucket_bytes: number;
+          file_bytes: number;
+          file_count: number;
+          limit_bytes: number;
+          orphan_count: number;
+        }[];
+      };
       invite: {
         Args: {
           p_email: string;
@@ -1119,6 +1443,20 @@ export type Database = {
           p_year_id: string;
         };
         Returns: Json;
+      };
+      previous_year_documents: {
+        Args: { p_year_id: string };
+        Returns: {
+          deadline: string;
+          description: string;
+          document_id: string;
+          exists_in_year: boolean;
+          food_only: boolean;
+          new_deadline: string;
+          requires_file: boolean;
+          target_categories: Database["public"]["Enums"]["group_category"][];
+          title: string;
+        }[];
       };
       previous_year_requests: {
         Args: { p_year_id: string };
@@ -1143,6 +1481,61 @@ export type Database = {
       remove_role: {
         Args: { p_reason?: string; p_user_id: string; p_year_id: string };
         Returns: undefined;
+      };
+      reserve_document_file: {
+        Args: {
+          p_content_type: string;
+          p_document_id: string;
+          p_file_id: string;
+          p_group_id: string;
+          p_size: number;
+        };
+        Returns: {
+          content_type: string;
+          created_at: string;
+          created_by: string | null;
+          document_id: string;
+          group_id: string;
+          id: string;
+          object_path: string;
+          size: number;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "document_files";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
+      return_document: {
+        Args: {
+          p_base_updated_at: string;
+          p_document_id: string;
+          p_group_id: string;
+          p_note: string;
+        };
+        Returns: {
+          created_at: string;
+          document_id: string;
+          group_id: string;
+          proxy: boolean;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          status: Database["public"]["Enums"]["document_status"];
+          submitted_at: string | null;
+          submitted_by: string | null;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "document_submissions";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
       };
       revoke_invitation: { Args: { p_invitation_id: string }; Returns: undefined };
       save_allocation_rows: {
@@ -1253,6 +1646,29 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      submit_document: {
+        Args: { p_base_updated_at: string; p_document_id: string; p_group_id: string };
+        Returns: {
+          created_at: string;
+          document_id: string;
+          group_id: string;
+          proxy: boolean;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          status: Database["public"]["Enums"]["document_status"];
+          submitted_at: string | null;
+          submitted_by: string | null;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "document_submissions";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       submit_requests: {
         Args: { p_group_id: string; p_note?: string; p_rows: Json };
         Returns: {
@@ -1296,6 +1712,29 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      withdraw_document: {
+        Args: { p_base_updated_at: string; p_document_id: string; p_group_id: string };
+        Returns: {
+          created_at: string;
+          document_id: string;
+          group_id: string;
+          proxy: boolean;
+          review_note: string | null;
+          reviewed_at: string | null;
+          reviewed_by: string | null;
+          status: Database["public"]["Enums"]["document_status"];
+          submitted_at: string | null;
+          submitted_by: string | null;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "document_submissions";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
     };
     Enums: {
       alloc_origin: "auto" | "manual";
@@ -1303,6 +1742,7 @@ export type Database = {
       consent_status: "not_asked" | "asked" | "accepted" | "declined";
       delivery_kind: "furniture" | "tent" | "weight" | "side_curtain";
       delivery_status: "pending" | "done" | "problem";
+      document_status: "not_submitted" | "submitted" | "returned" | "approved";
       event_audience: "soumu" | "groups" | "all";
       event_kind: "deadline" | "event";
       festival_day: "day_minus2" | "day_minus1" | "day1" | "day2";
@@ -1432,6 +1872,7 @@ export const Constants = {
       consent_status: ["not_asked", "asked", "accepted", "declined"],
       delivery_kind: ["furniture", "tent", "weight", "side_curtain"],
       delivery_status: ["pending", "done", "problem"],
+      document_status: ["not_submitted", "submitted", "returned", "approved"],
       event_audience: ["soumu", "groups", "all"],
       event_kind: ["deadline", "event"],
       festival_day: ["day_minus2", "day_minus1", "day1", "day2"],

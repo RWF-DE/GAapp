@@ -9,6 +9,10 @@
 -- から書いた）、②に集合の関数 my_group_year_ids・my_group_notice_ids、④に2表のポリシーの形と実行計画を足した。
 -- T18：予定と締切の events（0015）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「予定と締切の権限」から書いた）、
 -- ④にポリシーの形と実行計画を足した（集合の関数は足していない）。
+-- T19：提出物の documents・document_submissions・document_files（0016）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の
+-- 「提出物の権限」から書いた）、②に集合の関数 my_group_document_ids・my_document_upload_paths・my_document_orphan_paths、④に3表と
+-- v_document_status・storage.objects のポリシーの形と実行計画を足した。⑤で storage.objects の3つのポリシー（select・insert・delete）が
+-- 行ごとの形の述語と同じ物を選ぶことを確かめる。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
@@ -18,7 +22,35 @@ begin;
 insert into public.audit_logs (table_name, row_pk, action, year_id, before, after)
 values ('years', '{}', 'update', null, '{"a":1}', '{"a":2}'), ('profiles', '{}', 'update', null, '{"a":1}', '{"a":2}');
 
-select plan(71);
+-- 提出物（T19）：飲食の団体だけの提出物（Q8）を足す。Y1 の G1 を飲食にして対象に入れ、Y2 の G3（飲食でない）は対象に入れない。
+-- ⑤の Storage の比べ方のために、予約（rep・head〔代理〕・承認の提出の viewer）と、届いた物・どの提出にも属さない物・形の違う名前の物を足す
+with d as (
+  insert into public.documents (year_id, title, deadline, target_categories, food_only) values
+    (tests.id('Y1'), 'T-DOC_FOOD', '2027-10-02 12:00+09', '{stall}', true),
+    (tests.id('Y2'), 'T-DOC_Y2_FOOD', '2026-10-02 12:00+09', '{stall}', true)
+  returning id, title)
+insert into tests.ids select substr(title, 3), id from d;
+update public.groups set is_food = true where id = tests.id('G1');
+insert into public.document_submissions (document_id, group_id, year_id) values
+  (tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1')), (tests.id('DOC_FOOD'), tests.id('G1'), tests.id('Y1'));
+insert into tests.ids values ('F13_REP', gen_random_uuid()), ('F13_HEAD', gen_random_uuid()), ('F13_VIEWER', gen_random_uuid()),
+  ('F13_REP2', gen_random_uuid()), ('O13_G2', gen_random_uuid());
+create function tests.doc_path(p_year text, p_group text, p_doc text, p_file text) returns text language sql stable as $$
+  select tests.id(p_year) || '/' || tests.id(p_group) || '/' || tests.id(p_doc) || '/' || tests.id(p_file) || '.pdf'
+$$;
+insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size, created_by) values
+  (tests.id('F13_REP'), tests.id('Y1'), tests.id('DOC_NOFILE'), tests.id('G1'), tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F13_REP'), 'application/pdf', 10, tests.id('rep')),
+  (tests.id('F13_HEAD'), tests.id('Y1'), tests.id('DOC_STALL'), tests.id('G1'), tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F13_HEAD'), 'application/pdf', 10, tests.id('head')),
+  (tests.id('F13_VIEWER'), tests.id('Y1'), tests.id('DOC_NOFILE'), tests.id('G4'), tests.doc_path('Y1', 'G4', 'DOC_NOFILE', 'F13_VIEWER'), 'application/pdf', 10, tests.id('viewer')),
+  (tests.id('F13_REP2'), tests.id('Y1'), tests.id('DOC_STALL'), tests.id('G2'), tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F13_REP2'), 'application/pdf', 10, tests.id('rep2'));
+insert into storage.objects (bucket_id, name, metadata) values
+  ('documents', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F13_REP'), '{"size": 10}'),
+  ('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'O13_G2'), '{"size": 10}'),
+  ('documents', tests.doc_path('Y2', 'G3', 'DOC_Y2', 'F_Y2'), '{"size": 2000}'),
+  ('documents', 'pgtap/' || tests.id('G1') || '/x.pdf', '{"size": 1}'),
+  ('documents', tests.id('Y1') || '', '{"size": 1}');
+
+select plan(100);
 
 -- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
 -- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
@@ -50,6 +82,15 @@ insert into tests.old_pred values
                  or (audience in ('groups', 'all')
                      and (private.has_role(year_id, 'viewer')
                           or exists (select 1 from public.groups g where g.year_id = t.year_id and private.is_group_member(g.id)))) $p$);
+-- 提出物（T19）：総務はその年度の全部。店長・副店長は自団体が対象（区分・飲食）の提出物と、自団体の提出・ファイル。ファイルは部門長以上
+-- （部門員は読めない。Q4）。閲覧のみは何も読めない（Q5）
+insert into tests.old_pred values
+  ('documents', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}')
+                    or exists (select 1 from public.groups g
+                               where g.year_id = t.year_id and g.category = any (t.target_categories)
+                                 and (not t.food_only or g.is_food) and private.is_group_member(g.id)) $p$),
+  ('document_submissions', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') or private.is_group_member(group_id) $p$),
+  ('document_files', $p$ private.has_any_role(year_id, '{admin,head,deputy_head}') or private.is_group_member(group_id) $p$);
 
 -- 行の中身をまとめた指紋（件数と、行の文字列を並べた md5）
 create function tests.visible_old(p_tbl text, p_persona text) returns text language plpgsql as $$
@@ -93,11 +134,11 @@ select tests.compare_all();
 select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
   format('%s：0010 の形（0013 の段）のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態）', t))
 from unnest(array['audit_logs', 'allocations', 'requests', 'request_submissions', 'substitution_consents', 'stocks', 'groups',
-                   'notices', 'notice_groups', 'events']) t;
+                   'notices', 'notice_groups', 'events', 'documents', 'document_submissions', 'document_files']) t;
 -- 比べたものに中身がある（全員 0 行や全員同じでは比べたことにならない）
 select is_empty($q$ select tbl from tests.compared group by tbl
                     having count(distinct new) < 2 or not bool_or(new !~ '^0:') $q$,
-  '10 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
+  '13 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
 
 -- ---------------------------------------------------------------- ② 新しい関数は呼んだ人についてだけ答える
 select tests.login_as('admin');
@@ -220,6 +261,69 @@ select tests.login_anon();
 select throws_ok($q$ select private.my_group_notice_ids() $q$, '42501', null, 'anon はお知らせの集合の関数を呼べない');
 select tests.logout();
 
+-- 提出物の集合（T19。0016）：my_group_document_ids は自分が代表の団体が対象（区分・飲食）の提出物、my_document_upload_paths は自分が
+-- 予約した、終了でない年度の、今書ける提出（店長・副店長は未提出・差し戻し、部門長以上は承認でない）の path、my_document_orphan_paths は
+-- 自分の範囲（1つ目のフォルダが部門長以上の年度、または2つ目が自分の団体）の、どの提出にも属さない物の path。どれも呼んだ人についてだけ答える
+create function tests.path_label(p_path text) returns text language sql stable as $$
+  select coalesce((select t.name from tests.ids t where t.id::text = split_part(split_part(p_path, '/', 4), '.', 1)),
+                  replace(replace(p_path, tests.id('Y1')::text, 'Y1'), tests.id('G1')::text, 'G1'))
+$$;
+grant execute on function tests.path_label(text) to authenticated;
+create function tests.doc_sets(p_persona text) returns text language plpgsql as $$
+declare v text;
+begin
+  perform tests.login_as(p_persona);
+  select format('%s | %s | %s',
+    coalesce((select string_agg(t.name, ' ' order by t.name collate "C") from private.my_group_document_ids() x(id) join tests.ids t on t.id = x.id), '-'),
+    coalesce((select string_agg(tests.path_label(x.p), ' ' order by tests.path_label(x.p) collate "C") from private.my_document_upload_paths() x(p)), '-'),
+    coalesce((select string_agg(tests.path_label(x.p), ' ' order by tests.path_label(x.p) collate "C") from private.my_document_orphan_paths() x(p)), '-'))
+  into v;
+  perform tests.logout();
+  return v;
+end $$;
+select is(tests.doc_sets('rep'), 'DOC_FOOD DOC_NOFILE DOC_STALL | F13_REP | O_G1 pgtap/G1/x.pdf',
+  'rep（G1 の店長。G1 は飲食）：対象の提出物は飲食だけのものを含む3つ、上げられるのは未提出の提出の自分の予約だけ（提出済みの F_G1 は入らない）、'
+  || '消せるのは G1 のフォルダのどの提出にも属さない物');
+select is(tests.doc_sets('rep2'), 'DOC_NOFILE DOC_STALL | F13_REP2 | O13_G2',
+  'rep2（G2 の店長。学科）：飲食だけの提出物は対象でない。差し戻しの提出の自分の予約は上げられる');
+select is(tests.doc_sets('viewer'), 'DOC_NOFILE DOC_STALL | - | -',
+  'viewer（G4 の副店長）：承認の提出の自分の予約（F13_VIEWER）は上げられない。閲覧のみのロールでは何も答えない');
+select is(tests.doc_sets('staff'), 'DOC_Y2 | F_Y2 | -',
+  'staff（Y2 の G3 の店長。飲食でない）：Y2 の飲食だけの提出物は対象でない。Y1 の部門員のロールでは何も答えない');
+select is(tests.doc_sets('head'), '- | F13_HEAD | O13_G2 O_G1 Y1',
+  'head：代表の団体はない。提出済みの提出への自分の代理の予約は上げられる。Y1 のフォルダのどの提出にも属さない物を全部消せる');
+select is(tests.doc_sets('admin'), '- | - | O13_G2 O_G1 Y1', 'admin：自分の予約はない（ほかの人の予約は入らない）');
+select is(tests.doc_sets('admin2'), '- | - | -', 'admin2：Y2 にはどの提出にも属さない物がない（Y1 の物は入らない）');
+select is(tests.doc_sets('outsider'), '- | - | -', '未招待の人：提出物の集合の関数は何も返さない');
+select tests.set_scenario('closed');
+select is(tests.doc_sets('rep') || ' / ' || tests.doc_sets('head') || ' / ' || tests.doc_sets('staff'),
+  'DOC_FOOD DOC_NOFILE DOC_STALL | - | O_G1 pgtap/G1/x.pdf / - | - | O13_G2 O_G1 Y1 / DOC_Y2 | F_Y2 | -',
+  '終了の年度（Y1）の予約は上げられない（Y2 の予約は上げられる）。対象の提出物とどの提出にも属さない物は変わらない');
+select tests.set_scenario('requesting');
+select set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+set local role authenticated;
+select is_empty($q$ select private.my_group_document_ids()::text union all select private.my_document_upload_paths()
+                    union all select private.my_document_orphan_paths() $q$,
+  'auth.uid() が null なら、提出物の集合の関数は何も返さない');
+select tests.logout();
+select is((select string_agg(p.proname || ':' || format_type(p.prorettype, null), ' ' order by p.proname) from pg_proc p
+           where p.pronamespace = 'private'::regnamespace
+             and p.proname in ('my_group_document_ids', 'my_document_upload_paths', 'my_document_orphan_paths')
+             and p.pronargs = 0 and p.prosecdef and p.provolatile = 's' and p.proretset
+             and coalesce(p.proconfig @> array['search_path=""'], false)),
+  'my_document_orphan_paths:text my_document_upload_paths:text my_group_document_ids:uuid',
+  '提出物の集合の関数は引数を取らず（ほかの人については答えられない）、SECURITY DEFINER・STABLE・setof・search_path = ""');
+select is((select count(*)::int from pg_proc p
+           where p.pronamespace = 'private'::regnamespace
+             and p.proname in ('my_group_document_ids', 'my_document_upload_paths', 'my_document_orphan_paths')
+             and has_function_privilege('authenticated', p.oid, 'execute') and not has_function_privilege('anon', p.oid, 'execute')
+             and not has_function_privilege('supabase_auth_admin', p.oid, 'execute')
+             and not exists (select 1 from aclexplode(p.proacl) a where a.grantee = 0)), 3,
+  '提出物の集合の関数は authenticated だけが実行できる（anon・supabase_auth_admin・PUBLIC は実行できない）');
+select tests.login_anon();
+select throws_ok($q$ select private.my_document_upload_paths() $q$, '42501', null, 'anon は提出物の集合の関数を呼べない');
+select tests.logout();
+
 -- ---------------------------------------------------------------- ③ audit_logs：年度をまたぐ表の行と、開いていない年度
 create function tests.audit_counts(p_persona text) returns text language plpgsql as $$
 declare v text;
@@ -325,6 +429,179 @@ select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('
           !~ '(?n)Filter: .*private\.',
   'events の読みの計画の Filter に、行ごとの判定関数が出ない（hashed SubPlan だけ）');
 select tests.logout();
+
+-- 提出物（T19）：3表の select のポリシーと v_document_status の where も集合を1回作る形（行の列を判定関数に渡さない）。閲覧のみは配列に
+-- 入れない（Q5）。ファイルは部門長以上の配列（staff を入れない。Q4）
+select is_empty($q$ select tablename::text || ': ' || qual from pg_policies
+                   where schemaname = 'public' and cmd = 'SELECT' and tablename in ('documents', 'document_submissions', 'document_files')
+                     and qual ~ '(?<!SELECT )private\.[a-z_]+\((year_id|group_id|id|user_id|target_categories|private\.)' $q$,
+  '提出物の3表の select のポリシーは、行の列を判定関数に渡さない（集合を1回作る形）');
+select is((select string_agg(policyname || '=' || (regexp_match(qual, 'my_role_year_ids\(''(\{[a-z_,]+\})'''))[1]
+                             || case when qual ~ 'SELECT private\.my_group_document_ids\(\)' then '+group_documents' else '' end
+                             || case when qual ~ 'SELECT private\.my_group_ids\(\)' then '+groups' else '' end, ' ' order by policyname)
+           from pg_policies where schemaname = 'public' and cmd = 'SELECT' and tablename in ('documents', 'document_submissions', 'document_files')),
+  'document_files_select={admin,head,deputy_head}+groups document_submissions_select={admin,head,deputy_head,staff}+groups '
+  || 'documents_select={admin,head,deputy_head,staff}+group_documents',
+  '提出物の select のポリシーの段の配列と集合（閲覧のみを入れない。ファイルは部門長以上と自団体だけ）');
+select ok((select pg_get_viewdef('public.v_document_status'::regclass) !~ '(?<!SELECT )private\.[a-z_]+\((d\.|g\.|s\.|year_id|group_id|private\.)'),
+  'v_document_status の where は、行の列を判定関数に渡さない（集合を1回作る形）');
+-- Storage（T19）：storage.objects の3つのポリシーも集合を1回作る形。行ごとには組み込みの split_part（文字列を分けるだけ）だけを呼ぶ
+select is_empty($q$ select policyname || ': ' || coalesce(qual, '') || ' ' || coalesce(with_check, '') from pg_policies
+                   where schemaname = 'storage' and tablename = 'objects'
+                     and coalesce(qual, '') || ' ' || coalesce(with_check, '')
+                         ~ '(?<!SELECT |FROM )private\.[a-z_]+\((name|bucket_id|owner|owner_id|metadata|private\.|split_part)' $q$,
+  'storage.objects のポリシーは、行の列を判定関数に渡さない（集合を1回作る形）');
+select ok((select qual ~ 'split_part\(name, ''/''::text, 1\) IN \( SELECT \(y\.y\)::text AS y\s+FROM private\.my_role_year_ids\(''\{admin,head,deputy_head\}''::app_role\[\]\) y\(y\)\)'
+                  and qual ~ 'split_part\(name, ''/''::text, 2\) IN \( SELECT \(g\.g\)::text AS g\s+FROM private\.my_group_ids\(\) g\(g\)\)'
+                  and qual !~ 'storage\.foldername'
+           from pg_policies where schemaname = 'storage' and policyname = 'documents_objects_select'),
+  'documents_objects_select は1つ目のフォルダを部門長以上の年度の集合と、2つ目を自分の団体の集合と比べる（split_part。storage の補助によらない）');
+select tests.login_as('outsider');
+select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.documents')) x(l))
+          !~ '(?n)Filter: .*private\.',
+  'documents の読みの計画の Filter に、行ごとの判定関数が出ない（hashed SubPlan だけ）');
+select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.document_submissions')) x(l))
+          !~ '(?n)Filter: .*private\.',
+  'document_submissions の読みの計画の Filter に、行ごとの判定関数が出ない');
+select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.document_files')) x(l))
+          !~ '(?n)Filter: .*private\.',
+  'document_files の読みの計画の Filter に、行ごとの判定関数が出ない');
+select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from storage.objects')) x(l))
+          !~ '(?n)Filter: .*private\.',
+  'storage.objects の読みの計画の Filter に、行ごとの判定関数が出ない（split_part と hashed SubPlan だけ）');
+select tests.logout();
+select tests.login_as('rep');
+select ok((select string_agg(l, E'\n') from (select * from tests.explain_lines('select * from public.v_document_status')) x(l))
+          !~ '(?n)(Filter|Join Filter|Cond): .*private\.',
+  'v_document_status の読みの計画にも、行ごとの判定関数が出ない（ビューの where と下の表のポリシー）');
+select tests.logout();
+
+-- ---------------------------------------------------------------- ⑤ Storage：3つのポリシーが行ごとの形の述語と同じ物を選ぶ（T19）
+-- 行ごとの形の述語は 02 の「提出物の権限」の Storage の表から書いた。select：1つ目のフォルダが自分の部門長以上の年度か、2つ目が自分の団体。
+-- insert：自分が予約した、終了でない年度の、今書ける提出の path。delete：select の範囲の、document_files に行のない物。
+-- 9 人 × Y1 の6状態 × Y2 の2状態で、select は見える物を中身ごと、insert は予約の path と予約していない path の全部に1つずつ上げてみて、
+-- delete は bucket の物を1つずつ消してみて（storage.allow_delete_query を立てて）、許されるかを比べる
+create function tests.is_uuid_text(p text) returns boolean language sql immutable as $$
+  select p ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+$$;
+create function tests.storage_old_select(p_bucket text, p_name text) returns boolean language sql stable as $$
+  select p_bucket = 'documents'
+         and (case when tests.is_uuid_text(split_part(p_name, '/', 1))
+                   then private.has_any_role(split_part(p_name, '/', 1)::uuid, '{admin,head,deputy_head}') else false end
+              or case when tests.is_uuid_text(split_part(p_name, '/', 2))
+                      then private.is_group_member(split_part(p_name, '/', 2)::uuid) else false end)
+$$;
+create function tests.storage_old_insert(p_bucket text, p_name text) returns boolean language sql stable as $$
+  select p_bucket = 'documents'
+         and exists (select 1 from public.document_files f
+                     join public.document_submissions s on s.document_id = f.document_id and s.group_id = f.group_id
+                     where f.object_path = p_name and f.created_by = auth.uid() and private.year_status(f.year_id) <> 'closed'
+                       and ((s.status in ('not_submitted', 'returned') and private.is_group_member(f.group_id))
+                            or (s.status <> 'approved' and private.has_any_role(f.year_id, '{admin,head,deputy_head}'))))
+$$;
+create function tests.storage_old_delete(p_bucket text, p_name text) returns boolean language sql stable as $$
+  select tests.storage_old_select(p_bucket, p_name)
+         and not exists (select 1 from public.document_files f where f.object_path = p_name)
+$$;
+-- 試す物と path（bucket と name）：bucket の全部の物と、予約の path の全部と、予約していない path
+create function tests.storage_candidates() returns table (bucket text, name text) language sql stable as $$
+  select o.bucket_id, o.name from storage.objects o
+  union
+  select 'documents', f.object_path from public.document_files f
+  union
+  select 'documents', tests.id('Y1') || '/' || tests.id('G1') || '/' || tests.id('DOC_NOFILE') || '/' || tests.id('outsider') || '.pdf'
+$$;
+create function tests.storage_old(p_persona text) returns text language plpgsql as $$
+declare v text;
+begin
+  perform tests.act_as(p_persona);                       -- postgres のまま（RLS を通らない）。auth.uid() だけを変える
+  select format('select=%s insert=%s delete=%s',
+    coalesce(string_agg(c.bucket || ':' || tests.path_label(c.name), ' ' order by c.bucket, tests.path_label(c.name) collate "C")
+             filter (where tests.storage_old_select(c.bucket, c.name)
+                     and exists (select 1 from storage.objects o where o.bucket_id = c.bucket and o.name = c.name)), '-'),
+    coalesce(string_agg(c.bucket || ':' || tests.path_label(c.name), ' ' order by c.bucket, tests.path_label(c.name) collate "C")
+             filter (where tests.storage_old_insert(c.bucket, c.name)), '-'),
+    coalesce(string_agg(c.bucket || ':' || tests.path_label(c.name), ' ' order by c.bucket, tests.path_label(c.name) collate "C")
+             filter (where tests.storage_old_delete(c.bucket, c.name)
+                     and exists (select 1 from storage.objects o where o.bucket_id = c.bucket and o.name = c.name)), '-'))
+  into v from tests.storage_candidates() c;
+  perform tests.act_clear();
+  return v;
+end $$;
+-- 1つの path に authenticated で上げてみる（取り消す）。ポリシーが許せば通るか一意の索引で止まる（23505。もう届いている）、許さなければ 42501
+create function tests.try_upload(p_persona text, p_bucket text, p_name text) returns boolean language plpgsql as $$
+declare v boolean;
+begin
+  begin
+    perform tests.login_as(p_persona);
+    insert into storage.objects (bucket_id, name, metadata) values (p_bucket, p_name, '{"size": 1}');
+    v := true;
+    raise exception using errcode = 'TT001';
+  exception
+    when sqlstate 'TT001' then null;
+    when unique_violation then v := true;
+    when insufficient_privilege then v := false;
+  end;
+  return v;
+end $$;
+-- 1つの物を authenticated で消してみる（取り消す）。消せた行の数が 1 なら許された
+create function tests.try_remove(p_persona text, p_bucket text, p_name text) returns boolean language plpgsql as $$
+declare v boolean; n bigint;
+begin
+  begin
+    perform set_config('storage.allow_delete_query', 'true', true);
+    perform tests.login_as(p_persona);
+    delete from storage.objects o where o.bucket_id = p_bucket and o.name = p_name;
+    get diagnostics n = row_count;
+    v := n = 1;
+    raise exception using errcode = 'TT001';
+  exception
+    when sqlstate 'TT001' then null;
+  end;
+  return v;
+end $$;
+create function tests.storage_new(p_persona text) returns text language plpgsql as $$
+declare v_select text; v_rest text;
+begin
+  perform tests.login_as(p_persona);
+  select coalesce(string_agg(o.bucket_id || ':' || tests.path_label(o.name), ' ' order by o.bucket_id, tests.path_label(o.name) collate "C"), '-')
+  into v_select from storage.objects o;
+  perform tests.logout();
+  select format('insert=%s delete=%s',
+    coalesce(string_agg(c.bucket || ':' || tests.path_label(c.name), ' ' order by c.bucket, tests.path_label(c.name) collate "C")
+             filter (where tests.try_upload(p_persona, c.bucket, c.name)), '-'),
+    coalesce(string_agg(c.bucket || ':' || tests.path_label(c.name), ' ' order by c.bucket, tests.path_label(c.name) collate "C")
+             filter (where exists (select 1 from storage.objects o where o.bucket_id = c.bucket and o.name = c.name)
+                     and tests.try_remove(p_persona, c.bucket, c.name)), '-'))
+  into v_rest from tests.storage_candidates() c;
+  return 'select=' || v_select || ' ' || v_rest;
+end $$;
+create table tests.compared_storage (scenario text, persona text, old text, new text);
+create function tests.compare_storage() returns void language plpgsql as $$
+declare s1 text; s2 text; p text;
+begin
+  foreach s2 in array array['preparing', 'closed'] loop
+    foreach s1 in array array['preparing', 'requesting', 'requesting:after', 'allocating', 'confirmed', 'closed'] loop
+      perform tests.set_scenario(s1);
+      update public.years set status = s2::public.year_status where id = tests.id('Y2');
+      foreach p in array array['admin', 'staff', 'rep', 'rep2', 'viewer', 'outsider', 'admin2', 'head', 'deputy'] loop
+        insert into tests.compared_storage values (s1 || ' / Y2 ' || s2, p, tests.storage_old(p), tests.storage_new(p));
+      end loop;
+    end loop;
+  end loop;
+  perform tests.set_scenario('requesting');
+  update public.years set status = 'preparing' where id = tests.id('Y2');
+end $$;
+select tests.compare_storage();
+select is_empty($q$ select scenario, persona, old, new from tests.compared_storage where old <> new $q$,
+  'storage.objects の select・insert・delete のポリシーで許される物は、行ごとの形の述語で選ぶ物と同じ（9 人 × Y1 の6状態 × Y2 の2状態）');
+-- 比べたものに中身がある（見える物・上げられる path・消せる物が、ペルソナ・状態で変わり、許される組がある）
+select ok((select count(distinct new) >= 5 and bool_or(new ~ 'select=documents:') and bool_or(new ~ 'insert=documents:')
+                  and bool_or(new ~ 'delete=documents:') from tests.compared_storage),
+  'Storage の比べたものに中身がある（見える物・上げられる path・消せる物がある組と、ない組がある）');
+select is((select new from tests.compared_storage where scenario = 'requesting / Y2 preparing' and persona = 'rep'),
+  'select=documents:F13_REP documents:F_G1 documents:O_G1 documents:pgtap/G1/x.pdf insert=documents:F13_REP delete=documents:O_G1 documents:pgtap/G1/x.pdf',
+  'rep（受付中）：G1 のフォルダの物が見え、自分の予約（F13_REP）に上げられ（届いていても一意の索引で止まるだけ）、どの提出にも属さない物を消せる');
 
 select * from finish();
 rollback;

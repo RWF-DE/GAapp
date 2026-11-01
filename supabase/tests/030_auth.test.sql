@@ -7,7 +7,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(90);
+select plan(91);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。confirmed = false なら email_confirmed_at を null にする。
 -- provider が google なら Google の identity（Google の経路）、email なら email_verified: true の email の identity（seed の経路）
@@ -266,9 +266,12 @@ select is((select count(*)::int from public.profiles), 1, '招待のない人が
 select is((select display_name from public.profiles), '招待なし', '自分の表示名は読める');
 select is_empty($$ select t from unnest(array['years','rooms','room_years','items','stocks','groups','year_roles','group_members',
                      'invitations','request_submissions','requests','rules','substitution_consents','allocations',
-                     'distance_overrides','slots','deliveries','audit_logs','notices','notice_groups','events','v_remaining']) t
+                     'distance_overrides','slots','deliveries','audit_logs','notices','notice_groups','events','v_remaining',
+                     'documents','document_submissions','document_files','v_document_status','v_document_files']) t
                    where tests.count_visible(t) > 0 $$,
-  '招待のない人は、profiles の自分の行のほかに何も読めない（全表〔T17 のお知らせの2表と T18 の予定と締切を含む〕と v_remaining が0行）');
+  '招待のない人は、profiles の自分の行のほかに何も読めない（全表〔T17 のお知らせの2表、T18 の予定と締切、T19 の提出物の3表を含む〕とビューが0行）');
+select is((select count(*)::int from storage.objects), 0,
+  '招待のない人は、Storage の物（提出物のファイル。T19）も読めない');
 select tests.logout();
 -- 同じ人をあとから招待すると、その場でロールが付き、読めるようになる
 select tests.login_as('admin');
