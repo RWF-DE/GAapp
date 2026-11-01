@@ -250,7 +250,7 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
     renderShell();
     await screen.findByLabelText('メモ');
     expect(screen.getByText('模擬店01 の店長・模擬店02 の副店長')).toBeTruthy();
-    expect(navLabels()).toEqual(['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定']);
+    expect(navLabels()).toEqual(['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定の一覧']);
     // スマホのメニュー（開いた形）にも同じ言い方
     await user.click(screen.getByRole('button', { name: 'メニューを開く' }));
     expect(document.getElementById('app-mobile-nav')?.textContent).toContain('代表（模擬店01 の店長・模擬店02 の副店長）');
@@ -285,7 +285,7 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       '振り分け',
       'キャスター机交換',
       'お知らせ一覧',
-      '締切と予定',
+      '締切と予定の一覧',
       'マスタ設定',
       '履歴',
     ]);
@@ -297,7 +297,7 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
     renderShell();
     await screen.findByLabelText('メモ');
     expect(screen.getByText('総務部門員')).toBeTruthy();
-    expect(navLabels()).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定']);
+    expect(navLabels()).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定の一覧']);
   });
 });
 
@@ -332,9 +332,9 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
     // T17：お知らせの見出し（見せる）に「お知らせ一覧」（見出しと同じ言葉を縦に並べない）
     const notices = within(aside()).getByRole('group', { name: 'お知らせ' });
     expect(within(notices).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['お知らせ一覧', '/notices']]);
-    // T18：締切と予定の見出し（見せる）に「締切と予定」（リードの決定で見出しと項目が同じ名前）
+    // T18：締切と予定の見出し（見せる）に「締切と予定の一覧」（見出しと同じ言葉を縦に並べない。お知らせと同じ形）
     const calendar = within(aside()).getByRole('group', { name: '締切と予定' });
-    expect(within(calendar).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['締切と予定', '/calendar']]);
+    expect(within(calendar).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['締切と予定の一覧', '/calendar']]);
     // 見出しは h2。「ホーム」だけ sr-only（項目が「ホーム」1つなので同じ言葉を2つ並べない）
     const heads = within(aside()).getAllByRole('heading', { level: 2 });
     expect(heads.map((h) => [h.textContent, h.classList.contains('sr-only')])).toEqual([
@@ -363,7 +363,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       '振り分け',
       'キャスター机交換',
       'お知らせ一覧',
-      '締切と予定',
+      '締切と予定の一覧',
       'マスタ設定',
       '履歴',
     ]);
@@ -392,7 +392,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       'お知らせ一覧',
     ]);
     expect(within(within(aside()).getByRole('group', { name: '締切と予定' })).getAllByRole('link').map((a) => a.textContent)).toEqual([
-      '締切と予定',
+      '締切と予定の一覧',
     ]);
   });
 

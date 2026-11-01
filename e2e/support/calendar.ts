@@ -182,12 +182,12 @@ export function calendarDates(page: Page): Promise<string[]> {
 }
 
 /**
- * 締切と予定（/calendar/）を開き、読み終わるのを待つ（h1「締切と予定」と、一覧か空の表示）。query は `?past=1` など。
+ * 締切と予定の一覧（/calendar/）を開き、読み終わるのを待つ（h1「締切と予定の一覧」と、一覧か空の表示）。query は `?past=1` など。
  * 年度は呼ぶ前に pinYear で決める。機能の日付は年度の行がそろうと足されるので、並びは expect.poll で確かめる。
  */
 export async function openCalendar(page: Page, query = ''): Promise<void> {
   await page.goto(`/calendar/${query}`);
-  await expect(page.getByRole('heading', { level: 1, name: '締切と予定' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: '締切と予定の一覧', exact: true })).toBeVisible();
   await expect(page.getByTestId('calendar-days').or(page.getByTestId('calendar-empty'))).toBeVisible();
 }
 
