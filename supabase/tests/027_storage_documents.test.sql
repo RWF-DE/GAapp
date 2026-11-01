@@ -9,7 +9,9 @@
 -- ③ update：ポリシーがないので 0 行（上書き・移動・upsert はできない）
 -- ④ delete：storage.allow_delete_query を立てないと誰も消せない（storage.protect_delete。42501）。立てると、範囲の中のどの提出にも属さない物だけ
 -- ⑤ 流れ：予約 → 上げる → v_document_files で届いたと分かる → 外す → どの提出にも属さない物になる → 消す
--- ⑥ bucket の設定と storage の表の権限（Supabase の既定のまま）
+-- ⑥ bucket の設定と storage の表の権限（Supabase の既定のまま）と、書き込みを確かめるトリガー documents_objects_guard
+-- ⑦ スーパーユーザーの書き込み（T19 のレビューの T19-SEC-1）：service_role（Storage API の署名つきアップロードの書き込み）と postgres でも、
+--    承認・終了の後・予約のない path・上書き・移動・申告を超える大きさはトリガーが止める（42501）。正しい道は通る
 -- ペルソナと提出物は fixture（026 の頭の注を参照）。Storage の fixture：F_G1 の物（1000 B。行あり）、O_G1（G1 のフォルダ。行なし）、
 -- ほかの bucket（pgtap-other）の F_G1 と同じ path の物
 begin;
@@ -31,9 +33,9 @@ insert into public.document_files (id, year_id, document_id, group_id, object_pa
 select tests.id(f), tests.id(y), tests.id(d), tests.id(g), tests.doc_path(y, g, d, f), 'application/pdf', 100, tests.id(u)
 from (values ('R_REP', 'Y1', 'G1', 'DOC_NOFILE', 'rep'), ('R_REP_SUB', 'Y1', 'G1', 'DOC_STALL', 'rep'), ('R_HEAD', 'Y1', 'G1', 'DOC_STALL', 'head'),
              ('R_REP2', 'Y1', 'G2', 'DOC_STALL', 'rep2'), ('R_VIEWER', 'Y1', 'G4', 'DOC_NOFILE', 'viewer')) v(f, y, g, d, u);
-insert into storage.objects (bucket_id, name, metadata) values
-  ('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'O_G2'), '{"size": 20}'),
-  ('documents', tests.doc_path('Y2', 'G3', 'DOC_Y2', 'O_Y2'), '{"size": 30}');
+-- どの提出にも属さない物は予約の外なので、tests.put_object（fixture。トリガーを飛ばして置く）で置く
+select tests.put_object('documents', tests.doc_path(y, g, d, f), m::jsonb)
+from (values ('Y1', 'G2', 'DOC_STALL', 'O_G2', '{"size": 20}'), ('Y2', 'G3', 'DOC_Y2', 'O_Y2', '{"size": 30}')) v(y, g, d, f, m);
 
 -- path の4つ目のフォルダ（ファイルの id）の名前
 create function tests.path_name(p_path text) returns text language sql stable as $$
@@ -138,7 +140,7 @@ begin
   return v;
 end $$;
 
-select plan(82);
+select plan(118);
 
 -- ================================================================ ① select
 select is(tests.visible_objects('admin'), 'documents:F_G1 documents:O_G1 documents:O_G2', 'admin：Y1 のフォルダの物（ほかの年度・ほかの bucket は見えない）');
@@ -153,13 +155,11 @@ select is(tests.visible_objects('outsider'), '-', '未招待の人は何も見�
 select is(tests.visible_objects('anon'), '-', 'anon は何も見えない（anon 向けのポリシーはない）');
 select is(tests.visible_objects('rep', $q$ select tests.set_scenario('closed') $q$), 'documents:F_G1 documents:O_G1', '終了の年度でも読める（rep）');
 select is(tests.visible_objects('head', $q$ select tests.set_scenario('closed') $q$), 'documents:F_G1 documents:O_G1 documents:O_G2', '終了の年度でも読める（head）');
-select is(tests.visible_objects('rep', $q$ insert into storage.objects (bucket_id, name, metadata)
-                                            values ('documents', 'x/' || :G1::text || '/y.pdf', '{"size": 1}'),
-                                                   ('documents', :G1::text || '/' || :Y1::text || '/y.pdf', '{"size": 1}') $q$),
+select is(tests.visible_objects('rep', $q$ select tests.put_object('documents', 'x/' || :G1::text || '/y.pdf'),
+                                                   tests.put_object('documents', :G1::text || '/' || :Y1::text || '/y.pdf') $q$),
   'documents:F_G1 documents:O_G1 documents:x/' || tests.id('G1') || '/y.pdf',
   'フォルダで決める：2つ目のフォルダが自団体なら見え、1つ目に団体を置いた物は見えない');
-select is(tests.visible_objects('head', $q$ insert into storage.objects (bucket_id, name, metadata)
-                                             values ('documents', upper(:Y1::text) || '/x.pdf', '{"size": 1}') $q$),
+select is(tests.visible_objects('head', $q$ select tests.put_object('documents', upper(:Y1::text) || '/x.pdf') $q$),
   'documents:F_G1 documents:O_G1 documents:O_G2', 'フォルダは文字列で比べる（大文字の年度の id のフォルダは見えない）');
 select is(tests.visible_objects('rep', $q$ delete from public.group_members where group_id = :G1 and user_id = :rep $q$), '-',
   '店長を外されると、その団体のフォルダの物は見えない');
@@ -327,6 +327,140 @@ select is((select count(*)::int from pg_policies where schemaname = 'storage' an
   'storage.objects に anon・public 向けのポリシーはない');
 select is((select count(*)::int from pg_trigger where tgrelid = 'storage.objects'::regclass and tgname = 'protect_objects_delete' and not tgisinternal), 1,
   'storage.objects には SQL の削除を止めるトリガー（protect_objects_delete）がある');
+select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgrelid = 'storage.objects'::regclass and t.tgname = 'documents_objects_guard'),
+  'CREATE TRIGGER documents_objects_guard BEFORE INSERT OR UPDATE ON storage.objects FOR EACH ROW EXECUTE FUNCTION private.tg_documents_objects_guard()',
+  'storage.objects に、bucket documents の物の書き込みを予約と提出の状態で確かめるトリガー（documents_objects_guard。BEFORE INSERT OR UPDATE・行ごと）がある');
+select is((select format('%s %s %s', p.prosecdef::text, p.provolatile, array_to_string(p.proconfig, ','))
+           from pg_proc p where p.oid = to_regprocedure('private.tg_documents_objects_guard()')),
+  'true v search_path=""', 'トリガー関数は SECURITY DEFINER・VOLATILE・search_path は空（書いたロールによらず、予約と提出を読み、ロックの後に読み直す）');
+
+-- ================================================================ ⑦ スーパーユーザーの書き込み（T19 のレビューの T19-SEC-1。トリガー documents_objects_guard）
+-- Storage API の署名つきアップロード（createSignedUploadUrl → uploadToSignedUrl）は、URL を作るときだけ呼んだ人の RLS を確かめ、書くときは
+-- service_role（BYPASSRLS）で書く（トークンは 2 時間使い回せる）。TUS・S3 の道の最後の書き込み、service_role の鍵、SQL Editor・マイグレーションの
+-- postgres も RLS を通らない。トリガーはロールによらず動き、insert は予約した人（created_by）の段で今書けるか（my_document_upload_paths と同じ
+-- 条件を、auth.uid() でなく予約した人で見る）と、届いた物の大きさ（metadata の size）が申告を超えないかを見る。名前・bucket・版・metadata を
+-- 変える update（上書き・移動）は、いつでも止める。止めるのは 42501（Storage API は 403）
+-- p_role（service_role か postgres）で SQL を流してみる（取り消す）：ok:<行数> か error:<SQLSTATE>（トリガーが止めたときは
+-- error:42501:<detail の reason>）。p_setup は先に postgres で流す。service_role は Storage API の書き込みと同じ形にする（role と
+-- request.jwt.claims が service_role で、sub がない。auth.uid() は null）
+create function tests.su_write(p_role text, p_sql text, p_setup text default null) returns text language plpgsql as $$
+declare v text; n bigint; d text; s text := tests.sql(p_sql);
+begin
+  begin
+    if p_setup is not null then execute tests.sql(p_setup); end if;
+    perform set_config('request.jwt.claim.sub', '', true);
+    if p_role = 'service_role' then
+      perform set_config('request.jwt.claims', '{"role": "service_role"}', true);
+      set local role service_role;
+    else
+      perform set_config('request.jwt.claims', '', true);
+    end if;
+    execute s;
+    get diagnostics n = row_count;
+    v := 'ok:' || n;
+    raise exception using errcode = 'TT001';
+  exception
+    when sqlstate 'TT001' then null;
+    when others then
+      get stacked diagnostics d = pg_exception_detail;
+      v := 'error:' || sqlstate || case when sqlstate = '42501' and d like '{%' then ':' || (d::jsonb ->> 'reason') else '' end;
+  end;
+  return v;
+end $$;
+-- 置く（Storage API の upload の最後の insert）・上書きする（x-upsert の insert … on conflict do update。Storage API と同じ衝突の対象）・
+-- update する（移動・中身の書き換え）
+create function tests.su_put(p_role text, p_name text, p_setup text default null, p_metadata text default '{"size": 1}', p_bucket text default 'documents')
+returns text language sql as $$
+  select tests.su_write(p_role, format('insert into storage.objects (bucket_id, name, metadata) values (%L, %L, %L)', p_bucket, p_name, p_metadata), p_setup)
+$$;
+create function tests.su_upsert(p_role text, p_name text, p_setup text default null) returns text language sql as $$
+  select tests.su_write(p_role, format($s$ insert into storage.objects (bucket_id, name, metadata, version) values ('documents', %L, '{"size": 2}', 'v2')
+                                          on conflict (bucket_id, name collate "C") where archived_at is null
+                                          do update set metadata = excluded.metadata, version = excluded.version $s$, p_name), p_setup)
+$$;
+create function tests.su_update(p_role text, p_bucket text, p_name text, p_set text, p_setup text default null) returns text language sql as $$
+  select tests.su_write(p_role, format('update storage.objects o set %s where o.bucket_id = %L and o.name = %L', p_set, p_bucket, p_name), p_setup)
+$$;
+grant usage on schema tests to service_role;
+grant select on tests.ids to service_role;
+grant execute on all functions in schema tests to service_role;
+
+-- insert：予約した人の段で今書けるときだけ（service_role。署名つきアップロード・TUS・S3 の道）
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'), null, '{"size": 100}'), 'ok:1',
+  'service_role：予約した path で、予約した人（rep）が今書ける（未提出）なら置ける（署名つきアップロードのふつうの道）');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'),
+                       $q$ update public.document_submissions set status = 'approved', reviewed_at = now() where document_id = :DOC_NOFILE and group_id = :G1 $q$),
+  'error:42501:not_editable', 'service_role：承認の後は、予約した path にも置けない（承認の前に作った署名つき URL を後で使う道）');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'R_REP_SUB')), 'error:42501:not_editable',
+  'service_role：店長の予約は、提出済みの提出には置けない（予約した人の段で決める）');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'R_HEAD')), 'ok:1',
+  'service_role：部門長の代理の予約は、提出済みの提出にも置ける（部門長以上は承認でなければ）');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'R_HEAD'),
+                       $q$ update public.document_submissions set status = 'approved', reviewed_at = now() where document_id = :DOC_STALL and group_id = :G1 $q$),
+  'error:42501:not_editable', 'service_role：部門長の予約も、承認の後は置けない');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G4', 'DOC_NOFILE', 'R_VIEWER')), 'error:42501:not_editable',
+  'service_role：紙などで受け取った承認の提出の予約には置けない（予約だけして上げずにおいた道）');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'), $q$ select tests.set_scenario('closed') $q$), 'error:42501:closed',
+  'service_role：終了の年度には置けない');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F_NONE')), 'error:42501:not_reserved',
+  'service_role：予約していない path（document_files に行がない）には置けない');
+select is(tests.su_put('service_role', 'pgtap/x.pdf'), 'error:42501:not_reserved', 'service_role：形の違う名前には置けない');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'), $q$ delete from public.document_files where id = :R_REP $q$),
+  'error:42501:not_reserved', 'service_role：外した予約の path には置けない');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'R_REP2'), $q$ delete from public.group_members where group_id = :G2 and user_id = :rep2 $q$),
+  'error:42501:not_editable', 'service_role：予約した店長が外された後は置けない（今もその団体の店長・副店長か）');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'R_HEAD'), $q$ delete from public.year_roles where year_id = :Y1 and user_id = :head $q$),
+  'error:42501:not_editable', 'service_role：予約した部門長がロールを外された後は置けない');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'), $q$ update public.document_files set created_by = null where id = :R_REP $q$),
+  'error:42501:not_editable', 'service_role：予約した人がいない（利用者を消した。set null）予約には置けない');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'), null, '{"size": 101}'), 'error:42501:too_large',
+  'service_role：届いた物の大きさ（metadata の size）が申告（100）を超えれば置けない（T19-SEC-2）');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'), null, '{"mimetype": "application/pdf"}'), 'ok:1',
+  'service_role：metadata に size がなければ大きさは見ない（Storage API の書く前の確かめの insert。大きさは書くときに入る）');
+select is(tests.su_put('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F_NONE'), null, '{"size": 1}', 'pgtap-other'), 'ok:1',
+  'service_role：ほかの bucket の物にはトリガーは効かない');
+-- 上書き・移動（update）：いつでも止める（Storage API の upsert は insert … on conflict do update。insert の確かめが先に動く）
+select is(tests.su_upsert('service_role', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1')), 'error:42501:not_editable',
+  'service_role：提出済みの提出の届いた物は upsert で上書きできない（upsert の署名つき URL）');
+select is(tests.su_upsert('service_role', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'),
+                          $q$ insert into storage.objects (bucket_id, name, metadata) values ('documents', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'), '{"size": 1}') $q$),
+  'error:42501:immutable', 'service_role：書ける状態（未提出）でも、届いた物は upsert で上書きできない');
+select is(tests.su_update('service_role', 'documents', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1'), $s$ metadata = '{"size": 2}' $s$), 'error:42501:immutable',
+  'service_role：届いた物の metadata を書き換えられない');
+select is(tests.su_update('service_role', 'documents', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1'), $s$ version = 'v2' $s$), 'error:42501:immutable',
+  'service_role：届いた物の版（中身）を書き換えられない');
+select is(tests.su_update('service_role', 'documents', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1'), $s$ name = name || '.moved' $s$), 'error:42501:immutable',
+  'service_role：届いた物の名前を変えられない（移動）');
+select is(tests.su_update('service_role', 'documents', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1'), $s$ bucket_id = 'pgtap-other', name = name || '.x' $s$),
+  'error:42501:immutable', 'service_role：届いた物をほかの bucket へ移せない');
+select is(tests.su_update('service_role', 'pgtap-other', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1'),
+                          format('bucket_id = %L, name = %L', 'documents', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'))), 'error:42501:immutable',
+  'service_role：ほかの bucket の物を、予約した path へ移して置けない');
+select is(tests.su_update('service_role', 'documents', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1'),
+                          $s$ owner_id = 'x', user_metadata = '{"a": 1}', last_accessed_at = now() $s$), 'ok:1',
+  'service_role：名前・bucket・版・metadata のほかの列（持ち主・利用者の metadata・最後に読んだ日時）は変えられる（Storage の版上げの update を止めない）');
+select is(tests.su_update('service_role', 'pgtap-other', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1'), $s$ metadata = '{"size": 8}' $s$), 'ok:1',
+  'service_role：ほかの bucket の物の update にはトリガーは効かない');
+select is(tests.su_write('service_role', format('delete from storage.objects where bucket_id = %L and name = %L', 'documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'O_G2')),
+                         $q$ select set_config('storage.allow_delete_query', 'true', true) $q$), 'ok:1',
+  'service_role：消すのはトリガーが見ない（storage.protect_delete と delete のポリシーが守る）');
+-- postgres（SQL Editor・マイグレーション。BYPASSRLS）も同じ
+select is(tests.su_put('postgres', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP')), 'ok:1', 'postgres：予約した path で今書けるなら置ける');
+select is(tests.su_put('postgres', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'),
+                       $q$ update public.document_submissions set status = 'approved', reviewed_at = now() where document_id = :DOC_NOFILE and group_id = :G1 $q$),
+  'error:42501:not_editable', 'postgres：承認の後は置けない');
+select is(tests.su_put('postgres', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'R_REP'), $q$ select tests.set_scenario('closed') $q$), 'error:42501:closed',
+  'postgres：終了の年度には置けない');
+select is(tests.su_put('postgres', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F_NONE')), 'error:42501:not_reserved', 'postgres：予約していない path には置けない');
+select is(tests.su_upsert('postgres', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1')), 'error:42501:not_editable', 'postgres：届いた物を upsert で上書きできない');
+select is(tests.su_update('postgres', 'documents', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1'), $s$ metadata = '{"size": 2}' $s$), 'error:42501:immutable',
+  'postgres：届いた物の metadata を書き換えられない');
+-- 確かめを飛ばせるのは session_replication_role = replica の間だけ（テストの準備の tests.put_object。postgres だけが設定できる）
+select is(tests.su_write('postgres', format('set local session_replication_role = replica; insert into storage.objects (bucket_id, name) values (%L, %L)',
+                                            'documents', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F_NONE'))), 'ok:1',
+  'postgres は session_replication_role = replica の間だけ、トリガーを飛ばして置ける（テストの準備・手での直し）');
+select is(tests.su_write('service_role', 'set local session_replication_role = replica'), 'error:42501',
+  'service_role（Storage API の書き込み）は session_replication_role を変えられない（トリガーを飛ばせない）');
 
 select * from finish();
 rollback;

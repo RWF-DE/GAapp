@@ -52,7 +52,7 @@ supabase start -x realtime,imgproxy,mailpit,studio,edge-runtime,logflare,vector,
 
 pgTAP（`supabase test db`）だけなら、DB だけを起動すればよい（`supabase db start`。storage-api がなくても、storage のスキーマは DB の中にあり、提出物の Storage のポリシーも SQL で確かめる）。
 
-Storage について（提出物。T19。D-55）：Storage の物（storage.objects の行）は SQL では消せない（`storage.allow_delete_query` を立てない delete は 42501。消すのは Storage API〔画面の remove〕）。DB の行を消すと、その物は「どの提出にも属さないファイル」として残り、画面が消す。年度・団体・提出物を SQL Editor で消さない（残った物を誰も消せなくなることがある）。ローカルの Storage のファイルの中身は `supabase stop --no-backup` で消える。
+Storage について（提出物。T19。D-55）：Storage の物（storage.objects の行）は SQL では消せない（`storage.allow_delete_query` を立てない delete は 42501。消すのは Storage API〔画面の remove〕）。DB の行を消すと、その物は「どの提出にも属さないファイル」として残り、画面が消す。年度・団体・提出物を SQL Editor で消さない（残った物を誰も消せなくなることがある）。bucket documents の物を置く・書き換えるのは、ロールによらずトリガー documents_objects_guard が DB の予約と提出の状態で確かめる（SQL Editor の postgres や service_role でも、予約のない path・承認や終了の後・上書きは 42501。テストの準備で予約の外の物を置くときは、pgTAP の tests.put_object のように `set local session_replication_role = replica` の間に置く。これを設定できるのは postgres だけ）。ローカルの Storage のファイルの中身は `supabase stop --no-backup` で消える。
 
 ### ログインとテストユーザー（ローカル）
 
@@ -214,9 +214,9 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
 
 マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で、**ブランチに `main` を選んで**手動実行する（先に 2 の環境 `production` を設定しておく。Required reviewers の承認の後に動く）。Migrate production DB（`supabase db push`）は、本番 DB にまだ流していないマイグレーションを、番号の順に全部流す。CLI はファイルごとに1つのトランザクションで流すので、途中のファイルで止まると、そのファイルの変更は何も残らず、それより前のファイルは流れたまま残る（もう一度流すと、止まったファイルから続く）。本番 DB に流したファイルは、管理画面の SQL Editor で `select version from supabase_migrations.schema_migrations order by version;` を流すと分かる（`0008` のようなファイルの番号が並ぶ）。
 
-#### 本番を使い始める前に流すもの（0009〜0015）
+#### 本番を使い始める前に流すもの（0009〜0016）
 
-main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（deploy.yml が main へのマージのたびに出す）は 0015 までのマイグレーションがあることを前提にしている。本番 DB に流していないファイルが残っていると、それを使う画面（招待とロールの段・お知らせ・締切と予定など）が失敗を出す。本番を使い始める前に（誰かがアプリで書き込む前に）、下の手順で Migrate production DB を流し、次の7つを流し終えておく（本番 DB が 0008 までなら、1回の実行でこの順に流れる）。
+main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（deploy.yml が main へのマージのたびに出す）は 0015 までのマイグレーションがあることを前提にしている。本番 DB に流していないファイルが残っていると、それを使う画面（招待とロールの段・お知らせ・締切と予定など）が失敗を出す。本番を使い始める前に（誰かがアプリで書き込む前に）、下の手順で Migrate production DB を流し、次の8つを流し終えておく（本番 DB が 0008 までなら、1回の実行でこの順に流れる）。0016（提出物の DB と Storage。T19 のパート A）は画面（パート B）より先に main に入るので、流しても今の画面は変わらない。
 
 | ファイル | 中身 | 流すときの注意 |
 | --- | --- | --- |
@@ -227,6 +227,7 @@ main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（depl
 | 0013_role_overlap_lead_tier.sql | 兼任の禁止・3つの段・新しい招待と受け入れ（T15。D-48・D-49。動きを変えるものはすべてここ） | 同上。流す前に兼任の問い合わせ |
 | 0014_notices.sql | お知らせ（T17。D-53）の型・表・RLS・RPC。足すだけ | 0013 で止まると、0014・0015 も流れない |
 | 0015_events.sql | 締切と予定の項目（T18。D-54）の型・表・RLS。足すだけ | 0014 の関数を使うので、0014 の後 |
+| 0016_documents.sql | 提出物（T19。D-55）の型・表・RLS・RPC と、Storage の bucket documents・storage.objects のポリシー3つとトリガー1つ。足すだけ | 下の「0016 の注意」。0014 の関数を使うので、0014 の後 |
 
 流す手順：
 
@@ -235,7 +236,7 @@ main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（depl
 3. 止まったら、ログのエラーを見る。止まったファイルの変更は何も残らないので、直すものを直してから、もう一度 Migrate production DB を流せば、止まったファイルから続く。
    - `role_overlap: …`（0013 の最初の文）：兼任を探す問い合わせで探して直してから流し直す。
    - lock timeout（SQLSTATE 55P03）・デッドロック（40P01）：直すものはない。そのまま流し直す。
-4. 流し終えたら、上の `supabase_migrations.schema_migrations` の問い合わせで 0015 まで並ぶことを確かめ、管理者が総務部門長・総務副部門長を招待する（下の「総務部門長・総務副部門長の付け方」）。
+4. 流し終えたら、上の `supabase_migrations.schema_migrations` の問い合わせで 0016 まで並ぶことを確かめ、下の「0016 の注意」の確かめの問い合わせを流し、管理者が総務部門長・総務副部門長を招待する（下の「総務部門長・総務副部門長の付け方」）。
 
 #### 0011〜0013（T15 のロールの見直し。D-48・D-49）の注意
 
@@ -269,6 +270,31 @@ main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（depl
 
 - 総務部門長・総務副部門長は、0011〜0013 を流した後に付ける（流す前の DB はこの2つのロールを知らない）。ロールの画面（T15b。PR #20）はもう本番に出ている。今までの admin・staff・viewer・団体代表は、そのまま使える（表示は管理者・総務部門員・閲覧のみ・「{団体} の店長」になる）。
 - 総務部門長・総務副部門長の付け方：その年度の管理者が、アプリのマスタ設定 → ユーザー の「招待する」で、メールアドレスを入れて立場に「総務部門長」か「総務副部門長」を選んで招待する（1回に1つの立場。すでにアカウントがあり、今のメールを本人のものと確かめられれば、その場で付く。ほかは、その人が学校の Google アカウントでログインしたときに付く）。年度の作成（create_year_from）で新しい年度に付くロールは作った人の管理者だけなので、**新しい年度を作るたびに招待し直す**（D-48。docs/runbook.md の 1.3）。総務部門員・店長・副店長は、管理者のほか総務部門長・総務副部門長も招待できる。総務部門長・総務副部門長・総務部門員は、同じ年度の店長・副店長を兼ねられない（管理者と閲覧のみは兼ねられる。D-49）。その年度の店長・副店長を総務部門長などに招待すると、立場の欄に兼任のエラーが出るので、先にメンバーの一覧で「代表を外す」か、別の人を招待する。
+
+#### 0016（提出物。T19。D-55）の注意
+
+- 0016 は型・表・関数・ポリシーを足すだけで、今の表と関数は変えない。最後の Storage の部分で、storage.buckets に bucket `documents` の行（非公開・1ファイル 10 MiB・PDF・JPEG・PNG）を入れ、storage.objects に bucket documents の物だけに効くポリシー3つ（documents_objects_select・documents_objects_insert・documents_objects_delete）と、書き込みを DB の予約と提出の状態で確かめるトリガー documents_objects_guard を作る（RLS を通らない Storage API の書き込み〔署名つきアップロードなど〕も止める。notes/T19.md の「レビューで直したこと」）。storage の表の持ち主は supabase_storage_admin で、Migrate production DB は postgres で流す。ローカル（supabase/postgres 17.11・CLI 2.122.0）では postgres でどれも作れたが、本番で権限のエラー（42501。permission denied・must be owner of table objects など）で止まることがある。止まると 0016 の変更は何も残らない（0015 までは残る。提出物の画面はまだないので、ほかの画面はそのまま使える）。
+- 流し終えたら、管理画面の SQL Editor で次を流し、Storage の部分が入ったことを確かめる（最後の4行は取り消すトランザクションで、service_role の書き込み〔署名つきアップロードと同じロール〕もトリガーが止めることを見る。何も残らない）：
+
+  ```sql
+  select id, public, file_size_limit, allowed_mime_types from storage.buckets where id = 'documents';
+  -- 1 行：documents | false | 10485760 | {application/pdf,image/jpeg,image/png}
+  select policyname, cmd, roles from pg_policies where schemaname = 'storage' and tablename = 'objects' order by policyname;
+  -- 3 行：documents_objects_delete | DELETE | {authenticated}、documents_objects_insert | INSERT | {authenticated}、documents_objects_select | SELECT | {authenticated}
+  select tgname, tgenabled from pg_trigger where tgrelid = 'storage.objects'::regclass and tgname = 'documents_objects_guard';
+  -- 1 行：documents_objects_guard | O
+  begin;
+  set local role service_role;
+  insert into storage.objects (bucket_id, name) values ('documents', 'check/not-reserved.pdf');
+  rollback;
+  -- ERROR: forbidden（42501。DETAIL は {"reason": "not_reserved"}）になれば、トリガーが効いている
+  ```
+
+- 止まったときの手順：
+  1. ログのエラーから、止まった文を控える（`insert into storage.buckets`・`create policy … on storage.objects`・`create trigger documents_objects_guard`）。どの文が通らないかは、SQL Editor で 0016 の全部を `begin;` と `rollback;` で囲んで流すと分かる（Storage の部分は 0016 の前半の表と関数を使うので、全部を流す。最後が rollback なので何も残らない）。
+  2. bucket の行かポリシーが通らないとき：手で入れる。bucket は管理画面の Storage → New bucket で作る（名前 `documents`、Public bucket はオフ、Restrict file upload size は 10 MB〔10485760 バイト〕、Allowed MIME types は `application/pdf`・`image/jpeg`・`image/png`）。ポリシーは Storage → Policies の bucket documents で New policy → For full customization を選び、0016 の3つの `create policy` と同じ名前・操作（SELECT・INSERT・DELETE）・対象のロール（authenticated）・式で作る。入れた後に上の確かめの問い合わせを流し、0016 から手で入れた文を除く PR を出してから（除いたことを notes/T19.md に書く）、Migrate production DB を流し直す。
+  3. トリガーが通らないとき（postgres が storage.objects にトリガーを作れない）：トリガーのないまま 0016 を流さない（署名つきアップロードの URL を取っておくと、承認の後のファイルを差し替えられる。T19-SEC-1）。代わりの守りを入れる PR を出してから流す：authenticated から storage.objects の update の権限を外して upsert の署名つき URL を作れなくし（`revoke update on storage.objects from authenticated`）、提出・承認のときに各物の版（storage.objects の version）を document_files に控えて、違えば v_document_files と承認で見つける（notes/T19.md の判断したことの 29）。
+  4. lock timeout（55P03）・デッドロック（40P01）：直すものはない。そのまま流し直す。
 
 ### 6. 最初の年度と最初の管理者（D-01）
 

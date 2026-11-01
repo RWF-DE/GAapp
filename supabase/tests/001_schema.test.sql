@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(370);
+select plan(371);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -271,6 +271,17 @@ select is((select string_agg(conname || ': ' || pg_get_constraintdef(oid), ' / '
   || 'document_submissions_document_fkey: FOREIGN KEY (document_id, year_id) REFERENCES documents(id, year_id) ON DELETE CASCADE / '
   || 'document_submissions_group_fkey: FOREIGN KEY (group_id, year_id) REFERENCES groups(id, year_id) ON DELETE CASCADE',
   '提出・ファイルの複合外部キーは3本とも名前つきで cascade（提出物・団体・提出を消すと行も消える）');
+with fk as (
+  select conrelid::regclass::text as tbl, confdeltype as del,
+         (select string_agg(a.attname, ',' order by a.attnum) from pg_attribute a
+           where a.attrelid = c.conrelid and a.attnum = any (c.conkey)) as cols
+  from pg_constraint c where c.contype = 'f'
+    and c.conrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass))
+select is((select string_agg(tbl || '.' || cols || '=' || del::text, ' ' order by tbl, cols) from fk),
+  'document_files.created_by=n document_files.year_id,document_id,group_id=c document_submissions.document_id,year_id=c '
+  || 'document_submissions.group_id,year_id=c document_submissions.reviewed_by=n document_submissions.submitted_by=n documents.created_by=n '
+  || 'documents.updated_by=n documents.year_id=c',
+  '提出物の3表の外部キーの on delete：年度・提出物・団体・提出へは cascade（c）、記録のための人（書いた人・直した人・提出した人・確かめた人・予約した人）は set null（n）。下の set null の一覧には入れない');
 
 -- on delete の動作（c＝cascade、r＝restrict、n＝set null）
 with fk as (
@@ -285,15 +296,15 @@ with fk as (
   select conrelid::regclass::text as tbl, confdeltype as del,
          (select string_agg(a.attname, ',' order by a.attnum) from pg_attribute a
            where a.attrelid = c.conrelid and a.attnum = any (c.conkey)) as cols
-  from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace)
+  from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace
+    and c.conrelid not in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)) -- 提出物（T19）は上で見る
 select is((select string_agg(tbl || '.' || cols, ' ' order by tbl, cols) from fk where del = 'n'),
-  'deliveries.checked_by deliveries.year_id,slot_id document_files.created_by document_submissions.reviewed_by document_submissions.submitted_by documents.created_by documents.updated_by events.created_by events.updated_by notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by years.prev_year_id',
-  '記録のためのユーザー参照（お知らせ・予定と締切・提出物の書いた人・直した人、提出した人・確かめた人・予約した人を含む）・時間枠・複製元は set null');
--- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー。T18 で events.year_id を足した。T19 で documents.year_id と、
--- 提出の2本・ファイルの1本の複合外部キーを足した
+  'deliveries.checked_by deliveries.year_id,slot_id events.created_by events.updated_by notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by years.prev_year_id',
+  '記録のためのユーザー参照（お知らせ・予定と締切の書いた人・直した人を含む）・時間枠・複製元は set null');
+-- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー。T18 で events.year_id を足した
 select is((select count(*)::int from pg_constraint c
            where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 27,
-  '年度・団体・ユーザー・お知らせ・提出物・提出への参照は cascade（27 本）');
+  '年度・団体・ユーザー・お知らせ・提出物・提出への参照は cascade（27 本。T19 で documents.year_id と、提出の2本・ファイルの1本の複合外部キーを足した）');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'deliveries_slot_id_year_id_fkey'),
   'FOREIGN KEY (slot_id, year_id) REFERENCES slots(id, year_id) ON DELETE SET NULL (slot_id)',
   '時間枠を消しても受け渡しの year_id は残す（列を指定した set null）');
@@ -835,10 +846,12 @@ select is((select count(distinct c.relname)::int from pg_trigger t join pg_class
   'set_timestamps が 24 表にある');
 
 -- トリガーの一覧（表ごとの名前の集合）
+-- 提出物の3表（T19）の audit は、T19 の確かめ（3表のトリガーの一覧と定義）で見る（並行の機能のチケットとぶつからないよう、ここの一覧は変えない）
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
+             and c.relname not in ('documents', 'document_submissions', 'document_files')
            where t.tgname = 'audit' and c.relnamespace = 'public'::regnamespace),
-  'allocations distance_overrides document_files document_submissions documents events group_members groups items notice_groups notices request_submissions requests room_years rooms rules stocks substitution_consents year_roles years',
-  'audit が 20 表にある（invitations・profiles は個人情報のため記録しない。T17 でお知らせの2表を、T18 で予定と締切を、T19 で提出物の3表を足した）');
+  'allocations distance_overrides events group_members groups items notice_groups notices request_submissions requests room_years rooms rules stocks substitution_consents year_roles years',
+  'audit が 17 表にある（invitations・profiles は個人情報のため記録しない。T17 でお知らせの2表を、T18 で予定と締切を足した）');
 select is((select string_agg(c.relname, ' ' order by c.relname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'bump_version_upd' and c.relnamespace = 'public'::regnamespace),
   'allocations distance_overrides groups items request_submissions requests room_years rooms rules stocks substitution_consents',

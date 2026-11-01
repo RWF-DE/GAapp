@@ -43,14 +43,16 @@ insert into public.document_files (id, year_id, document_id, group_id, object_pa
   (tests.id('F13_HEAD'), tests.id('Y1'), tests.id('DOC_STALL'), tests.id('G1'), tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F13_HEAD'), 'application/pdf', 10, tests.id('head')),
   (tests.id('F13_VIEWER'), tests.id('Y1'), tests.id('DOC_NOFILE'), tests.id('G4'), tests.doc_path('Y1', 'G4', 'DOC_NOFILE', 'F13_VIEWER'), 'application/pdf', 10, tests.id('viewer')),
   (tests.id('F13_REP2'), tests.id('Y1'), tests.id('DOC_STALL'), tests.id('G2'), tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F13_REP2'), 'application/pdf', 10, tests.id('rep2'));
-insert into storage.objects (bucket_id, name, metadata) values
-  ('documents', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F13_REP'), '{"size": 10}'),
-  ('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'O13_G2'), '{"size": 10}'),
-  ('documents', tests.doc_path('Y2', 'G3', 'DOC_Y2', 'F_Y2'), '{"size": 2000}'),
-  ('documents', 'pgtap/' || tests.id('G1') || '/x.pdf', '{"size": 1}'),
-  ('documents', tests.id('Y1') || '', '{"size": 1}');
+-- 物は tests.put_object（fixture。0016 のトリガー documents_objects_guard を飛ばして置く。どの提出にも属さない物と形の違う名前の物は、
+-- 予約の外なのでトリガーが止めるため）で置く
+select tests.put_object('documents', v.name, v.metadata::jsonb)
+from (values (tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F13_REP'), '{"size": 10}'),
+             (tests.doc_path('Y1', 'G2', 'DOC_STALL', 'O13_G2'), '{"size": 10}'),
+             (tests.doc_path('Y2', 'G3', 'DOC_Y2', 'F_Y2'), '{"size": 2000}'),
+             ('pgtap/' || tests.id('G1') || '/x.pdf', '{"size": 1}'),
+             (tests.id('Y1') || '', '{"size": 1}')) v(name, metadata);
 
-select plan(100);
+select plan(101);
 
 -- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
 -- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
@@ -134,11 +136,21 @@ select tests.compare_all();
 select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
   format('%s：0010 の形（0013 の段）のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態）', t))
 from unnest(array['audit_logs', 'allocations', 'requests', 'request_submissions', 'substitution_consents', 'stocks', 'groups',
-                   'notices', 'notice_groups', 'events', 'documents', 'document_submissions', 'document_files']) t;
+                   'notices', 'notice_groups', 'events']) t;
+-- 提出物の3表（T19）も同じ（行ごとの形の述語は 02 の「提出物の権限」から）。並行の機能のチケットとぶつからないよう、上の一覧とは分ける
+select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
+  format('%s：0010 の形（0013 の段）のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態）', t))
+from unnest(array['documents', 'document_submissions', 'document_files']) t;
+-- 提出物の3表を比べたものに中身がある（下の 10 表の確かめと同じ。全員 0 行や全員同じでは比べたことにならない）
+select is((select string_agg(x.tbl, ' ' order by x.tbl) from (select tbl from tests.compared
+             where tbl in ('documents', 'document_submissions', 'document_files')
+             group by tbl having count(distinct new) >= 2 and bool_or(new !~ '^0:')) x),
+  'document_files document_submissions documents',
+  '提出物の3表（T19）とも比べていて、ペルソナ・状態によって見える行が違い、見える行のある組がある');
 -- 比べたものに中身がある（全員 0 行や全員同じでは比べたことにならない）
-select is_empty($q$ select tbl from tests.compared group by tbl
+select is_empty($q$ select tbl from tests.compared where tbl not in ('documents', 'document_submissions', 'document_files') group by tbl
                     having count(distinct new) < 2 or not bool_or(new !~ '^0:') $q$,
-  '13 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
+  '10 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
 
 -- ---------------------------------------------------------------- ② 新しい関数は呼んだ人についてだけ答える
 select tests.login_as('admin');

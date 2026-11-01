@@ -5,7 +5,8 @@
 --    yn は列の順（admin head staff viewer rep rep2 outsider admin2）に、空白で区切った8つの結果。deputy は head の列で確かめ、実際の結果
 --    どうしも比べる。略号：ok、F＝forbidden、NF＝not_found、IS＝invalid_state、II＝invalid_input、CF＝conflict。
 -- ② reserve_document_file：エラーの順番と detail、path の形、冪等（送り直し）と in_use、書ける状態（店長・副店長と部門長以上）、
---    5 つまで、bucket の合計 900 MiB（届いた物は実際の大きさ、届いていない予約は申告の大きさ）
+--    5 つまで、団体のフォルダのどの提出にも属さない物が 5 つ未満（T19 のレビューの T19-SEC-2）、bucket の合計 900 MiB（届いた物は
+--    実際の大きさ、届いていない予約は申告の大きさ）
 -- ③ discard_document_file：有無を漏らさない forbidden、届いた物と届いていない予約、返り値と提出の版
 -- ④ submit_document・withdraw_document：楽観ロック（ミリ秒まで。行がないときの null）、ファイルの確かめ、代理の印、締切の後
 -- ⑤ approve_document・return_document：紙などで受け取った承認（メモが必須・提出の日時を消す）、メモ・理由の空白と長さ
@@ -246,7 +247,7 @@ select c.n, c.label, c.scenario, p.persona, p.ord,
        tests.sql(c.template) as sql
 from tests.rpc_case c cross join tests.rpc_persona p;
 
-select plan((select count(*)::int from tests.rpc_cells) + 3 + 217);
+select plan((select count(*)::int from tests.rpc_cells) + 3 + 226);
 
 select is_empty($$ select n, yn from tests.rpc_case
                    where array_length(string_to_array(yn, ' '), 1) <> 8
@@ -332,7 +333,7 @@ select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G
 select is(tests.q('rep', $q$ select tests.name_of((public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 1000)).id) $q$),
   'F_G1', '予約の送り直し：提出済みでも、同じ id・同じ中身なら同じ行を返す');
 select is(tests.q('rep', $q$ select tests.name_of((public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 1000)).id) $q$,
-                  $q$ insert into storage.objects (bucket_id, name, metadata) values ('documents', 'pgtap/full.pdf', jsonb_build_object('size', 943718400)) $q$),
+                  $q$ select tests.put_object('documents', 'pgtap/full.pdf', jsonb_build_object('size', 943718400)) $q$),
   'F_G1', '予約の送り直し：bucket がいっぱいでも、同じ id・同じ中身なら同じ行を返す（容量を見ない）');
 select is(tests.q('rep', $q$ select count(*) || ' ' || tests.name_of(min(f.id::text)::uuid) from public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 1000) f $q$),
   '1 F_G1', '予約の送り直しは行を増やさない');
@@ -372,21 +373,74 @@ select is(tests.q('rep2', $q$ select (public.reserve_document_file(:DOC_STALL, :
                       select x.id, :Y1, :DOC_STALL, :G2, :Y1::text || '/' || :G2::text || '/' || :DOC_STALL::text || '/' || x.id::text || '.pdf', 'application/pdf', 1
                       from (select gen_random_uuid() as id from generate_series(1, 4)) x $q$),
   '10', '予約：4 つなら 5 つ目を足せる');
+-- どの提出にも属さない物（T19 のレビューの T19-SEC-2）：その団体のフォルダ（path の2つ目のフォルダがその団体）に 5 つ以上あれば
+-- too_many_orphans（届いた物を外して予約し直す繰り返しで、1つの団体が bucket を埋められないようにする。画面は document_orphan_paths の
+-- path を消してから足し直す）。fixture の O_G1 が G1 のフォルダに1つある。状態・5 つの確かめの後、容量の確かめの前
+select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
+                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
+                      from generate_series(1, 4) $q$),
+  tests.e('invalid_state', '{"status": "not_submitted", "reason": "too_many_orphans"}'),
+  '予約：団体のフォルダにどの提出にも属さない物が 5 つあれば too_many_orphans');
+select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
+                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
+                      from generate_series(1, 3) $q$),
+  '10', '予約：4 つなら足せる');
+select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
+                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_NOFILE::text || '/' || gen_random_uuid()::text || '.pdf')
+                      from generate_series(1, 4) $q$),
+  tests.e('invalid_state', '{"status": "submitted", "reason": "too_many_orphans"}'),
+  '予約：部門長の代理の予約も、その団体のフォルダの物で数える（ほかの提出物の分も）');
+select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
+                  $q$ select tests.put_object(b, :Y1::text || '/' || g::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
+                      from (values ('documents', :G2), ('pgtap-other', :G1)) v(b, g), generate_series(1, 4);
+                      select tests.put_object('documents', 'pgtap/' || gen_random_uuid()::text || '.pdf') from generate_series(1, 4) $q$),
+  '10', '予約：ほかの団体のフォルダ・ほかの bucket・形の違う名前の物は数えない');
+select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
+                  $q$ insert into public.document_submissions (document_id, group_id, year_id) values (:DOC_NOFILE, :G1, :Y1);
+                      insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size, created_by)
+                      select x.id, :Y1, :DOC_NOFILE, :G1, :Y1::text || '/' || :G1::text || '/' || :DOC_NOFILE::text || '/' || x.id::text || '.pdf', 'application/pdf', 1, :rep
+                      from (select gen_random_uuid() as id from generate_series(1, 4)) x;
+                      select tests.put_object('documents', f.object_path) from public.document_files f where f.document_id = :DOC_NOFILE and f.group_id = :G1 $q$),
+  '10', '予約：DB の行がある物（届いたファイル）は数えない');
+select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
+                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
+                      from generate_series(1, 4) $q$),
+  tests.e('invalid_state', '{"status": "submitted", "reason": "not_editable"}'), '予約：書けない状態（not_editable）は too_many_orphans より先');
+select is(tests.q('rep2', $q$ select (public.reserve_document_file(:DOC_STALL, :G2, gen_random_uuid(), 'application/pdf', 10)).id $q$,
+                  $q$ insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
+                      select x.id, :Y1, :DOC_STALL, :G2, :Y1::text || '/' || :G2::text || '/' || :DOC_STALL::text || '/' || x.id::text || '.pdf', 'application/pdf', 1
+                      from (select gen_random_uuid() as id from generate_series(1, 5)) x;
+                      select tests.put_object('documents', :Y1::text || '/' || :G2::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
+                      from generate_series(1, 5) $q$),
+  tests.e('invalid_state', '{"status": "returned", "reason": "too_many_files"}'), '予約：5 つ（too_many_files）は too_many_orphans より先');
+select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
+                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
+                      from generate_series(1, 4);
+                      select tests.put_object('documents', 'pgtap/full.pdf', jsonb_build_object('size', 943718400)) $q$),
+  tests.e('invalid_state', '{"status": "not_submitted", "reason": "too_many_orphans"}'), '予約：too_many_orphans は容量（storage_full）より先');
+select is(tests.q('rep', $q$ select tests.name_of((public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 1000)).id) $q$,
+                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
+                      from generate_series(1, 4) $q$),
+  'F_G1', '予約の送り直し（同じ id・同じ中身）は、どの提出にも属さない物の数を見ずに同じ行を返す');
 -- bucket の合計 900 MiB（943718400 B）：届いた物（metadata の size）＋届いていない予約（申告）＋今回。fixture と F_G1B では、届いた物が
 -- F_G1 の 1000 と O_G1 の 500（ほかの bucket の 7 は数えない）、届いていない予約が F_Y2 の 2000 と F_G1B の 300 で、合計 3800
 select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 11)).id $q$,
-                  $q$ insert into storage.objects (bucket_id, name, metadata) values ('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 3800 - 10)) $q$),
+                  $q$ select tests.put_object('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 3800 - 10)) $q$),
   tests.e('invalid_state', '{"status": "not_submitted", "reason": "storage_full"}'), '予約：bucket の合計が 900 MiB を 1 B でも超えるなら storage_full');
 select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ insert into storage.objects (bucket_id, name, metadata) values ('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 3800 - 10)) $q$),
+                  $q$ select tests.put_object('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 3800 - 10)) $q$),
   '10', '予約：ちょうど 900 MiB までは足せる');
 select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ update storage.objects set metadata = '{"size": 1}' where bucket_id = 'documents' and name = tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1');
-                      insert into storage.objects (bucket_id, name, metadata) values ('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 2801 - 10)) $q$),
+                  $q$ set local session_replication_role = replica;
+                      update storage.objects set metadata = '{"size": 1}' where bucket_id = 'documents' and name = tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1');
+                      set local session_replication_role = origin;
+                      select tests.put_object('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 2801 - 10)) $q$),
   '10', '予約：届いた物は申告（1000）でなく実際の大きさ（1）で数える');
 select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 11)).id $q$,
-                  $q$ update storage.objects set metadata = '{"size": 1}' where bucket_id = 'documents' and name = tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1');
-                      insert into storage.objects (bucket_id, name, metadata) values ('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 2801 - 10)) $q$),
+                  $q$ set local session_replication_role = replica;
+                      update storage.objects set metadata = '{"size": 1}' where bucket_id = 'documents' and name = tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1');
+                      set local session_replication_role = origin;
+                      select tests.put_object('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 2801 - 10)) $q$),
   tests.e('invalid_state', '{"status": "not_submitted", "reason": "storage_full"}'), '予約：実際の大きさで数えても、超えれば storage_full');
 select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
                   $q$ insert into storage.objects (bucket_id, name, metadata) values ('pgtap-other', 'pgtap/big.pdf', jsonb_build_object('size', 943718400)) $q$),
@@ -707,8 +761,8 @@ select is(tests.q('rep2', $q$ select count(*) from public.document_orphan_paths(
 select is(tests.q('staff', $q$ select count(*) from public.document_orphan_paths(:Y1) $q$), 'forbidden', '部門員は forbidden');
 select is(tests.q('admin', $q$ select count(*) from public.document_orphan_paths(null) $q$), 'forbidden', '年度が null → forbidden');
 select is(tests.q('admin', $q$ select count(*) from public.document_orphan_paths(:Y1) $q$,
-                  $q$ insert into storage.objects (bucket_id, name, metadata) values ('pgtap-other', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F5'), '{"size": 1}'),
-                                                                                     ('documents', tests.doc_path('Y2', 'G3', 'DOC_Y2', 'F5'), '{"size": 1}') $q$),
+                  $q$ select tests.put_object('pgtap-other', tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F5')),
+                             tests.put_object('documents', tests.doc_path('Y2', 'G3', 'DOC_Y2', 'F5')) $q$),
   '2', 'ほかの bucket の物と、ほかの年度のフォルダの物は入らない');
 -- 使った量：bucket の合計（全年度・どの提出にも属さない物も）、上限、その年度のファイルの数と大きさ（届いた物は実際、届いていないものは申告）、
 -- その年度のフォルダのどの提出にも属さない物の数
@@ -806,19 +860,19 @@ select is(tests.q('rep2', $q$ select (public.submit_document(:DOC_STALL, :G2, te
                   $q$ select set_config('tests.raise', 'document_submissions:23514', true);
                       insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
                       values (:F6, :Y1, :DOC_STALL, :G2, tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6'), 'application/pdf', 1);
-                      insert into storage.objects (bucket_id, name, metadata) values ('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6'), '{"size": 1}') $q$),
+                      select tests.put_object('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6')) $q$),
   tests.e('invalid_input', '{"field": "document_id"}'), '提出：CHECK の違反 → document_id');
 select is(tests.q('rep2', $q$ select (public.submit_document(:DOC_STALL, :G2, tests.sub_ts('DOC_STALL', 'G2'))).status $q$,
                   $q$ select set_config('tests.raise', 'document_submissions:23503', true);
                       insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
                       values (:F6, :Y1, :DOC_STALL, :G2, tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6'), 'application/pdf', 1);
-                      insert into storage.objects (bucket_id, name, metadata) values ('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6'), '{"size": 1}') $q$),
+                      select tests.put_object('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6')) $q$),
   'not_found', '提出：外部キーの違反 → not_found');
 select is(tests.q('rep2', $q$ select (public.submit_document(:DOC_STALL, :G2, tests.sub_ts('DOC_STALL', 'G2'))).status $q$,
                   $q$ select set_config('tests.raise', 'document_submissions:22003', true);
                       insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
                       values (:F6, :Y1, :DOC_STALL, :G2, tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6'), 'application/pdf', 1);
-                      insert into storage.objects (bucket_id, name, metadata) values ('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6'), '{"size": 1}') $q$),
+                      select tests.put_object('documents', tests.doc_path('Y1', 'G2', 'DOC_STALL', 'F6')) $q$),
   tests.e('invalid_input', '{"field": "document_id"}'), '提出：クラス 22 の誤り → document_id');
 select is(tests.q('head', $q$ select (public.approve_document(:DOC_STALL, :G1, null, tests.sub_ts('DOC_STALL', 'G1'))).status $q$,
                   $q$ select set_config('tests.raise', 'document_submissions:23514:document_submissions_review_note_check', true) $q$),

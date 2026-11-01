@@ -61,7 +61,8 @@ insert into tests.expected_fn values
   ('notice_trigger', 'private.tg_notices_check_groups()'),
   -- 予定と締切のトリガー関数（0015。T18。誰も実行できない。判定関数と RPC は足していない）
   ('event_trigger', 'private.tg_events_set_actor()');
--- 提出物（0016。T19）：RPC 11 個、ポリシー（storage.objects を含む）が呼ぶ集合の関数3個、トリガー関数2つと RPC の補助2つ（誰も実行できない）
+-- 提出物（0016。T19）：RPC 11 個、ポリシー（storage.objects を含む）が呼ぶ集合の関数3個、トリガー関数3つ（storage.objects の書き込みの守りを
+-- 含む。T19 のレビューの T19-SEC-1）と RPC の補助2つ（誰も実行できない）
 insert into tests.expected_fn values
   ('rpc', 'public.reserve_document_file(uuid, uuid, uuid, text, integer)'),
   ('rpc', 'public.discard_document_file(uuid)'),
@@ -79,6 +80,7 @@ insert into tests.expected_fn values
   ('predicate', 'private.my_document_orphan_paths()'),
   ('document_helper', 'private.tg_documents_normalize_categories()'),
   ('document_helper', 'private.tg_documents_set_actor()'),
+  ('document_helper', 'private.tg_documents_objects_guard()'),
   ('document_helper', 'private.lock_document_year(uuid, uuid)'),
   ('document_helper', 'private.target_document(uuid, uuid, uuid)');
 
@@ -158,11 +160,11 @@ select is_empty($$ select f.sig from tests.expected_fn f
                           or has_function_privilege('supabase_auth_admin', to_regprocedure(f.sig), 'execute')
                           or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
                                      where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
-  '提出物のトリガー関数（set_actor・区分の並べ直し）と RPC の補助（lock_document_year・target_document）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T19）');
+  '提出物のトリガー関数（set_actor・区分の並べ直し・storage.objects の書き込みの守り）と RPC の補助（lock_document_year・target_document）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T19）');
 select is((select string_agg(p.proname || '=' || case when p.prosecdef then 'definer' else 'invoker' end || ':' || p.provolatile::text, ' ' order by p.proname)
            from tests.expected_fn f join pg_proc p on p.oid = to_regprocedure(f.sig) where f.kind = 'document_helper'),
-  'lock_document_year=definer:v target_document=definer:v tg_documents_normalize_categories=invoker:v tg_documents_set_actor=invoker:v',
-  '提出物の RPC の補助は DEFINER・VOLATILE（ロックの後を新しいスナップショットで読む）、トリガー関数は INVOKER');
+  'lock_document_year=definer:v target_document=definer:v tg_documents_normalize_categories=invoker:v tg_documents_objects_guard=definer:v tg_documents_set_actor=invoker:v',
+  '提出物の RPC の補助は DEFINER・VOLATILE（ロックの後を新しいスナップショットで読む）、トリガー関数は INVOKER（storage.objects の書き込みの守りは、書いたロールによらず予約と提出を読み、ロックの後に読み直すので DEFINER・VOLATILE）');
 -- 提出物の RPC（T19。04 の DB 関数）：引数名・既定値・返り値。どれも名前つきで呼ぶ。既定値は delete_year_document_files の理由（null）だけ
 -- （base_updated_at は既定値なし：行がなければ null を名前つきで渡す）
 select is((select string_agg(p.proname || '(' || array_to_string(p.proargnames[1:p.pronargs], ',') || ') defaults=' || p.pronargdefaults

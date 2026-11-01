@@ -593,8 +593,8 @@ insert into public.document_submissions (document_id, group_id, year_id) values 
 insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
 values ('00000000-0000-4000-8000-00000000df12', tests.id('Y1'), tests.id('DOC_STALL'), tests.id('G9'),
         tests.id('Y1') || '/' || tests.id('G9') || '/' || tests.id('DOC_STALL') || '/00000000-0000-4000-8000-00000000df12.pdf', 'application/pdf', 1);
-insert into storage.objects (bucket_id, name, metadata)
-values ('documents', tests.id('Y1') || '/' || tests.id('G9') || '/' || tests.id('DOC_STALL') || '/00000000-0000-4000-8000-00000000df12.pdf', '{"size": 1}');
+-- 予約した人のない行なので、物は tests.put_object（fixture。0016 のトリガー documents_objects_guard を飛ばす）で置く
+select tests.put_object('documents', tests.id('Y1') || '/' || tests.id('G9') || '/' || tests.id('DOC_STALL') || '/00000000-0000-4000-8000-00000000df12.pdf');
 select coalesce(max(id), 0) as d2 from public.audit_logs \gset
 select lives_ok($$ delete from public.groups where id = tests.id('G9') $$, '受付中なら団体を消せる（提出・ファイルも連鎖で消える）');
 select is((select count(*)::int from public.document_submissions where group_id = tests.id('G9'))

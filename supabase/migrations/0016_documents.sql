@@ -7,15 +7,18 @@
 --   提出・ファイル      ：RPC だけ（表には書き込みの権限を与えない）。状態の移り方・ファイルの数と容量・理由を同じトランザクションで
 --                         確かめ、提出とファイルを1回で変えるため（CLAUDE.md の設計上の約束）
 --   Storage の物        ：Storage API（画面の upload・remove）。上げられるのは DB が予約した path だけ（storage.objects の insert の
---                         ポリシー）。Storage の物は SQL では消せない（storage.protect_delete）ので、DB の行を消した物は「どの提出にも
---                         属さないファイル」として残り、画面が消す（document_orphan_paths が消せる path を返す）
+--                         ポリシーと、ロールによらず動くトリガー documents_objects_guard。署名つきアップロードなど RLS を通らない
+--                         書き込みも、予約と提出の状態で止め、上書き・移動はいつでも止める。T19 のレビューの T19-SEC-1）。Storage の物は
+--                         SQL では消せない（storage.protect_delete）ので、DB の行を消した物は「どの提出にも属さないファイル」として残り、
+--                         画面が消す（document_orphan_paths が消せる path を返す）
 -- 読める人（Q4・Q5）：部門長以上はその年度の全部（ファイルを含む）、総務部門員は提出物と提出の状況だけ（ファイルは読めない）、
 -- 店長・副店長は自団体が対象の提出物と自団体の提出・ファイル、閲覧のみ・未招待は何も読めない。読み取りは年度の状態によらない。
 -- 終了（closed）の年度は読むだけ（例外は、管理者がファイルの行を全部消す delete_year_document_files だけ。Q3）。振り分けの入力で
 -- ないので、版（allocation_version）を増やさず、確定中の守りもない（確定中も書ける）。年度の複製（create_year_from）は写さない。
 -- 細部（RPC のエラーの順・ロックの順・判断したこと）は notes/T19.md の「SQL の約束」。画面は T19 のパート B。
 -- storage のスキーマ（storage.buckets・storage.objects と、その権限・トリガー）は Supabase のもの（CLI は DB を作るときに storage-api の
--- マイグレーションを流す。本番にもある）。ここでは bucket の行とポリシーを足すだけで、storage の表・関数・既定の権限は変えない。
+-- マイグレーションを流す。本番にもある）。ここでは bucket の行とポリシー3つとトリガー1つを足すだけで、storage の表・関数・既定の権限は
+-- 変えない（トリガーの関数は private に置く）。
 -- 0014 の private.my_group_year_ids を使うので 0014 の後（0015 の次）に当てる。足すだけで、今の表・関数・ポリシーは変えない。
 
 ------------------------------------------------------------------------
@@ -337,6 +340,7 @@ $$;
 
 -- ポリシーは bucket documents の物だけに効く（ほかの bucket の物は、ほかのポリシーがなければ誰も触れない）。anon 向けと update の
 -- ポリシーは作らない（上書き・移動・upsert はできない。画面の upload は upsert: false）。storage の表の権限（Supabase の既定）は変えない。
+-- RLS を通らない書き込み（署名つきアップロードなど）は、下のトリガー documents_objects_guard が同じ条件で止める。
 -- フォルダは組み込みの split_part で分ける（文字列を分けるだけ。storage.foldername と同じ意味で、storage の補助の版によらない）。
 -- select（ダウンロード・署名つき URL・一覧。Storage API の insert・remove も行を返させるので要る）は DB の行でなくフォルダで決める
 -- （どの提出にも属さない物も、範囲の人が読んで消せる。判断したことの 23）。部門員・閲覧のみ・未招待は読めない（Q4・Q5）
@@ -349,6 +353,82 @@ create policy documents_objects_insert on storage.objects for insert to authenti
 create policy documents_objects_delete on storage.objects for delete to authenticated
   using (bucket_id = 'documents' and name in (select private.my_document_orphan_paths()));
 
+-- 書き込みの守り（T19 のレビューの T19-SEC-1。2026-11-01）：上のポリシー（RLS）は、Storage API が呼んだ人の権限で書くときにしか効かない。
+-- 署名つきアップロード（createSignedUploadUrl → uploadToSignedUrl）は、URL を作るときだけ呼んだ人の RLS を確かめ、書くときは service_role
+-- （BYPASSRLS）で書く。トークンは有効期限（ローカル・ホスト版の既定で 2 時間）の間は使い回せるので、RLS だけでは、予約の後に URL を作って
+-- おけば承認・終了の後にファイルを足せ、upsert の URL で承認済みのファイルを上書きできてしまう（TUS・S3 の道の最後の書き込み、service_role の
+-- 鍵、SQL Editor・マイグレーションの postgres も RLS を通らない）。トリガーはロールによらず動くので、bucket documents の物の書き込みを
+-- storage.objects の行の前のトリガーで確かめる（止めるのは 42501。Storage API は 403 AccessDenied にする）：
+--   insert：name が document_files の object_path で、年度が終了でなく、予約した人（created_by）が、その段で今書ける提出（店長・副店長は
+--     未提出・差し戻しで今もその団体の店長・副店長、部門長以上は承認でなく今もその年度の部門長以上）の物だけ（my_document_upload_paths と
+--     同じ条件を、呼んだ人〔auth.uid()〕でなく予約した人で見る。スーパーユーザーの書き込みには auth.uid() がない）。予約した人のいない
+--     （利用者を消した。set null）予約には置けない。届いた物の大きさ（metadata の size。Storage API が書くときに入れる）が申告の大きさを
+--     超えれば止める（size のない insert〔Storage API が書く前に権限だけを確かめる insert〕は大きさを見ない。T19-SEC-2。判断したことの 18）
+--   update：名前・bucket・版（version）・metadata を変える update（上書き・移動。bucket documents の物から、または物へ）は、いつでも止める
+--     （authenticated は update のポリシーがないので、もともと 0 行か 42501）。ほかの列（持ち主・利用者の metadata・最後に読んだ日時など）は
+--     変えてよい（Storage の版上げの、列を埋める update を止めない）
+--   delete は見ない（delete のポリシーと storage.protect_delete が守る）
+-- ロックは RPC と同じ順（年度の行 → 提出の行。どちらも for share）に取り、その後にファイルの行を読み直す：承認・差し戻し・外す・年度の
+-- 終了（提出の行を for update、年度の行を for no key update で取る）と同時でも、終わった後の状態で決まる。
+-- 確かめを飛ばせるのは session_replication_role = replica の間だけ（トリガーが動かない。設定できるのは postgres〔supautils〕だけで、
+-- Storage API の service_role・authenticated・anon はできない。テストの準備〔tests.put_object〕と手での直しにだけ使う）。
+-- 持ち主の postgres（BYPASSRLS）の権限で予約と提出を読む（SECURITY DEFINER。書いたロールが anon・authenticated でも、RLS によらず読む）。
+-- 本番の postgres が storage.objects にトリガーを作れることは、本番を使い始める前に README の 5 で確かめる（作れないときの代わりは
+-- notes/T19.md の判断したことの 29）
+create function private.tg_documents_objects_guard()
+returns trigger language plpgsql security definer set search_path = '' as $$
+declare
+  v_file public.document_files;
+  v_year_status public.year_status;
+  v_sub_status public.document_status;
+begin
+  if tg_op = 'UPDATE' then
+    if (old.bucket_id = 'documents' or new.bucket_id = 'documents')
+       and (new.bucket_id, new.name, new.version, new.metadata) is distinct from (old.bucket_id, old.name, old.version, old.metadata) then
+      raise exception using errcode = '42501', message = 'forbidden', detail = '{"reason": "immutable"}';
+    end if;
+    return new;
+  end if;
+  if new.bucket_id is distinct from 'documents' then
+    return new;
+  end if;
+
+  select * into v_file from public.document_files f where f.object_path = new.name;
+  if found then
+    select y.status into v_year_status from public.years y where y.id = v_file.year_id for share;
+    select s.status into v_sub_status from public.document_submissions s
+    where s.document_id = v_file.document_id and s.group_id = v_file.group_id
+    for share;
+    select * into v_file from public.document_files f where f.object_path = new.name;  -- ロックを待つ間に外された・消された
+  end if;
+  -- detail の reason：not_reserved（予約がない）・closed（終了の年度）・not_editable（予約した人の段で今書けない）・too_large（申告を
+  -- 超える）・immutable（上書き・移動）。Storage API は message だけを返すので、画面は 403 で分ける（理由は pgTAP と調べるときのため）
+  if not found then
+    raise exception using errcode = '42501', message = 'forbidden', detail = '{"reason": "not_reserved"}';
+  end if;
+  if v_year_status is null or v_year_status = 'closed' then
+    raise exception using errcode = '42501', message = 'forbidden', detail = '{"reason": "closed"}';
+  end if;
+  if v_file.created_by is null
+     or not coalesce(
+          (v_sub_status in ('not_submitted', 'returned')
+           and exists (select 1 from public.group_members gm
+                       where gm.group_id = v_file.group_id and gm.user_id = v_file.created_by))
+          or (v_sub_status <> 'approved'
+              and exists (select 1 from public.year_roles yr
+                          where yr.year_id = v_file.year_id and yr.user_id = v_file.created_by
+                            and yr.role in ('admin', 'head', 'deputy_head'))),
+          false) then
+    raise exception using errcode = '42501', message = 'forbidden', detail = '{"reason": "not_editable"}';
+  end if;
+  if new.metadata ->> 'size' ~ '^[0-9]+$' and (new.metadata ->> 'size')::numeric > v_file.size then
+    raise exception using errcode = '42501', message = 'forbidden', detail = '{"reason": "too_large"}';
+  end if;
+  return new;
+end $$;
+create trigger documents_objects_guard before insert or update on storage.objects
+  for each row execute function private.tg_documents_objects_guard();
+
 ------------------------------------------------------------------------
 -- 書き込み：提出とファイル（RPC）
 ------------------------------------------------------------------------
@@ -358,7 +438,10 @@ create policy documents_objects_delete on storage.objects for delete to authenti
 --      for share なので提出どうしは並行に進み、年度の状態の遷移（set_year_status の for no key update）とは順に処理される
 --   3. 入力（invalid_input。detail は field と reason）
 --   4. not_found（その年度にない提出物・団体が対象でない提出物。detail なし）
---   5. 状態（invalid_state。detail は status と reason：not_editable・no_file・not_uploaded・too_many_files・storage_full）
+--   5. 状態（invalid_state。detail は status と reason：not_editable・no_file・not_uploaded・too_many_files・too_many_orphans・
+--      storage_full）。提出・取り消し・承認で同じ操作が重なったとき（店長と副店長が同時に「提出した」を押した）と、成功した後の送り直しは、
+--      ロックを待った後の状態で invalid_state（not_editable と今の status）になる（6 の conflict より先。画面は読み直して今の状態を出す。
+--      差し戻しは差し戻しからもできるので、重なると conflict。T19 のレビューの F1）
 --   6. 楽観ロック（conflict。detail は document_id と group_id）：base_updated_at と提出の行の updated_at をミリ秒までで比べる。
 --      行がなければ版は null とみなす（null と null は同じ）
 --   7. 理由を置いて（private.set_reason）書く
@@ -416,10 +499,12 @@ end $$;
 -- reserve_document_file：ファイルを予約し、ファイルの行（DB が作った object_path を含む）を返す。画面はその path へ Storage API で
 -- upload する（upsert: false）。呼べる人：その年度の部門長以上（代理）、その団体の店長・副店長。
 -- 同じ file_id・同じ中身（提出物・団体・形・大きさ）で送り直したら、状態・数・容量を見ずにその行を返す（冪等。04 の (B1)）。
--- 中身が違えば invalid_input（file_id・in_use）。提出の行がなければ作る（未提出）。1つの提出に 5 つまで（Q2）、bucket の合計
--- （届いた物の metadata の size ＋ 届いていない予約の申告 ＋ 今回）が 900 MiB（943718400 バイト。無料プランの 1 GB の手前）まで。
--- 容量は勧告的ロックで予約どうしを順にして数える。ファイルを足すと提出の版（updated_at）を進める（提出・承認の base_updated_at が
--- ファイルの組も守る。判断したことの 4）。理由は置かない（理由の要らない書き込み）
+-- 中身が違えば invalid_input（file_id・in_use）。提出の行がなければ作る（未提出）。1つの提出に 5 つまで（Q2）、その団体のフォルダの
+-- どの提出にも属さない物（DB の行のない物）が 5 つ未満（T19 のレビューの T19-SEC-2：届いた物を外して予約し直す繰り返しで、1つの団体が
+-- bucket を埋められないようにする。画面は document_orphan_paths の path を消してから足し直す）、bucket の合計（届いた物の metadata の
+-- size ＋ 届いていない予約の申告 ＋ 今回）が 900 MiB（943718400 バイト。無料プランの 1 GB の手前）まで。届いた物は申告を超えられない
+-- （トリガー documents_objects_guard）。容量は勧告的ロックで予約どうしを順にして数える。ファイルを足すと提出の版（updated_at）を進める
+-- （提出・承認の base_updated_at がファイルの組も守る。判断したことの 4）。理由は置かない（理由の要らない書き込み）
 create function public.reserve_document_file(p_document_id uuid, p_group_id uuid, p_file_id uuid,
                                              p_content_type text, p_size integer)
 returns public.document_files language plpgsql security definer set search_path = '' as $$
@@ -480,6 +565,11 @@ begin
   if (select count(*) from public.document_files f
       where f.document_id = p_document_id and f.group_id = p_group_id) >= 5 then
     perform private.fail('invalid_state', jsonb_build_object('status', v_sub.status, 'reason', 'too_many_files'));
+  end if;
+  if (select count(*) from storage.objects o
+      where o.bucket_id = 'documents' and split_part(o.name, '/', 2) = p_group_id::text
+        and not exists (select 1 from public.document_files f where f.object_path = o.name)) >= 5 then
+    perform private.fail('invalid_state', jsonb_build_object('status', v_sub.status, 'reason', 'too_many_orphans'));
   end if;
   perform pg_advisory_xact_lock(hashtext('gaapp.document_storage'), 0);
   if (select coalesce(sum((o.metadata ->> 'size')::bigint), 0)
@@ -956,7 +1046,7 @@ revoke all on function private.my_group_document_ids(), private.my_document_uplo
 grant execute on function private.my_group_document_ids(), private.my_document_upload_paths(),
   private.my_document_orphan_paths() to authenticated;
 revoke all on function private.tg_documents_normalize_categories(), private.tg_documents_set_actor(),
-  private.lock_document_year(uuid, uuid), private.target_document(uuid, uuid, uuid)
+  private.tg_documents_objects_guard(), private.lock_document_year(uuid, uuid), private.target_document(uuid, uuid, uuid)
   from public, anon, authenticated;
 revoke all on all functions in schema private from public;
 
