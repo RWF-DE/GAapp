@@ -461,6 +461,252 @@ export type Database = {
         };
         Relationships: [];
       };
+      lending_assignments: {
+        Row: {
+          count: number;
+          created_at: string;
+          group_id: string;
+          lending_item_id: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          count: number;
+          created_at?: string;
+          group_id: string;
+          lending_item_id: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id: string;
+        };
+        Update: {
+          count?: number;
+          created_at?: string;
+          group_id?: string;
+          lending_item_id?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "lending_assignments_group_fkey";
+            columns: ["group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "lending_assignments_item_fkey";
+            columns: ["lending_item_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "lending_items";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "lending_assignments_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      lending_items: {
+        Row: {
+          created_at: string;
+          id: string;
+          name: string;
+          requestable_categories: Database["public"]["Enums"]["group_category"][];
+          sort_order: number;
+          stock: number;
+          unit: string;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          id?: string;
+          name: string;
+          requestable_categories?: Database["public"]["Enums"]["group_category"][];
+          sort_order?: number;
+          stock: number;
+          unit?: string;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          name?: string;
+          requestable_categories?: Database["public"]["Enums"]["group_category"][];
+          sort_order?: number;
+          stock?: number;
+          unit?: string;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "lending_items_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      lending_records: {
+        Row: {
+          created_at: string;
+          damaged_count: number;
+          group_id: string;
+          lending_item_id: string;
+          lent_count: number;
+          note: string | null;
+          returned_count: number;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          damaged_count?: number;
+          group_id: string;
+          lending_item_id: string;
+          lent_count?: number;
+          note?: string | null;
+          returned_count?: number;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          damaged_count?: number;
+          group_id?: string;
+          lending_item_id?: string;
+          lent_count?: number;
+          note?: string | null;
+          returned_count?: number;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "lending_records_group_fkey";
+            columns: ["group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "lending_records_item_fkey";
+            columns: ["lending_item_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "lending_items";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "lending_records_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      lending_requests: {
+        Row: {
+          count: number;
+          created_at: string;
+          group_id: string;
+          lending_item_id: string;
+          updated_at: string;
+          updated_by: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          count: number;
+          created_at?: string;
+          group_id: string;
+          lending_item_id: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id: string;
+        };
+        Update: {
+          count?: number;
+          created_at?: string;
+          group_id?: string;
+          lending_item_id?: string;
+          updated_at?: string;
+          updated_by?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "lending_requests_group_fkey";
+            columns: ["group_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "groups";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "lending_requests_item_fkey";
+            columns: ["lending_item_id", "year_id"];
+            isOneToOne: false;
+            referencedRelation: "lending_items";
+            referencedColumns: ["id", "year_id"];
+          },
+          {
+            foreignKeyName: "lending_requests_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      lending_years: {
+        Row: {
+          confirmed_at: string | null;
+          confirmed_by: string | null;
+          created_at: string;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          confirmed_at?: string | null;
+          confirmed_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          confirmed_at?: string | null;
+          confirmed_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "lending_years_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: true;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       notice_groups: {
         Row: {
           created_at: string;
@@ -1120,6 +1366,16 @@ export type Database = {
         };
         Returns: Json;
       };
+      previous_year_lending_items: {
+        Args: { p_year_id: string };
+        Returns: {
+          name: string;
+          requestable_categories: Database["public"]["Enums"]["group_category"][];
+          sort_order: number;
+          stock: number;
+          unit: string;
+        }[];
+      };
       previous_year_requests: {
         Args: { p_year_id: string };
         Returns: {
@@ -1153,6 +1409,7 @@ export type Database = {
         Args: { p_base_version: number; p_mode: string; p_rows: Json; p_year_id: string };
         Returns: Json;
       };
+      save_lending_assignments: { Args: { p_changes: Json; p_year_id: string }; Returns: Json };
       save_notice: {
         Args: {
           p_audience: Database["public"]["Enums"]["notice_audience"];
@@ -1216,6 +1473,22 @@ export type Database = {
           p_user_id: string;
         };
         Returns: undefined;
+      };
+      set_lending_confirmed: {
+        Args: { p_confirmed: boolean; p_reason?: string; p_year_id: string };
+        Returns: {
+          confirmed_at: string | null;
+          confirmed_by: string | null;
+          created_at: string;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "lending_years";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
       };
       set_role: {
         Args: {

@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(202);
+select plan(259);
 
 -- ---------------------------------------------------------------- 時刻（created_at・updated_at）
 select lives_ok($$ insert into public.rooms (name, created_at, updated_at) values ('pgtap-T', '2000-01-01', '2000-01-01') $$, '時刻を指定した insert');
@@ -434,6 +434,221 @@ select is((select format('%s %s %s %s', action, before ->> 'title', (after is nu
            from public.audit_logs where table_name = 'events' and action = 'delete' and row_pk ->> 'id' = tests.id('E_TRG')::text),
   'delete T-E_TRG2 true true', '予定と締切の削除の監査に、前の行と消した人が残る');
 
+-- ---------------------------------------------------------------- テント等の貸し出し（T21）：申請できる区分・確定中の在庫の守り・書いた人・日時・
+-- 監査・変えられない列・備品の restrict・団体の連鎖（postgres のまま。区分と在庫の守りは RLS を通らない書き込みでも確かめる）
+-- （ここでは G2 はもう消えている。G4 は部門、G5 は企業〔上の申請できる品目で作った〕。Y1 は受付中・割り当ての確定前、Y2 は確定後）
+select is((select format('%s %s %s', count(*), bool_and(year_id = tests.id('Y1'))::text,
+                         bool_and(row_pk = jsonb_build_object('group_id', tests.id('G2'), 'lending_item_id', tests.id('LI_TENT')))::text)
+           from public.audit_logs where table_name = 'lending_requests' and action = 'delete' and group_id = tests.id('G2')),
+  '1 true true', '上で G2 を消したとき、G2 のテント等の申請も連鎖で消え、監査に年度と団体が入った（row_pk は団体と備品）');
+-- 申請できる区分（check_requestable）：数が1以上なのに、団体の区分が備品の requestable_categories にないと invalid_input。0 は通す
+select is(tests.error_json(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 1) $$,
+            tests.id('G4'), tests.id('LI_CURTAIN'), tests.id('Y1'))),
+  jsonb_build_object('code', 'invalid_input', 'detail', jsonb_build_object('field', 'lending_item_id', 'reason', 'not_requestable',
+                     'group_id', tests.id('G4'), 'lending_item_id', tests.id('LI_CURTAIN'))),
+  '部門（G4）は模擬店だけの三方幕を 1 以上申請できない（invalid_input。detail は団体と備品）');
+select lives_ok(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 0) $$,
+  tests.id('G4'), tests.id('LI_CURTAIN'), tests.id('Y1')), '区分で申請できない備品も 0（借りない）は入る');
+select is(tests.error_json(format($$ update public.lending_requests set count = 2 where group_id = %L and lending_item_id = %L $$,
+            tests.id('G4'), tests.id('LI_CURTAIN'))),
+  jsonb_build_object('code', 'invalid_input', 'detail', jsonb_build_object('field', 'lending_item_id', 'reason', 'not_requestable',
+                     'group_id', tests.id('G4'), 'lending_item_id', tests.id('LI_CURTAIN'))),
+  '0 の申請を 1 以上に変えると止める（update の道）');
+select is(tests.error_json(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 2)
+                                      on conflict (group_id, lending_item_id) do update set count = excluded.count $$,
+            tests.id('G4'), tests.id('LI_CURTAIN'), tests.id('Y1'))),
+  jsonb_build_object('code', 'invalid_input', 'detail', jsonb_build_object('field', 'lending_item_id', 'reason', 'not_requestable',
+                     'group_id', tests.id('G4'), 'lending_item_id', tests.id('LI_CURTAIN'))),
+  'upsert の update の道でも止める');
+select is(tests.error_json(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 2) $$,
+            tests.id('G5'), tests.id('LI_WEIGHT'), tests.id('Y1'))),
+  jsonb_build_object('code', 'invalid_input', 'detail', jsonb_build_object('field', 'lending_item_id', 'reason', 'not_requestable',
+                     'group_id', tests.id('G5'), 'lending_item_id', tests.id('LI_WEIGHT'))),
+  '企業（G5）は既定の区分（模擬店・部門）の備品を申請できない（企業・休憩所は部門長以上が割り当てに直接入れる）');
+select lives_ok(format($$ update public.lending_requests set count = 3 where group_id = %L and lending_item_id = %L $$,
+  tests.id('G1'), tests.id('LI_CURTAIN')), '模擬店（G1）は模擬店だけの三方幕の申請を直せる');
+with li as (
+  insert into public.lending_items (year_id, name, stock, requestable_categories, sort_order) values (tests.id('Y1'), 'T-区分なし', 1, '{}', 8)
+  returning id)
+insert into tests.ids select 'LI_NONE', id from li;
+select is(tests.error_json(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 1) $$,
+            tests.id('G1'), tests.id('LI_NONE'), tests.id('Y1'))),
+  jsonb_build_object('code', 'invalid_input', 'detail', jsonb_build_object('field', 'lending_item_id', 'reason', 'not_requestable',
+                     'group_id', tests.id('G1'), 'lending_item_id', tests.id('LI_NONE'))),
+  '申請できる区分が空の備品は、どの団体も 1 以上を申請できない');
+select lives_ok(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 0) $$,
+  tests.id('G1'), tests.id('LI_NONE'), tests.id('Y1')), '申請できる区分が空の備品も 0 は入る');
+select throws_ok(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 1) $$,
+  tests.id('G3'), tests.id('LI_CURTAIN'), tests.id('Y2')), '23503', null,
+  '年度の違う団体（Y2 の G3）と備品（Y1 の三方幕）は、区分の誤りでなく外部キーのエラー');
+select throws_ok(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (gen_random_uuid(), %L, %L, 1) $$,
+  tests.id('LI_TENT'), tests.id('Y1')), '23503', null, 'ない団体は外部キーのエラー（区分を確かめない）');
+select lives_ok(format($$ insert into public.lending_assignments (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 1) $$,
+  tests.id('G5'), tests.id('LI_CURTAIN'), tests.id('Y1')), '割り当てには区分の確かめがない（企業にも入れられる）');
+select lives_ok(format($$ insert into public.lending_records (group_id, lending_item_id, year_id, lent_count) values (%L, %L, %L, 1) $$,
+  tests.id('G5'), tests.id('LI_CURTAIN'), tests.id('Y1')), '記録にも区分の確かめがない');
+-- 区分を後から外しても、今の申請はそのまま（区分は申請を書くときに確かめる）。数を 1 以上に変えると止まり、0 には直せる
+select lives_ok(format($$ update public.lending_items set requestable_categories = '{department}' where id = %L $$, tests.id('LI_CURTAIN')),
+  '三方幕の申請できる区分を部門だけに変える（G1 の三方幕の申請 3 が残っていても）');
+select is(tests.error_json(format($$ update public.lending_requests set count = 4 where group_id = %L and lending_item_id = %L $$,
+            tests.id('G1'), tests.id('LI_CURTAIN'))),
+  jsonb_build_object('code', 'invalid_input', 'detail', jsonb_build_object('field', 'lending_item_id', 'reason', 'not_requestable',
+                     'group_id', tests.id('G1'), 'lending_item_id', tests.id('LI_CURTAIN'))),
+  '区分を外した後に、残った申請の数を 1 以上に変えると止める');
+select lives_ok(format($$ update public.lending_requests set count = 0 where group_id = %L and lending_item_id = %L $$,
+  tests.id('G1'), tests.id('LI_CURTAIN')), '区分を外した後も、残った申請を 0 には直せる');
+update public.lending_items set requestable_categories = '{stall}' where id = tests.id('LI_CURTAIN');
+
+-- 確定中の在庫の守り（guard_stock）：割り当ての確定中（Y2）は、在庫をその備品の割り当て合計（1）より少なくできない（invalid_state）。
+-- postgres（SQL Editor）でも止める。同じ・多い在庫、在庫を書かない更新、割り当てのない備品、確定前・解除の後は通る
+select is(tests.error_json(format($$ update public.lending_items set stock = 0 where id = %L $$, tests.id('LI_Y2_TENT'))),
+  jsonb_build_object('code', 'invalid_state', 'detail', jsonb_build_object('reason', 'confirmed', 'lending_item_id', tests.id('LI_Y2_TENT'),
+                     'assigned', 1, 'stock', 0)),
+  '割り当ての確定中は、在庫を割り当て合計より少なくできない（detail は備品・割り当て合計・新しい在庫）');
+select lives_ok(format($$ update public.lending_items set stock = 1 where id = %L $$, tests.id('LI_Y2_TENT')),
+  '割り当て合計と同じ在庫にはできる');
+select lives_ok(format($$ update public.lending_items set stock = 5 where id = %L $$, tests.id('LI_Y2_TENT')), '在庫を増やせる');
+select is(tests.error_json(format($$ update public.lending_items set name = name, stock = 0 where id = %L $$, tests.id('LI_Y2_TENT'))),
+  jsonb_build_object('code', 'invalid_state', 'detail', jsonb_build_object('reason', 'confirmed', 'lending_item_id', tests.id('LI_Y2_TENT'),
+                     'assigned', 1, 'stock', 0)),
+  '名前と一緒に書いても止める');
+select lives_ok(format($$ update public.lending_items set name = 'T-テント改', sort_order = 3 where id = %L $$, tests.id('LI_Y2_TENT')),
+  '在庫を書かない更新は守りの対象でない（確定中も名前・並びを直せる）');
+with li as (insert into public.lending_items (year_id, name, stock) values (tests.id('Y2'), 'T-Y2空', 3) returning id)
+insert into tests.ids select 'LI_Y2_EMPTY', id from li;
+select lives_ok(format($$ update public.lending_items set stock = 0 where id = %L $$, tests.id('LI_Y2_EMPTY')),
+  '割り当てのない備品は確定中でも在庫を 0 にできる');
+update public.lending_years set confirmed_at = null, confirmed_by = null where year_id = tests.id('Y2');
+select lives_ok(format($$ update public.lending_items set stock = 0 where id = %L $$, tests.id('LI_Y2_TENT')),
+  '確定を解除した後（confirmed_at が null）は、割り当て合計より少なくできる');
+update public.lending_items set stock = 2 where id = tests.id('LI_Y2_TENT');
+update public.lending_years set confirmed_at = now(), confirmed_by = tests.id('admin2') where year_id = tests.id('Y2');
+select lives_ok(format($$ update public.lending_items set stock = 0 where id = %L $$, tests.id('LI_TENT')),
+  '確定前（Y1）は在庫を割り当て合計（2）より少なくできる（在庫超過は確定で止める）');
+update public.lending_items set stock = 3 where id = tests.id('LI_TENT');
+
+-- 書いた人（set_actor）と日時：ログインしている人の書き込みでは、updated_by は DB が auth.uid() を入れ（送った値は使わない）、
+-- created_at・updated_at も DB が入れる。auth.uid() がない書き込み（seed・SQL Editor）は入れた値のまま（D-10）
+select tests.act_as('rep');
+insert into public.lending_requests (group_id, lending_item_id, year_id, count, updated_by, created_at, updated_at)
+values (tests.id('G1'), tests.id('LI_SPARE'), tests.id('Y1'), 1, tests.id('admin'), '2000-01-01', '2000-01-01');
+select tests.act_clear();
+select is((select updated_by from public.lending_requests where group_id = tests.id('G1') and lending_item_id = tests.id('LI_SPARE')),
+  tests.id('rep'), '申請の insert：updated_by は書いた人（送った値は使わない）');
+select ok((select created_at = now() and updated_at = now() from public.lending_requests
+           where group_id = tests.id('G1') and lending_item_id = tests.id('LI_SPARE')),
+  '申請の insert：created_at・updated_at は DB が入れる');
+select tests.act_as('head');
+update public.lending_requests set count = 2, updated_by = tests.id('rep')
+where group_id = tests.id('G1') and lending_item_id = tests.id('LI_SPARE');
+select tests.act_clear();
+select is((select updated_by from public.lending_requests where group_id = tests.id('G1') and lending_item_id = tests.id('LI_SPARE')),
+  tests.id('head'), '申請の update：updated_by は直した人');
+select tests.act_as('deputy');
+insert into public.lending_assignments (group_id, lending_item_id, year_id, count, updated_by)
+values (tests.id('G4'), tests.id('LI_TENT'), tests.id('Y1'), 1, tests.id('admin'));
+select tests.act_clear();
+select is((select updated_by from public.lending_assignments where group_id = tests.id('G4') and lending_item_id = tests.id('LI_TENT')),
+  tests.id('deputy'), '割り当ての insert：updated_by は書いた人');
+select tests.act_as('staff');
+insert into public.lending_records (group_id, lending_item_id, year_id, lent_count, updated_by)
+values (tests.id('G4'), tests.id('LI_TENT'), tests.id('Y1'), 1, tests.id('admin'));
+select tests.act_clear();
+select is((select updated_by from public.lending_records where group_id = tests.id('G4') and lending_item_id = tests.id('LI_TENT')),
+  tests.id('staff'), '記録の insert：updated_by は書いた人');
+update public.lending_requests set updated_by = tests.id('admin') where group_id = tests.id('G1') and lending_item_id = tests.id('LI_SPARE');
+update public.lending_assignments set updated_by = tests.id('admin') where group_id = tests.id('G4') and lending_item_id = tests.id('LI_TENT');
+update public.lending_records set updated_by = tests.id('admin') where group_id = tests.id('G4') and lending_item_id = tests.id('LI_TENT');
+select is((select count(*)::int from public.lending_requests where group_id = tests.id('G1') and lending_item_id = tests.id('LI_SPARE') and updated_by = tests.id('admin'))
+          + (select count(*)::int from public.lending_assignments where group_id = tests.id('G4') and lending_item_id = tests.id('LI_TENT') and updated_by = tests.id('admin'))
+          + (select count(*)::int from public.lending_records where group_id = tests.id('G4') and lending_item_id = tests.id('LI_TENT') and updated_by = tests.id('admin')),
+  3, 'auth.uid() がない書き込み（seed・SQL Editor）は、申請・割り当て・記録とも入れた updated_by のまま');
+
+-- 監査：備品は row_pk が id で group_id は null、申請・割り当て・記録は row_pk が (group_id, lending_item_id) で group_id は団体、
+-- 確定の印は row_pk が year_id で group_id は null。year_id は行から。直接の書き込みには理由がない（null）
+select is((select format('%s %s %s %s %s', action, (row_pk = jsonb_build_object('id', tests.id('LI_NONE')))::text,
+                         (year_id = tests.id('Y1'))::text, (group_id is null)::text, coalesce(reason, 'null'))
+           from public.audit_logs where table_name = 'lending_items' and action = 'insert' and row_pk ->> 'id' = tests.id('LI_NONE')::text),
+  'insert true true true null', '備品の監査：row_pk は id、year_id は行から、group_id と理由は null');
+select is((select format('%s %s %s %s %s %s', action,
+                         (row_pk = jsonb_build_object('group_id', tests.id('G1'), 'lending_item_id', tests.id('LI_SPARE')))::text,
+                         (year_id = tests.id('Y1'))::text, (group_id = tests.id('G1'))::text, (user_id = tests.id('rep'))::text, coalesce(reason, 'null'))
+           from public.audit_logs where table_name = 'lending_requests' and action = 'insert'
+             and group_id = tests.id('G1') and row_pk ->> 'lending_item_id' = tests.id('LI_SPARE')::text),
+  'insert true true true true null', '申請の監査：row_pk は団体と備品、year_id は行から、group_id は団体、user_id は書いた人、理由は null');
+select is((select format('%s %s %s %s', action, (group_id = tests.id('G4'))::text, (user_id = tests.id('deputy'))::text, after ->> 'count')
+           from public.audit_logs where table_name = 'lending_assignments' and action = 'insert'
+             and group_id = tests.id('G4') and row_pk ->> 'lending_item_id' = tests.id('LI_TENT')::text),
+  'insert true true 1', '割り当ての監査：group_id は団体、user_id は書いた人、after は行全体');
+select is((select format('%s %s>%s', action, before ->> 'updated_by', after ->> 'updated_by')
+           from public.audit_logs where table_name = 'lending_records' and action = 'update'
+             and group_id = tests.id('G4') and row_pk ->> 'lending_item_id' = tests.id('LI_TENT')::text order by id desc limit 1),
+  format('update %s>%s', tests.id('staff'), tests.id('admin')), '記録の更新の監査：before・after は行全体（書いた人の付け替えも残る）');
+select is((select format('%s %s %s', action, (row_pk = jsonb_build_object('year_id', tests.id('Y2')))::text, (group_id is null)::text)
+           from public.audit_logs where table_name = 'lending_years' and action = 'insert' and year_id = tests.id('Y2')),
+  'insert true true', '確定の印の監査：row_pk は年度、group_id は null');
+-- 中身を変えない保存（同じ人が同じ値を書き直す）は監査に書かない
+select tests.act_as('staff');
+update public.lending_records set lent_count = lent_count where group_id = tests.id('G4') and lending_item_id = tests.id('LI_TENT');
+select coalesce(max(id), 0) as l0 from public.audit_logs \gset
+update public.lending_records set lent_count = lent_count where group_id = tests.id('G4') and lending_item_id = tests.id('LI_TENT');
+select tests.act_clear();
+select is((select count(*)::int from public.audit_logs where id > :l0 and table_name = 'lending_records'), 0,
+  '同じ人が中身を変えずに記録を書き直す（updated_at だけの変更）は監査に書かない');
+
+-- 年度・団体・備品の付け替えを止める（check_immutable。invalid_input の detail は列と immutable）。鍵を同じ値で書き直す upsert は通る
+select is(tests.error_json(format($$ update public.lending_items set year_id = %L where id = %L $$, tests.id('Y2'), tests.id('LI_SPARE'))),
+  '{"code": "invalid_input", "detail": {"column": "year_id", "reason": "immutable"}}'::jsonb, 'lending_items.year_id は変えられない');
+select is(tests.error_json(format($$ update public.lending_requests set group_id = %L where group_id = %L and lending_item_id = %L $$,
+            tests.id('G4'), tests.id('G1'), tests.id('LI_TENT'))),
+  '{"code": "invalid_input", "detail": {"column": "group_id", "reason": "immutable"}}'::jsonb,
+  'lending_requests.group_id は変えられない（同じ年度の団体へも。行は足すか 0 にするだけ）');
+select is(tests.error_json(format($$ update public.lending_requests set lending_item_id = %L where group_id = %L and lending_item_id = %L $$,
+            tests.id('LI_WEIGHT'), tests.id('G1'), tests.id('LI_SPARE'))),
+  '{"code": "invalid_input", "detail": {"column": "lending_item_id", "reason": "immutable"}}'::jsonb,
+  'lending_requests.lending_item_id は変えられない');
+select is(tests.error_json(format($$ update public.lending_assignments set year_id = %L where group_id = %L and lending_item_id = %L $$,
+            tests.id('Y2'), tests.id('G1'), tests.id('LI_TENT'))),
+  '{"code": "invalid_input", "detail": {"column": "year_id", "reason": "immutable"}}'::jsonb, 'lending_assignments.year_id は変えられない');
+select is(tests.error_json(format($$ update public.lending_records set lending_item_id = %L where group_id = %L and lending_item_id = %L $$,
+            tests.id('LI_SPARE'), tests.id('G1'), tests.id('LI_TENT'))),
+  '{"code": "invalid_input", "detail": {"column": "lending_item_id", "reason": "immutable"}}'::jsonb,
+  'lending_records.lending_item_id は変えられない');
+select is(tests.error_json(format($$ update public.lending_years set year_id = %L where year_id = %L $$, tests.id('Y1'), tests.id('Y2'))),
+  '{"code": "invalid_input", "detail": {"column": "year_id", "reason": "immutable"}}'::jsonb, 'lending_years.year_id は変えられない');
+select lives_ok(format($$ insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (%L, %L, %L, 2)
+                         on conflict (group_id, lending_item_id) do update set group_id = excluded.group_id,
+                           lending_item_id = excluded.lending_item_id, year_id = excluded.year_id, count = excluded.count $$,
+  tests.id('G1'), tests.id('LI_TENT'), tests.id('Y1')),
+  '鍵の列を同じ値で書き直す upsert は通る（check_immutable は値で比べる。画面の upsert の形）');
+
+-- 備品を消す：申請・割り当て・記録のある備品は restrict（23503。数が 0 の申請だけでも）。どこからも参照されない備品は消せる
+select throws_ok(format($$ delete from public.lending_items where id = %L $$, tests.id('LI_TENT')), '23503', null,
+  '申請・割り当て・記録のある備品は消せない（restrict）');
+select throws_ok(format($$ delete from public.lending_items where id = %L $$, tests.id('LI_NONE')), '23503', null,
+  '数が 0 の申請しかない備品も消せない（申請は 0 にして残す）');
+with li as (insert into public.lending_items (year_id, name, stock) values (tests.id('Y1'), 'T-消す', 1) returning id)
+insert into tests.ids select 'LI_DEL', id from li;
+select lives_ok(format($$ delete from public.lending_items where id = %L $$, tests.id('LI_DEL')), 'どこからも参照されない備品は消せる');
+select is((select format('%s %s %s', action, before ->> 'name', (after is null)::text) from public.audit_logs
+           where table_name = 'lending_items' and action = 'delete' and row_pk ->> 'id' = tests.id('LI_DEL')::text),
+  'delete T-消す true', '消した備品の監査に前の行が残る');
+
+-- 団体を消す：その団体の申請・割り当て・記録も連鎖で消え（団体へは cascade）、監査に団体と年度が入る
+with g as (insert into public.groups (year_id, name, category) values (tests.id('Y1'), 'T-G7', 'stall') returning id)
+insert into tests.ids select 'G7', id from g;
+insert into public.lending_requests (group_id, lending_item_id, year_id, count) values (tests.id('G7'), tests.id('LI_TENT'), tests.id('Y1'), 1);
+insert into public.lending_assignments (group_id, lending_item_id, year_id, count) values (tests.id('G7'), tests.id('LI_TENT'), tests.id('Y1'), 1);
+insert into public.lending_records (group_id, lending_item_id, year_id, lent_count) values (tests.id('G7'), tests.id('LI_TENT'), tests.id('Y1'), 1);
+select lives_ok($$ delete from public.groups where id = tests.id('G7') $$, 'テント等の申請・割り当て・記録のある団体を消す（受付中）');
+select is((select count(*)::int from public.lending_requests where group_id = tests.id('G7'))
+          + (select count(*)::int from public.lending_assignments where group_id = tests.id('G7'))
+          + (select count(*)::int from public.lending_records where group_id = tests.id('G7')), 0,
+  '団体を消すと、その団体のテント等の申請・割り当て・記録も消える');
+select is((select string_agg(table_name, ' ' order by table_name collate "C") from public.audit_logs
+           where action = 'delete' and group_id = tests.id('G7') and year_id = tests.id('Y1') and table_name like 'lending\_%'),
+  'lending_assignments lending_records lending_requests', '連鎖で消えた申請・割り当て・記録の監査に、団体と年度が入る');
+
 -- ---------------------------------------------------------------- lock_year_guard
 select is(private.lock_year_guard(tests.id('Y1')), 'requesting'::public.year_status, 'lock_year_guard は状態を返す');
 select is(private.lock_year_guard(gen_random_uuid()), null, 'lock_year_guard は年度がなければ null');
@@ -485,6 +700,12 @@ insert into public.events (year_id, kind, audience, title, starts_at) values (te
 update public.events set title = 'T-版2' where title = 'T-版';
 delete from public.events where title = 'T-版2';
 select is(tests.ver(), :v1 + 13, '予定と締切（events）の書き込みでは増えない（振り分けの入力でない。T18）');
+insert into public.lending_items (year_id, name, stock) values (tests.id('Y1'), 'T-版', 1);
+update public.lending_requests set count = 1 where group_id = tests.id('G1') and lending_item_id = tests.id('LI_TENT');
+insert into public.lending_assignments (group_id, lending_item_id, year_id, count) values (tests.id('G4'), tests.id('LI_WEIGHT'), tests.id('Y1'), 1);
+update public.lending_records set returned_count = 2 where group_id = tests.id('G1') and lending_item_id = tests.id('LI_TENT');
+insert into public.lending_years (year_id, confirmed_at, confirmed_by) values (tests.id('Y1'), now(), tests.id('head'));
+select is(tests.ver(), :v1 + 13, 'テント等の貸し出し（5表）の書き込みでは増えない（振り分けの入力でない。T21）');
 update public.rooms set sort_order = sort_order where id = tests.id('R4');
 select is(tests.ver(), :v1 + 14, '値が同じ update でも、文が行に当たれば増える（監査は書かない）');
 select is((select count(*)::int from public.audit_logs where table_name = 'years' and (after ->> 'allocation_version')::int > :v0), 0,
@@ -526,6 +747,8 @@ select lives_ok($$ update public.notices set title = 'T-確定中' where id = te
   '確定中もお知らせは直せる（お知らせに確定中の守りはない。T17）');
 select lives_ok($$ update public.events set note = '確定中' where id = tests.id('E_ALL') $$,
   '確定中も予定と締切は直せる（予定と締切に確定中の守りはない。T18）');
+select lives_ok($$ update public.lending_assignments set count = 1 where group_id = tests.id('G1') and lending_item_id = tests.id('LI_TENT') $$,
+  '机椅子の確定中もテント等の表は書ける（机椅子の確定中の守りはない。テント等の割り当ての確定は RPC と guard_stock が守る。T21）');
 
 -- closed
 update public.years set status = 'closed' where id = tests.id('Y1');
@@ -540,6 +763,8 @@ select lives_ok($$ update public.notices set title = 'T-終了' where id = tests
   'closed の年度のお知らせも SQL Editor からは直せる（トリガーの守りはない。終了の年度の読み取り専用は RPC が守る。T17）');
 select lives_ok($$ update public.events set note = '終了' where id = tests.id('E_ALL') $$,
   'closed の年度の予定と締切も SQL Editor からは直せる（トリガーの守りはない。終了の年度の読み取り専用は RLS〔can_lead〕が守る。T18）');
+select lives_ok($$ update public.lending_records set note = '終了' where group_id = tests.id('G1') and lending_item_id = tests.id('LI_TENT') $$,
+  'closed の年度のテント等の記録も SQL Editor からは書ける（トリガーの守りはない。終了の年度の読み取り専用は RLS と RPC が守る。T21）');
 
 -- ---------------------------------------------------------------- 年度ごと消す（連鎖）は守りに止められない
 select coalesce(max(id), 0) as a0 from public.audit_logs \gset
@@ -559,9 +784,26 @@ select is((select count(*)::int from public.events where year_id = tests.id('Y1'
   '年度を消すと、その年度の予定と締切も消える（T18）');
 select is((select count(*)::int from public.audit_logs where id > :a0 and table_name = 'events' and action = 'delete' and year_id = tests.id('Y1')), 3,
   '年度の連鎖削除で消えた予定と締切（fixture の3件）の監査にも年度が入る');
+select is((select count(*)::int from public.lending_items where year_id = tests.id('Y1'))
+          + (select count(*)::int from public.lending_requests where year_id = tests.id('Y1'))
+          + (select count(*)::int from public.lending_assignments where year_id = tests.id('Y1'))
+          + (select count(*)::int from public.lending_records where year_id = tests.id('Y1'))
+          + (select count(*)::int from public.lending_years where year_id = tests.id('Y1')), 0,
+  '年度を消すと、その年度のテント等の5表の行も消える（子の3表は年度からも直接 cascade なので、備品の restrict に止められない。T21）');
+select is((select string_agg(distinct table_name collate "C", ' ' order by table_name collate "C") from public.audit_logs
+           where id > :a0 and table_name like 'lending\_%' and action = 'delete' and year_id = tests.id('Y1')),
+  'lending_assignments lending_items lending_records lending_requests lending_years',
+  '年度の連鎖削除で消えたテント等の5表の監査にも年度が入る');
 select lives_ok($$ delete from public.groups where id = tests.id('G3') $$, '受付前の年度（Y2）の団体は消せる');
 select is((select count(*)::int from public.notice_groups where group_id = tests.id('G3')), 0,
   'Y2 の団体を消すと、その団体の宛先の団体の行も消える');
+select is((select count(*)::int from public.lending_requests where group_id = tests.id('G3'))
+          + (select count(*)::int from public.lending_assignments where group_id = tests.id('G3'))
+          + (select count(*)::int from public.lending_records where group_id = tests.id('G3')), 0,
+  'Y2 の団体を消すと、割り当ての確定中でも、その団体のテント等の申請・割り当て・記録が消える（T21）');
+select is((select format('%s %s', (select count(*) from public.lending_items where year_id = tests.id('Y2')),
+                         (select count(*) from public.lending_years where year_id = tests.id('Y2') and confirmed_at is not null))),
+  '2 1', '団体を消しても、その年度の備品（fixture の1件と上で足した1件）と確定の印は残る');
 
 select * from finish();
 rollback;

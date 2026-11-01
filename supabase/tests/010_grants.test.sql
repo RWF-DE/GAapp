@@ -2,7 +2,7 @@
 -- anon と PUBLIC に何もないことは 001_schema が確かめる。ここでは authenticated と supabase_auth_admin を一覧で比べる（supabase_auth_admin は T04 でフックを足した）。
 begin;
 \ir _helpers/personas.psql
-select plan(30);
+select plan(34);
 
 -- 一覧（T15 から版〔引数の型〕まで比べる。同じ名前の古い版〔4引数の invite など〕が残れば落ちる）
 create table tests.expected_fn (kind text not null, sig text primary key);
@@ -61,6 +61,20 @@ insert into tests.expected_fn values
   ('notice_trigger', 'private.tg_notices_check_groups()'),
   -- 予定と締切のトリガー関数（0015。T18。誰も実行できない。判定関数と RPC は足していない）
   ('event_trigger', 'private.tg_events_set_actor()');
+-- テント等の貸し出し（0018。T21）：RPC 3つ、ポリシーが呼ぶ判定と集合の関数2つ（can_record_lending・lending_confirmed_year_ids）、
+-- 誰も実行できない年度のロックとトリガー関数6つ
+insert into tests.expected_fn values
+  ('rpc', 'public.save_lending_assignments(uuid, jsonb)'),
+  ('rpc', 'public.set_lending_confirmed(uuid, boolean, text)'),
+  ('rpc', 'public.previous_year_lending_items(uuid)'),
+  ('predicate', 'private.can_record_lending(uuid)'),
+  ('predicate', 'private.lending_confirmed_year_ids()'),
+  ('lending_internal', 'private.lock_lending_year(uuid)'),
+  ('lending_internal', 'private.tg_lending_items_guard_stock()'),
+  ('lending_internal', 'private.tg_lending_requests_check_requestable()'),
+  ('lending_internal', 'private.tg_lending_requests_set_actor()'),
+  ('lending_internal', 'private.tg_lending_assignments_set_actor()'),
+  ('lending_internal', 'private.tg_lending_records_set_actor()');
 
 -- ---------------------------------------------------------------- 関数
 select is_empty($$ select sig from tests.expected_fn where to_regprocedure(sig) is null $$,
@@ -72,11 +86,11 @@ select is_empty($$ select p.oid::regprocedure::text from pg_proc p
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace = 'public'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   $$ select to_regprocedure(sig)::text from tests.expected_fn where kind = 'rpc' $$,
-  'authenticated が実行できる public の関数は RPC 20 個だけ（版まで比べる）');
+  'authenticated が実行できる public の関数は RPC 23 個だけ（T21 のテント等の3つを含む。版まで比べる）');
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   $$ select to_regprocedure(sig)::text from tests.expected_fn where kind = 'predicate' $$,
-  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 19 個だけ（0010 の集合の3個・can_lead・お知らせの集合の2個を含む。RPC の補助・トリガー関数・verified_email・兼任の補助は実行できない）');
+  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 21 個だけ（0010 の集合の3個・can_lead・お知らせの集合の2個・テント等の2個を含む。RPC の補助・トリガー関数・verified_email・兼任の補助・テント等の年度のロックは実行できない）');
 -- 同じ名前の public の関数は版が1つだけ（2つあると、名前つきの引数で呼ぶ PostgREST が版を選べない。PGRST203）
 select is_empty($$ select p.proname::text from pg_proc p where p.pronamespace = 'public'::regnamespace
                    and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
@@ -131,6 +145,24 @@ select is_empty($$ select f.sig from tests.expected_fn f
                           or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
                                      where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
   '予定と締切のトリガー関数（set_actor）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T18）');
+select is_empty($$ select f.sig from tests.expected_fn f
+                   where f.kind = 'lending_internal'
+                     and (has_function_privilege('authenticated', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('anon', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('supabase_auth_admin', to_regprocedure(f.sig), 'execute')
+                          or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                                     where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
+  'テント等の年度のロックとトリガー関数（区分・在庫の守り・set_actor 3つ）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T21）');
+-- テント等の RPC（T21）：引数名・既定値・返り値。確定の解除の理由（p_reason）だけが既定値 null（確定のときは送らなくてよい）。
+-- previous_year_lending_items は読み取りだけなので STABLE、保存と確定は VOLATILE
+select is((select string_agg(p.proname || '(' || pg_get_function_arguments(p.oid) || ') -> ' || pg_get_function_result(p.oid) || ' ' || p.provolatile::text,
+                             ' / ' order by p.proname)
+           from pg_proc p where p.pronamespace = 'public'::regnamespace
+             and p.proname in ('save_lending_assignments', 'set_lending_confirmed', 'previous_year_lending_items')),
+  'previous_year_lending_items(p_year_id uuid) -> TABLE(name text, unit text, stock integer, requestable_categories group_category[], sort_order integer) s / '
+  || 'save_lending_assignments(p_year_id uuid, p_changes jsonb) -> jsonb v / '
+  || 'set_lending_confirmed(p_year_id uuid, p_confirmed boolean, p_reason text DEFAULT NULL::text) -> lending_years v',
+  'テント等の RPC 3つの引数名・既定値・返り値・揮発性（T21）');
 select is_empty($$ select p.oid::regprocedure::text from pg_proc p
                    where p.pronamespace = 'public'::regnamespace
                      and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
@@ -179,11 +211,15 @@ select set_eq($$ select format('%s %s', c.relname, p.p) from pg_class c
                    and has_table_privilege('authenticated', c.oid, p.p) $$,
   array(select format('%s %s', t, p) from unnest(array['years','rooms','room_years','items','stocks','groups','year_roles',
           'group_members','invitations','request_submissions','requests','rules','substitution_consents','allocations',
-          'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events','v_remaining']) t, unnest(array['select']) p
+          'distance_overrides','slots','deliveries','profiles','audit_logs','notices','notice_groups','events','v_remaining',
+          'lending_items','lending_requests','lending_assignments','lending_records','lending_years']) t, unnest(array['select']) p
         union all
         select format('%s %s', t, p) from unnest(array['rooms','items','room_years','distance_overrides','stocks','groups',
-          'request_submissions','requests','rules','slots','deliveries','events']) t, unnest(array['insert','update','delete']) p),
-  'authenticated の表の権限：全表の select と、W の 12 表（T18 の予定と締切を含む）の insert・update・delete だけ（RPC だけで書く表〔お知らせの2表を含む〕には書き込みの権限がない）');
+          'request_submissions','requests','rules','slots','deliveries','events','lending_items']) t, unnest(array['insert','update','delete']) p
+        union all
+        -- テント等の申請と記録（T21）：insert と update だけ（削除はしない。0 にして残す）
+        select format('%s %s', t, p) from unnest(array['lending_requests','lending_records']) t, unnest(array['insert','update']) p),
+  'authenticated の表の権限：全表の select と、W の 13 表（T18 の予定と締切・T21 のテント等の備品を含む）の insert・update・delete、テント等の申請と記録の insert・update だけ（RPC だけで書く表〔お知らせの2表・テント等の割り当てと確定の印を含む〕には書き込みの権限がない）');
 select is_empty($$ select c.relname::text from pg_class c
                    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
                      and (has_any_column_privilege('anon', c.oid, 'select') or has_any_column_privilege('anon', c.oid, 'insert')
@@ -195,6 +231,13 @@ select is_empty($$ select c.relname || ' ' || p.p from pg_class c
                    where c.oid in ('public.notices'::regclass, 'public.notice_groups'::regclass)
                      and has_any_column_privilege('authenticated', c.oid, p.p) $$,
   'authenticated は notices・notice_groups のどの列にも insert・update（・references）の権限がない');
+-- テント等の割り当てと確定の印（T21）も RPC だけで書く：列の単位でも authenticated に insert・update の権限がない。申請と記録は
+-- 削除の権限がない（0 にして残す）
+select is_empty($$ select c.relname || ' ' || p.p from pg_class c
+                   cross join unnest(array['insert', 'update', 'references']) as p(p)
+                   where c.oid in ('public.lending_assignments'::regclass, 'public.lending_years'::regclass)
+                     and has_any_column_privilege('authenticated', c.oid, p.p) $$,
+  'authenticated は lending_assignments・lending_years のどの列にも insert・update（・references）の権限がない（T21）');
 select is_empty($$ select c.relname::text from pg_class c
                    where c.relnamespace in ('public'::regnamespace, 'private'::regnamespace) and c.relkind = 'S'
                      and (has_sequence_privilege('authenticated', c.oid, 'usage') or has_sequence_privilege('authenticated', c.oid, 'update')) $$,
@@ -207,11 +250,25 @@ select ok((select 'security_invoker=true' = any (reloptions) from pg_class where
   'v_remaining は security_invoker（RLS を素通りしない）');
 select set_eq($$ select format('%s %s', tablename, cmd) from pg_policies where schemaname = 'public' $$,
   array(select format('%s %s', t, c) from unnest(array['rooms','items','distance_overrides','room_years','slots','stocks','groups',
-          'request_submissions','requests','rules','deliveries','events']) t, unnest(array['SELECT','INSERT','UPDATE','DELETE']) c
+          'request_submissions','requests','rules','deliveries','events','lending_items']) t, unnest(array['SELECT','INSERT','UPDATE','DELETE']) c
         union all
         select format('%s SELECT', t) from unnest(array['years','year_roles','group_members','invitations','substitution_consents',
-          'allocations','profiles','audit_logs','notices','notice_groups']) t),
-  'ポリシーは 58 個（W の 12 表は4操作、RPC だけで書く 10 表は select だけ。T17 でお知らせの2表、T18 で予定と締切の4つを足した）');
+          'allocations','profiles','audit_logs','notices','notice_groups','lending_assignments','lending_years']) t
+        union all
+        -- テント等の申請と記録（T21）：select・insert・update（削除のポリシーはない）
+        select format('%s %s', t, c) from unnest(array['lending_requests','lending_records']) t, unnest(array['SELECT','INSERT','UPDATE']) c),
+  'ポリシーは 70 個（W の 13 表は4操作、RPC だけで書く 12 表は select だけ、テント等の申請と記録は3操作。T17 でお知らせの2表、T18 で予定と締切の4つ、T21 でテント等の 12 個を足した）');
+-- テント等の貸し出し（T21）の書き込みのポリシー：備品はその年度の部門長以上で終了でない年度（can_lead）、申請は机椅子の申請と同じ
+-- （can_write_requests）、記録はその年度の総務で終了でない年度（can_record_lending）。update は using と with check に同じ述語
+select is((select string_agg(format('%s %s using=%s check=%s', policyname, cmd, coalesce(qual, '-'), coalesce(with_check, '-')), ' / ' order by policyname)
+           from pg_policies where schemaname = 'public' and tablename like 'lending\_%' and cmd <> 'SELECT'),
+  'lending_items_delete DELETE using=private.can_lead(year_id) check=- / lending_items_insert INSERT using=- check=private.can_lead(year_id) / '
+  || 'lending_items_update UPDATE using=private.can_lead(year_id) check=private.can_lead(year_id) / '
+  || 'lending_records_insert INSERT using=- check=private.can_record_lending(year_id) / '
+  || 'lending_records_update UPDATE using=private.can_record_lending(year_id) check=private.can_record_lending(year_id) / '
+  || 'lending_requests_insert INSERT using=- check=private.can_write_requests(group_id) / '
+  || 'lending_requests_update UPDATE using=private.can_write_requests(group_id) check=private.can_write_requests(group_id)',
+  'テント等の書き込みのポリシー：備品は can_lead、申請は can_write_requests、記録は can_record_lending（割り当てと確定の印にはない。T21）');
 -- 予定と締切（T18）の書き込みは、その年度の部門長以上で年度が終了でないとき（can_lead。room_years・slots・deliveries と同じ）
 select is((select string_agg(format('%s %s using=%s check=%s', policyname, cmd, coalesce(qual, '-'), coalesce(with_check, '-')), ' / ' order by policyname)
            from pg_policies where schemaname = 'public' and tablename = 'events' and cmd <> 'SELECT'),

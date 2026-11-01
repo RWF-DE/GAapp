@@ -7,7 +7,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(90);
+select plan(91);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。confirmed = false なら email_confirmed_at を null にする。
 -- provider が google なら Google の identity（Google の経路）、email なら email_verified: true の email の identity（seed の経路）
@@ -269,6 +269,9 @@ select is_empty($$ select t from unnest(array['years','rooms','room_years','item
                      'distance_overrides','slots','deliveries','audit_logs','notices','notice_groups','events','v_remaining']) t
                    where tests.count_visible(t) > 0 $$,
   '招待のない人は、profiles の自分の行のほかに何も読めない（全表〔T17 のお知らせの2表と T18 の予定と締切を含む〕と v_remaining が0行）');
+select is_empty($$ select t from unnest(array['lending_items','lending_requests','lending_assignments','lending_records','lending_years']) t
+                   where tests.count_visible(t) > 0 $$,
+  '招待のない人は、テント等の貸し出しの5表も読めない（0行。T21）');
 select tests.logout();
 -- 同じ人をあとから招待すると、その場でロールが付き、読めるようになる
 select tests.login_as('admin');

@@ -171,6 +171,41 @@ insert into tests.cell_sql values
  ('events(groups)','delete','delete from public.events where id = :E_GROUPS'),
  ('events(all)','delete','delete from public.events where id = :E_ALL'),
  ('events(Y2)','delete','delete from public.events where id = :E_Y2_SOUMU');
+-- テント等の貸し出し（T21）：fixture の Y1（割り当ての確定前）と Y2（確定後）の行を1件ずつ読み、書く。備品・申請・記録は直接（RLS）、
+-- 割り当てと確定の印は RPC だけ（表に書き込みの権限がない）。(upsert) は画面と同じ insert … on conflict do update（既にある行に当たる）
+insert into tests.cell_sql values
+ ('lending_items','select','select count(*) from public.lending_items where id = :LI_TENT'),
+ ('lending_items(Y2)','select','select count(*) from public.lending_items where id = :LI_Y2_TENT'),
+ ('lending_items','insert','insert into public.lending_items(year_id, name, stock) values (:Y1, ''T-新しい備品'', 1)'),
+ ('lending_items(Y2)','insert','insert into public.lending_items(year_id, name, stock) values (:Y2, ''T-新しい備品'', 1)'),
+ ('lending_items','update','update public.lending_items set name = name where id = :LI_TENT'),
+ ('lending_items(Y2)','update','update public.lending_items set name = name where id = :LI_Y2_TENT'),
+ ('lending_items','delete','delete from public.lending_items where id = :LI_SPARE'),
+ ('lending_requests','select','select count(*) from public.lending_requests where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_requests(G2)','select','select count(*) from public.lending_requests where group_id = :G2'),
+ ('lending_requests(Y2)','select','select count(*) from public.lending_requests where group_id = :G3'),
+ ('lending_requests','insert','insert into public.lending_requests(group_id, lending_item_id, year_id, count) values (:G1, :LI_SPARE, :Y1, 1)'),
+ ('lending_requests(G4)','insert','insert into public.lending_requests(group_id, lending_item_id, year_id, count) values (:G4, :LI_TENT, :Y1, 1)'),
+ ('lending_requests(upsert)','insert','insert into public.lending_requests(group_id, lending_item_id, year_id, count) values (:G1, :LI_TENT, :Y1, 3) on conflict (group_id, lending_item_id) do update set count = excluded.count'),
+ ('lending_requests','update','update public.lending_requests set count = count where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_requests(Y2)','update','update public.lending_requests set count = count where group_id = :G3'),
+ ('lending_requests','delete','delete from public.lending_requests where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_assignments','select','select count(*) from public.lending_assignments where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_assignments(Y2)','select','select count(*) from public.lending_assignments where group_id = :G3'),
+ ('lending_assignments','insert','insert into public.lending_assignments(group_id, lending_item_id, year_id, count) values (:G2, :LI_TENT, :Y1, 1)'),
+ ('lending_assignments','update','update public.lending_assignments set count = count where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_assignments','delete','delete from public.lending_assignments where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_records','select','select count(*) from public.lending_records where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_records(Y2)','select','select count(*) from public.lending_records where group_id = :G3'),
+ ('lending_records','insert','insert into public.lending_records(group_id, lending_item_id, year_id, lent_count) values (:G1, :LI_SPARE, :Y1, 1)'),
+ ('lending_records(upsert)','insert','insert into public.lending_records(group_id, lending_item_id, year_id, lent_count) values (:G1, :LI_TENT, :Y1, 3) on conflict (group_id, lending_item_id) do update set lent_count = excluded.lent_count'),
+ ('lending_records','update','update public.lending_records set note = note where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_records(Y2)','update','update public.lending_records set note = note where group_id = :G3'),
+ ('lending_records','delete','delete from public.lending_records where group_id = :G1 and lending_item_id = :LI_TENT'),
+ ('lending_years(Y2)','select','select count(*) from public.lending_years where year_id = :Y2'),
+ ('lending_years','insert','insert into public.lending_years(year_id) values (:Y1)'),
+ ('lending_years','update','update public.lending_years set confirmed_at = confirmed_at where year_id = :Y2'),
+ ('lending_years','delete','delete from public.lending_years where year_id = :Y2');
 
 -- 期待値（列の順：admin staff rep viewer outsider admin2 head。deputy は head の列）
 insert into tests.expect values
@@ -314,6 +349,50 @@ insert into tests.expect values
  ('events(groups)','delete','*','YNNNNNY'), ('events(groups)','delete','closed','NNNNNNN'),
  ('events(all)','delete','*','YNNNNNY'), ('events(all)','delete','closed','NNNNNNN'),
  ('events(Y2)','insert','*','NNNNNYN'), ('events(Y2)','update','*','NNNNNYN'), ('events(Y2)','delete','*','NNNNNYN');
+-- テント等の貸し出し（T21。02「テント等の貸し出しの権限」から書いた）。読み取りは年度の状態によらない。staff は Y2 では G3 の店長
+-- （総務でない）、rep は Y1 の G1 の店長で Y2 の閲覧のみ、viewer は G4（部門）の副店長も兼ねる。Y2 は準備中のまま（admin2 だけが書ける）
+insert into tests.expect values
+ -- lending_items：総務と閲覧のみはその年度、団体代表は代表である年度を読む。書くのはその年度の部門長以上で、終了でない年度（can_lead）。
+ -- 机椅子の確定中も書ける（守りがない）
+ ('lending_items','select','*','YYYYNNY'),
+ ('lending_items(Y2)','select','*','NYYNNYN'),
+ ('lending_items','insert','*','YNNNNNY'), ('lending_items','insert','closed','NNNNNNN'),
+ ('lending_items','update','*','YNNNNNY'), ('lending_items','update','closed','NNNNNNN'),
+ ('lending_items','delete','*','YNNNNNY'), ('lending_items','delete','closed','NNNNNNN'),
+ ('lending_items(Y2)','insert','*','NNNNNYN'), ('lending_items(Y2)','update','*','NNNNNYN'),
+ -- lending_requests：総務はその年度の全部、団体代表は自団体を読む（閲覧のみは読めない）。書くのは机椅子の申請と同じ（can_write_requests：
+ -- 団体代表は受付期間内、部門長以上は準備中と締切前）。viewer は G4 の副店長なので受付期間内は G4 の申請を書ける。削除の権限はない
+ ('lending_requests','select','*','YYYNNNY'),
+ ('lending_requests(G2)','select','*','YYNNNNY'),
+ ('lending_requests(Y2)','select','*','NYNNNYN'),
+ ('lending_requests','insert','*','NNNNNNN'), ('lending_requests','insert','preparing','YNNNNNY'),
+ ('lending_requests','insert','requesting','YNYNNNY'),
+ ('lending_requests(G4)','insert','*','NNNNNNN'), ('lending_requests(G4)','insert','preparing','YNNNNNY'),
+ ('lending_requests(G4)','insert','requesting','YNNYNNY'),
+ ('lending_requests(upsert)','insert','*','NNNNNNN'), ('lending_requests(upsert)','insert','preparing','YNNNNNY'),
+ ('lending_requests(upsert)','insert','requesting','YNYNNNY'),
+ ('lending_requests','update','*','NNNNNNN'), ('lending_requests','update','preparing','YNNNNNY'),
+ ('lending_requests','update','requesting','YNYNNNY'),
+ ('lending_requests(Y2)','update','*','NNNNNYN'),
+ ('lending_requests','delete','*','NNNNNNN'),
+ -- lending_assignments：総務はその年度の全部（確定の前も）。閲覧のみはその年度の、団体代表は自団体の、どちらも割り当ての確定後だけ
+ -- （Y1 は確定前、Y2 は確定後。Y1 の確定後は 029 で確かめる）。書き込みは RPC だけ
+ ('lending_assignments','select','*','YYNNNNY'),
+ ('lending_assignments(Y2)','select','*','NYYNNYN'),
+ ('lending_assignments','insert','*','NNNNNNN'), ('lending_assignments','update','*','NNNNNNN'),
+ ('lending_assignments','delete','*','NNNNNNN'),
+ -- lending_records：総務はその年度の全部、団体代表は自団体を読む（閲覧のみは読めない）。書くのはその年度の総務で、終了でない年度
+ -- （can_record_lending。確定の前でも、机椅子の確定中でも）。削除の権限はない
+ ('lending_records','select','*','YYYNNNY'),
+ ('lending_records(Y2)','select','*','NYNNNYN'),
+ ('lending_records','insert','*','YYNNNNY'), ('lending_records','insert','closed','NNNNNNN'),
+ ('lending_records(upsert)','insert','*','YYNNNNY'), ('lending_records(upsert)','insert','closed','NNNNNNN'),
+ ('lending_records','update','*','YYNNNNY'), ('lending_records','update','closed','NNNNNNN'),
+ ('lending_records(Y2)','update','*','NNNNNYN'),
+ ('lending_records','delete','*','NNNNNNN'),
+ -- lending_years：総務と閲覧のみはその年度、団体代表は代表である年度を読む（fixture は Y2 だけに行がある）。書き込みは RPC だけ
+ ('lending_years(Y2)','select','*','NYYNNYN'),
+ ('lending_years','insert','*','NNNNNNN'), ('lending_years','update','*','NNNNNNN'), ('lending_years','delete','*','NNNNNNN');
 
 -- ペルソナと期待値の列。deputy は head の列で確かめる（総務副部門長の権限は総務部門長と同じ。D-48）
 create table tests.persona_col (persona text primary key, col int not null, ord int not null unique);
@@ -344,8 +423,8 @@ select plan((select count(*)::int from tests.cells) + 6 + 31);
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
 select is_empty($$ select e.tbl, e.op from tests.expect e left join tests.cell_sql c using (tbl, op) where c.tbl is null $$,
   '期待値の表に、試す SQL のない行がない');
-select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 23,
-  '22 表（T17 のお知らせの2表と T18 の予定と締切を含む）と v_remaining をすべて試す');
+select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 28,
+  '27 表（T17 のお知らせの2表、T18 の予定と締切、T21 のテント等の5表を含む）と v_remaining をすべて試す');
 select is_empty($$ select tbl, op, scenario, yn from tests.expect where yn !~ '^[YN]{7}$' $$,
   '期待値はどの行も7列（admin staff rep viewer outsider admin2 head）');
 select is((select string_agg(persona || '=' || col, ' ' order by ord) from tests.persona_col),

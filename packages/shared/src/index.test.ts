@@ -64,7 +64,7 @@ describe('生成された型（database.types.ts）', () => {
     expect(year.status).toBe('allocating');
   });
 
-  it('RPC は 04_screens_api.md の DB 関数の表の 20 個（型のテスト）', () => {
+  it('RPC は 04_screens_api.md の DB 関数の表の 23 個（型のテスト）', () => {
     type Rpc = keyof Database['public']['Functions'];
     const rpcs = [
       'set_year_status',
@@ -88,12 +88,16 @@ describe('生成された型（database.types.ts）', () => {
       // お知らせ（T17）
       'save_notice',
       'delete_notice',
+      // テント等の貸し出し（T21）
+      'save_lending_assignments',
+      'set_lending_confirmed',
+      'previous_year_lending_items',
     ] as const satisfies readonly Rpc[];
     // 表にない RPC が DB にあれば、ここで型エラーになる（Exclude が never でなければ型が false になり、true を入れられない）
     type Missing = Exclude<Rpc, (typeof rpcs)[number]>;
     const noneMissing: [Missing] extends [never] ? true : false = true;
     expect(noneMissing).toBe(true);
-    expect(new Set(rpcs).size).toBe(20);
+    expect(new Set(rpcs).size).toBe(23);
     // invite は T15 で p_group_role（省略可）を足した5引数の版だけ。今の画面の呼び方（ロールか団体のどちらか）も型が通る
     const inviteRole: Database['public']['Functions']['invite']['Args'] = {
       p_year_id: '00000000-0000-0000-0000-000000000000',
