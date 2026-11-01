@@ -3,6 +3,9 @@
 // 締切と予定に祭の日（前々日〜2日目。日付だけの行）を出すため、撮るときだけシナリオの年度の1日目を今日より後に動かす
 // （festivalIn）。撮影は1つずつ流れ（shots のプロジェクトは workers 1）、年度は pinYear で開くので、ほかのテストの既定の年度は
 // 変わらない（並行の E2E〔e2e/t16-portal.spec.ts〕では動かさない。D-36）。年度は撮り終えたら消す。
+// 締切と予定の欄の件数は T18 の選び方（04「ダッシュボード」の締切と予定）：これからの 30 日（今日＋30 日の日まで）のものと、過ぎた締切
+// （期限の新しい順に余りの枠へ）を 8 件まで。受付期間が閉じた年度（requestWindow: 'closed'）は昨日が申請の締切なので「締切を過ぎました」
+// で入り、受付開始（30 日前。過ぎた予定）は出ない。受付中の年度の申請の締切（今＋30 日）は入り、40 日後の祭の日は出ない。
 import { expect, test, type Page, type Route } from '@playwright/test';
 import { storageStateFor } from '../support/auth';
 import { createScenario, sql, type Scenario } from '../support/db';
@@ -60,10 +63,13 @@ test.describe('T16 管理者', () => {
       await festivalIn(s, 14);
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
 
-      // ダッシュボード：要対応（急ぎ・ふつう）、締切と予定（祭の日）、机椅子のカード
+      // ダッシュボード：要対応（急ぎ・ふつう）、締切と予定（過ぎた申請の締切と祭の4日）、机椅子のカード
       await openPortal(page, 'ダッシュボード');
       await expect(page.locator('[data-testid="portal-todo"][data-severity="urgent"]')).toHaveCount(1);
-      await expect(page.getByTestId('portal-dated-item')).toHaveCount(4);
+      await expect(page.getByTestId('portal-dated-item')).toHaveCount(5);
+      await expect(page.locator('[data-testid="portal-dated-item"][data-id="furniture:request-close"]').getByTestId('portal-dated-relative')).toHaveText(
+        '締切を過ぎました',
+      );
       await expect(furnitureCard(page)).toBeVisible();
       await shoot(page, 'T16', 'portal-admin-pc', { fullPage: true });
 
@@ -88,7 +94,7 @@ test.describe('T16 管理者', () => {
       await expect(page.getByTestId('portal-todos').locator('[data-testid="portal-loading"][data-module="furniture"]')).toBeVisible();
       await expect(page.getByTestId('portal-cards').getByTestId('portal-loading')).toBeVisible();
       await expect(page.getByTestId('portal-dated').getByTestId('portal-loading')).toHaveCount(0);
-      await expect(page.getByTestId('portal-dated-item')).toHaveCount(4);
+      await expect(page.getByTestId('portal-dated-item')).toHaveCount(5);
       await shoot(page, 'T16', 'portal-loading-pc', { fullPage: true });
       release();
       await expect(furnitureCard(page)).toBeVisible();
@@ -112,7 +118,7 @@ test.describe('T16 管理者', () => {
 test.describe('T16 総務部門長', () => {
   test.use({ storageState: storageStateFor('head'), viewport: PC });
 
-  test('T16 総務部門長のダッシュボード（振り分け中：自動振り分け・了承の依頼中。これからの締切と予定はない）', async ({ page }) => {
+  test('T16 総務部門長のダッシュボード（振り分け中：自動振り分け・了承の依頼中。締切と予定は過ぎた申請の締切だけ）', async ({ page }) => {
     const s = await createScenario({
       status: 'allocating',
       requestWindow: 'closed',
@@ -126,7 +132,12 @@ test.describe('T16 総務部門長', () => {
       await pinYear(page, SEED_USER_IDS.head, s.yearId);
       await openPortal(page, 'ダッシュボード');
       await expect(page.getByTestId('portal-todo')).toHaveCount(2);
-      await expect(page.getByTestId('portal-dated-empty')).toBeVisible();
+      // これからの項目はなく（祭の日は 2001 年）、昨日の申請の締切が「締切を過ぎました」で入る（T18 の選び方）
+      await expect(page.getByTestId('portal-dated-item')).toHaveCount(1);
+      await expect(page.locator('[data-testid="portal-dated-item"][data-id="furniture:request-close"]').getByTestId('portal-dated-relative')).toHaveText(
+        '締切を過ぎました',
+      );
+      await expect(page.getByTestId('portal-dated-empty')).toHaveCount(0);
       await shoot(page, 'T16', 'portal-head-pc', { fullPage: true });
     } finally {
       await s.cleanup();
@@ -149,7 +160,9 @@ test.describe('T16 総務部門員（スマホ）', () => {
       await pinYear(page, SEED_USER_IDS.staff, s.yearId);
       await openPortal(page, 'ダッシュボード');
       await expect(page.getByTestId('portal-todo')).toHaveCount(2);
-      await expect(page.getByTestId('portal-dated-item')).toHaveCount(5);
+      // 申請の締切（今＋30 日）だけ（40 日後の祭の日は、これからの 30 日の外。T18 の選び方）
+      await expect(page.getByTestId('portal-dated-item')).toHaveCount(1);
+      await expect(page.locator('[data-testid="portal-dated-item"][data-id="furniture:request-close"]')).toBeVisible();
       await expectNoOverflow(page);
       await shoot(page, 'T16', 'portal-staff-mobile', { fullPage: true });
 
@@ -177,7 +190,8 @@ test.describe('T16 閲覧のみ', () => {
       await pinYear(page, SEED_USER_IDS.viewer, s.yearId);
       await openPortal(page, 'ホーム');
       await expect(furnitureCard(page).getByRole('link', { name: '振り分け表を見る' })).toBeVisible();
-      await expect(page.getByTestId('portal-dated-item')).toHaveCount(4);
+      // 祭の4日と、過ぎた申請の締切（T18 の選び方）
+      await expect(page.getByTestId('portal-dated-item')).toHaveCount(5);
       await shoot(page, 'T16', 'portal-viewer-pc');
 
       await page.setViewportSize(MOBILE);
