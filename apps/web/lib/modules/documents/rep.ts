@@ -2,6 +2,8 @@
 // 純粋な関数（時計は now だけ）。カードは締切の早い順（同じなら題名 → id）、ファイルは提出物ごとに created_at → id の順に番号を付ける。
 // 差し戻しの理由・前回の差し戻しの理由・承認のメモは、状態で出し分ける（書いたとおりの文字は画面が出す）。
 import { compareStrings } from '@gaapp/shared';
+import { tokyoDate, tokyoToday } from '@/lib/datetime';
+import { daysBetween, formatShortDateTimeWeekday } from '@/lib/datetime-weekday';
 import { numberFiles, type NumberedFile } from './files';
 import { statusOf, type DocumentStatus } from './labels';
 import { documentMarks, type DocumentMarks } from './marks';
@@ -64,6 +66,35 @@ export function buildRepDocumentCards(data: Pick<RepDocumentsData, 'statuses' | 
         baseVersion: doc.updated_at ?? null,
       };
     });
+}
+
+/** 締切を過ぎたときの相対の言い方（「締切と予定」の DATED_OVERDUE と同じ文字） */
+export const DEADLINE_OVERDUE_TEXT = '締切を過ぎました';
+
+/**
+ * 締切の文（04「自団体の提出物」：「締切 10/5（月）17:00」。年は now の Asia/Tokyo の年と違うときだけ付ける）。読めない締切は「締切 —」。
+ *
+ * @example
+ * deadlineText('2026-10-05T08:00:00Z', Date.parse('2026-10-01T00:00:00Z')) // '締切 10/5（月）17:00'
+ */
+export function deadlineText(deadline: string, now: number): string {
+  const year = Number(tokyoToday(new Date(now)).slice(0, 4));
+  return `締切 ${formatShortDateTimeWeekday(deadline, year) || '—'}`;
+}
+
+/**
+ * 締切の相対の言い方（04「自団体の提出物」。「締切と予定」の日付の出し方〔lib/modules/portal.ts の datedRelative の締切〕と同じ決め方）：
+ * 締切ちょうどからは「締切を過ぎました」、でなければ Asia/Tokyo の暦の日付の差で「今日」「明日」「あと N 日」。読めない締切は空文字。
+ * lib/modules/portal.ts（並べ方・まとめ方）を /document の最初に読む JS に入れないため、ここに同じ決め方を置く（テストで比べる）。
+ */
+export function deadlineRelative(deadline: string, now: number): string {
+  const t = Date.parse(deadline);
+  if (Number.isNaN(t)) return '';
+  if (t <= now) return DEADLINE_OVERDUE_TEXT;
+  const n = daysBetween(tokyoToday(new Date(now)), tokyoDate(deadline));
+  if (n === null) return '';
+  if (n <= 0) return '今日';
+  return n === 1 ? '明日' : `あと ${n} 日`;
 }
 
 /** `?document=` のカード（その団体のカードにない・形の違う値なら null） */

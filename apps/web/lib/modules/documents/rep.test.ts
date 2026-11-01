@@ -1,8 +1,9 @@
 // 自団体の提出物（/document）のカード（04「自団体の提出物」。T19）：締切の早い順・ファイルの番号・状態ごとの理由とメモ・提出の版・
 // `?document=` のカード・団体の選び方（/request と同じ。先読みと同じ関数）。
 import { describe, expect, it } from 'vitest';
+import { datedRelative, DATED_OVERDUE } from '@/lib/modules/portal';
 import type { DocumentFileRow, RepDocumentStatusRow } from './reads';
-import { buildRepDocumentCards, highlightedCard, pickDocumentGroup } from './rep';
+import { buildRepDocumentCards, DEADLINE_OVERDUE_TEXT, deadlineRelative, deadlineText, highlightedCard, pickDocumentGroup } from './rep';
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const G = uuid(10);
@@ -93,5 +94,40 @@ describe('T19 buildRepDocumentCards', () => {
     expect(pickDocumentGroup(groups, 'other')).toEqual({ id: 'g1' });
     expect(pickDocumentGroup(groups, null)).toEqual({ id: 'g1' });
     expect(pickDocumentGroup([], 'g1')).toBeNull();
+  });
+});
+
+describe('T19 締切の文と相対の言い方（/document のカード）', () => {
+  const now = Date.parse('2026-10-01T03:00:00Z'); // 2026-10-01 12:00（Asia/Tokyo）
+
+  it('deadlineText：「締切 10/5（月）17:00」。年が違えば年も。読めなければ —', () => {
+    expect(deadlineText('2026-10-05T08:00:00Z', now)).toBe('締切 10/5（月）17:00');
+    expect(deadlineText('2027-01-04T00:00:00Z', now)).toBe('締切 2027/1/4（月）09:00');
+    expect(deadlineText('x', now)).toBe('締切 —');
+  });
+
+  it('deadlineRelative：締切ちょうどから「締切を過ぎました」、ほかは Asia/Tokyo の日付の差（「締切と予定」の datedRelative と同じ）', () => {
+    expect(DEADLINE_OVERDUE_TEXT).toBe(DATED_OVERDUE);
+    expect(deadlineRelative('2026-10-01T03:00:00Z', now)).toBe('締切を過ぎました');
+    expect(deadlineRelative('2026-10-01T03:00:00.001Z', now)).toBe('今日');
+    expect(deadlineRelative('2026-10-01T14:59:00Z', now)).toBe('今日');
+    expect(deadlineRelative('2026-10-01T15:00:00Z', now)).toBe('明日');
+    expect(deadlineRelative('2026-10-04T08:00:00Z', now)).toBe('あと 3 日');
+    expect(deadlineRelative('bad', now)).toBe('');
+    // 「締切と予定」の締切（終わりなし）と同じ答え（日付の境目と、締切ちょうどの前後）
+    const deadlines = [
+      '2026-09-30T15:00:00Z',
+      '2026-10-01T02:59:59Z',
+      '2026-10-01T03:00:00Z',
+      '2026-10-01T03:00:01Z',
+      '2026-10-01T14:59:59Z',
+      '2026-10-01T15:00:00Z',
+      '2026-10-02T14:59:59Z',
+      '2026-10-02T15:00:00Z',
+      '2026-12-31T15:00:00Z',
+    ];
+    for (const d of deadlines) {
+      expect(deadlineRelative(d, now), d).toBe(datedRelative({ at: d, kind: 'deadline' }, now));
+    }
   });
 });
