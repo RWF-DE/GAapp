@@ -65,7 +65,16 @@ function HistoryBody({ yearId, yearLabel, adminOfOpenYear }: { yearId: string; y
     const users = new Map<string, string>();
     for (const mem of o?.members ?? []) if (mem.displayName !== null) users.set(mem.userId, mem.displayName);
     for (const [id, name] of n?.users ?? []) users.set(id, name);
-    return { groups, rooms: o?.rooms ?? new Map(), items: o?.items ?? new Map(), users, years: new Map([[yearId, yearLabel]]) };
+    return {
+      groups,
+      rooms: o?.rooms ?? new Map(),
+      items: o?.items ?? new Map(),
+      users,
+      years: new Map([[yearId, yearLabel]]),
+      // シフト・作業（T20）：持ち場の名前と時間枠の日時
+      duties: o?.duties ?? new Map(),
+      slots: o?.slots ?? new Map(),
+    };
   }, [o, n, yearId, yearLabel]);
 
   // URL の反映（router.replace）は少し遅れて届くので、続けて変えたとき（始めと終わりの日付を続けて入れるなど）に前の変更を

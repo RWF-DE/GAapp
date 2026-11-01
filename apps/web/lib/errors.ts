@@ -246,6 +246,8 @@ export interface NameLookup {
   room?: (id: string) => string | undefined;
   item?: (id: string) => string | undefined;
   group?: (id: string) => string | undefined;
+  /** シフトの時間枠の時刻（「09:00〜10:00」。T20。重なりの文言の括弧） */
+  slot?: (id: string) => string | undefined;
 }
 
 export interface MessageContext {
@@ -356,6 +358,18 @@ export const NOTICE_CONFLICT_MESSAGE = 'ほかの人がこのお知らせを先�
 /** お知らせの not_found（直す間にお知らせが消えた。04「お知らせ一覧」のエラー） */
 export const NOTICE_MISSING_MESSAGE = 'このお知らせは見つかりません（ほかの人が削除した可能性があります）';
 
+// シフト・作業（T20・D-56。04「シフト表」「作業一覧」のエラーと読み直し）
+/** 作業の状態の conflict（set_task_status。details は {id}。振り分けの行の id と取り違えない） */
+export const TASK_CONFLICT_MESSAGE = 'ほかの人がこの作業を先に変えました。読み直しました';
+/** 作業の not_found（直す・状態を変える間に作業が消えた） */
+export const TASK_MISSING_MESSAGE = 'この作業は見つかりません（ほかの人が削除した可能性があります）';
+/** 割り当てる人・担当者が総務でない（invalid_input の reason: not_soumu） */
+export const NOT_SOUMU_MESSAGE = '総務（管理者・総務部門長・総務副部門長・総務部門員）だけを割り当てられます';
+/** ます・時間枠・持ち場が先に消された（23503。add_shift_slots の needs の not_in_year） */
+export const SHIFT_GONE_MESSAGE = '時間枠か持ち場がほかの人に消されました。読み直しました';
+/** 作る時間枠どうしが重なる（add_shift_slots の field: slots、reason: overlap） */
+export const SHIFT_SLOTS_OVERLAP_MESSAGE = '作る時間枠どうしが重なっています';
+
 function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '他の人が先に変更しました。読み直しました';
   // details（year_id・user_id・reason）によらず同じ文言（04 のエラーの一覧）
@@ -398,6 +412,8 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   }
   // お知らせ（save_notice・delete_notice の details は {id}。振り分けの行の id と分ける）
   if (ctx.rpc && NOTICE_RPCS.includes(ctx.rpc) && 'id' in d) return NOTICE_CONFLICT_MESSAGE;
+  // 作業の状態（set_task_status の details は {id}。T20）
+  if (ctx.rpc === 'set_task_status' && 'id' in d) return TASK_CONFLICT_MESSAGE;
   if ('id' in d) return 'ほかの人が同じ振り分けの行を先に変えました。読み直しました';
   return generic;
 }
@@ -435,6 +451,15 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
     return col ? `この項目は変えられません（${col}）` : 'この項目は変えられません';
   }
   if ('op' in d) return '入力の形が違います（数は 1〜10000、運び元・品目を選んでください）';
+  // シフト・作業（T20）：時間枠の重なり（トリガーの field: starts_at は今ある時間枠の時刻を括弧に。add_shift_slots の field: slots は
+  // 送った時間枠どうし）、総務だけ（not_soumu）、1日分の持ち場が消えた（needs の not_in_year）
+  if (d.reason === 'overlap' && d.field === 'slots' && ctx.rpc === 'add_shift_slots') return SHIFT_SLOTS_OVERLAP_MESSAGE;
+  if (d.reason === 'overlap' && d.field === 'starts_at' && 'slot_id' in d) {
+    const time = typeof d.slot_id === 'string' ? ctx.names?.slot?.(d.slot_id) : undefined;
+    return time ? `ほかの時間枠と時間が重なっています（${time}）` : 'ほかの時間枠と時間が重なっています';
+  }
+  if (d.reason === 'not_soumu') return NOT_SOUMU_MESSAGE;
+  if (d.field === 'needs' && d.reason === 'not_in_year') return SHIFT_GONE_MESSAGE;
   switch (d.field) {
     case 'festival_start':
       return '1日目は、前の年度より後・次の年度より前で、2000年1月1日〜2200年12月31日の日付にしてください';
@@ -479,6 +504,7 @@ export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string
     case 'not_found':
       if (e.reason === 'lock_missing') return 'すでに消えていました（ほかの人が消した可能性があります）。読み直しました';
       if (ctx.rpc && NOTICE_RPCS.includes(ctx.rpc)) return NOTICE_MISSING_MESSAGE;
+      if (ctx.rpc === 'set_task_status') return TASK_MISSING_MESSAGE;
       return isRecord(e.details) && e.details.field === 'user_id'
         ? 'この人のアカウントが見つかりません'
         : '対象が見つかりません（ほかの人が消した可能性があります）';

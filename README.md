@@ -214,9 +214,9 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
 
 マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で、**ブランチに `main` を選んで**手動実行する（先に 2 の環境 `production` を設定しておく。Required reviewers の承認の後に動く）。Migrate production DB（`supabase db push`）は、本番 DB にまだ流していないマイグレーションを、番号の順に全部流す。CLI はファイルごとに1つのトランザクションで流すので、途中のファイルで止まると、そのファイルの変更は何も残らず、それより前のファイルは流れたまま残る（もう一度流すと、止まったファイルから続く）。本番 DB に流したファイルは、管理画面の SQL Editor で `select version from supabase_migrations.schema_migrations order by version;` を流すと分かる（`0008` のようなファイルの番号が並ぶ）。
 
-#### 本番を使い始める前に流すもの（0009〜0016）
+#### 本番を使い始める前に流すもの（0009〜0017）
 
-main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（deploy.yml が main へのマージのたびに出す）は 0015 までのマイグレーションがあることを前提にしている。本番 DB に流していないファイルが残っていると、それを使う画面（招待とロールの段・お知らせ・締切と予定など）が失敗を出す。本番を使い始める前に（誰かがアプリで書き込む前に）、下の手順で Migrate production DB を流し、次の8つを流し終えておく（本番 DB が 0008 までなら、1回の実行でこの順に流れる）。0016（提出物の DB と Storage。T19 のパート A）は画面（パート B）より先に main に入るので、流しても今の画面は変わらない。
+main には T15〜T18（PR #19〜#23）と T20 が入り、GitHub Pages の画面（deploy.yml が main へのマージのたびに出す）は 0017 までのマイグレーションがあることを前提にしている。本番 DB に流していないファイルが残っていると、それを使う画面（招待とロールの段・お知らせ・締切と予定・シフト・作業など）が失敗を出す。本番を使い始める前に（誰かがアプリで書き込む前に）、下の手順で Migrate production DB を流し、次の9つを流し終えておく（本番 DB が 0008 までなら、1回の実行でこの順に流れる）。0016（提出物の DB と Storage。T19 のパート A）は画面（パート B）より先に main に入るので、流しても今の画面は変わらない。
 
 | ファイル | 中身 | 流すときの注意 |
 | --- | --- | --- |
@@ -228,6 +228,7 @@ main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（depl
 | 0014_notices.sql | お知らせ（T17。D-53）の型・表・RLS・RPC。足すだけ | 0013 で止まると、0014・0015 も流れない |
 | 0015_events.sql | 締切と予定の項目（T18。D-54）の型・表・RLS。足すだけ | 0014 の関数を使うので、0014 の後 |
 | 0016_documents.sql | 提出物（T19。D-55）の型・表・RLS・RPC と、Storage の bucket documents・storage.objects のポリシー3つとトリガー1つ。足すだけ | 下の「0016 の注意」。0014 の関数を使うので、0014 の後 |
+| 0017_shifts.sql | シフト・作業（T20。D-56）の型・表・RLS・RPC。足すだけ（今の表・関数・ポリシーは変えない） | 0015 までの関数（0013 の can_lead など）だけを使う。0016・0018 とは独立（どの順でも通る）。画面（自分のシフト・シフト表・印刷・作業一覧と、ダッシュボード・締切と予定の一覧のシフト・作業の分）は、流すまで読み込みの失敗を出す（ほかの機能の分はそのまま使える） |
 
 流す手順：
 
@@ -236,7 +237,7 @@ main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（depl
 3. 止まったら、ログのエラーを見る。止まったファイルの変更は何も残らないので、直すものを直してから、もう一度 Migrate production DB を流せば、止まったファイルから続く。
    - `role_overlap: …`（0013 の最初の文）：兼任を探す問い合わせで探して直してから流し直す。
    - lock timeout（SQLSTATE 55P03）・デッドロック（40P01）：直すものはない。そのまま流し直す。
-4. 流し終えたら、上の `supabase_migrations.schema_migrations` の問い合わせで 0016 まで並ぶことを確かめ、下の「0016 の注意」の確かめの問い合わせを流し、管理者が総務部門長・総務副部門長を招待する（下の「総務部門長・総務副部門長の付け方」）。
+4. 流し終えたら、上の `supabase_migrations.schema_migrations` の問い合わせで 0017 まで並ぶことを確かめ、下の「0016 の注意」の確かめの問い合わせを流し、管理者が総務部門長・総務副部門長を招待する（下の「総務部門長・総務副部門長の付け方」）。
 
 #### 0011〜0013（T15 のロールの見直し。D-48・D-49）の注意
 
@@ -273,7 +274,7 @@ main には T15〜T18（PR #19〜#23）が入り、GitHub Pages の画面（depl
 
 #### 0016（提出物。T19。D-55）の注意
 
-- 0016 は型・表・関数・ポリシーを足すだけで、今の表と関数は変えない。最後の Storage の部分で、storage.buckets に bucket `documents` の行（非公開・1ファイル 10 MiB・PDF・JPEG・PNG）を入れ、storage.objects に bucket documents の物だけに効くポリシー3つ（documents_objects_select・documents_objects_insert・documents_objects_delete）と、書き込みを DB の予約と提出の状態で確かめるトリガー documents_objects_guard を作る（RLS を通らない Storage API の書き込み〔署名つきアップロードなど〕も止める。notes/T19.md の「レビューで直したこと」）。storage の表の持ち主は supabase_storage_admin で、Migrate production DB は postgres で流す。ローカル（supabase/postgres 17.11・CLI 2.122.0）では postgres でどれも作れたが、本番で権限のエラー（42501。permission denied・must be owner of table objects など）で止まることがある。止まると 0016 の変更は何も残らない（0015 までは残る。提出物の画面はまだないので、ほかの画面はそのまま使える）。
+- 0016 は型・表・関数・ポリシーを足すだけで、今の表と関数は変えない。最後の Storage の部分で、storage.buckets に bucket `documents` の行（非公開・1ファイル 10 MiB・PDF・JPEG・PNG）を入れ、storage.objects に bucket documents の物だけに効くポリシー3つ（documents_objects_select・documents_objects_insert・documents_objects_delete）と、書き込みを DB の予約と提出の状態で確かめるトリガー documents_objects_guard を作る（RLS を通らない Storage API の書き込み〔署名つきアップロードなど〕も止める。notes/T19.md の「レビューで直したこと」）。storage の表の持ち主は supabase_storage_admin で、Migrate production DB は postgres で流す。ローカル（supabase/postgres 17.11・CLI 2.122.0）では postgres でどれも作れたが、本番で権限のエラー（42501。permission denied・must be owner of table objects など）で止まることがある。止まると 0016 の変更は何も残らない（0015 までは残る。その後の 0017 も流れないので、0016 を直して流し直す〔0017 も続けて流れる〕までは、シフト・作業の画面と、ダッシュボードなどのシフト・作業の分〔0017 の行〕が読み込みの失敗を出す。提出物の画面はまだないので、ほかはそのまま使える）。
 - 流し終えたら、管理画面の SQL Editor で次を流し、Storage の部分が入ったことを確かめる（最後の4行は取り消すトランザクションで、service_role の書き込み〔署名つきアップロードと同じロール〕もトリガーが止めることを見る。何も残らない）：
 
   ```sql

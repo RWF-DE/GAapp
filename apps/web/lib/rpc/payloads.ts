@@ -174,6 +174,14 @@ export const RPC_ARGS = {
     p_base_updated_at: updatedAt.optional(),
   }),
   delete_notice: z.object({ p_notice_id: uuid, p_base_updated_at: updatedAt }),
+  // シフト・作業（T20・D-56）。作業の状態は担当者と部門長以上（楽観ロックは読んだときの updated_at の文字列のまま）。1日分は時間枠 1〜96 と、
+  // そのすべてに同じ持ち場のます（0〜100 個。必要人数 0〜100）。日時はオフセットつきの ISO 8601（画面は `+09:00` で送る）
+  set_task_status: z.object({ p_task_id: uuid, p_status: z.enum(E.task_status), p_base_updated_at: updatedAt }),
+  add_shift_slots: z.object({
+    p_year_id: uuid,
+    p_slots: z.array(z.object({ starts_at: isoDateTimeSchema, ends_at: isoDateTimeSchema })).min(1).max(96),
+    p_needs: z.array(z.object({ duty_id: uuid, required_count: z.number().int().min(0).max(100) })).max(100),
+  }),
 } as const;
 
 // ---- jsonb の返り値 ----

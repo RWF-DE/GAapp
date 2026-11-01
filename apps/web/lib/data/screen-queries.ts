@@ -7,7 +7,7 @@
 // 関数（planStockPrefetch など）と表（SCREEN_PREFETCH）をこの軽いモジュールに置き、Providers から読む。
 // 画面のフック（useStockMaster など）も同じクエリの設定（stockMasterOptions など）を使うので、先読みしたキャッシュをそのまま使う。
 import { queryOptions, type QueryClient } from '@tanstack/react-query';
-import { isSoumu } from '@/lib/auth/roles';
+import { isLead, isSoumu } from '@/lib/auth/roles';
 import type { PrefetchEntry, RoutePrefetchContext, RoutePrefetcher } from '@/lib/boot/early-load';
 import { fetchAll } from '@/lib/db/fetch-all';
 import {
@@ -28,6 +28,8 @@ import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
+import { shiftsPortalOptions } from '@/lib/modules/shifts/portal-read';
+import { myShiftsOptions, shiftMembersOptions, soumuNamesOptions, tasksOptions } from '@/lib/modules/shifts/reads';
 import { queryKeys, STALE_TIME_MS } from '@/lib/query';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import { fetchYear, isAllocationFinal, seedYearRows } from './year';
@@ -348,6 +350,9 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
     list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
     list.push({ options: noticesLatestOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
     list.push({ options: calendarDatedOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
+    // シフト・作業（T20・D-56）：部門長以上と総務部門員で別のキー（段が同じときだけ使う）
+    const lead = isLead(ctx.role);
+    list.push({ options: shiftsPortalOptions(ctx.yearId, lead ? 'lead' : 'staff'), usable: (m) => isSoumu(m.role) && isLead(m.role) === lead });
   }
   if (ctx.role === 'viewer') {
     list.push({ options: noticesLatestOptions(ctx.yearId, 'viewer'), usable: (m) => m.role === 'viewer' });
@@ -369,6 +374,36 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
   return list;
 }
 
+// ---------------------------------------------------------------- 自分のシフト /shift・作業一覧 /tasks（T20）
+
+/**
+ * /shift の先読み（04「共通レイアウト」のシフト・作業の読み込み。D-56）：総務なら自分の割り当てと表示名（2本を並行）。版を使わない画面
+ * なので記録・先送りもする（EARLY_FETCH_PATHS）。立場が届いて総務でなくなったら使わない。
+ */
+export function planShiftPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
+  if (!isSoumu(ctx.role)) return [];
+  return [
+    { options: myShiftsOptions(ctx.yearId), usable: (m) => isSoumu(m.role) },
+    { options: soumuNamesOptions(ctx.yearId), usable: (m) => isSoumu(m.role) },
+  ];
+}
+
+/**
+ * /tasks の先読み（D-56）：総務なら作業の全部と表示名、部門長以上はロールの一覧も（担当者を選ぶ一覧と「担当者が総務でない」）。
+ * 段（部門長以上か）が同じときだけ使う。
+ */
+export function planTasksPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
+  if (!isSoumu(ctx.role)) return [];
+  const lead = isLead(ctx.role);
+  const same = (m: { role: RoutePrefetchContext['role'] }) => isSoumu(m.role) && isLead(m.role) === lead;
+  const list: PrefetchEntry[] = [
+    { options: tasksOptions(ctx.yearId), usable: same },
+    { options: soumuNamesOptions(ctx.yearId), usable: same },
+  ];
+  if (lead) list.push({ options: shiftMembersOptions(ctx.yearId), usable: same });
+  return list;
+}
+
 // ---------------------------------------------------------------- 先読みの表
 
 /** 画面のパス（basePath と末尾の / を外したもの）→ 先読みするものの決め方（Providers が startEarlyLoad に渡す） */
@@ -377,6 +412,9 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
   '/stock': planStockPrefetch,
   '/request': planRequestPrefetch,
   '/my': planMyPrefetch,
+  // シフト・作業（T20・D-56）：版を使わない画面（シフト表 /shifts と印刷は入れない）
+  '/shift': planShiftPrefetch,
+  '/tasks': planTasksPrefetch,
 };
 
 /**

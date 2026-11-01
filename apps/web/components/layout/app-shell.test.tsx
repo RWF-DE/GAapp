@@ -286,6 +286,10 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       'キャスター机交換',
       'お知らせ一覧',
       '締切と予定の一覧',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
       'マスタ設定',
       '履歴',
     ]);
@@ -297,7 +301,7 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
     renderShell();
     await screen.findByLabelText('メモ');
     expect(screen.getByText('総務部門員')).toBeTruthy();
-    expect(navLabels()).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定の一覧']);
+    expect(navLabels()).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定の一覧', '自分のシフト', 'シフト表', '作業一覧']);
   });
 });
 
@@ -315,6 +319,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       '机椅子',
       'お知らせ',
       '締切と予定',
+      'シフト・作業',
       '共通',
     ]);
     const furniture = within(aside()).getByRole('group', { name: '机椅子' });
@@ -335,6 +340,13 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
     // T18：締切と予定の見出し（見せる）に「締切と予定の一覧」（見出しと同じ言葉を縦に並べない。お知らせと同じ形）
     const calendar = within(aside()).getByRole('group', { name: '締切と予定' });
     expect(within(calendar).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['締切と予定の一覧', '/calendar']]);
+    // T20：シフト・作業の見出しに自分のシフト・シフト表・作業一覧（印刷はナビに出さない）
+    const shifts = within(aside()).getByRole('group', { name: 'シフト・作業' });
+    expect(within(shifts).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['自分のシフト', '/shift'],
+      ['シフト表', '/shifts'],
+      ['作業一覧', '/tasks'],
+    ]);
     // 見出しは h2。「ホーム」だけ sr-only（項目が「ホーム」1つなので同じ言葉を2つ並べない）
     const heads = within(aside()).getAllByRole('heading', { level: 2 });
     expect(heads.map((h) => [h.textContent, h.classList.contains('sr-only')])).toEqual([
@@ -342,6 +354,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       ['机椅子', false],
       ['お知らせ', false],
       ['締切と予定', false],
+      ['シフト・作業', false],
       ['共通', false],
     ]);
   });
@@ -364,6 +377,10 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       'キャスター机交換',
       'お知らせ一覧',
       '締切と予定の一覧',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
       'マスタ設定',
       '履歴',
     ]);

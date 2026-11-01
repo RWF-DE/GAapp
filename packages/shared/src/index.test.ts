@@ -56,6 +56,8 @@ describe('生成された型（database.types.ts）', () => {
       notice_audience: ['soumu', 'all_groups', 'groups'],
       room_kind: ['room', 'gym', 'outdoor', 'other'],
       rule_kind: ['substitute', 'source_restrict', 'fixed_request', 'keep'],
+      // 作業の状態：未着手・作業中・完了（T20 の 0017。D-56）
+      task_status: ['todo', 'doing', 'done'],
       year_status: ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'],
     });
   });
@@ -66,7 +68,7 @@ describe('生成された型（database.types.ts）', () => {
     expect(year.status).toBe('allocating');
   });
 
-  it('RPC は 04_screens_api.md の DB 関数の表の 31 個（型のテスト）', () => {
+  it('RPC は 04_screens_api.md の DB 関数の表の 33 個（型のテスト）', () => {
     type Rpc = keyof Database['public']['Functions'];
     const rpcs = [
       'set_year_status',
@@ -102,12 +104,15 @@ describe('生成された型（database.types.ts）', () => {
       'delete_year_document_files',
       'document_orphan_paths',
       'document_storage_usage',
+      // シフト・作業（T20）
+      'set_task_status',
+      'add_shift_slots',
     ] as const satisfies readonly Rpc[];
     // 表にない RPC が DB にあれば、ここで型エラーになる（Exclude が never でなければ型が false になり、true を入れられない）
     type Missing = Exclude<Rpc, (typeof rpcs)[number]>;
     const noneMissing: [Missing] extends [never] ? true : false = true;
     expect(noneMissing).toBe(true);
-    expect(new Set(rpcs).size).toBe(31);
+    expect(new Set(rpcs).size).toBe(33);
     // invite は T15 で p_group_role（省略可）を足した5引数の版だけ。今の画面の呼び方（ロールか団体のどちらか）も型が通る
     const inviteRole: Database['public']['Functions']['invite']['Args'] = {
       p_year_id: '00000000-0000-0000-0000-000000000000',
@@ -294,5 +299,56 @@ describe('生成された型（database.types.ts）', () => {
       943718400,
       4,
     ]);
+  });
+
+  it('シフト・作業の表と RPC を画面から呼ぶ形で使える（T20。型のテスト）', () => {
+    type Fns = Database['public']['Functions'];
+    const Y = '00000000-0000-0000-0000-000000000001';
+    const D = '00000000-0000-0000-0000-000000000005';
+    const S = '00000000-0000-0000-0000-000000000006';
+    const T = '00000000-0000-0000-0000-000000000007';
+    const U = '00000000-0000-0000-0000-000000000008';
+    // 持ち場・時間枠・作業を足す：画面が id を作って送る（場所・説明・並び・締切・担当者は省ける。日時・書いた人は DB が入れる）
+    const duty: TablesInsert<'shift_duties'> = { id: D, year_id: Y, name: '受付', place: null, note: null, sort_order: 1 };
+    const slot: TablesInsert<'shift_slots'> = { id: S, year_id: Y, starts_at: '2027-10-15T09:00:00+09:00', ends_at: '2027-10-15T10:00:00+09:00' };
+    const need: TablesInsert<'shift_needs'> = { year_id: Y, slot_id: S, duty_id: D, required_count: 2 };
+    const assign: TablesInsert<'shift_assignments'> = { year_id: Y, slot_id: S, duty_id: D, user_id: U };
+    const task: TablesInsert<'tasks'> = { id: T, year_id: Y, title: '机の数を数える' };
+    expect(Object.keys(task)).toEqual(['id', 'year_id', 'title']);
+    expect([duty.name, slot.starts_at, need.required_count, assign.user_id]).toEqual(['受付', '2027-10-15T09:00:00+09:00', 2, U]);
+    // 移す（duty_id の update）、作業を直す（担当者を空に・締切つき）
+    const move: TablesUpdate<'shift_assignments'> = { duty_id: D };
+    const edit: TablesUpdate<'tasks'> = { title: '机の数を数える', note: null, assignee_id: null, due_at: '2027-10-10T17:00:00+09:00' };
+    expect([move.duty_id, edit.assignee_id]).toEqual([D, null]);
+    // 作業の状態：読んだときの updated_at の文字列をそのまま版にする。返り値は作業の行（次の版の updated_at を持つ）
+    const setStatus: Fns['set_task_status']['Args'] = { p_task_id: T, p_status: 'doing', p_base_updated_at: '2026-11-01T12:34:56.789+00:00' };
+    const saved: Fns['set_task_status']['Returns'] = {
+      id: T,
+      year_id: Y,
+      title: '机の数を数える',
+      note: null,
+      assignee_id: null,
+      due_at: null,
+      status: 'done',
+      created_by: null,
+      updated_by: null,
+      created_at: '2026-11-01T12:34:56.789+00:00',
+      updated_at: '2026-11-01T12:34:56.789+00:00',
+    };
+    const taskRow: Tables<'tasks'> = saved;
+    expect([setStatus.p_status, taskRow.status]).toEqual(['doing', 'done']);
+    // 1日分をまとめて作る：時間枠（オフセットつきの ISO 8601）と、全部の時間枠に同じ持ち場のます（省ける）。返り値は作った時間枠の配列
+    const addDay: Fns['add_shift_slots']['Args'] = {
+      p_year_id: Y,
+      p_slots: [{ starts_at: '2027-10-15T09:00:00+09:00', ends_at: '2027-10-15T10:00:00+09:00' }],
+      p_needs: [{ duty_id: D, required_count: 1 }],
+    };
+    const slotsOnly: Fns['add_shift_slots']['Args'] = { p_year_id: Y, p_slots: [] };
+    const made: Fns['add_shift_slots']['Returns'] = [
+      { id: S, year_id: Y, starts_at: '2027-10-15T00:00:00+00:00', ends_at: '2027-10-15T01:00:00+00:00', created_at: '', updated_at: '' },
+    ];
+    const slotRow: Tables<'shift_slots'> = made[0]!;
+    const statuses: Enums<'task_status'>[] = ['todo', 'doing', 'done'];
+    expect([Object.keys(slotsOnly), slotRow.id, statuses.length, Array.isArray(addDay.p_needs)]).toEqual([['p_year_id', 'p_slots'], S, 3, true]);
   });
 });

@@ -1,5 +1,5 @@
 -- 011_rls_matrix：権限表の全セル（表 × 操作 × 年度の状態 × ペルソナ）（T03。T15 で総務部門長・副部門長を、T17 でお知らせの notices・notice_groups を、
--- T18 で予定と締切の events を、T19 で提出物の documents・document_submissions・document_files と2つのビューを足した）
+-- T18 で予定と締切の events を、T19 で提出物の documents・document_submissions・document_files と2つのビューを、T20 でシフト・作業の5表を足した）
 -- 期待値の表（tests.expect）から、試す SQL（tests.cell_sql）と、Y1 の6つの状態（preparing、requesting、requesting:after＝締切後、
 -- allocating、confirmed、closed）と、8人のペルソナ（admin staff rep viewer outsider admin2 head deputy）を掛け合わせてセルを作る。
 -- yn は期待値の列の順（admin staff rep viewer outsider admin2 head）に Y（allowed）/N（denied）を並べた7文字。どのペルソナがどの列で
@@ -202,6 +202,51 @@ insert into tests.cell_sql values
  ('v_document_files','select','select count(*) from public.v_document_files where id = :F_G1'),
  ('v_document_files(Y2)','select','select count(*) from public.v_document_files where id = :F_Y2');
 
+-- シフト・作業（T20）：5表を Y1（fixture の DU1〜DU3・SL1・SL2・ます・割り当て・TK_*）と Y2（準備中のまま。DU_Y2・SL_Y2 など）で1つずつ読み、
+-- 書く。書き込みの値は BEFORE ROW のトリガー（重なり・総務だけ）を通るもの（時間枠は隣り合う時刻、割り当てる人はその年度の総務）。
+-- 作業の update は状態を変える（担当の総務部門員も直接は変えられない）
+insert into tests.cell_sql values
+ ('shift_duties','select','select count(*) from public.shift_duties where id = :DU1'),
+ ('shift_duties','insert','insert into public.shift_duties(year_id, name) values (:Y1, ''T-足す'')'),
+ ('shift_duties','update','update public.shift_duties set place = ''集合場所'' where id = :DU1'),
+ ('shift_duties','delete','delete from public.shift_duties where id = :DU3'),
+ ('shift_duties(Y2)','select','select count(*) from public.shift_duties where id = :DU_Y2'),
+ ('shift_duties(Y2)','insert','insert into public.shift_duties(year_id, name) values (:Y2, ''T-足す'')'),
+ ('shift_duties(Y2)','update','update public.shift_duties set place = ''集合場所'' where id = :DU_Y2'),
+ ('shift_duties(Y2)','delete','delete from public.shift_duties where id = :DU_Y2B'),
+ ('shift_slots','select','select count(*) from public.shift_slots where id = :SL1'),
+ ('shift_slots','insert','insert into public.shift_slots(year_id, starts_at, ends_at) values (:Y1, ''2027-10-15 11:00+09'', ''2027-10-15 12:00+09'')'),
+ ('shift_slots','update','update public.shift_slots set ends_at = ''2027-10-15 11:30+09'' where id = :SL2'),
+ ('shift_slots','delete','delete from public.shift_slots where id = :SL2'),
+ ('shift_slots(Y2)','select','select count(*) from public.shift_slots where id = :SL_Y2'),
+ ('shift_slots(Y2)','insert','insert into public.shift_slots(year_id, starts_at, ends_at) values (:Y2, ''2026-10-15 11:00+09'', ''2026-10-15 12:00+09'')'),
+ ('shift_slots(Y2)','update','update public.shift_slots set ends_at = ''2026-10-15 11:30+09'' where id = :SL_Y2B'),
+ ('shift_slots(Y2)','delete','delete from public.shift_slots where id = :SL_Y2B'),
+ ('shift_needs','select','select count(*) from public.shift_needs where slot_id = :SL1 and duty_id = :DU1'),
+ ('shift_needs','insert','insert into public.shift_needs(year_id, slot_id, duty_id, required_count) values (:Y1, :SL2, :DU2, 1)'),
+ ('shift_needs','update','update public.shift_needs set required_count = 3 where slot_id = :SL1 and duty_id = :DU1'),
+ ('shift_needs','delete','delete from public.shift_needs where slot_id = :SL2 and duty_id = :DU1'),
+ ('shift_needs(Y2)','select','select count(*) from public.shift_needs where slot_id = :SL_Y2 and duty_id = :DU_Y2'),
+ ('shift_needs(Y2)','insert','insert into public.shift_needs(year_id, slot_id, duty_id, required_count) values (:Y2, :SL_Y2, :DU_Y2B, 1)'),
+ ('shift_needs(Y2)','update','update public.shift_needs set required_count = 3 where slot_id = :SL_Y2 and duty_id = :DU_Y2'),
+ ('shift_needs(Y2)','delete','delete from public.shift_needs where slot_id = :SL_Y2B and duty_id = :DU_Y2'),
+ ('shift_assignments','select','select count(*) from public.shift_assignments where slot_id = :SL1 and user_id = :staff'),
+ ('shift_assignments','insert','insert into public.shift_assignments(year_id, slot_id, duty_id, user_id) values (:Y1, :SL2, :DU1, :deputy)'),
+ ('shift_assignments','update','update public.shift_assignments set duty_id = :DU2 where slot_id = :SL1 and user_id = :staff'),
+ ('shift_assignments','delete','delete from public.shift_assignments where slot_id = :SL1 and user_id = :staff'),
+ ('shift_assignments(Y2)','select','select count(*) from public.shift_assignments where slot_id = :SL_Y2 and user_id = :admin2'),
+ ('shift_assignments(Y2)','insert','insert into public.shift_assignments(year_id, slot_id, duty_id, user_id) values (:Y2, :SL_Y2B, :DU_Y2, :admin2)'),
+ ('shift_assignments(Y2)','update','update public.shift_assignments set duty_id = duty_id where slot_id = :SL_Y2 and user_id = :admin2'),
+ ('shift_assignments(Y2)','delete','delete from public.shift_assignments where slot_id = :SL_Y2 and user_id = :admin2'),
+ ('tasks','select','select count(*) from public.tasks where id = :TK_STAFF'),
+ ('tasks','insert','insert into public.tasks(year_id, title, assignee_id, due_at) values (:Y1, ''T-足す'', :staff, ''2027-10-10 17:00+09'')'),
+ ('tasks','update','update public.tasks set status = ''doing'' where id = :TK_STAFF'),
+ ('tasks','delete','delete from public.tasks where id = :TK_NONE'),
+ ('tasks(Y2)','select','select count(*) from public.tasks where id = :TK_Y2'),
+ ('tasks(Y2)','insert','insert into public.tasks(year_id, title, assignee_id) values (:Y2, ''T-足す'', :admin2)'),
+ ('tasks(Y2)','update','update public.tasks set status = ''done'' where id = :TK_Y2'),
+ ('tasks(Y2)','delete','delete from public.tasks where id = :TK_Y2');
+
 -- 期待値（列の順：admin staff rep viewer outsider admin2 head。deputy は head の列）
 insert into tests.expect values
  -- years：読むのはロールか団体代表。書き込みは RPC だけ（権限がない）
@@ -372,6 +417,36 @@ insert into tests.expect values
  ('v_document_files','select','*','YNYNNNY'),
  ('v_document_files(Y2)','select','*','NYNNNYN');
 
+-- シフト・作業（T20。02「シフト・作業の権限」）：5表とも、その年度の総務（admin・head・deputy_head・staff）が全部を読み（年度の状態によらない）、
+-- その年度の部門長以上が、終了でない年度に書く（can_lead。確定中も書ける）。閲覧のみ・店長・副店長・招待されていない人は読めも書けもしない。
+-- Y2 の総務は admin2 だけ（rep は Y2 の閲覧のみ、staff は Y2 の G3 の店長で、Y2 では総務でない）。Y2 は準備中のまま
+insert into tests.expect values
+ ('shift_duties','select','*','YYNNNNY'),
+ ('shift_duties','insert','*','YNNNNNY'), ('shift_duties','insert','closed','NNNNNNN'),
+ ('shift_duties','update','*','YNNNNNY'), ('shift_duties','update','closed','NNNNNNN'),
+ ('shift_duties','delete','*','YNNNNNY'), ('shift_duties','delete','closed','NNNNNNN'),
+ ('shift_duties(Y2)','select','*','NNNNNYN'), ('shift_duties(Y2)','insert','*','NNNNNYN'), ('shift_duties(Y2)','update','*','NNNNNYN'), ('shift_duties(Y2)','delete','*','NNNNNYN'),
+ ('shift_slots','select','*','YYNNNNY'),
+ ('shift_slots','insert','*','YNNNNNY'), ('shift_slots','insert','closed','NNNNNNN'),
+ ('shift_slots','update','*','YNNNNNY'), ('shift_slots','update','closed','NNNNNNN'),
+ ('shift_slots','delete','*','YNNNNNY'), ('shift_slots','delete','closed','NNNNNNN'),
+ ('shift_slots(Y2)','select','*','NNNNNYN'), ('shift_slots(Y2)','insert','*','NNNNNYN'), ('shift_slots(Y2)','update','*','NNNNNYN'), ('shift_slots(Y2)','delete','*','NNNNNYN'),
+ ('shift_needs','select','*','YYNNNNY'),
+ ('shift_needs','insert','*','YNNNNNY'), ('shift_needs','insert','closed','NNNNNNN'),
+ ('shift_needs','update','*','YNNNNNY'), ('shift_needs','update','closed','NNNNNNN'),
+ ('shift_needs','delete','*','YNNNNNY'), ('shift_needs','delete','closed','NNNNNNN'),
+ ('shift_needs(Y2)','select','*','NNNNNYN'), ('shift_needs(Y2)','insert','*','NNNNNYN'), ('shift_needs(Y2)','update','*','NNNNNYN'), ('shift_needs(Y2)','delete','*','NNNNNYN'),
+ ('shift_assignments','select','*','YYNNNNY'),
+ ('shift_assignments','insert','*','YNNNNNY'), ('shift_assignments','insert','closed','NNNNNNN'),
+ ('shift_assignments','update','*','YNNNNNY'), ('shift_assignments','update','closed','NNNNNNN'),
+ ('shift_assignments','delete','*','YNNNNNY'), ('shift_assignments','delete','closed','NNNNNNN'),
+ ('shift_assignments(Y2)','select','*','NNNNNYN'), ('shift_assignments(Y2)','insert','*','NNNNNYN'), ('shift_assignments(Y2)','update','*','NNNNNYN'), ('shift_assignments(Y2)','delete','*','NNNNNYN'),
+ ('tasks','select','*','YYNNNNY'),
+ ('tasks','insert','*','YNNNNNY'), ('tasks','insert','closed','NNNNNNN'),
+ ('tasks','update','*','YNNNNNY'), ('tasks','update','closed','NNNNNNN'),
+ ('tasks','delete','*','YNNNNNY'), ('tasks','delete','closed','NNNNNNN'),
+ ('tasks(Y2)','select','*','NNNNNYN'), ('tasks(Y2)','insert','*','NNNNNYN'), ('tasks(Y2)','update','*','NNNNNYN'), ('tasks(Y2)','delete','*','NNNNNYN');
+
 -- ペルソナと期待値の列。deputy は head の列で確かめる（総務副部門長の権限は総務部門長と同じ。D-48）
 create table tests.persona_col (persona text primary key, col int not null, ord int not null unique);
 insert into tests.persona_col values
@@ -395,14 +470,14 @@ begin
   return tests.try_cell(p_sql, p_persona, p_op);
 end $$;
 
-select plan((select count(*)::int from tests.cells) + 6 + 31 + 14);
+select plan((select count(*)::int from tests.cells) + 6 + 31 + 14 + 22);   -- 14 は T19、22 は T20 の権限表の外の確かめ
 
 -- 期待値の表の形
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
 select is_empty($$ select e.tbl, e.op from tests.expect e left join tests.cell_sql c using (tbl, op) where c.tbl is null $$,
   '期待値の表に、試す SQL のない行がない');
-select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 28,
-  '25 表（T17 のお知らせの2表、T18 の予定と締切、T19 の提出物の3表を含む）と3つのビュー（v_remaining と提出物の2つ）をすべて試す');
+select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 33,
+  '30 表（T17 のお知らせの2表、T18 の予定と締切、T19 の提出物の3表、T20 のシフト・作業の5表を含む）と3つのビュー（v_remaining と提出物の2つ）をすべて試す');
 select is_empty($$ select tbl, op, scenario, yn from tests.expect where yn !~ '^[YN]{7}$' $$,
   '期待値はどの行も7列（admin staff rep viewer outsider admin2 head）');
 select is((select string_agg(persona || '=' || col, ' ' order by ord) from tests.persona_col),
@@ -568,6 +643,85 @@ select is((select format('%s %s %s', (created_by = tests.id('head'))::text, (upd
 select tests.login_as('admin');
 select throws_ok(format($q$ update public.events set year_id = %L where id = %L $q$, tests.id('Y2'), tests.id('E_DIRECT')),
   'P0001', 'invalid_input', '両方の年度の管理者でも、予定と締切を別の年度へ移せない（check_immutable）');
+select tests.logout();
+
+-- シフト・作業（T20）：直接の書き込みの中身（権限表の外）。部門長以上の直接の insert で created_by・updated_by を送っても自分になり、返り値も
+-- 読める。画面が作った id で送り直すと主キーの重複で止まる（04 の (B1)）。同じ時間枠に同じ人を2か所に入れるのは主キーが止める（23505）。
+-- 書ける人が総務でない人を入れると not_soumu、重なる時間枠を足すと overlap。書けない人はどちらも RLS の 42501（読めない year_roles・
+-- 時間枠の有無を、エラーの違いで知らせない）
+select tests.set_scenario('requesting');
+select tests.login_as('head');
+with t as (
+  insert into public.tasks (id, year_id, title, assignee_id, due_at, created_by, updated_by)
+  values ('00000000-0000-4000-8000-0000000f0001', tests.id('Y1'), 'T-TK_DIRECT', tests.id('staff'), '2027-10-12 17:00+09',
+          tests.id('admin'), tests.id('admin'))
+  returning created_by, updated_by, status)
+select is((select format('%s %s %s', (created_by = tests.id('head'))::text, (updated_by = tests.id('head'))::text, status) from t), 'true true todo',
+  '部門長の作業の直接の insert：送った created_by・updated_by は使われず自分になり、状態は未着手、返り値も読める');
+select throws_ok($q$ insert into public.tasks (id, year_id, title)
+                    values ('00000000-0000-4000-8000-0000000f0001', (select id from tests.ids where name = 'Y1'), 'T-TK_DIRECT') $q$,
+  '23505', null, '画面が作った id で作業を送り直すと、主キーの重複で止まる（二重にならない）');
+select throws_ok(tests.sql('insert into public.shift_assignments (year_id, slot_id, duty_id, user_id) values (:Y1, :SL1, :DU2, :staff)'),
+  '23505', null, '同じ時間枠（SL1）に同じ人（staff）をほかの持ち場で入れると、主キーの重複で止まる（二重の割り当て）');
+select is(tests.error_json(tests.sql('insert into public.shift_assignments (year_id, slot_id, duty_id, user_id) values (:Y1, :SL2, :DU1, :viewer)')),
+  '{"code": "invalid_input", "detail": {"field": "user_id", "reason": "not_soumu"}}'::jsonb, '部門長が閲覧のみを割り当てると not_soumu');
+select is(tests.error_json(tests.sql($q$ insert into public.shift_slots (year_id, starts_at, ends_at) values (:Y1, '2027-10-15 09:30+09', '2027-10-15 10:30+09') $q$)),
+  jsonb_build_object('code', 'invalid_input', 'detail', jsonb_build_object('field', 'starts_at', 'reason', 'overlap', 'slot_id', tests.id('SL1'))),
+  '部門長が重なる時間枠を直接足すと overlap（slot_id つき）');
+select throws_ok(tests.sql('update public.shift_assignments set duty_id = :DU3 where slot_id = :SL1 and user_id = :staff'),
+  '23503', null, 'ますのない持ち場へ移すと外部キーで止まる');
+select tests.logout();
+select tests.login_as('staff');
+select throws_ok(tests.sql('insert into public.shift_assignments (year_id, slot_id, duty_id, user_id) values (:Y1, :SL2, :DU1, :viewer)'),
+  '42501', null, '総務部門員が閲覧のみを割り当てようとしても、not_soumu でなく RLS の 42501（ロールを漏らさない）');
+select throws_ok(tests.sql($q$ insert into public.shift_slots (year_id, starts_at, ends_at) values (:Y1, '2027-10-15 09:30+09', '2027-10-15 10:30+09') $q$),
+  '42501', null, '総務部門員が重なる時間枠を足そうとしても、overlap でなく RLS の 42501');
+with u as (update public.tasks set status = 'done' where id = tests.id('TK_STAFF') returning 1)
+select is((select count(*)::int from u), 0, '総務部門員は自分が担当の作業でも、状態を直接は変えられない（0 行。状態は RPC set_task_status だけ）');
+select tests.logout();
+insert into tests.ids values ('TK_DIRECT', '00000000-0000-4000-8000-0000000f0001');
+-- 楽観ロック（画面が updated_at を条件に入れる）：set_timestamps を止めて過去の updated_at を入れてから確かめる。合う版なら 1 行、
+-- 同じ版でもう一度・古い版なら 0 行（画面は読み直して conflict にする）
+alter table public.tasks disable trigger set_timestamps;
+update public.tasks set updated_at = '2027-01-01 00:00:00.123456+00' where id = tests.id('TK_DIRECT');
+alter table public.tasks enable trigger set_timestamps;
+alter table public.shift_assignments disable trigger set_timestamps;
+update public.shift_assignments set updated_at = '2027-01-01 00:00:00.5+00' where slot_id = tests.id('SL1') and user_id = tests.id('staff');
+alter table public.shift_assignments enable trigger set_timestamps;
+select tests.login_as('deputy');
+with u as (update public.tasks set title = 'T-TK_DIRECT2', assignee_id = null
+           where id = tests.id('TK_DIRECT') and updated_at = '2027-01-01 00:00:00.123456+00' returning 1)
+select is((select count(*)::int from u), 1, '作業の楽観ロック：updated_at が合えば直せる（1 行。担当者を空にしてもよい）');
+with u as (update public.tasks set title = 'T-TK_DIRECT3'
+           where id = tests.id('TK_DIRECT') and updated_at = '2027-01-01 00:00:00.123456+00' returning 1)
+select is((select count(*)::int from u), 0, '作業の楽観ロック：同じ版でもう一度は 0 行（直した後の updated_at は進んでいる）');
+with d as (delete from public.shift_assignments
+           where slot_id = tests.id('SL1') and user_id = tests.id('staff') and updated_at = '2027-01-01 00:00:00.4+00' returning 1)
+select is((select count(*)::int from d), 0, '割り当てを外す：古い版では 0 行');
+with d as (delete from public.shift_assignments
+           where slot_id = tests.id('SL1') and user_id = tests.id('staff') and updated_at = '2027-01-01 00:00:00.5+00' returning 1)
+select is((select count(*)::int from d), 1, '割り当てを外す：合う版なら 1 行');
+select tests.logout();
+select is((select format('%s %s %s %s', (created_by = tests.id('head'))::text, (updated_by = tests.id('deputy'))::text, title,
+                         coalesce(assignee_id::text, 'null'))
+           from public.tasks where id = tests.id('TK_DIRECT')),
+  'true true T-TK_DIRECT2 null', '直した後も created_by は書いた人（head）、updated_by は直した人（副部門長）');
+-- 両方の年度の管理者（admin は上のルールの確かめで Y2 の管理者も兼ねた）でも、シフト・作業を別の年度へ移せず、ますの時間枠も付け替え
+-- られない（BEFORE ROW の check_immutable が、ポリシーの with check より先に invalid_input で止める）
+select tests.login_as('admin');
+select throws_ok(tests.sql('update public.tasks set year_id = :Y2 where id = :TK_NONE'),
+  'P0001', 'invalid_input', '両方の年度の管理者でも、作業を別の年度へ移せない（check_immutable）');
+select throws_ok(tests.sql('update public.shift_slots set year_id = :Y2 where id = :SL2'),
+  'P0001', 'invalid_input', '両方の年度の管理者でも、時間枠を別の年度へ移せない');
+select throws_ok(tests.sql('update public.shift_needs set slot_id = :SL2 where slot_id = :SL1 and duty_id = :DU2'),
+  'P0001', 'invalid_input', 'ますの時間枠は付け替えられない（消して作り直す）');
+select tests.logout();
+select tests.login_anon();
+select throws_ok($q$ select count(*) from public.shift_duties $q$, '42501', null, 'anon は持ち場を読めない（T20）');
+select throws_ok($q$ select count(*) from public.shift_slots $q$, '42501', null, 'anon は時間枠を読めない（T20）');
+select throws_ok($q$ select count(*) from public.shift_needs $q$, '42501', null, 'anon はますを読めない（T20）');
+select throws_ok($q$ select count(*) from public.shift_assignments $q$, '42501', null, 'anon は割り当てを読めない（T20）');
+select throws_ok($q$ select count(*) from public.tasks $q$, '42501', null, 'anon は作業を読めない（T20）');
 select tests.logout();
 
 -- anon は表もビューも読めない

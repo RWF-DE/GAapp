@@ -16,7 +16,7 @@ describe('T16 機能の登録（MODULES）', () => {
 
   it('T18 締切と予定：名前は「締切と予定」（ダッシュボードの欄と同じ）、入口は /calendar（お知らせの後。最後に1行足した）', () => {
     expect(MODULES[2]).toEqual({ id: 'calendar', label: '締切と予定', homeHref: '/calendar' });
-    expect(MODULES.map((m) => m.id)).toEqual(['furniture', 'notices', 'calendar']);
+    expect(MODULES.map((m) => m.id).slice(0, 3)).toEqual(['furniture', 'notices', 'calendar']);
   });
 
   it('id は英字の小文字で重ならない。名前も重ならない', () => {
@@ -91,7 +91,7 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
   });
 
   it('T17・T18 PORTAL_PROVIDERS は 机椅子 → お知らせ → 締切と予定（MODULES と同じ並び）', () => {
-    expect(PORTAL_PROVIDERS.map((p) => p.moduleId)).toEqual(['furniture', 'notices', 'calendar']);
+    expect(PORTAL_PROVIDERS.map((p) => p.moduleId).slice(0, 3)).toEqual(['furniture', 'notices', 'calendar']);
   });
 
   it('T18 / の先読みにも使える締切と予定の欄の読み取り（calendar/dated.ts）は、組み立て・ダッシュボードの型と関数・ナビゲーション・日付の表示・一覧の画面を読まない', () => {
@@ -131,5 +131,23 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
     expect(g.files).toContain('lib/modules/query-key.ts');
     expect(staticImportGraph('lib/modules/query-key.ts')).toEqual({ files: ['lib/modules/query-key.ts'], packages: [] });
     expect(g.packages.filter((p) => p.startsWith('@gaapp/'))).toEqual([]);
+  });
+});
+
+describe('T20 シフト・作業（機能の登録・プロバイダ）', () => {
+  it('名前は「シフト・作業」、入口は /shifts（締切と予定の後に1行足した）。プロバイダも同じ並び', () => {
+    const k = MODULES.findIndex((m) => m.id === 'shifts');
+    expect(MODULES[k]).toEqual({ id: 'shifts', label: 'シフト・作業', homeHref: '/shifts' });
+    expect(MODULES[k - 1]?.id).toBe('calendar');
+    const ids = PORTAL_PROVIDERS.map((p) => p.moduleId);
+    expect(ids.indexOf('shifts')).toBe(ids.indexOf('calendar') + 1);
+  });
+
+  it('プロバイダ（providers.ts）からシフト表の組み立て・作業一覧の組み立て・書き込み・画面の部品を読まない', () => {
+    const g = staticImportGraph('lib/modules/providers.ts');
+    expect(g.files).toContain('lib/modules/shifts/portal.ts');
+    for (const f of ['lib/modules/shifts/board.ts', 'lib/modules/shifts/my-shift.ts', 'lib/data/shifts.ts', 'lib/data/tasks.ts', 'lib/schemas/shifts.ts', 'lib/schemas/tasks.ts']) {
+      expect(g.files).not.toContain(f);
+    }
   });
 });
