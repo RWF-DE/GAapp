@@ -206,3 +206,44 @@ describe('T17 save_notice・delete_notice の引数（RPC_ARGS）', () => {
     expect(messageFor(info, { rpc: 'delete_notice' })).toBe('ほかの人がこのお知らせを先に変えました。読み直しました');
   });
 });
+
+describe('T20 set_task_status・add_shift_slots の引数（RPC_ARGS）', () => {
+  const T = '77777777-7777-4777-8777-777777777777';
+  const D = '88888888-8888-4888-8888-888888888888';
+  const slot = { starts_at: '2027-10-15T09:00:00+09:00', ends_at: '2027-10-15T10:00:00+09:00' };
+
+  it('set_task_status：作業の id・状態・読んだときの updated_at（文字列のまま）。状態は task_status の値だけ', async () => {
+    const { client, issued } = fake({ data: { id: T } });
+    await callRpc('set_task_status', { p_task_id: T, p_status: 'doing', p_base_updated_at: '2027-10-01T00:00:00.123456+00:00' }, client);
+    expect(issued[0]!.ops[0]!.args[0]).toEqual({ p_task_id: T, p_status: 'doing', p_base_updated_at: '2027-10-01T00:00:00.123456+00:00' });
+    const bad = await caught(callRpc('set_task_status', { p_task_id: T, p_status: 'waiting' as never, p_base_updated_at: 't' }, client));
+    expect(bad.details).toEqual({ field: 'status' });
+    expect(messageFor(bad, { rpc: 'set_task_status' })).toBe('入力の形が違います（状態）');
+    const noVersion = await caught(callRpc('set_task_status', { p_task_id: T, p_status: 'done', p_base_updated_at: '' }, client));
+    expect(noVersion.details).toEqual({ field: 'base_updated_at' });
+  });
+
+  it('add_shift_slots：時間枠は 1〜96 個（オフセットつきの日時）、ますは 0〜100 個（必要人数 0〜100 の整数）', async () => {
+    const { client, issued } = fake({ data: [] });
+    await callRpc('add_shift_slots', { p_year_id: Y, p_slots: [slot], p_needs: [{ duty_id: D, required_count: 0 }] }, client);
+    expect(issued).toHaveLength(1);
+    const cases: [Record<string, unknown>, string][] = [
+      [{ p_slots: [] }, 'slots'],
+      [{ p_slots: Array.from({ length: 97 }, () => slot) }, 'slots'],
+      [{ p_slots: [{ starts_at: '2027-10-15T09:00:00', ends_at: '2027-10-15T10:00:00' }] }, 'slots'],
+      [{ p_needs: [{ duty_id: D, required_count: 101 }] }, 'needs'],
+      [{ p_needs: [{ duty_id: D, required_count: 1.5 }] }, 'needs'],
+      [{ p_needs: [{ duty_id: 'x', required_count: 1 }] }, 'needs'],
+      [{ p_needs: Array.from({ length: 101 }, () => ({ duty_id: D, required_count: 1 })) }, 'needs'],
+    ];
+    for (const [over, field] of cases) {
+      const f = fake({ data: [] });
+      const info = await caught(callRpc('add_shift_slots', { p_year_id: Y, p_slots: [slot], p_needs: [], ...over } as never, f.client));
+      expect(f.issued, field).toHaveLength(0);
+      expect(info.details, JSON.stringify(over).slice(0, 40)).toEqual({ field });
+    }
+    const ok96 = fake({ data: [] });
+    await callRpc('add_shift_slots', { p_year_id: Y, p_slots: Array.from({ length: 96 }, () => slot), p_needs: [] }, ok96.client);
+    expect(ok96.issued).toHaveLength(1);
+  });
+});

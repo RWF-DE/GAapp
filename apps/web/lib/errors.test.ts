@@ -454,3 +454,37 @@ describe('T17 お知らせ（save_notice・delete_notice）の文言（04「お�
     expect(msg(pg('40P01'), save)).toBe('ほかの人の保存と重なりました。もう一度保存してください');
   });
 });
+
+describe('T20 シフト・作業の文言（04「シフト表」「作業一覧」のエラー、notes/T20.md「画面の約束」9）', () => {
+  const S = '00000000-0000-4000-8000-000000000011';
+  it('時間枠の重なり（トリガー：field starts_at・slot_id）は今ある時間枠の時刻を括弧に。引けなければ括弧を出さない', () => {
+    const e = p0001('invalid_input', { field: 'starts_at', reason: 'overlap', slot_id: S });
+    expect(msg(e, { names: { slot: (id) => (id === S ? '09:00〜10:00' : undefined) } })).toBe('ほかの時間枠と時間が重なっています（09:00〜10:00）');
+    expect(msg(e)).toBe('ほかの時間枠と時間が重なっています');
+    expect(effectOf(classifyError(e)).keepInput).toBe(true);
+  });
+
+  it('add_shift_slots：送った時間枠どうしの重なり、持ち場が消えた（needs の not_in_year）、ほかの形の誤りは欄の名前つき', () => {
+    const rpc = { rpc: 'add_shift_slots' };
+    expect(msg(p0001('invalid_input', { field: 'slots', reason: 'overlap', ord: 2 }), rpc)).toBe('作る時間枠どうしが重なっています');
+    expect(msg(p0001('invalid_input', { field: 'needs', reason: 'not_in_year', ord: 1 }), rpc)).toBe('時間枠か持ち場がほかの人に消されました。読み直しました');
+    expect(msg(p0001('invalid_input', { field: 'slots', reason: 'too_long', ord: 1 }), rpc)).toBe('入力の形が違います（時間枠）');
+    expect(msg(p0001('invalid_input', { field: 'needs', reason: 'duplicate', ord: 2 }), rpc)).toBe('入力の形が違います（必要人数）');
+    // 送った時間枠どうしの文言は add_shift_slots のときだけ（ほかの機能の overlap と取り違えない）
+    expect(msg(p0001('invalid_input', { field: 'slots', reason: 'overlap' }))).toBe('入力の形が違います（時間枠）');
+  });
+
+  it('総務だけ（not_soumu）：割り当てる人・作業の担当者', () => {
+    for (const field of ['user_id', 'assignee_id']) {
+      expect(msg(p0001('invalid_input', { field, reason: 'not_soumu' }))).toBe('総務（管理者・総務部門長・総務副部門長・総務部門員）だけを割り当てられます');
+    }
+  });
+
+  it('set_task_status：conflict（details は {id}。振り分けの行と取り違えない）・not_found', () => {
+    const rpc = { rpc: 'set_task_status' };
+    expect(msg(p0001('conflict', { id: S }), rpc)).toBe('ほかの人がこの作業を先に変えました。読み直しました');
+    expect(msg(p0001('conflict', { id: S }))).toBe('ほかの人が同じ振り分けの行を先に変えました。読み直しました');
+    expect(msg(p0001('not_found'), rpc)).toBe('この作業は見つかりません（ほかの人が削除した可能性があります）');
+    expect(msg(p0001('invalid_input', { field: 'status' }), rpc)).toBe('入力の形が違います（状態）');
+  });
+});

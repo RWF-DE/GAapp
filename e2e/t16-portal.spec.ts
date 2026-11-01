@@ -266,8 +266,11 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       'GET request_submissions?select=group_id,submitted_at,groups!inner(year_id)',
       'GET room_years?select=room_id,usable',
       'GET rooms?select=id,name,is_storage,sort_order',
+      // シフト・作業（T20）：部門長以上は時間枠のますと作業の全部も読む（自分の割り当てと作業は year_roles に埋め込む＝立場と同じ表）
+      'GET shift_slots?select=id,starts_at,ends_at,shift_needs(duty_id,required_count,shift_assignments(user_id,year_roles(role)))',
       'GET stocks?select=room_id',
       'GET substitution_consents?select=group_id,status,groups!inner(year_id)',
+      'GET tasks?select=id,title,status,due_at,assignee_id,year_roles(role)',
     ];
     try {
       // 前にこの年度を管理者として開いた（覚えたロールで、立場の読み込みと同時に机椅子の読み取りを始める。D-45）
@@ -653,7 +656,9 @@ test.describe('T16 ナビの見出し（管理者・PC）', () => {
     const calendar = nav.getByRole('group', { name: '締切と予定' });
     await expect(calendar.getByRole('heading', { level: 2, name: '締切と予定' })).toBeVisible();
     await expect(calendar.getByRole('link')).toHaveText(['締切と予定の一覧']);
-    await expect(nav.getByRole('group')).toHaveCount(5);
+    // シフト・作業（T20）：締切と予定の後・共通の前（総務だけ。印刷はナビに出さない）
+    await expect(nav.getByRole('group', { name: 'シフト・作業' }).getByRole('link')).toHaveText(['自分のシフト', 'シフト表', '作業一覧']);
+    await expect(nav.getByRole('group')).toHaveCount(6);
     const common = nav.getByRole('group', { name: '共通' });
     await expect(common.getByRole('heading', { level: 2, name: '共通' })).toBeVisible();
     await expect(common.getByRole('link')).toHaveText(['マスタ設定', '履歴']);
@@ -681,12 +686,13 @@ test.describe('T16 ナビの見出し（総務部門員・スマホ）', () => {
     await open.click();
     const menu = page.locator('#app-mobile-nav');
     const nav = menu.getByRole('navigation', { name: 'メインメニュー' });
-    await expect(nav.getByRole('group')).toHaveCount(4);
+    await expect(nav.getByRole('group')).toHaveCount(5);
     await expect(nav.getByRole('group', { name: 'ホーム' }).getByRole('link')).toHaveText(['ホーム']);
     const furniture = nav.getByRole('group', { name: '机椅子' });
     await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
     await expect(nav.getByRole('group', { name: 'お知らせ' }).getByRole('link')).toHaveText(['お知らせ一覧']);
     await expect(nav.getByRole('group', { name: '締切と予定' }).getByRole('link')).toHaveText(['締切と予定の一覧']);
+    await expect(nav.getByRole('group', { name: 'シフト・作業' }).getByRole('link')).toHaveText(['自分のシフト', 'シフト表', '作業一覧']);
     await expect(nav.getByRole('group', { name: '共通' })).toHaveCount(0);
     expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(MOBILE.width);
 

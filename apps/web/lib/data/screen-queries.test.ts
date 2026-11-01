@@ -10,6 +10,8 @@ import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
+import { shiftsPortalOptions } from '@/lib/modules/shifts/portal-read';
+import { myShiftsOptions, shiftMembersOptions, soumuNamesOptions, tasksOptions } from '@/lib/modules/shifts/reads';
 import { PORTAL_WIDGETS, portalContextsOf, portalWidgetQuery } from '@/lib/modules/portal';
 import { PORTAL_PROVIDERS } from '@/lib/modules/providers';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
@@ -24,7 +26,9 @@ import {
   planHomePrefetch,
   planMyPrefetch,
   planRequestPrefetch,
+  planShiftPrefetch,
   planStockPrefetch,
+  planTasksPrefetch,
   SCREEN_PREFETCH,
 } from './screen-queries';
 import { seedYearRows } from './year';
@@ -87,7 +91,8 @@ function fakeClient(rows: Record<string, unknown>, gates: Record<string, Promise
 describe('先送りしてよい画面（EARLY_FETCH_PATHS）', () => {
   it('版を使わない画面（先読みの表と同じ /・/stock・/request・/my）だけで、振り分けに関わる画面（版を先に読む。D-33）は入らない', () => {
     // T16：ダッシュボード（/）は版・振り分けの行を読まないので入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）
-    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/', '/my', '/request', '/stock']);
+    // T20：自分のシフト（/shift）と作業一覧（/tasks）も版を使わない画面（シフト表〔/shifts〕と印刷は入れない。D-56）
+    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/', '/my', '/request', '/shift', '/stock', '/tasks']);
     expect(EARLY_FETCH_PATHS).toEqual(Object.keys(SCREEN_PREFETCH));
     expect(SCREEN_PREFETCH['/']).toBe(planHomePrefetch);
     // 振り分けに関わる画面（スナップショットで版を先に読む：机椅子の状況・振り分け・キャスター机交換）
@@ -131,6 +136,8 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
         furnitureSoumuOptions(Y).queryKey,
         noticesLatestOptions(Y, 'soumu').queryKey,
         calendarDatedOptions(Y, 'soumu').queryKey,
+        // T20：シフト・作業（部門長以上と総務部門員で別のキー）
+        shiftsPortalOptions(Y, role === 'staff' ? 'staff' : 'lead').queryKey,
       ]);
     },
   );
@@ -151,6 +158,7 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
       furnitureSoumuOptions(Y).queryKey,
       noticesLatestOptions(Y, 'soumu').queryKey,
       calendarDatedOptions(Y, 'soumu').queryKey,
+      shiftsPortalOptions(Y, 'lead').queryKey,
       furnitureRepOptions(Y, [G1]).queryKey,
       noticesLatestOptions(Y, 'rep', [G1]).queryKey,
     ]);
@@ -207,7 +215,7 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     for (const m of [member('admin', [G1g]), member('staff'), member('viewer', [G2g]), member(null, [G1g, G2g])]) {
       for (const key of keys(home(m))) {
         expect(key.slice(0, 3)).toEqual(['year', Y, 'portal']);
-        expect(['furniture', 'notices', 'calendar']).toContain(key[3]);
+        expect(['furniture', 'notices', 'calendar', 'shifts']).toContain(key[3]);
       }
     }
   });
@@ -395,5 +403,56 @@ describe('seedYearRows', () => {
     expect(qc.getQueryData(queryKeys.yearRow(Y))).toEqual({ id: Y, status: 'allocating' });
     expect(seedYearRows(qc, [{ id: Y, status: 'confirmed' } as never], t + 20)).toBe(1);
     expect(qc.getQueryData(queryKeys.yearRow(Y))).toEqual({ id: Y, status: 'confirmed' });
+  });
+});
+
+// ---------------------------------------------------------------- 自分のシフト /shift・作業一覧 /tasks（T20）
+
+describe('T20 /shift・/tasks の先読み（planShiftPrefetch・planTasksPrefetch）', () => {
+  const member = (role: AppRole | null): Membership => {
+    const year = { id: Y, label: 'R9', status: 'requesting' as const, festival_start: '2027-10-16' };
+    return { displayName: null, year, role, groups: [], years: [year], latestYear: year, adminOfOpenYear: role === 'admin' };
+  };
+
+  it('/shift：総務なら自分の割り当てと表示名（2本）。総務でなければ読まない。立場が総務でなくなったら使わない', () => {
+    for (const role of ['admin', 'head', 'deputy_head', 'staff'] as const) {
+      expect(keys(planShiftPrefetch(ctx('', [], role)))).toEqual([myShiftsOptions(Y).queryKey, soumuNamesOptions(Y).queryKey]);
+    }
+    expect(planShiftPrefetch(ctx('', [], 'viewer'))).toEqual([]);
+    expect(planShiftPrefetch(ctx('', [], null))).toEqual([]);
+    const [mine] = planShiftPrefetch(ctx('', [], 'staff'));
+    expect(mine!.usable!(member('head'))).toBe(true);
+    expect(mine!.usable!(member('viewer'))).toBe(false);
+    expect(SCREEN_PREFETCH['/shift']).toBe(planShiftPrefetch);
+  });
+
+  it('/tasks：総務なら作業と表示名、部門長以上はロールの一覧も。段が変わったら使わない', () => {
+    expect(keys(planTasksPrefetch(ctx('', [], 'staff')))).toEqual([tasksOptions(Y).queryKey, soumuNamesOptions(Y).queryKey]);
+    expect(keys(planTasksPrefetch(ctx('', [], 'head')))).toEqual([tasksOptions(Y).queryKey, soumuNamesOptions(Y).queryKey, shiftMembersOptions(Y).queryKey]);
+    expect(planTasksPrefetch(ctx('', [], 'viewer'))).toEqual([]);
+    const [tasks] = planTasksPrefetch(ctx('', [], 'staff'));
+    expect(tasks!.usable!(member('staff'))).toBe(true);
+    expect(tasks!.usable!(member('admin'))).toBe(false);
+    expect(SCREEN_PREFETCH['/tasks']).toBe(planTasksPrefetch);
+    // シフト表と印刷は先読みしない（版を使わないが、PC の画面で読む量が多い）
+    expect(Object.keys(SCREEN_PREFETCH)).not.toContain('/shifts');
+  });
+
+  it('/ の先読みのシフト・作業：段が同じときだけ使う（部門員の先読みは部門長になったら使わない）', () => {
+    const entry = planHomePrefetch(ctx('', [], 'staff')).find((e) => e.options.queryKey[3] === 'shifts')!;
+    expect(entry.options.queryKey).toEqual(shiftsPortalOptions(Y, 'staff').queryKey);
+    expect(entry.usable!(member('staff'))).toBe(true);
+    expect(entry.usable!(member('head'))).toBe(false);
+    expect(entry.usable!(member('viewer'))).toBe(false);
+  });
+
+  it('ルートのレイアウト（screen-queries.ts）にシフト表の組み立て・書き込み・ダイアログ・組み立てたダッシュボードを入れない', () => {
+    const g = staticImportGraph('lib/data/screen-queries.ts');
+    for (const f of ['lib/modules/shifts/board.ts', 'lib/modules/shifts/portal.ts', 'lib/data/shifts.ts', 'lib/data/tasks.ts', 'lib/schemas/shifts.ts', 'lib/schemas/tasks.ts']) {
+      expect(g.files).not.toContain(f);
+    }
+    expect(g.files.filter((f) => f.startsWith('components/'))).toEqual([]);
+    expect(g.files).toContain('lib/modules/shifts/reads.ts');
+    expect(g.files).toContain('lib/modules/shifts/portal-read.ts');
   });
 });

@@ -93,6 +93,11 @@ export const ROUTES: readonly RouteDef[] = [
   // （締切と予定）と同じ言葉を縦に並べないよう「締切と予定の一覧」（お知らせの「お知らせ一覧」と同じ形。マージの後の直し。
   // notes/T18.md の「後半で決められなかったこと」の 1 の (a)）
   { href: '/calendar', label: '締切と予定の一覧', section: 'calendar', audiences: ALL, nav: true, ticket: 'T18' },
+  // シフト・作業（shifts。T20・D-56）：総務だけ（閲覧のみ・店長・副店長には見出しごと出ない）。印刷はシフト表から開く
+  { href: '/shift', label: '自分のシフト', section: 'shifts', audiences: SOUMU, nav: true, ticket: 'T20' },
+  { href: '/shifts', label: 'シフト表', section: 'shifts', audiences: SOUMU, nav: true, ticket: 'T20' },
+  { href: '/shifts/print', label: 'シフト表の印刷', section: 'shifts', audiences: SOUMU, nav: false, ticket: 'T20' },
+  { href: '/tasks', label: '作業一覧', section: 'shifts', audiences: SOUMU, nav: true, ticket: 'T20' },
   // 共通（部門長・副部門長はマスタ設定の一部のタブだけ。settingsTabsFor）
   { href: '/settings', label: 'マスタ設定', section: 'common', audiences: LEAD, nav: true, ticket: 'T09' },
   { href: '/history', label: '履歴', section: 'common', audiences: LEAD, nav: true, ticket: 'T14' },
