@@ -485,3 +485,19 @@ describe('T18 upcomingDated（これからの 30 日と過ぎた締切。04「�
     expect(merged[0]!.dated).toEqual([x]);
   });
 });
+
+describe('T19 要対応の2行目（detail。D-52 の T19 の直し）', () => {
+  it('detail は任意。sortTodos・mergePortalSections はそのまま運ぶ（2行目のない要対応は今までどおり detail を持たない）', () => {
+    const plain = todo('plain', 'normal');
+    const withDetail = todo('returned', 'urgent', { detail: '理由：印鑑がありません\n2枚目もお願いします' });
+    expect('detail' in plain).toBe(false);
+    expect(sortTodos([plain, withDetail])).toEqual([withDetail, plain]);
+    const merged = mergePortalSections([
+      { moduleId: 'furniture', kind: 'soumu', section: { card: null, todos: [plain], dated: [] } },
+      // 兼ねた人：同じ id の要対応は最初の1件だけ（2行目も消えない）
+      { moduleId: 'furniture', kind: 'rep', section: { card: null, todos: [withDetail, { ...withDetail, detail: '別の理由' }], dated: [] } },
+    ]);
+    expect(merged[0]!.todos).toEqual([plain, withDetail]);
+    expect(merged[0]!.todos[1]!.detail).toBe('理由：印鑑がありません\n2枚目もお願いします');
+  });
+});

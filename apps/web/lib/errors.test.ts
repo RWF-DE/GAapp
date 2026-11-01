@@ -3,12 +3,21 @@ import {
   AppError,
   appError,
   classifyError,
+  DOCUMENT_CONFLICT_MESSAGE,
+  DOCUMENT_FILE_MISSING_MESSAGE,
+  DOCUMENT_FILES_LOCKED_MESSAGES,
+  DOCUMENT_INPUT_MESSAGES,
+  DOCUMENT_MISSING_MESSAGE,
+  DOCUMENT_NOT_EDITABLE_MESSAGES,
+  DOCUMENT_RPCS,
+  DOCUMENT_STATE_MESSAGES,
   effectOf,
   isUnknownOutcome,
   issueMessages,
   messageFor,
   normalizeIssues,
   parseDetails,
+  STORAGE_ERROR_MESSAGES,
   toAppError,
   unknownOutcomeMessage,
   type MessageContext,
@@ -452,5 +461,140 @@ describe('T17 お知らせ（save_notice・delete_notice）の文言（04「お�
     expect(msg(p0001('invalid_state', { status: 'closed' }), save)).toBe('年度が「終了」のため、この操作はできません');
     expect(effectOf(classifyError(p0001('invalid_state', { status: 'closed' }))).reload).toBe('year');
     expect(msg(pg('40P01'), save)).toBe('ほかの人の保存と重なりました。もう一度保存してください');
+  });
+});
+
+describe('T19 提出物の RPC と Storage の文言（04「提出物」のエラーの文言の表の行ごと）', () => {
+  const rpc = (name: string): MessageContext => ({ rpc: name });
+  const state = (status: string, reason?: string) => p0001('invalid_state', reason ? { status, reason } : { status });
+  const input = (field: string, reason?: string) => p0001('invalid_input', reason ? { field, reason } : { field });
+  const RPCS = [
+    'reserve_document_file',
+    'discard_document_file',
+    'submit_document',
+    'withdraw_document',
+    'approve_document',
+    'return_document',
+    'previous_year_documents',
+    'copy_previous_documents',
+    'delete_year_document_files',
+    'document_orphan_paths',
+    'document_storage_usage',
+  ];
+
+  it('DOCUMENT_RPCS は 11 個の RPC', () => {
+    expect([...DOCUMENT_RPCS]).toEqual(RPCS);
+  });
+
+  it('forbidden（どの RPC も。discard_document_file はファイルがないときも）と invalid_state の closed は今の文言（年度の行と立場を読み直す）', () => {
+    for (const name of RPCS) {
+      expect(msg(p0001('forbidden'), rpc(name)), name).toBe('権限がありません。立場が変わった可能性があります');
+      expect(msg(state('closed'), rpc(name)), name).toBe('年度が「終了」のため、この操作はできません');
+    }
+    expect(effectOf(classifyError(state('submitted', 'not_editable'))).reload).toBe('year');
+  });
+
+  it('not_editable：ファイルの予約・外すは提出済み・承認で別の文、ほかの RPC は今の状態ごと（同じ操作の重なりと成功した後の送り直し）', () => {
+    for (const name of ['reserve_document_file', 'discard_document_file']) {
+      expect(msg(state('submitted', 'not_editable'), rpc(name))).toBe(
+        '提出済みなので、ファイルを変えられません（変えるときは、先に「提出を取り消す」を押してください）。読み直しました',
+      );
+      expect(msg(state('approved', 'not_editable'), rpc(name))).toBe('承認されたので、ファイルを変えられません。読み直しました');
+    }
+    const cases: [string, string][] = [
+      ['not_submitted', '未提出になっています（提出が取り消された可能性があります）。読み直しました'],
+      ['submitted', 'すでに提出されています。読み直しました'],
+      ['returned', '差し戻されています。読み直しました'],
+      ['approved', 'すでに承認されています。読み直しました'],
+    ];
+    for (const name of ['submit_document', 'withdraw_document', 'approve_document', 'return_document']) {
+      for (const [status, text] of cases) expect(msg(state(status, 'not_editable'), rpc(name)), `${name}・${status}`).toBe(text);
+    }
+    // 知らない状態は今の文言
+    expect(msg(state('weird', 'not_editable'), rpc('submit_document'))).toBe('この操作はできません');
+  });
+
+  it('invalid_state のほかの reason', () => {
+    const cases: [string, string, string][] = [
+      ['submit_document', 'no_file', 'ファイルを1つ以上足してから提出してください'],
+      ['submit_document', 'not_uploaded', '届いていないファイルがあります。外すか、もう一度送ってから提出してください'],
+      ['reserve_document_file', 'too_many_files', 'ファイルは1つの提出物に 5 つまでです'],
+      ['reserve_document_file', 'too_many_orphans', '前に外したファイルを片付けられませんでした。通信を確かめてから、もう一度足してください'],
+      [
+        'reserve_document_file',
+        'storage_full',
+        'ファイルの置き場がいっぱいです（上限 900 MB）。総務に知らせてください（管理者が終了した年度のファイルを削除すると空きます）',
+      ],
+      ['delete_year_document_files', 'not_closed', '年度が終了していないので、ファイルを削除できません'],
+    ];
+    for (const [name, reason, text] of cases) expect(msg(state('not_submitted', reason), rpc(name)), reason).toBe(text);
+    // 提出物の RPC でなければ今の文言（年度の状態の表示名がない値は「この操作はできません」）
+    expect(msg(state('not_submitted', 'no_file'))).toBe('この操作はできません');
+  });
+
+  it('invalid_input：理由・メモ（差し戻しと承認で分ける）・形・大きさ・番号の重なり・版・写す提出物', () => {
+    expect(msg(input('note', 'required'), rpc('return_document'))).toBe('差し戻しの理由を入れてください');
+    expect(msg(input('note', 'required'), rpc('approve_document'))).toBe('紙などで受け取ったときは、メモを入れてください');
+    expect(msg(input('note', 'too_long'), rpc('return_document'))).toBe('理由は 1000 字までです');
+    expect(msg(input('note', 'too_long'), rpc('approve_document'))).toBe('メモは 1000 字までです');
+    expect(msg(input('content_type'), rpc('reserve_document_file'))).toBe('PDF・JPEG・PNG のファイルを選んでください');
+    expect(msg(input('size'), rpc('reserve_document_file'))).toBe('ファイルは1つ 10 MB までです');
+    expect(msg(input('file_id', 'in_use'), rpc('reserve_document_file'))).toBe('ファイルの番号が重なりました。もう一度足してください');
+    for (const name of ['withdraw_document', 'return_document']) {
+      expect(msg(input('base_updated_at'), rpc(name))).toBe('提出の版を読めませんでした。読み直してから、もう一度押してください');
+    }
+    const copy: [string, string][] = [
+      ['required', '写す提出物を選んでください'],
+      ['too_many', '一度に写せるのは 1000 件までです'],
+      ['invalid', '選んだ提出物が重なっています'],
+      ['not_in_prev_year', '前年度にない提出物が選ばれています。読み直しました'],
+      ['deadline_out_of_range', 'ずらした締切が 2000年〜2200年の外になる提出物があります'],
+    ];
+    for (const [reason, text] of copy) expect(msg(input('document_ids', reason), rpc('copy_previous_documents')), reason).toBe(text);
+    // 年度のファイルの削除の理由は今の文言
+    expect(msg(input('reason'), rpc('delete_year_document_files'))).toBe('理由は 500 字までです');
+    // 表にない field・reason は「入力の形が違います（{欄}）」・「入力の形が違います」
+    expect(msg(input('document_id'), rpc('submit_document'))).toBe('入力の形が違います（提出物）');
+    expect(msg(input('file_id'), rpc('reserve_document_file'))).toBe('入力の形が違います（ファイル）');
+    expect(msg(input('document_ids', 'x'), rpc('copy_previous_documents'))).toBe('入力の形が違います（写す提出物）');
+    expect(msg(input('note', '__proto__'), rpc('return_document'))).toBe('入力の形が違います（備考）');
+    expect(msg(input('zzz'), rpc('submit_document'))).toBe('入力の形が違います');
+    // 提出物の RPC でなければ size・content_type も今の文言
+    expect(msg(input('size'))).toBe('入力の形が違います（ファイルの大きさ）');
+  });
+
+  it('conflict（details は document_id・group_id）と not_found（外すは別の文）', () => {
+    for (const name of ['submit_document', 'withdraw_document', 'approve_document', 'return_document']) {
+      expect(msg(p0001('conflict', { document_id: 'd', group_id: 'g' }), rpc(name))).toBe(
+        'ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください',
+      );
+      expect(msg(p0001('not_found'), rpc(name))).toBe('この提出物は見つかりません（削除されたか、この団体が対象から外れた可能性があります）。読み直しました');
+    }
+    expect(msg(p0001('not_found'), rpc('discard_document_file'))).toBe('このファイルはもうありません（ほかの人が外した可能性があります）。読み直しました');
+    expect(effectOf(classifyError(p0001('conflict', { document_id: 'd', group_id: 'g' }))).reload).toBe('data');
+    // ほかの RPC の conflict は今のまま
+    expect(msg(p0001('conflict', { id: ALLOC }), { rpc: 'save_allocation_rows' })).toBe('ほかの人が同じ振り分けの行を先に変えました。読み直しました');
+  });
+
+  it('Storage の AppError（reason storage_*）は、どの kind でも Storage の文言', () => {
+    const storage = (kind: 'forbidden' | 'not_found' | 'input' | 'unknown', reason: string) => messageFor(appError(kind, reason).info);
+    expect(storage('forbidden', 'storage_denied')).toBe('アップロードできませんでした。提出の状態か立場が変わった可能性があります。読み直しました');
+    expect(storage('not_found', 'storage_missing')).toBe('ファイルを開けませんでした（消された可能性があります）。読み直しました');
+    expect(storage('input', 'storage_too_large')).toBe('ファイルは1つ 10 MB までです');
+    expect(storage('input', 'storage_mime')).toBe('PDF・JPEG・PNG のファイルを選んでください');
+    expect(storage('unknown', 'storage_failed')).toBe('ファイルの置き場で問題が起きました。少し待ってから、もう一度');
+    expect(Object.keys(STORAGE_ERROR_MESSAGES)).toEqual(['storage_denied', 'storage_missing', 'storage_too_large', 'storage_mime', 'storage_failed']);
+    expect(effectOf(appError('forbidden', 'storage_denied').info).reload).toBe('year');
+    expect(effectOf(appError('not_found', 'storage_missing').info).reload).toBe('data');
+  });
+
+  it('定数の名前は DOCUMENT_・STORAGE_ で始め、文言の表は 04 のとおり', () => {
+    expect(DOCUMENT_CONFLICT_MESSAGE).toBe('ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください');
+    expect(DOCUMENT_MISSING_MESSAGE).toContain('この提出物は見つかりません');
+    expect(DOCUMENT_FILE_MISSING_MESSAGE).toContain('このファイルはもうありません');
+    expect(Object.keys(DOCUMENT_FILES_LOCKED_MESSAGES)).toEqual(['submitted', 'approved']);
+    expect(Object.keys(DOCUMENT_NOT_EDITABLE_MESSAGES)).toEqual(['not_submitted', 'submitted', 'returned', 'approved']);
+    expect(Object.keys(DOCUMENT_STATE_MESSAGES)).toEqual(['no_file', 'not_uploaded', 'too_many_files', 'too_many_orphans', 'storage_full', 'not_closed']);
+    expect(Object.keys(DOCUMENT_INPUT_MESSAGES)).toContain('file_id:in_use');
   });
 });

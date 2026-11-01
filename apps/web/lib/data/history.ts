@@ -22,6 +22,7 @@ import {
   labelOf,
 } from '@/lib/labels';
 import { EVENT_AUDIENCE_LABELS, EVENT_KIND_LABELS } from '@/lib/modules/calendar/labels';
+import { CONTENT_TYPE_LABELS, DOCUMENT_STATUS_LABELS } from '@/lib/modules/documents/labels';
 import { queryKeys } from '@/lib/query';
 import { uuidSchema } from '@/lib/schemas/common';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
@@ -49,6 +50,10 @@ export const AUDIT_TABLES = [
   'notice_groups',
   // 締切と予定（T18。足すだけ）
   'events',
+  // 提出物（T19。足すだけ）
+  'documents',
+  'document_submissions',
+  'document_files',
 ] as const;
 export type AuditTable = (typeof AUDIT_TABLES)[number];
 
@@ -75,6 +80,8 @@ export const DIFF_IGNORED_KEYS: readonly string[] = ['created_at', 'updated_at']
 export const OUTSIDE_USER = 'outside';
 
 export const NAME_UNKNOWN = '名前を表示できません';
+/** 今の年度にない提出物（提出とファイルの対象。T19） */
+export const DELETED_DOCUMENT = '（消えた提出物）';
 export const OUTSIDE_LABEL = 'SQL・seed（アプリの外）';
 
 export const AUDIT_ACTIONS = { insert: '追加', update: '変更', delete: '削除' } as const;
@@ -333,6 +340,8 @@ export interface HistoryLookups {
   users: Map<string, string>;
   /** 年度の名前（開いている年度。year_id・prev_year_id の表示） */
   years: Map<string, string>;
+  /** 提出物の題名（T19。今の年度の提出物。提出とファイルの対象・document_id の表示） */
+  documents?: Map<string, string>;
 }
 
 export interface HistoryOptions {
@@ -342,12 +351,29 @@ export interface HistoryOptions {
   members: HistoryMember[];
   rooms: Map<string, string>;
   items: Map<string, string>;
+  /** 提出物の題名（T19。読めなければ空） */
+  documents?: Map<string, string>;
 }
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
+/**
+ * 提出物の題名（T19。提出とファイルの対象「{団体}・{提出物の題名}」に使う。部門長以上は読める）。読めなければ（失敗）空の表にする
+ * （対象の文が「（消えた提出物）」になるだけで、履歴は出す）
+ */
+export async function fetchDocumentTitles(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<Map<string, string>> {
+  try {
+    const docs = await fetchAll((from, to) => client.from('documents').select('id, title').eq('year_id', yearId).order('id').range(from, to));
+    return new Map(docs.map((d) => [d.id, d.title]));
+  } catch {
+    return new Map();
+  }
+}
+
 /** 絞り込みの選択肢と、対象の名前に使う団体・場所・品目・メンバーを読む */
 export async function fetchHistoryOptions(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<HistoryOptions> {
+  // 提出物の題名（T19）。ほかの読み取りと並行に読む（失敗しても空の表を返す）
+  const documentTitles = fetchDocumentTitles(yearId, client);
   const [groups, roles, reps, rooms, items] = await Promise.all([
     fetchAll((from, to) =>
       client.from('groups').select('id, name, category, sort_order').eq('year_id', yearId).order('id').range(from, to),
@@ -378,6 +404,8 @@ export async function fetchHistoryOptions(yearId: string, client: AppSupabaseCli
     members,
     rooms: new Map(rooms.map((r) => [r.id, r.name])),
     items: new Map(items.map((i) => [i.id, i.name])),
+    // 提出物（T19）
+    documents: await documentTitles,
   };
 }
 
@@ -503,6 +531,11 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     if (ref) return lookups?.[ref]?.get(v) ?? v;
     if (key === 'year_id' || key === 'prev_year_id') return lookups?.years?.get(v) ?? v;
     if (key === 'user_id' || key === 'counted_by' || key === 'updated_by' || key === 'created_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
+    // 提出物（T19）：提出した人・確かめた人は表示名、提出物は題名（なければ id のまま）、提出の状態とファイルの形は表示名
+    if (key === 'submitted_by' || key === 'reviewed_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
+    if (key === 'document_id' && (table === 'document_submissions' || table === 'document_files')) return lookups?.documents?.get(v) ?? v;
+    if (key === 'status' && table === 'document_submissions') return labelOf(DOCUMENT_STATUS_LABELS, v, v);
+    if (key === 'content_type' && table === 'document_files') return labelOf(CONTENT_TYPE_LABELS, v, v);
     if (key === 'status') {
       if (table === 'years') return labelOf(YEAR_STATUS_LABELS, v, v);
       if (table === 'substitution_consents') return labelOf(CONSENT_STATUS_LABELS, v, v);
@@ -522,6 +555,10 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     if (labels) return labelOf(labels, v, v);
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v)) return formatDateTime(v) || v;
     return v;
+  }
+  // 提出物の対象の区分（documents.target_categories。T19）は区分の表示名を「・」で
+  if (key === 'target_categories' && Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+    return v.length === 0 ? '（空）' : v.map((c: string) => labelOf(CATEGORY_LABELS, c, c)).join('・');
   }
   if (Array.isArray(v) && v.every((x) => typeof x === 'string' || typeof x === 'number')) return v.length === 0 ? '（空）' : v.join('、');
   return JSON.stringify(v);
@@ -596,6 +633,12 @@ export function auditTarget(row: Pick<AuditLogRow, 'table_name' | 'row_pk' | 'be
       // 締切と予定（T18）：題名
       case 'events':
         return [str('title')];
+      // 提出物（T19）：提出物は題名、提出とファイルは「{団体}・{提出物の題名}」（今の年度にない提出物は「（消えた提出物）」）
+      case 'documents':
+        return [str('title')];
+      case 'document_submissions':
+      case 'document_files':
+        return [groupName(str('group_id')), str('document_id') ? (lookups.documents?.get(str('document_id')!) ?? DELETED_DOCUMENT) : null];
       default:
         return [];
     }
@@ -646,6 +689,11 @@ export function useHistoryNames(yearId: string, rows: readonly AuditLogRow[], op
       // お知らせの書いた人（notices.created_by。T17）
       asRecord(r.after)?.created_by,
       asRecord(r.before)?.created_by,
+      // 提出した人・確かめた人（document_submissions。T19）
+      asRecord(r.after)?.submitted_by,
+      asRecord(r.before)?.submitted_by,
+      asRecord(r.after)?.reviewed_by,
+      asRecord(r.before)?.reviewed_by,
     ]) {
       if (typeof v === 'string' && !known.has(v)) userIds.add(v);
     }

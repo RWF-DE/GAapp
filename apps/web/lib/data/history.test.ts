@@ -10,6 +10,8 @@ import {
   EMPTY_FILTER,
   fetchDeletedGroupNames,
   fetchHistoryPage,
+  DELETED_DOCUMENT,
+  fetchDocumentTitles,
   formatAuditValue,
   formatDiffEntry,
   HISTORY_PAGE_SIZE,
@@ -159,7 +161,7 @@ describe('差の表示', () => {
   });
 
   it('T17 お知らせ：表の絞り込みの最後に notices・notice_groups（足すだけ）。表の名前、対象（題名・宛先の団体の名前）、宛先と書いた人の値', () => {
-    expect(AUDIT_TABLES.slice(-3, -1)).toEqual(['notices', 'notice_groups']);
+    expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('notices'), AUDIT_TABLES.indexOf('notices') + 2)).toEqual(['notices', 'notice_groups']);
     expect(AUDIT_TABLES.slice(0, 2)).toEqual(['requests', 'request_submissions']);
     expect(tableLabel('notices')).toBe('お知らせ');
     expect(tableLabel('notice_groups')).toBe('宛先の団体');
@@ -175,7 +177,7 @@ describe('差の表示', () => {
   });
 
   it('T18 締切と予定：表の絞り込みの最後に events（足すだけ）。表の名前は「締切と予定」、対象は題名、種類・対象は表示名（お知らせの宛先と取り違えない）', () => {
-    expect(AUDIT_TABLES.at(-1)).toBe('events');
+    expect(AUDIT_TABLES.indexOf('events')).toBe(AUDIT_TABLES.indexOf('notice_groups') + 1);
     expect(new Set(AUDIT_TABLES).size).toBe(AUDIT_TABLES.length);
     expect(tableLabel('events')).toBe('締切と予定');
     const lookups = { users: new Map([[U, '総務 太郎']]) };
@@ -368,5 +370,62 @@ describe('fetchDeletedGroupNames', () => {
     const fake = createFakeSupabase(() => ({ data: [] }));
     expect((await fetchDeletedGroupNames(Y, [], fake.client)).size).toBe(0);
     expect(fake.issued).toHaveLength(0);
+  });
+});
+
+describe('T19 提出物の履歴（04「提出状況」の履歴、notes/T19.md「パート B・C の約束」12）', () => {
+  const D = '66666666-6666-4666-8666-666666666666';
+  const row = (table_name: string, data: Record<string, unknown> | null, before: Record<string, unknown> | null = null) => ({
+    table_name,
+    row_pk: {},
+    group_id: (data?.group_id as string) ?? (before?.group_id as string) ?? null,
+    before,
+    after: data,
+  });
+  const lookups = { groups: new Map([[G, '模擬店A']]), users: new Map([[U, '部門長A']]), documents: new Map([[D, '出店計画']]) };
+
+  it('表の絞り込みの最後に3表（足すだけ）。表の名前は「提出物」「提出物の提出」「提出物のファイル」', () => {
+    expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('documents'), AUDIT_TABLES.indexOf('documents') + 3)).toEqual(['documents', 'document_submissions', 'document_files']);
+    expect(AUDIT_TABLES.indexOf('documents')).toBeGreaterThan(AUDIT_TABLES.indexOf('events'));
+    expect(['documents', 'document_submissions', 'document_files'].map(tableLabel)).toEqual(['提出物', '提出物の提出', '提出物のファイル']);
+    expect(new Set(AUDIT_TABLES).size).toBe(AUDIT_TABLES.length);
+  });
+
+  it('対象：提出物は題名、提出とファイルは「{団体}・{提出物の題名}」（今の年度にない提出物は「（消えた提出物）」）', () => {
+    expect(auditTarget(row('documents', { id: D, title: '出店計画' }), lookups)).toBe('出店計画');
+    expect(auditTarget(row('documents', null, { id: D, title: '消した提出物' }), lookups)).toBe('消した提出物');
+    expect(auditTarget(row('document_submissions', { document_id: D, group_id: G, status: 'submitted' }), lookups)).toBe('模擬店A・出店計画');
+    expect(auditTarget(row('document_files', null, { id: 'f', document_id: D, group_id: G }), lookups)).toBe('模擬店A・出店計画');
+    expect(auditTarget(row('document_submissions', { document_id: 'gone', group_id: G }), lookups)).toBe(`模擬店A・${DELETED_DOCUMENT}`);
+    expect(auditTarget(row('document_files', { document_id: D, group_id: 'g-gone' }), {})).toBe(`（消えた団体）・${DELETED_DOCUMENT}`);
+    expect(DELETED_DOCUMENT).toBe('（消えた提出物）');
+  });
+
+  it('値：提出の状態は表示名、提出した人・確かめた人は表示名、提出物は題名、ファイルの形は PDF など、対象の区分は表示名を「・」で', () => {
+    expect(formatAuditValue('document_submissions', 'status', 'not_submitted')).toBe('未提出');
+    expect(formatAuditValue('document_submissions', 'status', 'submitted')).toBe('提出済み');
+    expect(formatAuditValue('document_submissions', 'status', 'returned')).toBe('差し戻し');
+    expect(formatAuditValue('document_submissions', 'status', 'approved')).toBe('承認');
+    expect(formatAuditValue('document_submissions', 'submitted_by', U, lookups)).toBe('部門長A');
+    expect(formatAuditValue('document_submissions', 'reviewed_by', 'x', lookups)).toBe(NAME_UNKNOWN);
+    expect(formatAuditValue('document_files', 'document_id', D, lookups)).toBe('出店計画');
+    expect(formatAuditValue('document_files', 'document_id', 'other', lookups)).toBe('other');
+    expect(formatAuditValue('document_files', 'content_type', 'application/pdf')).toBe('PDF');
+    expect(formatAuditValue('document_files', 'content_type', 'image/jpeg')).toBe('JPEG');
+    expect(formatAuditValue('documents', 'target_categories', ['stall', 'rest_area'])).toBe('模擬店・休憩所');
+    expect(formatAuditValue('documents', 'target_categories', [])).toBe('（空）');
+    expect(formatAuditValue('document_submissions', 'proxy', true)).toBe('はい');
+    expect(formatAuditValue('documents', 'deadline', '2026-10-05T08:00:00+00:00')).toBe('2026/10/05 17:00');
+    // ほかの表の status・配列は今のまま
+    expect(formatAuditValue('years', 'status', 'closed')).toBe('終了');
+    expect(formatAuditValue('items', 'aliases', ['a', 'b'])).toBe('a、b');
+  });
+
+  it('fetchDocumentTitles：その年度の提出物の id と題名（読めなければ空の表）', async () => {
+    const ok = createFakeSupabase(() => ({ data: [{ id: D, title: '出店計画' }] }));
+    expect(await fetchDocumentTitles(Y, ok.client)).toEqual(new Map([[D, '出店計画']]));
+    expect(opArgs(ok.issued[0]!, 'eq')).toEqual([['year_id', Y]]);
+    const failed = createFakeSupabase(() => ({ error: { code: '42501', message: 'x' }, status: 403 }));
+    expect(await fetchDocumentTitles(Y, failed.client)).toEqual(new Map());
   });
 });

@@ -310,6 +310,11 @@ function stateMessage(d: unknown, ctx: MessageContext): string {
     if (ctx.rpc === 'set_consent') return 'まだ依頼されていないので回答できません。読み直しました';
     return generic;
   }
+  // 提出物（T19）：not_editable（今の状態ごと。ファイルの予約・外すは別の文）と no_file などの reason
+  if (isDocumentRpc(ctx)) {
+    const m = documentStateMessage(d, ctx);
+    if (m) return m;
+  }
   if ('from' in d && 'to' in d) {
     const from = statusLabel(d.from);
     const to = statusLabel(d.to);
@@ -356,11 +361,108 @@ export const NOTICE_CONFLICT_MESSAGE = 'ほかの人がこのお知らせを先�
 /** お知らせの not_found（直す間にお知らせが消えた。04「お知らせ一覧」のエラー） */
 export const NOTICE_MISSING_MESSAGE = 'このお知らせは見つかりません（ほかの人が削除した可能性があります）';
 
+// 提出物（T19・D-55。04「提出物」のエラーの文言。MessageContext の rpc で分ける。下にない reason・field は今の文言）
+/** 提出物の RPC（11 個。これらの invalid_state・invalid_input・conflict・not_found は下の文言を先に見る） */
+export const DOCUMENT_RPCS: readonly string[] = [
+  'reserve_document_file',
+  'discard_document_file',
+  'submit_document',
+  'withdraw_document',
+  'approve_document',
+  'return_document',
+  'previous_year_documents',
+  'copy_previous_documents',
+  'delete_year_document_files',
+  'document_orphan_paths',
+  'document_storage_usage',
+];
+/** ファイルを足す・外す RPC（not_editable の文言を分ける） */
+const DOCUMENT_FILE_RPCS: readonly string[] = ['reserve_document_file', 'discard_document_file'];
+const isDocumentRpc = (ctx: MessageContext): boolean => !!ctx.rpc && DOCUMENT_RPCS.includes(ctx.rpc);
+/** ファイルの予約・外すの not_editable（details の status は今の提出の状態） */
+export const DOCUMENT_FILES_LOCKED_MESSAGES: Readonly<Record<string, string>> = {
+  submitted: '提出済みなので、ファイルを変えられません（変えるときは、先に「提出を取り消す」を押してください）。読み直しました',
+  approved: '承認されたので、ファイルを変えられません。読み直しました',
+};
+/** ほかの RPC（提出・取り消し・承認・差し戻し）の not_editable（同じ操作が重なったときと、成功した後の送り直し。今の状態ごと） */
+export const DOCUMENT_NOT_EDITABLE_MESSAGES: Readonly<Record<string, string>> = {
+  not_submitted: '未提出になっています（提出が取り消された可能性があります）。読み直しました',
+  submitted: 'すでに提出されています。読み直しました',
+  returned: '差し戻されています。読み直しました',
+  approved: 'すでに承認されています。読み直しました',
+};
+/** そのほかの invalid_state の reason */
+export const DOCUMENT_STATE_MESSAGES: Readonly<Record<string, string>> = {
+  no_file: 'ファイルを1つ以上足してから提出してください',
+  not_uploaded: '届いていないファイルがあります。外すか、もう一度送ってから提出してください',
+  too_many_files: 'ファイルは1つの提出物に 5 つまでです',
+  too_many_orphans: '前に外したファイルを片付けられませんでした。通信を確かめてから、もう一度足してください',
+  storage_full: 'ファイルの置き場がいっぱいです（上限 900 MB）。総務に知らせてください（管理者が終了した年度のファイルを削除すると空きます）',
+  not_closed: '年度が終了していないので、ファイルを削除できません',
+};
+/** invalid_input（キーは `field`・`field:reason`・`field:reason:rpc`。細かいキーを先に見る。年度のファイルの削除の reason は今の文言） */
+export const DOCUMENT_INPUT_MESSAGES: Readonly<Record<string, string>> = {
+  'note:required:return_document': '差し戻しの理由を入れてください',
+  'note:required:approve_document': '紙などで受け取ったときは、メモを入れてください',
+  'note:too_long:return_document': '理由は 1000 字までです',
+  'note:too_long:approve_document': 'メモは 1000 字までです',
+  content_type: 'PDF・JPEG・PNG のファイルを選んでください',
+  size: 'ファイルは1つ 10 MB までです',
+  'file_id:in_use': 'ファイルの番号が重なりました。もう一度足してください',
+  base_updated_at: '提出の版を読めませんでした。読み直してから、もう一度押してください',
+  'document_ids:required': '写す提出物を選んでください',
+  'document_ids:too_many': '一度に写せるのは 1000 件までです',
+  'document_ids:invalid': '選んだ提出物が重なっています',
+  'document_ids:not_in_prev_year': '前年度にない提出物が選ばれています。読み直しました',
+  'document_ids:deadline_out_of_range': 'ずらした締切が 2000年〜2200年の外になる提出物があります',
+};
+/** 提出・取り消し・承認・差し戻しの conflict（details は {document_id, group_id}。読んだ後にファイルを足す・外すなどで版が進んだ） */
+export const DOCUMENT_CONFLICT_MESSAGE = 'ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください';
+/** not_found（discard_document_file 以外） */
+export const DOCUMENT_MISSING_MESSAGE = 'この提出物は見つかりません（削除されたか、この団体が対象から外れた可能性があります）。読み直しました';
+/** not_found（discard_document_file：待つ間に外された） */
+export const DOCUMENT_FILE_MISSING_MESSAGE = 'このファイルはもうありません（ほかの人が外した可能性があります）。読み直しました';
+/**
+ * Storage API のエラー（lib/data/documents.ts の toStorageAppError が本文の statusCode・code で分けた AppError の reason。HTTP の
+ * status〔400〕は見ない）
+ */
+export const STORAGE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  storage_denied: 'アップロードできませんでした。提出の状態か立場が変わった可能性があります。読み直しました',
+  storage_missing: 'ファイルを開けませんでした（消された可能性があります）。読み直しました',
+  storage_too_large: 'ファイルは1つ 10 MB までです',
+  storage_mime: 'PDF・JPEG・PNG のファイルを選んでください',
+  storage_failed: 'ファイルの置き場で問題が起きました。少し待ってから、もう一度',
+};
+
+/** 提出物の invalid_state の文言（当てはまらなければ null。status: closed〔reason なし〕は今の文言） */
+function documentStateMessage(d: Record<string, unknown>, ctx: MessageContext): string | null {
+  if (d.reason === 'not_editable') {
+    const table = ctx.rpc && DOCUMENT_FILE_RPCS.includes(ctx.rpc) ? DOCUMENT_FILES_LOCKED_MESSAGES : DOCUMENT_NOT_EDITABLE_MESSAGES;
+    return labelOf(table, str(d.status)) || null;
+  }
+  return labelOf(DOCUMENT_STATE_MESSAGES, str(d.reason)) || null;
+}
+
+/** 提出物の invalid_input の文言（`field:reason:rpc` → `field:reason` → `field` の順に引く。当てはまらなければ null） */
+function documentInputMessage(d: Record<string, unknown>, ctx: MessageContext): string | null {
+  const field = str(d.field);
+  if (!field) return null;
+  const reason = str(d.reason);
+  const keys = reason ? [`${field}:${reason}:${ctx.rpc ?? ''}`, `${field}:${reason}`, field] : [field];
+  for (const k of keys) {
+    const m = labelOf(DOCUMENT_INPUT_MESSAGES, k);
+    if (m) return m;
+  }
+  return null;
+}
+
 function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '他の人が先に変更しました。読み直しました';
   // details（year_id・user_id・reason）によらず同じ文言（04 のエラーの一覧）
   if (e.reason === 'role_overlap') return ROLE_OVERLAP_MESSAGE;
   if (e.code === '23505') return '同じものがすでにあります（ほかの人が先に足した可能性があります）';
+  // 提出物（T19）：提出・取り消し・承認・差し戻しの conflict（details は {document_id, group_id}）
+  if (isDocumentRpc(ctx)) return DOCUMENT_CONFLICT_MESSAGE;
   const d = e.details;
   if (!isRecord(d)) return generic;
   if (d.field === 'label') return '同じ年度名があります';
@@ -435,6 +537,11 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
     return col ? `この項目は変えられません（${col}）` : 'この項目は変えられません';
   }
   if ('op' in d) return '入力の形が違います（数は 1〜10000、運び元・品目を選んでください）';
+  // 提出物（T19）：理由・メモ・ファイルの形と大きさ・番号の重なり・版・写す提出物（年度のファイルの削除の理由は下の今の文言）
+  if (isDocumentRpc(ctx)) {
+    const m = documentInputMessage(d, ctx);
+    if (m) return m;
+  }
   switch (d.field) {
     case 'festival_start':
       return '1日目は、前の年度より後・次の年度より前で、2000年1月1日〜2200年12月31日の日付にしてください';
@@ -467,6 +574,9 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
 
 /** 分類したエラーの文言（2.5 の表と details の表）。MessageContext で RPC の名前・名前の引き方を渡す */
 export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string {
+  // Storage API のエラー（T19。lib/data/documents.ts の toStorageAppError の reason。kind は forbidden・not_found・input・unknown）
+  const storage = labelOf(STORAGE_ERROR_MESSAGES, e.reason);
+  if (storage) return storage;
   switch (e.kind) {
     case 'forbidden':
       if (ctx.rpc === 'revoke_invitation') return '取り消せませんでした。読み直しました';
@@ -479,6 +589,9 @@ export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string
     case 'not_found':
       if (e.reason === 'lock_missing') return 'すでに消えていました（ほかの人が消した可能性があります）。読み直しました';
       if (ctx.rpc && NOTICE_RPCS.includes(ctx.rpc)) return NOTICE_MISSING_MESSAGE;
+      // 提出物（T19）：外す（discard_document_file）は待つ間に外されたファイル、ほかは消えた・対象から外れた提出物
+      if (ctx.rpc === 'discard_document_file') return DOCUMENT_FILE_MISSING_MESSAGE;
+      if (isDocumentRpc(ctx)) return DOCUMENT_MISSING_MESSAGE;
       return isRecord(e.details) && e.details.field === 'user_id'
         ? 'この人のアカウントが見つかりません'
         : '対象が見つかりません（ほかの人が消した可能性があります）';

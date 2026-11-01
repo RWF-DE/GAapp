@@ -11,6 +11,8 @@ export const MODULES = [
   { id: 'notices', label: 'お知らせ', homeHref: '/notices' },
   // 締切と予定（T18。D-54）。入口は「締切と予定の一覧」（/calendar。招待されている全員。見出しと同じ言葉を縦に並べないよう「の一覧」）
   { id: 'calendar', label: '締切と予定', homeHref: '/calendar' },
+  // 提出物（T19。D-55）。入口は「提出状況」（/documents。総務）。店長・副店長の「自団体の提出物」（/document）は同じ見出しの2つ目の項目
+  { id: 'documents', label: '提出物', homeHref: '/documents' },
 ] as const satisfies readonly {
   id: string;
   label: string;

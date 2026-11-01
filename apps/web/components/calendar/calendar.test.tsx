@@ -20,6 +20,7 @@ import { CALENDAR_EVENTS_SELECT, type CalendarEventRow } from '@/lib/data/calend
 import type { YearRow } from '@/lib/db/types';
 import { draftKey, saveDraft } from '@/lib/drafts';
 import { unknownOutcomeMessage } from '@/lib/errors';
+import { documentsPortalProvider } from '@/lib/modules/documents/portal';
 import { portalQueryKey, portalQueryOptions, type PortalProvider } from '@/lib/modules/portal';
 import { queryKeys } from '@/lib/query';
 import { EVENT_FORM_MESSAGES } from '@/lib/schemas/calendar';
@@ -1323,5 +1324,62 @@ describe('T18 削除', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('権限がありません。立場が変わった可能性があります'));
     expect(h.reloadMembership).toHaveBeenCalled();
     expect(rows.some((r) => r.id === E_GROUPS)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------- 提出物の締切（T19。読み取りの要る機能の日付）
+
+describe('T19 締切と予定の一覧：提出物の締切（読み取りの要る機能の日付。04「締切と予定」の読むもの）', () => {
+  const DOC = uuid(301);
+  const G9: GroupSummary = { id: uuid(39), name: '模擬店09', year_id: Y, role: 'manager' };
+  /** 10/16（土）17:00（Asia/Tokyo）の締切 */
+  const DEADLINE = '2027-10-16T08:00:00Z';
+  const usage = { bucket_bytes: 0, limit_bytes: 943718400, file_count: 0, file_bytes: 0, orphan_count: 0 };
+  let failDocs = false;
+
+  beforeEach(() => {
+    failDocs = false;
+    h.providers.push(documentsPortalProvider);
+    override = (call) => {
+      if (call.table === 'documents') return failDocs ? NETWORK : { data: [{ id: DOC, title: '出店計画', deadline: DEADLINE }] };
+      if (call.table === 'v_document_status') return { data: [{ document_id: DOC, group_id: G9.id, status: 'not_submitted', title: '出店計画', deadline: DEADLINE, review_note: null }] };
+      if (call.table === 'rpc:document_storage_usage') return { data: [usage] };
+      return undefined;
+    };
+  });
+
+  it('総務部門長：「提出物「{題名}」の締切」を機能の日付として出し、機能の印は「提出物」、題名は提出状況のその提出物へのリンク', async () => {
+    renderScreen('head');
+    await waitFor(() => expect(itemIds()).toContain(`documents:deadline:${DOC}`));
+    const item = itemOf(`documents:deadline:${DOC}`);
+    expect(item.getAttribute('data-module')).toBe('documents');
+    expect(within(item).getByTestId('calendar-item-module').textContent).toBe('提出物');
+    expect(within(item).getByTestId('calendar-item-kind').textContent).toBe('締切');
+    expect(within(item).getByRole('link', { name: '提出物「出店計画」の締切' }).getAttribute('href')).toBe(`/documents?document=${DOC}`);
+    expect(within(item).queryByRole('button')).toBeNull();
+    expect(within(item).getByTestId('calendar-item-time').textContent).toBe('17:00');
+  });
+
+  it('店長：自団体が対象の提出物の締切。題名は自団体の提出物のそのカードへのリンク', async () => {
+    renderScreen(null, { groups: [G9] });
+    await waitFor(() => expect(itemIds()).toContain(`documents:deadline:${DOC}`));
+    expect(within(itemOf(`documents:deadline:${DOC}`)).getByRole('link', { name: '提出物「出店計画」の締切' }).getAttribute('href')).toBe(
+      `/document?group=${G9.id}&document=${DOC}`,
+    );
+  });
+
+  it('提出物の読み取りが失敗したら「提出物：{文言}」と「もう一度」（項目とほかの機能の日付は出したまま）。もう一度で出る', async () => {
+    failDocs = true;
+    const user = setUser();
+    renderScreen('head');
+    const err = await screen.findByTestId('portal-module-error');
+    expect(err.getAttribute('data-module')).toBe('documents');
+    expect(err.textContent).toContain('提出物：通信できませんでした');
+    await loaded();
+    expect(itemIds()).toEqual(HEAD_ORDER);
+    failDocs = false;
+    await user.click(within(err).getByRole('button', { name: 'もう一度' }));
+    await waitFor(() => expect(itemIds()).toContain(`documents:deadline:${DOC}`));
+    expect(screen.queryByTestId('portal-module-error')).toBeNull();
   });
 });

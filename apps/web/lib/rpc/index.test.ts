@@ -206,3 +206,72 @@ describe('T17 save_notice・delete_notice の引数（RPC_ARGS）', () => {
     expect(messageFor(info, { rpc: 'delete_notice' })).toBe('ほかの人がこのお知らせを先に変えました。読み直しました');
   });
 });
+
+describe('T19 提出物の RPC の引数（RPC_ARGS。lib/rpc/payloads.ts）', () => {
+  const D = '66666666-6666-4666-8666-666666666666';
+  const F = '77777777-7777-4777-8777-777777777777';
+  const V = '2026-10-01T00:00:00.123456+00:00';
+  const sub = { document_id: D, group_id: G, status: 'submitted' };
+
+  it('提出・承認の版は null を名前つきで送れる（行がなければ null）。取り消し・差し戻しの版は null にしない', async () => {
+    const { client, issued } = fake({ data: sub });
+    await callRpc('submit_document', { p_document_id: D, p_group_id: G, p_base_updated_at: null }, client);
+    await callRpc('approve_document', { p_document_id: D, p_group_id: G, p_note: null, p_base_updated_at: null }, client);
+    expect(issued.map((c) => c.ops[0]!.args[0])).toEqual([
+      { p_document_id: D, p_group_id: G, p_base_updated_at: null },
+      { p_document_id: D, p_group_id: G, p_note: null, p_base_updated_at: null },
+    ]);
+    for (const name of ['withdraw_document', 'return_document'] as const) {
+      const args = { p_document_id: D, p_group_id: G, p_note: '理由', p_base_updated_at: null } as never;
+      const info = await caught(callRpc(name, args, client));
+      expect(info.details, name).toEqual({ field: 'base_updated_at' });
+    }
+    expect(issued).toHaveLength(2);
+  });
+
+  it('承認のメモは null にでき、差し戻しの理由は必須（前後の空白〔全角を含む〕を除いて 1〜1000 字。補助面の文字も1字）', async () => {
+    const { client, issued } = fake({ data: sub });
+    await callRpc('return_document', { p_document_id: D, p_group_id: G, p_note: '　印鑑がありません\t', p_base_updated_at: V }, client);
+    expect(issued[0]!.ops[0]!.args[0]).toEqual({ p_document_id: D, p_group_id: G, p_note: '印鑑がありません', p_base_updated_at: V });
+    for (const note of [' 　', 'あ'.repeat(1001), null]) {
+      const info = await caught(callRpc('return_document', { p_document_id: D, p_group_id: G, p_note: note as string, p_base_updated_at: V }, client));
+      expect(info.details).toEqual({ field: 'note' });
+    }
+    await callRpc('return_document', { p_document_id: D, p_group_id: G, p_note: '😀'.repeat(1000), p_base_updated_at: V }, client);
+    expect(issued).toHaveLength(2);
+  });
+
+  it('予約：形は PDF・JPEG・PNG、大きさは 1〜10485760 の整数、id は uuid（合わなければ送らず、field は p_ を除いた名前）', async () => {
+    const { client, issued } = fake({ data: { id: F } });
+    const base = { p_document_id: D, p_group_id: G, p_file_id: F, p_content_type: 'image/png' as const, p_size: 10485760 };
+    await callRpc('reserve_document_file', base, client);
+    expect(issued[0]!.ops[0]!.args[0]).toEqual(base);
+    const cases: [Record<string, unknown>, string][] = [
+      [{ p_content_type: 'image/heic' }, 'content_type'],
+      [{ p_size: 10485761 }, 'size'],
+      [{ p_size: 0 }, 'size'],
+      [{ p_size: 1.5 }, 'size'],
+      [{ p_file_id: 'x' }, 'file_id'],
+    ];
+    for (const [over, field] of cases) {
+      const info = await caught(callRpc('reserve_document_file', { ...base, ...over } as never, client));
+      expect(info.details, field).toEqual({ field });
+    }
+    expect(issued).toHaveLength(1);
+  });
+
+  it('写す（1〜1000 件の uuid）・年度のファイルの削除（理由は省ける・空は null）・外す・読み取りの RPC', async () => {
+    const { client, issued } = fake({ data: [] });
+    await callRpc('copy_previous_documents', { p_year_id: Y, p_document_ids: [D] }, client);
+    expect((await caught(callRpc('copy_previous_documents', { p_year_id: Y, p_document_ids: [] }, client))).details).toEqual({ field: 'document_ids' });
+    await callRpc('delete_year_document_files', { p_year_id: Y }, client);
+    await callRpc('delete_year_document_files', { p_year_id: Y, p_reason: '  ' }, client);
+    await callRpc('discard_document_file', { p_file_id: F }, client);
+    expect(issued.map((c) => [c.table, c.ops[0]!.args[0]])).toEqual([
+      ['rpc:copy_previous_documents', { p_year_id: Y, p_document_ids: [D] }],
+      ['rpc:delete_year_document_files', { p_year_id: Y }],
+      ['rpc:delete_year_document_files', { p_year_id: Y, p_reason: null }],
+      ['rpc:discard_document_file', { p_file_id: F }],
+    ]);
+  });
+});

@@ -69,6 +69,10 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   notice_groups: '宛先の団体',
   // 締切と予定（T18。表 events。種類・対象の表示名は lib/modules/calendar/labels.ts）
   events: '締切と予定',
+  // 提出物（T19。状態・形の表示名は lib/modules/documents/labels.ts）
+  documents: '提出物',
+  document_submissions: '提出物の提出',
+  document_files: '提出物のファイル',
 };
 
 /** 監査ログの操作（audit_logs.action） */
@@ -119,6 +123,12 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   group_ids: '宛先の団体',
   base_updated_at: 'お知らせの版',
   notice: 'お知らせ',
+  // 提出物（T19）。理由・メモ（note）・形（content_type）・大きさ（size）などの専用の文言は lib/errors.ts の DOCUMENT_INPUT_MESSAGES
+  document_id: '提出物',
+  file_id: 'ファイル',
+  content_type: 'ファイルの形',
+  size: 'ファイルの大きさ',
+  document_ids: '写す提出物',
 };
 
 /** 表にない値は、そのまま出さず fallback にする（新しい列挙が増えても画面が壊れない） */

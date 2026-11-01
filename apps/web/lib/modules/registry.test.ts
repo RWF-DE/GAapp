@@ -16,7 +16,13 @@ describe('T16 機能の登録（MODULES）', () => {
 
   it('T18 締切と予定：名前は「締切と予定」（ダッシュボードの欄と同じ）、入口は /calendar（お知らせの後。最後に1行足した）', () => {
     expect(MODULES[2]).toEqual({ id: 'calendar', label: '締切と予定', homeHref: '/calendar' });
-    expect(MODULES.map((m) => m.id)).toEqual(['furniture', 'notices', 'calendar']);
+    expect(MODULES.map((m) => m.id).slice(0, 3)).toEqual(['furniture', 'notices', 'calendar']);
+  });
+
+  it('T19 提出物：名前は「提出物」、入口は /documents（提出状況。締切と予定の後に足した）', () => {
+    const k = MODULES.findIndex((m) => m.id === 'documents');
+    expect(MODULES[k]).toEqual({ id: 'documents', label: '提出物', homeHref: '/documents' });
+    expect(k).toBeGreaterThan(MODULES.findIndex((m) => m.id === 'calendar'));
   });
 
   it('id は英字の小文字で重ならない。名前も重ならない', () => {
@@ -91,7 +97,56 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
   });
 
   it('T17・T18 PORTAL_PROVIDERS は 机椅子 → お知らせ → 締切と予定（MODULES と同じ並び）', () => {
-    expect(PORTAL_PROVIDERS.map((p) => p.moduleId)).toEqual(['furniture', 'notices', 'calendar']);
+    expect(PORTAL_PROVIDERS.map((p) => p.moduleId).slice(0, 3)).toEqual(['furniture', 'notices', 'calendar']);
+  });
+
+  it('T19 提出物のプロバイダは登録と同じ並び（締切と予定の後）。総務と店長・副店長に出し、閲覧のみには出さない（Q5）', () => {
+    const ids = PORTAL_PROVIDERS.map((p) => p.moduleId);
+    expect(ids).toContain('documents');
+    expect(ids.indexOf('documents')).toBeGreaterThan(ids.indexOf('calendar'));
+    const p = PORTAL_PROVIDERS.find((x) => x.moduleId === 'documents')!;
+    expect(p.kinds).toEqual(['soumu', 'rep']);
+    expect(p.fromYear).toBeUndefined();
+    expect(p.query?.widgets).toEqual(['todos', 'dated', 'cards']);
+  });
+
+  it('T19 提出物のプロバイダは、/documents・/document の画面・表の組み立て・CSV・画像の作り直し・lib/data・入力の zod を読まない', () => {
+    const g = staticImportGraph('lib/modules/documents/portal.ts');
+    for (const f of [
+      'lib/modules/documents/board.ts',
+      'lib/modules/documents/rep.ts',
+      'lib/modules/documents/csv.ts',
+      'lib/modules/documents/image.ts',
+      'lib/data/documents.ts',
+      'lib/schemas/documents.ts',
+    ]) {
+      expect(g.files).not.toContain(f);
+    }
+    expect(g.files.filter((f) => f.startsWith('lib/data/') || f.startsWith('components/') || f.startsWith('app/'))).toEqual([]);
+    expect(g.packages.filter((p) => /^(@gaapp\/(allocator|exporter|importer)|highs|react|react-dom|next|zod)(\/|$)/.test(p))).toEqual([]);
+    expect(g.files).toContain('lib/modules/documents/reads.ts');
+  });
+
+  it('T19 / と /document の先読みが使う提出物の読み取り（documents/reads.ts）は、組み立て・ダッシュボードの型と関数・ナビゲーション・日付の表示・zod・Storage を読まない', () => {
+    const g = staticImportGraph('lib/modules/documents/reads.ts');
+    for (const f of [
+      'lib/modules/documents/portal.ts',
+      'lib/modules/documents/board.ts',
+      'lib/modules/documents/rep.ts',
+      'lib/modules/documents/files.ts',
+      'lib/modules/portal.ts',
+      'lib/navigation.ts',
+      'lib/datetime.ts',
+      'lib/datetime-weekday.ts',
+      'lib/rpc/payloads.ts',
+      'lib/data/documents.ts',
+      'lib/schemas/documents.ts',
+    ]) {
+      expect(g.files).not.toContain(f);
+    }
+    expect(g.files.filter((f) => f.startsWith('lib/data/') || f.startsWith('components/') || f.startsWith('app/'))).toEqual([]);
+    expect(g.files).toContain('lib/modules/query-key.ts');
+    expect(g.packages.filter((p) => p.startsWith('@gaapp/') || p === 'zod')).toEqual([]);
   });
 
   it('T18 / の先読みにも使える締切と予定の欄の読み取り（calendar/dated.ts）は、組み立て・ダッシュボードの型と関数・ナビゲーション・日付の表示・一覧の画面を読まない', () => {

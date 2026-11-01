@@ -7,7 +7,7 @@
 // 関数（planStockPrefetch など）と表（SCREEN_PREFETCH）をこの軽いモジュールに置き、Providers から読む。
 // 画面のフック（useStockMaster など）も同じクエリの設定（stockMasterOptions など）を使うので、先読みしたキャッシュをそのまま使う。
 import { queryOptions, type QueryClient } from '@tanstack/react-query';
-import { isSoumu } from '@/lib/auth/roles';
+import { isLead, isSoumu } from '@/lib/auth/roles';
 import type { PrefetchEntry, RoutePrefetchContext, RoutePrefetcher } from '@/lib/boot/early-load';
 import { fetchAll } from '@/lib/db/fetch-all';
 import {
@@ -25,6 +25,7 @@ import {
 } from '@/lib/db/types';
 import { appError, toAppError } from '@/lib/errors';
 import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
+import { documentsSoumuPortalOptions, pickDocumentGroup, repDocumentsOptions } from '@/lib/modules/documents/reads';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
@@ -348,6 +349,13 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
     list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
     list.push({ options: noticesLatestOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
     list.push({ options: calendarDatedOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
+    // 提出物（T19・D-55）：総務の読み取り（部門長以上と総務部門員で別のキー。段が同じときだけ使う）。店長・副店長の分は、団体代表の / が
+    // 4G で 2 秒以内のままか `pnpm e2e:perf` で確かめてから決める（パート C。04「共通レイアウト」の提出物の読み込み、D-45）
+    const lead = isLead(ctx.role);
+    list.push({
+      options: documentsSoumuPortalOptions(ctx.yearId, lead ? 'lead' : 'staff'),
+      usable: (m) => isSoumu(m.role) && isLead(m.role) === lead,
+    });
   }
   if (ctx.role === 'viewer') {
     list.push({ options: noticesLatestOptions(ctx.yearId, 'viewer'), usable: (m) => m.role === 'viewer' });
@@ -369,6 +377,21 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
   return list;
 }
 
+// ---------------------------------------------------------------- 自団体の提出物 /document（T19）
+
+/**
+ * /document の先読み（D-45。04「共通レイアウト」の提出物の読み込み）：`?group=` が覚えた団体にあればその団体、なければ最初の団体
+ * （DocumentScreen の pickDocumentGroup と同じ選び方）の提出の状況とファイル（repDocumentsOptions。2本を並行に）。版を使わないので、
+ * 記録・先送りの対象にもなる（EARLY_FETCH_PATHS）。覚えた団体がなければ読まない。
+ */
+export function planDocumentPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
+  const group = pickDocumentGroup(
+    ctx.groupIds.map((id) => ({ id })),
+    ctx.params.get('group'),
+  );
+  return group ? [{ groupId: group.id, options: repDocumentsOptions(ctx.yearId, group.id) }] : [];
+}
+
 // ---------------------------------------------------------------- 先読みの表
 
 /** 画面のパス（basePath と末尾の / を外したもの）→ 先読みするものの決め方（Providers が startEarlyLoad に渡す） */
@@ -377,6 +400,8 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
   '/stock': planStockPrefetch,
   '/request': planRequestPrefetch,
   '/my': planMyPrefetch,
+  // 自団体の提出物（T19。版を使わない画面。提出状況〔/documents〕は入れない）
+  '/document': planDocumentPrefetch,
 };
 
 /**

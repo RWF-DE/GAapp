@@ -5,6 +5,9 @@
 // sortTodos（急ぎ → ふつう → 参考、期日、機能の登録の順、作った順）で並べる。1件は行全体を行き先へのリンクにする。
 // いちばん低い度合い（info）の印は「参考」（機能の「お知らせ」〔T17〕と取り違えないため）。期日はダッシュボードを開いた時刻（now）で
 // 過ぎていれば「締切 10/5 17:00 を過ぎました」と出す。
+// 2行目（detail。T19 で足した。D-52 の T19 の直し）があれば、文の下に小さな字で、書いたとおりの文字（改行を残し、長い語も折り返す。
+// React の文字として出すので HTML にしない）で 3 行まで出す（超える分は「…」で切る。全文は行き先の画面）。リンクの中に入れる
+// （読み上げでも読む）。2行目のない要対応は今までどおり。
 import { AlertTriangle, ChevronRight, CircleDot, Info } from 'lucide-react';
 import { AppLink } from '@/components/common/app-link';
 import { Badge } from '@/components/ui/badge';
@@ -82,6 +85,11 @@ function TodoRow({ todo: t, now }: { todo: TodoItem; now: number }) {
           >
             {t.title}
           </span>
+          {t.detail ? (
+            <span data-testid="portal-todo-detail" className="line-clamp-3 text-xs whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">
+              {t.detail}
+            </span>
+          ) : null}
           {t.due ? (
             <span data-testid="portal-todo-due" className="block text-xs text-muted-foreground">
               締切 <time dateTime={t.due}>{formatShortDateTime(t.due)}</time>
