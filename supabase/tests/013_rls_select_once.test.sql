@@ -166,7 +166,7 @@ from unnest(array['audit_logs', 'allocations', 'requests', 'request_submissions'
 select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
   format('%s：0010 の形（0013 の段）のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態）', t))
 from unnest(array['documents', 'document_submissions', 'document_files']) t;
--- 提出物の3表を比べたものに中身がある（下の 10 表の確かめと同じ。全員 0 行や全員同じでは比べたことにならない）
+-- 提出物の3表を比べたものに中身がある（下の 20 表の確かめと同じ。全員 0 行や全員同じでは比べたことにならない）
 select is((select string_agg(x.tbl, ' ' order by x.tbl) from (select tbl from tests.compared
              where tbl in ('documents', 'document_submissions', 'document_files')
              group by tbl having count(distinct new) >= 2 and bool_or(new !~ '^0:')) x),

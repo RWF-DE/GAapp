@@ -81,9 +81,11 @@ test.describe('T16 管理者', () => {
       await shoot(page, 'T16', 'nav-grouped-pc');
       await shoot(page, 'T16', 'furniture-pc', { fullPage: true });
 
-      // 欄の読み込み中：机椅子の読み込み（提出の記録）を止める。年度の行だけで決まる項目は先に出ている。読み込み中は要対応とカード
-      // だけで、締切と予定（年度の行だけで決まる）には出さない（決定 7）。2回目の / なので覚えた id で机椅子の読み取りを先に始める
-      // （先読み。D-45）が、その提出の記録も同じ route で止まる
+      // 欄の読み込み中：机椅子の読み込み（提出の記録）を止める。年度の行だけで決まる項目は先に出ている。締切と予定の欄には机椅子の
+      // 読み込み中を出さない（机椅子の日付は年度の行だけで決まる。決定 7。この欄の締切と予定の機能・提出物・シフト・作業の分は届くのを
+      // 待つ）。2回目の / なので覚えた id で机椅子の読み取りを先に始める（先読み。D-45）が、その提出の記録も同じ route で止まる。欄は
+      // 機能ごとに読み込み中を出し、止めていない機能の読み取りの届く順は回ごとに変わるので、確かめは止めた机椅子の分に絞り、撮る前に
+      // 机椅子以外の読み込み中（お知らせ・テント等の貸し出しなど）が消えるのを待つ（写るものを毎回同じにする。FU3）
       const held = new Promise<void>((r) => (release = r));
       await page.route(route, async (r: Route) => {
         await held;
@@ -92,9 +94,10 @@ test.describe('T16 管理者', () => {
       await page.goto('/');
       await expect(page.locator('[data-testid="portal-todo"][data-id="furniture:lead:close-requests"]')).toBeVisible();
       await expect(page.getByTestId('portal-todos').locator('[data-testid="portal-loading"][data-module="furniture"]')).toBeVisible();
-      await expect(page.getByTestId('portal-cards').getByTestId('portal-loading')).toBeVisible();
+      await expect(page.getByTestId('portal-cards').locator('[data-testid="portal-loading"][data-module="furniture"]')).toBeVisible();
       await expect(page.getByTestId('portal-dated').getByTestId('portal-loading')).toHaveCount(0);
       await expect(page.getByTestId('portal-dated-item')).toHaveCount(5);
+      await expect(page.locator('[data-testid="portal-loading"]:not([data-module="furniture"])')).toHaveCount(0);
       await shoot(page, 'T16', 'portal-loading-pc', { fullPage: true });
       release();
       await expect(furnitureCard(page)).toBeVisible();
