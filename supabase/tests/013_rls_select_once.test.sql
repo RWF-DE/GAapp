@@ -15,6 +15,8 @@
 -- 行ごとの形の述語と同じ物を選ぶことを確かめる。
 -- T20：シフト・作業の5表（0017）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「シフト・作業の権限」から書いた）、
 -- ④にポリシーの形と実行計画を足した（集合の関数は足していない）。
+-- T21：テント等の貸し出しの5表（0018）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「テント等の貸し出しの権限」
+-- から書いた。Y1 の割り当ての確定後でも比べる）、②に集合の関数 lending_confirmed_year_ids、④に5表のポリシーの形と実行計画を足した。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
@@ -54,7 +56,7 @@ from (values (tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F13_REP'), '{"size": 10}
              ('pgtap/' || tests.id('G1') || '/x.pdf', '{"size": 1}'),
              (tests.id('Y1') || '', '{"size": 1}')) v(name, metadata);
 
-select plan(110);
+select plan(128);
 
 -- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
 -- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
@@ -102,6 +104,20 @@ insert into tests.old_pred values
   ('shift_needs', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$),
   ('shift_assignments', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$),
   ('tasks', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$);
+-- テント等の貸し出し（T21。02「テント等の貸し出しの権限」の表から書いた。行ごとに判定関数を呼ぶ形。t は比べる表の行）：
+-- 備品と確定の印は、総務と閲覧のみはその年度、団体の代表は代表である年度。申請と記録は、総務はその年度の全部、団体の代表は自団体
+-- （閲覧のみは読めない）。割り当ては、総務はその年度の全部、閲覧のみはその年度・団体の代表は自団体の、どちらも割り当ての確定後
+-- （その年度の lending_years の confirmed_at が null でない）だけ
+insert into tests.old_pred values
+  ('lending_items', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff,viewer}')
+                        or exists (select 1 from public.groups g where g.year_id = t.year_id and private.is_group_member(g.id)) $p$),
+  ('lending_years', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff,viewer}')
+                        or exists (select 1 from public.groups g where g.year_id = t.year_id and private.is_group_member(g.id)) $p$),
+  ('lending_requests', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') or private.is_group_member(group_id) $p$),
+  ('lending_records', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') or private.is_group_member(group_id) $p$),
+  ('lending_assignments', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}')
+                              or (exists (select 1 from public.lending_years ly where ly.year_id = t.year_id and ly.confirmed_at is not null)
+                                  and (private.has_role(year_id, 'viewer') or private.is_group_member(group_id))) $p$);
 
 -- 行の中身をまとめた指紋（件数と、行の文字列を並べた md5）
 create function tests.visible_old(p_tbl text, p_persona text) returns text language plpgsql as $$
@@ -159,7 +175,7 @@ select is((select string_agg(x.tbl, ' ' order by x.tbl) from (select tbl from te
 -- 比べたものに中身がある（全員 0 行や全員同じでは比べたことにならない）
 select is_empty($q$ select tbl from tests.compared where tbl not in ('documents', 'document_submissions', 'document_files') group by tbl
                     having count(distinct new) < 2 or not bool_or(new !~ '^0:') $q$,
-  '10 表とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
+  '20 表（T20 のシフト・作業の5表と T21 のテント等の5表を含む）とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
 -- シフト・作業（T20）
 select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
   format('%s：D-47 の形のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態。T20）', t))
@@ -169,6 +185,40 @@ select is((select count(distinct tbl)::int from tests.compared
              and new !~ '^0:'
              and tbl in (select tbl from tests.compared group by tbl having count(distinct new) >= 3)), 5,
   'シフト・作業の5表とも、見える行のある組があり、ペルソナで見える行が分かれる（Y1 の総務・Y2 の総務・何も見えない人の3通り以上）');
+
+-- テント等の貸し出し（T21）：上の比べた結果（fixture の Y1 は割り当ての確定前、Y2 は確定後）に加えて、Y1 の割り当てを確定した状態でも
+-- 比べる（確定後の枝：閲覧のみと団体の代表に Y1 の割り当てが見える）。G2 の割り当て（fixture では未入力）を1つ足して、G2 の代表（rep2）
+-- にも見える行を作る。比べた後は元に戻す
+insert into public.lending_assignments (group_id, lending_item_id, year_id, count) values (tests.id('G2'), tests.id('LI_TENT'), tests.id('Y1'), 1);
+insert into public.lending_years (year_id, confirmed_at, confirmed_by) values (tests.id('Y1'), now(), tests.id('head'));
+create function tests.compare_lending() returns void language plpgsql as $$
+declare s1 text; s2 text; t text; p text;
+begin
+  foreach s2 in array array['preparing', 'closed'] loop
+    foreach s1 in array array['preparing', 'requesting', 'requesting:after', 'allocating', 'confirmed', 'closed'] loop
+      perform tests.set_scenario(s1);
+      update public.years set status = s2::public.year_status where id = tests.id('Y2');
+      foreach t in array array['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years'] loop
+        foreach p in array array['admin', 'staff', 'rep', 'rep2', 'viewer', 'outsider', 'admin2', 'head', 'deputy'] loop
+          insert into tests.compared values (t, s1 || ' / Y2 ' || s2 || ' / Y1 割り当て確定', p, tests.visible_old(t, p), tests.visible_new(t, p));
+        end loop;
+      end loop;
+    end loop;
+  end loop;
+  perform tests.set_scenario('requesting');
+  update public.years set status = 'preparing' where id = tests.id('Y2');
+end $$;
+select tests.compare_lending();
+delete from public.lending_years where year_id = tests.id('Y1');
+delete from public.lending_assignments where group_id = tests.id('G2') and lending_item_id = tests.id('LI_TENT');
+select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
+  format('%s：0018 の形（D-47）のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態 × Y1 の割り当ての確定前・確定後。T21）', t))
+from unnest(array['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years']) t;
+select ok((select bool_and(new ~ '^0:') from tests.compared
+           where tbl = 'lending_assignments' and persona in ('viewer', 'rep2') and scenario !~ '割り当て確定')
+          and (select bool_and(new !~ '^0:') from tests.compared
+               where tbl = 'lending_assignments' and persona in ('viewer', 'rep2') and scenario ~ '割り当て確定'),
+  '割り当ては、閲覧のみ（viewer）と Y1 の団体の代表（rep2）に、Y1 の確定前は見えず、確定後に見える（確定後の枝も比べた。T21）');
 
 -- ---------------------------------------------------------------- ② 新しい関数は呼んだ人についてだけ答える
 select tests.login_as('admin');
@@ -352,6 +402,51 @@ select is((select count(*)::int from pg_proc p
   '提出物の集合の関数は authenticated だけが実行できる（anon・supabase_auth_admin・PUBLIC は実行できない）');
 select tests.login_anon();
 select throws_ok($q$ select private.my_document_upload_paths() $q$, '42501', null, 'anon は提出物の集合の関数を呼べない');
+select tests.logout();
+
+-- テント等の割り当てを確定した年度の集合（T21。0018 の lending_confirmed_year_ids）：呼んだ人がロールか団体の代表を持つ年度のうち、
+-- 割り当てを確定した（lending_years の confirmed_at が null でない）もの。呼んだ人についてだけ答える（引数を取らない）
+create function tests.confirmed_years(p_persona text) returns text language plpgsql as $$
+declare v text;
+begin
+  perform tests.login_as(p_persona);
+  select coalesce(string_agg(t.name, ' ' order by t.name), '-') into v
+  from private.lending_confirmed_year_ids() as y(id) join tests.ids t on t.id = y.id;
+  perform tests.logout();
+  return v;
+end $$;
+create function tests.confirmed_years_all() returns text language sql as $$
+  select string_agg(p || '=' || tests.confirmed_years(p), ' ' order by o)
+  from unnest(array['admin', 'head', 'deputy', 'staff', 'viewer', 'rep', 'rep2', 'outsider', 'admin2']) with ordinality as x(p, o)
+$$;
+select is(tests.confirmed_years_all(),
+  'admin=- head=- deputy=- staff=Y2 viewer=- rep=Y2 rep2=- outsider=- admin2=Y2',
+  'Y2（確定後）は Y2 の管理者・閲覧のみ（rep）・G3 の店長（staff）の集合だけに入る。Y1（確定前）はだれの集合にも入らない');
+insert into public.lending_years (year_id, confirmed_at, confirmed_by) values (tests.id('Y1'), now(), tests.id('head'));
+select is(tests.confirmed_years_all(),
+  'admin=Y1 head=Y1 deputy=Y1 staff=Y1 Y2 viewer=Y1 rep=Y1 Y2 rep2=Y1 outsider=- admin2=Y2',
+  'Y1 を確定すると、Y1 のロール（総務・閲覧のみ）と団体の代表（rep・rep2・副店長の viewer）の集合に入る');
+update public.lending_years set confirmed_at = null, confirmed_by = null where year_id = tests.id('Y1');
+select is(tests.confirmed_years('admin') || ' ' || tests.confirmed_years('rep'), '- Y2',
+  '確定の印の行があっても confirmed_at が null（解除の後）なら入らない');
+delete from public.lending_years where year_id = tests.id('Y1');
+select set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+set local role authenticated;
+select is_empty($q$ select private.lending_confirmed_year_ids() $q$, 'auth.uid() が null なら、確定した年度の集合は何も返さない');
+select tests.logout();
+select is_empty($q$ select p.oid::regprocedure::text from pg_proc p
+                   where p.oid = 'private.lending_confirmed_year_ids()'::regprocedure
+                     and not (p.pronargs = 0 and p.prosecdef and p.provolatile = 's' and p.proretset
+                              and p.prorettype = 'uuid'::regtype and coalesce(p.proconfig @> array['search_path=""'], false)) $q$,
+  '確定した年度の集合の関数は引数を取らず、SECURITY DEFINER・STABLE・setof uuid・search_path = ""');
+select ok(has_function_privilege('authenticated', 'private.lending_confirmed_year_ids()', 'execute')
+          and not has_function_privilege('anon', 'private.lending_confirmed_year_ids()', 'execute')
+          and not has_function_privilege('supabase_auth_admin', 'private.lending_confirmed_year_ids()', 'execute')
+          and not exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                          where p.oid = 'private.lending_confirmed_year_ids()'::regprocedure and a.grantee = 0),
+  '確定した年度の集合の関数は authenticated だけが実行できる（anon・supabase_auth_admin・PUBLIC は実行できない）');
+select tests.login_anon();
+select throws_ok($q$ select private.lending_confirmed_year_ids() $q$, '42501', null, 'anon は確定した年度の集合の関数を呼べない');
 select tests.logout();
 
 -- ---------------------------------------------------------------- ③ audit_logs：年度をまたぐ表の行と、開いていない年度
@@ -652,6 +747,27 @@ select is((select string_agg(t, ' ' order by t collate "C")
            from unnest(array['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']) t
            where (select string_agg(l, E'\n') from tests.explain_lines('select * from public.' || t) l) ~ '(?n)Filter: .*private\.'), null,
   'シフト・作業の5表の読みの計画の Filter に、行ごとの判定関数が出ない（hashed SubPlan だけ）');
+select tests.logout();
+
+-- テント等の貸し出し（T21）：5表の select のポリシーも集合を1回作る形（行の列を判定関数に渡さない）。割り当ては確定した年度の集合
+-- （lending_confirmed_year_ids）と、ロールの年度・代表の団体の集合を使い、備品と確定の印は代表である年度の集合を使う
+select is((select count(*)::int from pg_policies where schemaname = 'public' and cmd = 'SELECT' and tablename like 'lending\_%'), 5,
+  'テント等の5表に select のポリシーが1つずつある');
+select is_empty($q$ select tablename::text || ': ' || qual from pg_policies
+                   where schemaname = 'public' and cmd = 'SELECT' and tablename like 'lending\_%'
+                     and qual ~ '(?<!SELECT )private\.[a-z_]+\((year_id|group_id|id|user_id|lending_item_id|private\.)' $q$,
+  'テント等の5表の select のポリシーは、行の列を判定関数に渡さない（集合を1回作る形）');
+select ok((select qual ~ 'SELECT private\.my_role_year_ids' and qual ~ 'SELECT private\.lending_confirmed_year_ids\(\)'
+                  and qual ~ 'SELECT private\.my_group_ids\(\)'
+           from pg_policies where schemaname = 'public' and policyname = 'lending_assignments_select'),
+  'lending_assignments_select は my_role_year_ids・lending_confirmed_year_ids・my_group_ids の集合を使う');
+select ok((select bool_and(qual ~ 'SELECT private\.my_role_year_ids' and qual ~ 'SELECT private\.my_group_year_ids\(\)') and count(*) = 2
+           from pg_policies where schemaname = 'public' and policyname in ('lending_items_select', 'lending_years_select')),
+  '備品と確定の印の select のポリシーは my_role_year_ids・my_group_year_ids の集合を使う');
+select tests.login_as('outsider');
+select is_empty($q$ select t from unnest(array['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years']) t
+                   where (select string_agg(l, E'\n') from tests.explain_lines('select * from public.' || t) as x(l)) ~ '(?n)Filter: .*private\.' $q$,
+  'テント等の5表の読みの計画の Filter に、行ごとの判定関数が出ない（hashed SubPlan だけ）');
 select tests.logout();
 
 select * from finish();

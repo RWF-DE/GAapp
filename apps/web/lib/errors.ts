@@ -267,6 +267,11 @@ export interface MessageContext {
    * 招待があるメールかもしれないと添える（部門長・副部門長にはその招待が見えず、DB は理由を返さない。D-48）
    */
   canChangeRoles?: boolean;
+  /**
+   * 直接の書き込みの表（T21：lending_items・lending_requests・lending_records。23503・23505 の文言を分ける）。テント等の画面では
+   * names.item でテント等の備品の名前を引く（save_lending_assignments・set_lending_confirmed の details の lending_item_id）
+   */
+  table?: string;
 }
 
 const statusLabel = (s: unknown): string | undefined =>
@@ -306,6 +311,54 @@ export function issueMessages(e: ClassifiedError, ctx: MessageContext = {}): str
 const GUARD_MESSAGE =
   '確定中は、在庫超過や使用不可の部屋からの振り分けになる変更はできません。確定を解除してから直してください';
 
+// テント等の貸し出し（T21・D-57。04「テント等の貸し出し」のエラー、notes/T21.md「画面の約束」12）
+/** 確定中に割り当てを保存した（save_lending_assignments の invalid_state、reason: confirmed） */
+export const LENDING_CONFIRMED_SAVE_MESSAGE = '割り当ては確定中です。直すときは「確定を解除」してください';
+/** 割り当ての保存で、団体か備品がその年度にない（invalid_input、reason: not_in_year）。申請・記録の 23503 も同じ */
+export const LENDING_NOT_IN_YEAR_MESSAGE = '団体か備品が見つかりません（消された可能性があります）。読み直しました';
+/** 割り当ての保存のほかの invalid_input（field の changes を振り分けの「振り分けの変更」と読まない。判断したことの 22） */
+export const LENDING_ASSIGNMENT_INPUT_MESSAGE = '入力の形が違います（テント等の割り当て）';
+/** 確定：締切の前（set_lending_confirmed の invalid_state、reason: before_deadline） */
+export const LENDING_BEFORE_DEADLINE_MESSAGE = '受付の締切の後に確定できます';
+/** 申請：区分で申請できない備品（lending_requests の invalid_input、reason: not_requestable） */
+export const LENDING_NOT_REQUESTABLE_MESSAGE = 'この備品は、この団体の区分では申請できません';
+/** 備品の削除の 23503（申請・割り当て・記録がある） */
+export const LENDING_ITEM_IN_USE_MESSAGE = '申請・割り当て・記録のある備品は削除できません';
+/** 備品の登録の 23505（同じ名前） */
+export const LENDING_ITEM_DUPLICATE_MESSAGE = '同じ名前の備品がすでにあります';
+
+/** details の備品の id（lending_item_ids）を名前にして「・」でつなぐ（名前のない id は出さない） */
+function lendingItemNames(ids: unknown, ctx: MessageContext): string {
+  if (!Array.isArray(ids)) return '';
+  return ids
+    .map((id) => (typeof id === 'string' ? nameOf(ctx.names, 'item', id) : undefined))
+    .filter((n): n is string => !!n)
+    .join('・');
+}
+
+/** テント等の invalid_state の文言（当てはまらなければ null） */
+function lendingStateMessage(d: Record<string, unknown>, ctx: MessageContext): string | null {
+  // 確定中の在庫の守り（lending_items の更新。detail は {reason: confirmed, lending_item_id, assigned, stock}）
+  if (d.reason === 'confirmed' && 'lending_item_id' in d && 'assigned' in d) {
+    const n = num(d.assigned);
+    return n !== undefined ? `割り当ての確定中は、在庫を割り当ての合計（${n}）より少なくできません` : '割り当ての確定中は、在庫を割り当ての合計より少なくできません';
+  }
+  if (ctx.rpc === 'save_lending_assignments' && d.reason === 'confirmed') return LENDING_CONFIRMED_SAVE_MESSAGE;
+  if (ctx.rpc !== 'set_lending_confirmed') return null;
+  const names = lendingItemNames(d.lending_item_ids, ctx);
+  switch (d.reason) {
+    case 'before_deadline':
+      return LENDING_BEFORE_DEADLINE_MESSAGE;
+    case 'over_stock':
+      return names ? `在庫を超えている備品があるので確定できません：${names}` : '在庫を超えている備品があるので確定できません';
+    case 'unassigned':
+      return names ? `申請があるのに割り当てていない団体があるので確定できません：${names}` : '申請があるのに割り当てていない団体があるので確定できません';
+    case 'unchanged':
+      return d.confirmed === true ? 'すでに確定されています（読み直しました）' : '確定されていません（読み直しました）';
+  }
+  return null;
+}
+
 function stateMessage(d: unknown, ctx: MessageContext): string {
   const generic = 'この操作はできません';
   if (!isRecord(d)) {
@@ -318,6 +371,9 @@ function stateMessage(d: unknown, ctx: MessageContext): string {
     return from && to ? `${from}から${to}には進められません。読み直しました` : '年度の状態を進められません。読み直しました';
   }
   if (d.status === 'closed' && d.reason === 'memo_only') return '終了した年度のルールは、メモだけ直せます';
+  // テント等の貸し出し（T21）：確定中の在庫の守り・確定中の割り当ての保存・確定の理由ごと（机椅子の reason: confirmed より先に見る）
+  const lending = lendingStateMessage(d, ctx);
+  if (lending) return lending;
   switch (d.reason) {
     case 'confirmed':
       return '確定中は振り分けを変えられません。確定を解除してから';
@@ -374,6 +430,7 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '他の人が先に変更しました。読み直しました';
   // details（year_id・user_id・reason）によらず同じ文言（04 のエラーの一覧）
   if (e.reason === 'role_overlap') return ROLE_OVERLAP_MESSAGE;
+  if (e.code === '23505' && ctx.table === 'lending_items') return LENDING_ITEM_DUPLICATE_MESSAGE;
   if (e.code === '23505') return '同じものがすでにあります（ほかの人が先に足した可能性があります）';
   const d = e.details;
   if (!isRecord(d)) return generic;
@@ -410,6 +467,12 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
     }
     return '振り分けの入力がほかの人に変えられました。読み直しました';
   }
+  // テント等の割り当て（save_lending_assignments の details は {group_id, lending_item_id}。T21）
+  if (ctx.rpc === 'save_lending_assignments' && 'lending_item_id' in d) {
+    const group = nameOf(ctx.names, 'group', str(d.group_id));
+    const item = nameOf(ctx.names, 'item', str(d.lending_item_id));
+    return group && item ? `${group}の${item}の割り当てを、ほかの人が先に変えました。読み直しました` : 'ほかの人が先に割り当てを変えました。読み直しました';
+  }
   // お知らせ（save_notice・delete_notice の details は {id}。振り分けの行の id と分ける）
   if (ctx.rpc && NOTICE_RPCS.includes(ctx.rpc) && 'id' in d) return NOTICE_CONFLICT_MESSAGE;
   // 作業の状態（set_task_status の details は {id}。T20）
@@ -432,6 +495,10 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
   if (e.code === '23514') return '入力が範囲を超えています';
   // 22xxx などの SQLSTATE は details を持たない。code が null は画面の層が送る前に止めたもの（lib/rpc の zod）
   if (e.code !== null && e.code !== 'P0001') return generic;
+  // テント等の割り当て（T21）：団体か備品が年度にないときは読み直す文言、ほかは「（テント等の割り当て）」（振り分けの変更と読まない）
+  if (ctx.rpc === 'save_lending_assignments') {
+    return isRecord(e.details) && e.details.reason === 'not_in_year' ? LENDING_NOT_IN_YEAR_MESSAGE : LENDING_ASSIGNMENT_INPUT_MESSAGE;
+  }
   const d = e.details;
   if (!isRecord(d)) {
     if (ctx.rpc === 'create_year_from') {
@@ -446,6 +513,8 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
     return `計算結果の行に誤りがあります（${n}行）。ページを再読み込みしてもう一度実行してください`;
   }
   if (d.reason === 'duplicate_id') return '同じ行への変更が重なっています';
+  // テント等の申請（T21）：区分で申請できない備品（lending_requests のトリガー）
+  if (d.reason === 'not_requestable') return LENDING_NOT_REQUESTABLE_MESSAGE;
   if (d.reason === 'immutable') {
     const col = typeof d.column === 'string' ? labelOf(FIELD_LABELS, d.column, d.column) : '';
     return col ? `この項目は変えられません（${col}）` : 'この項目は変えられません';
@@ -522,6 +591,9 @@ export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string
       return list.length === 1 ? list[0]! : `${list[0]}（ほか ${list.length - 1} 件）`;
     }
     case 'blocked':
+      // テント等（T21）：備品の削除は使われている、申請・記録の書き込みは団体か備品が年度にない（消えた）
+      if (ctx.table === 'lending_items') return LENDING_ITEM_IN_USE_MESSAGE;
+      if (ctx.table === 'lending_requests' || ctx.table === 'lending_records') return LENDING_NOT_IN_YEAR_MESSAGE;
       return 'ほかのデータから使われているので削除できません';
     case 'deadlock':
       return 'ほかの人の保存と重なりました。もう一度保存してください';

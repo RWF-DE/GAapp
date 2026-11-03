@@ -13,6 +13,8 @@ export const MODULES = [
   { id: 'calendar', label: '締切と予定', homeHref: '/calendar' },
   // シフト・作業（T20。D-56）。入口は「シフト表」（/shifts。総務だけ）
   { id: 'shifts', label: 'シフト・作業', homeHref: '/shifts' },
+  // テント等の貸し出し（T21。D-57）。入口は「備品と割り当て」（/lending。総務と閲覧のみ）
+  { id: 'lending', label: 'テント等の貸し出し', homeHref: '/lending' },
 ] as const satisfies readonly {
   id: string;
   label: string;

@@ -54,6 +54,8 @@ app_role の head（総務部門長）と deputy_head（総務副部門長）は
 
 0017_shifts.sql（作業の状態の型 task_status、表 shift_duties・shift_slots・shift_needs・shift_assignments・tasks とそのトリガー・RLS、RPC set_task_status・add_shift_slots。書き込みは画面から直接〔RLS〕と、この2つの RPC。足すだけで、今の表と関数は変えない。D-56）は T20 で作る（番号はリードが割り当てた。並行の T19 は 0016、T21 は 0018。0015 までの関数だけを使い、0016・0018 の物には依らない）。
 
+0018_lending.sql（テント等の貸し出しの表 lending_items・lending_requests・lending_assignments・lending_records・lending_years とそのトリガー・RLS、判定と集合の関数 private.can_record_lending・lending_confirmed_year_ids、RPC save_lending_assignments・set_lending_confirmed・previous_year_lending_items。列挙型は足さない。足すだけで、今の表と関数は変えない。D-57）は T21 で作る（番号はリードが割り当てた。並行して作る T19 の 0016・T20 の 0017 の物は使わず、どの順に流しても通る）。
+
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
 
 文字列と数には上限を付ける。自由記述（note・memo・problem_note）は 2000 字、名前・表示名・ラベルは 100 字（年度名は 50 字）、コードと建物は 50 字、aliases は 20 個・合計 1000 字、rules.params は 20000 字、数（count）は 10000 まで。団体代表と部員も書ける列があるので、大きな値で無料プランの容量（500MB）を使い切らせず、解けない申請を入れさせないため。
@@ -547,6 +549,85 @@ create index on tasks (year_id, assignee_id);
 
 時間枠は、同じ年度の中で [開始, 終わり) が重ならない（9:00〜10:00 と 10:00〜11:00 のように隣り合うのはよい）。すべての持ち場が同じ時間枠を使うので、同じ人が同じ時刻に2か所にいるのは同じ時間枠に2行あるときだけで、割り当ての主キー (slot_id, user_id) が止める（23505）。日（シフト表のタブ）は開始の Asia/Tokyo の日付で、0 時をまたぐ枠は開始の日に入る。割り当てる人と作業の担当者は、その年度の総務（管理者・総務部門長・総務副部門長・総務部門員）だけ（外部キーで year_roles の行があることを、トリガーで総務のロールであることを確かめる。下の「設計上の決めごと」）。CHECK と制約の名前・トリガーの SQL は notes/T20.md の「SQL の約束」。
 
+**テント等の貸し出し（T21。0018。D-57）**
+
+総務アプリの機能「テント等の貸し出し」（機能の id は lending）の表。総務が持つテント・重し・三方幕などを年度ごとに備品として登録し、団体の申請をもとに部門長以上が割り当て（確定して団体・閲覧のみに見せる）、当日の受け渡しと返却を総務が記録する。机椅子の表（items・stocks・requests・allocations）とは別の表で、振り分け（allocate）の入力・検証コード・R8 の Excel・年度データの JSON・版（allocation_version）・確定中の守りには入らない。机椅子のフェーズ2の slots・deliveries は変えず、テント等の数と受け渡し・返却の記録はこの表だけに持つ（deliveries の tent・weight・side_curtain の status・returned はテント等には使わない。下の「設計上の決めごと」）。読める人・書ける人は下の「権限とRLS」の「テント等の貸し出しの権限」。
+
+```sql
+-- 貸し出す備品（年度ごと。数だけで、個体の番号は持たない）
+create table lending_items (
+  id uuid primary key default gen_random_uuid(),
+  year_id uuid not null references years on delete cascade,
+  name text not null,                         -- 'テント'。前後の空白（notices の題名と同じ 25 文字）を除いた形で 1〜100 字
+  unit text not null default '個',            -- '張'・'個'・'枚'。同じ形で 1〜10 字
+  stock int not null check (stock between 0 and 10000), -- 在庫（その年度に貸し出せる総数。部屋ごとに数えない）
+  requestable_categories group_category[] not null default '{stall,department}' check (cardinality(requestable_categories) <= 4), -- 申請できる区分
+  sort_order int not null default 0,
+  check (name <> '' and name = btrim(name, E'\t\n\u000b\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff') and length(name) <= 100),
+  check (unit <> '' and unit = btrim(unit, E'\t\n\u000b\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff') and length(unit) <= 10),
+  unique (year_id, name),
+  unique (id, year_id)                        -- 申請・割り当て・記録の複合外部キーの参照先
+);
+
+-- テント等の申請（団体×備品の数。備考はない）
+create table lending_requests (
+  group_id uuid not null,
+  lending_item_id uuid not null,
+  year_id uuid not null references years on delete cascade, -- 年度を消したときの連鎖の順によらず消えるように（下の「設計上の決めごと」）
+  count int not null check (count between 0 and 10000),
+  updated_by uuid references auth.users on delete set null, -- DB が auth.uid() を入れる
+  primary key (group_id, lending_item_id),
+  foreign key (group_id, year_id) references groups (id, year_id) on delete cascade,
+  foreign key (lending_item_id, year_id) references lending_items (id, year_id) on delete restrict -- 申請のある備品は消せない
+);
+create index on lending_requests (year_id);
+create index on lending_requests (lending_item_id, year_id);
+
+-- 割り当て（団体に貸す数。0 は「貸さない」と決めたこと。行がなければ未入力）。RPC だけで書く
+create table lending_assignments (
+  group_id uuid not null,
+  lending_item_id uuid not null,
+  year_id uuid not null references years on delete cascade,
+  count int not null check (count between 0 and 10000),
+  updated_by uuid references auth.users on delete set null,
+  primary key (group_id, lending_item_id),
+  foreign key (group_id, year_id) references groups (id, year_id) on delete cascade,
+  foreign key (lending_item_id, year_id) references lending_items (id, year_id) on delete restrict
+);
+create index on lending_assignments (year_id);
+create index on lending_assignments (lending_item_id, year_id);
+
+-- 受け渡し・返却の記録（団体×備品。渡した数・返った数・そのうちの破損の数とメモ）
+create table lending_records (
+  group_id uuid not null,
+  lending_item_id uuid not null,
+  year_id uuid not null references years on delete cascade,
+  lent_count int not null default 0,
+  returned_count int not null default 0,
+  damaged_count int not null default 0,
+  note text check (length(note) <= 2000),     -- 破損の内容など（任意。空なら null。D-33）
+  updated_by uuid references auth.users on delete set null,
+  primary key (group_id, lending_item_id),
+  check (damaged_count >= 0 and damaged_count <= returned_count and returned_count <= lent_count and lent_count <= 10000),
+  foreign key (group_id, year_id) references groups (id, year_id) on delete cascade,
+  foreign key (lending_item_id, year_id) references lending_items (id, year_id) on delete restrict
+);
+create index on lending_records (year_id);
+create index on lending_records (lending_item_id, year_id);
+
+-- 割り当ての確定（年度ごとに1行まで。行がないか confirmed_at が null なら確定前）。RPC だけで書く
+create table lending_years (
+  year_id uuid primary key references years on delete cascade,
+  confirmed_at timestamptz,                   -- 確定した日時。解除すると null（行は残す）
+  confirmed_by uuid references auth.users on delete set null,
+  check (confirmed_at is not null or confirmed_by is null)
+);
+```
+
+- 備品（lending_items）は部門長以上が年度ごとに登録する（画面の「前年度から読み込む」は RPC previous_year_lending_items で前年度の備品を読み、画面が作った id で入れる）。申請できる区分の既定は模擬店・部門で、企業・休憩所は申請せず、部門長以上が割り当てに直接入れる（どの区分の団体にも割り当てられる）。
+- 申請（lending_requests）の year_id と、割り当て・記録の year_id は、書く人（画面・RPC）が団体の年度を入れる。複合外部キーが、団体と備品が行と同じ年度であることを保証する（違えば 23503）。
+- 割り当ての確定（lending_years）は印で、確定するたびに confirmed_at・confirmed_by を入れ、解除で null にする（履歴では同じ行の変更として、理由つきで並ぶ）。年度の状態（years.status の confirmed）とは別のもの。
+
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
@@ -588,6 +669,17 @@ create index on tasks (year_id, assignee_id);
   - 監査：5表とも audit_logs に残す（tg_audit。D-11。year_id は行から、group_id は null。row_pk は持ち場・時間枠・作業が id、ますが slot_id・duty_id、割り当てが slot_id・user_id）。理由は、画面からの直接の書き込みでは null、RPC では「作業の状態」「シフトの時間枠」、ロールを外した連鎖では remove_role の理由
   - 楽観ロック：持ち場・時間枠・ます・割り当て・作業を直す・消す直接の update・delete は、画面が updated_at を条件に入れて変わった行を返させる（受け取った文字列のまま。DB がマイクロ秒まで完全一致で比べる。0 行なら読み直して not_found・conflict・権限や状態の変化を分ける。04 の (B1)。予定と締切と同じ）。作業の状態の RPC `set_task_status` は base_updated_at をミリ秒までで比べる（お知らせと同じ）。ますの必要人数は数の絶対値の upsert（04 の (A)）
   - 振り分けの入力でないので、版（allocation_version）を増やさず、確定中の守りもない（確定中も書ける。当日に直すため）。終了の年度は読むだけ（can_lead と RPC の invalid_state）。年度の複製（create_year_from）はシフト・作業を写さない（日時と人が年ごとに違う。持ち場も毎年入れ直す）。件数の上限は持たない（add_shift_slots は1回に時間枠 96・持ち場 100 まで）
+- テント等の貸し出し（T21。D-57）：
+  - 書き込みの道：備品（lending_items）の登録・編集・削除と、申請（lending_requests）・記録（lending_records）は画面から直接（RLS。理由の要らない1つの表の書き込み。監査の理由は null）。申請と記録は団体ごとの upsert（`on conflict (group_id, lending_item_id)`）で、削除はしない（0 にして残す。delete の権限も与えない）。割り当て（lending_assignments）は RPC `save_lending_assignments`（理由「テント等の割り当て」）、割り当ての確定（lending_years）は RPC `set_lending_confirmed`（確定は理由「テント等の割り当ての確定」、解除は理由が必須）だけで書く（表に書き込みの権限を与えない）。
+  - DB が入れる値：updated_by（申請・割り当て・記録）は表ごとのトリガー `set_actor`（`private.tg_lending_requests_set_actor` など）が auth.uid() を入れる（seed・SQL Editor〔auth.uid() が null〕では入れた値のまま。D-10）。confirmed_at・confirmed_by は RPC が入れる。created_at・updated_at は set_timestamps。
+  - 変えられない列（check_immutable。invalid_input）：備品と確定の印の year_id、申請・割り当て・記録の group_id・lending_item_id・year_id。
+  - 監査（tg_audit。D-11）は5表に付ける（row_pk は備品が id、申請・割り当て・記録が group_id と lending_item_id、確定の印が year_id。year_id は行から、group_id は申請・割り当て・記録の団体）。
+  - 申請できる区分：申請の数が1以上なのに、団体の区分が備品の requestable_categories にないと、BEFORE のトリガー `check_requestable` が invalid_input（field: lending_item_id、reason: not_requestable）で止める（他の表を参照する CHECK は使わない）。トリガーは最初に、書いている人が RLS で申請を書けるか（`private.can_write_requests`）をポリシーと同じ条件で確かめ、書けない人には確かめずに拒否を RLS に任せる。
+  - 確定中の守り：割り当ての確定中は、`save_lending_assignments` が invalid_state（reason: confirmed）を返し、備品の在庫をその備品の割り当て合計より少なくできない（BEFORE のトリガー `guard_stock`。invalid_state、reason: confirmed。書けない人には何もしない）。申請・割り当て・記録のある備品は消せない（外部キーの restrict。23503）。確定は受付の締切の後（年度が受付中で締切を過ぎた、または振り分け中・確定）で、在庫超過（割り当て合計 > 在庫）と未入力（申請が1以上なのに割り当ての行がない組）がないときだけ（RPC が invalid_state。reason: before_deadline・over_stock・unassigned）。
+  - ロック：割り当ての保存・確定と解除・在庫の守りは、年度ごとの勧告的ロック `pg_advisory_xact_lock(hashtext('gaapp.lending'), hashtext(year_id::text))`（`private.lock_lending_year`）で順に処理する。years の行はロックしない（机椅子の版・確定の RPC・在庫の保存・提出の lock_year_guard とぶつけないため）。申請と記録の直接の書き込みはロックを取らない。
+  - 年度の削除：申請・割り当て・記録は、団体・備品への複合外部キーのほかに years への外部キー（cascade）も持つ。年度を消したときの連鎖（団体の削除と備品の削除）は after トリガーで順に処理され、その順はトリガーの名前で決まるので、子の行が years から直接消えるようにして、備品の restrict の確かめで止まらないようにする。
+  - 机椅子との関係：振り分けの入力でないので、版（allocation_version）を増やさず、机椅子の確定中・終了の守り（lock_year_guard）も付けない（確定中の年度も書ける）。終了（closed）の年度は5表とも読むだけ（RLS の can_lead・can_write_requests・can_record_lending と RPC の invalid_state。SQL Editor からは書ける）。年度の複製（create_year_from）は写さない（画面の「前年度から読み込む」で備品だけを写す）。机椅子のフェーズ2の slots・deliveries は変えない：テント等の数（申請・割り当て）と受け渡し・返却の記録はこの5表だけに持ち、受け渡しの時刻を作るとき（フェーズ2）は数を確定した割り当てから読む（deliveries に数を持たせない。deliveries の tent・weight・side_curtain の status・returned はテント等の受け渡し・返却に使わない）。
+  - 楽観ロック：割り当ては `save_lending_assignments` の行ごとの updatedAt（DB がミリ秒までで比べる）、備品の編集・削除は画面からの直接の update・delete に updated_at の条件（受け取った文字列のまま。マイクロ秒まで）。申請と記録は (A)（送る前に読み直す。04）。件数の上限は持たない（数・名前・メモの大きさと、申請できる区分の数〔4 個まで〕で抑える）
 
 ## 権限とRLS
 
@@ -597,6 +689,7 @@ create index on tasks (year_id, assignee_id);
 - 部門長以上：状態の遷移（終了を除く）、受付期間（`update_year` の request_open_at・request_close_at）、ルール、振り分けの保存、了承の記録、締切後の申請の修正・前年度の申請・申請の代理入力、今年の使用（room_years）、時間枠・受け渡しの書き込み、年度の履歴の読み取り、staff と団体代表（店長・副店長）の招待・付ける・外す・取り消しと店長⇄副店長、その招待と year_roles・group_members の読み取り、全団体・指定の団体あてのお知らせとピン留め、ほかの人が書いたお知らせを直す・消す（T17）、予定と締切の書き込み（T18）
 - 総務：在庫の書き込み、在庫・申請・提出・了承・振り分け・ルール・受け渡しとメンバーのプロフィールの読み取り、運搬・返却のチェック、前年度の在庫、総務内のお知らせを出すことと自分が書いたお知らせを直す・消すこと、その年度のお知らせと宛先の団体の読み取り（T17）、その年度の予定と締切の読み取り（T18）
 - シフト・作業（T20。D-56）：部門長以上は持ち場・時間枠・ます・割り当て・作業の書き込み（1日分をまとめて作る〔`add_shift_slots`〕と、どの作業の状態の変更〔`set_task_status`〕も）。総務はその年度のシフト・作業の読み取りと、自分が担当の作業の状態の変更（`set_task_status`）。閲覧のみ・店長・副店長は読めない（下の「シフト・作業の権限」）
+- テント等の貸し出し（T21。D-57）：部門長以上は備品の登録・編集・削除、申請の代理の書き込み（準備中と締切前。机椅子の申請と同じ段）、割り当ての保存と確定・解除（RPC）、前年度の備品の読み取り（RPC）。総務は受け渡し・返却の記録の書き込みと、その年度の備品・申請・割り当て・記録・確定の印の読み取り。店長・副店長は自団体の申請（受付期間内）と、自団体の記録・確定後の割り当ての読み取り。閲覧のみは備品・確定の印と、確定後の割り当ての読み取り（下の「テント等の貸し出しの権限」）
 
 判定の関数は公開しないスキーマ private に置き、どれも呼んだ人（auth.uid()）についてだけ答え、SECURITY DEFINER、`search_path = ''`、STABLE にして、ポリシーの中で表を読んでも再帰しないようにする（execute は authenticated だけ）：
 
@@ -612,6 +705,8 @@ create index on tasks (year_id, assignee_id);
 - `private.my_role_year_ids(roles)`・`private.my_group_ids()`・`private.my_role_group_ids(roles)`：行の多い表の select のポリシーで使う集合（下の D-47 の項）
 - `private.my_group_year_ids()`・`private.my_group_notice_ids()`：お知らせの select のポリシーで使う集合（自分が団体の代表である年度、自分が代表の団体を宛先の団体に含むお知らせ。T17）。my_group_year_ids は予定と締切の events の select のポリシーでも使う（T18）
 - `private.my_group_document_ids()`・`private.my_document_upload_paths()`・`private.my_document_orphan_paths()`：提出物の select のポリシーと、Storage（storage.objects）の insert・delete のポリシーで使う集合（自分が代表の団体が対象の提出物、自分が予約した今書ける提出の path、自分の範囲のどの提出にも属さない物の path。T19。下の「提出物の権限」）
+- `private.can_record_lending(year_id)`：その年度の総務（admin・head・deputy_head・staff）で、年度が closed でない（テント等の受け渡し・返却の記録〔lending_records〕の書き込み。T21）
+- `private.lending_confirmed_year_ids()`：呼んだ人がロールか団体代表を持つ年度のうち、テント等の割り当てを確定したもの（lending_years の confirmed_at が null でない年度。テント等の割り当ての select のポリシーで使う集合。T21）。テント等の貸し出しの select のポリシーは、ほかに my_role_year_ids・my_group_ids・my_group_year_ids を使う
 - `private.my_verified_email()`：本人のものと確かめられる今のメール（自分あての招待の読み取り）
 - ほかに、年度の状態と団体の年度を引く関数（`private.year_status`・`private.group_year_id`）
 
@@ -652,6 +747,11 @@ R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ
 | v_document_files | R | R | — | R（自団体） | — |
 | shift_duties・shift_slots・shift_needs・shift_assignments | RW（closed でない年度） | RW（closed でない年度） | R | — | — |
 | tasks | RW（closed でない年度） | RW（closed でない年度） | R・RPC（自分が担当の作業の状態だけ。set_task_status） | — | — |
+| lending_items | RW（closed でない年度） | RW（closed でない年度） | R | R（代表である年度） | R |
+| lending_requests | RW（preparing と締切前。削除はなし） | RW（admin と同じ） | R | RW（自団体・requesting・受付期間内。削除はなし） | — |
+| lending_assignments | R・RPC | R・RPC | R | R（自団体・割り当ての確定後） | R（割り当ての確定後） |
+| lending_records | RW（closed でない年度。削除はなし） | RW（admin と同じ） | RW（admin と同じ） | R（自団体） | — |
+| lending_years | R・RPC | R・RPC | R | R（代表である年度） | R |
 
 admin・head・deputy_head・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。「自分のメール」は、本人のものと確かめられる今のメール（`private.verified_email`。下の招待の受け入れと同じ判定。ポリシーは自分の分だけを返す `private.my_verified_email()` を呼ぶ）で、JWT の email とは比べない（email を他人のアドレスに変えた状態で、その人あての未使用の招待を読ませないため。D-17a）。head・deputy_head が読める招待は、その年度の staff のロールの招待と団体代表の招待（と自分のメールの行）で、admin・head・deputy_head・viewer のロールの招待は読めない。admin と viewer は、同じ年度の団体代表を兼ねられ、兼ねた人は両方の権限を持つ（例：admin が自団体の代表として申請を書く）。head・deputy_head・staff は、同じ年度の団体代表を兼ねられない（兼任の禁止。「設計上の決めごと」。違う年度なら兼ねてよい）。店長と副店長の権限は同じ。
 
@@ -714,6 +814,21 @@ Storage（bucket documents の物。storage.objects のポリシーとトリガ�
 | 作業を足す・直す・消す・担当者を決める（準備中〜確定） | ○ | ○ | — | — | — |
 | 作業の状態を変える（set_task_status。準備中〜確定） | ○ | ○ | 自分が担当の作業だけ | — | — |
 | どれかを書く（終了） | — | — | — | — | — |
+
+**テント等の貸し出しの権限**（T21。D-57）：備品・申請・記録の書き込みは画面から直接（RLS。備品の insert・update・delete は `private.can_lead(year_id)`、申請の insert・update は `private.can_write_requests(group_id)`、記録の insert・update は `private.can_record_lending(year_id)`。申請と記録の削除はない）。割り当てと確定の印は RPC（save_lending_assignments・set_lending_confirmed）だけ（直接の insert・update・delete は 42501）。読み取りは年度の状態によらない。「その年度」は行の年度、「確定後」はその年度の割り当てを確定している（lending_years の confirmed_at が null でない）とき。書けない人の直接の insert（upsert を含む）は 42501、update はエラーにならず 0 行（画面は読み直して分ける）。終了の年度では、どのロールも読むだけ（RPC は invalid_state）。select のポリシーは D-47 の形で書く（集合の関数 my_role_year_ids・my_group_ids・my_group_year_ids と、T21 の lending_confirmed_year_ids。行の列を判定関数に渡さない。013 で行ごとの述語と見える行が同じことを確かめる）。
+
+| 操作 | admin | head・deputy_head | staff | 団体代表（店長・副店長） | viewer |
+| --- | --- | --- | --- | --- | --- |
+| 備品（lending_items）と確定の印（lending_years）を読む | その年度 | その年度 | その年度 | 代表である年度 | その年度 |
+| 備品を登録・編集・削除する（終了でない年度。申請・割り当て・記録のある備品は消せない） | ○ | ○ | — | — | — |
+| 前年度の備品を読む（RPC previous_year_lending_items） | ○ | ○ | — | — | — |
+| 申請（lending_requests）を読む | その年度の全部 | その年度の全部 | その年度の全部 | 自団体 | — |
+| 申請を書く（数が1以上なら、団体の区分で申請できる備品だけ） | 準備中と締切前 | 準備中と締切前 | — | 自団体・受付期間内 | — |
+| 割り当て（lending_assignments）を読む | その年度の全部 | その年度の全部 | その年度の全部 | 自団体・確定後 | その年度・確定後 |
+| 割り当てを保存する（RPC。終了でなく、確定前） | ○ | ○ | — | — | — |
+| 確定する・確定を解除する（RPC。終了でない年度。確定は締切の後で、在庫超過と未入力がないとき。解除は理由が要る） | ○ | ○ | — | — | — |
+| 受け渡し・返却の記録（lending_records）を読む | その年度の全部 | その年度の全部 | その年度の全部 | 自団体 | — |
+| 記録を書く（終了でない年度。確定の前でも） | ○ | ○ | ○ | — | — |
 
 - allocations は誰にも直接の書き込みを許さない。すべて RPC で書き、確定中は RPC がエラーを返す。団体の連鎖削除などで確定中・終了の年度の allocations が変わることも、トリガーが止める。これで確定後の書き込みは確実に止まる
 - 締切前：団体代表が申請を書けるのは、status が requesting で、request_open_at が null か過ぎていて、now() が request_close_at より前のとき。request_close_at が null なら締切前とみなさない（書けない）。部門長以上（admin・head・deputy_head）が RPC なしで書けるのは、status が preparing のときと、requesting で締切前のとき。受付開始（requesting への遷移）は request_close_at が未来でなければエラーにする

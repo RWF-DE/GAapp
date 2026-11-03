@@ -246,3 +246,39 @@ with t as (
     (tests.id('Y2'), 'T-TK_Y2', null, tests.id('admin2'), null, 'doing', tests.id('admin2'), tests.id('admin2'))
   returning id, title)
 insert into tests.ids select substr(title, 3), id from t;
+
+-- テント等の貸し出し（T21。D-57）：Y1・Y2 に備品・申請・割り当て・記録・確定の印を置く（011 の権限表・013 の D-47・020 の複製・
+-- 029 の RPC・030 の招待のない人で読む）。名前は「T-」で始める。書いた人は updated_by・confirmed_by に直接入れる（auth.uid() のない
+-- 書き込みでは set_actor は入れた値のまま。D-10）。
+-- Y1（受付中・割り当ての確定前）：テント（在庫 3。模擬店・部門）は申請 4（G1 が 2・G2 が 2）で在庫を超える。重し（在庫 20・既定の区分）、
+-- 三方幕（在庫 2・模擬店だけ）、予備（在庫 5。どこからも参照しない。011 の権限表の削除で消す）。割り当ては G1 のテント 2・重し 8
+-- （G2 のテントと G1 の三方幕は未入力）。記録は G1 のテント（渡した 2・返った 1）と重し（8・8・うち破損 1。メモつき）。
+-- Y2（準備中・割り当ての確定後）：G3（staff が店長）がテントを 1 申請し、1 を割り当て、1 を渡した（返っていない）。確定は admin2。
+-- 名前は tests.ids の LI_TENT・LI_WEIGHT・LI_CURTAIN・LI_SPARE・LI_Y2_TENT
+with li as (
+  insert into public.lending_items (year_id, name, unit, stock, requestable_categories, sort_order) values
+    (tests.id('Y1'), 'T-テント', '張', 3, '{stall,department}', 1),
+    (tests.id('Y1'), 'T-重し', '個', 20, default, 2),
+    (tests.id('Y1'), 'T-三方幕', '枚', 2, '{stall}', 3),
+    (tests.id('Y1'), 'T-予備', '個', 5, default, 9),
+    (tests.id('Y2'), 'T-テント', '張', 2, default, 1)
+  returning id, year_id, name)
+insert into tests.ids
+select case when year_id = tests.id('Y2') then 'LI_Y2_TENT' when name = 'T-テント' then 'LI_TENT'
+            when name = 'T-重し' then 'LI_WEIGHT' when name = 'T-三方幕' then 'LI_CURTAIN' else 'LI_SPARE' end, id
+from li;
+insert into public.lending_requests (group_id, lending_item_id, year_id, count, updated_by) values
+  (tests.id('G1'), tests.id('LI_TENT'), tests.id('Y1'), 2, tests.id('rep')),
+  (tests.id('G2'), tests.id('LI_TENT'), tests.id('Y1'), 2, tests.id('rep2')),
+  (tests.id('G1'), tests.id('LI_WEIGHT'), tests.id('Y1'), 8, tests.id('rep')),
+  (tests.id('G1'), tests.id('LI_CURTAIN'), tests.id('Y1'), 1, tests.id('rep')),
+  (tests.id('G3'), tests.id('LI_Y2_TENT'), tests.id('Y2'), 1, tests.id('staff'));
+insert into public.lending_assignments (group_id, lending_item_id, year_id, count, updated_by) values
+  (tests.id('G1'), tests.id('LI_TENT'), tests.id('Y1'), 2, tests.id('head')),
+  (tests.id('G1'), tests.id('LI_WEIGHT'), tests.id('Y1'), 8, tests.id('head')),
+  (tests.id('G3'), tests.id('LI_Y2_TENT'), tests.id('Y2'), 1, tests.id('admin2'));
+insert into public.lending_records (group_id, lending_item_id, year_id, lent_count, returned_count, damaged_count, note, updated_by) values
+  (tests.id('G1'), tests.id('LI_TENT'), tests.id('Y1'), 2, 1, 0, null, tests.id('staff')),
+  (tests.id('G1'), tests.id('LI_WEIGHT'), tests.id('Y1'), 8, 8, 1, 'T-メモ', tests.id('staff')),
+  (tests.id('G3'), tests.id('LI_Y2_TENT'), tests.id('Y2'), 1, 0, 0, null, tests.id('admin2'));
+insert into public.lending_years (year_id, confirmed_at, confirmed_by) values (tests.id('Y2'), now(), tests.id('admin2'));

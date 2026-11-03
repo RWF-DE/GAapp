@@ -290,6 +290,9 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       '自分のシフト',
       'シフト表',
       '作業一覧',
+      // T21：テント等の貸し出し
+      '備品と割り当て',
+      '受け渡し・返却',
       'マスタ設定',
       '履歴',
     ]);
@@ -301,7 +304,23 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
     renderShell();
     await screen.findByLabelText('メモ');
     expect(screen.getByText('総務部門員')).toBeTruthy();
-    expect(navLabels()).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定の一覧', '自分のシフト', 'シフト表', '作業一覧']);
+    expect(navLabels()).toEqual([
+      'ホーム',
+      '机椅子の状況',
+      '在庫入力',
+      '在庫一覧',
+      '申請一覧',
+      '振り分け',
+      'お知らせ一覧',
+      '締切と予定の一覧',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
+      // T21：テント等の貸し出し
+      '備品と割り当て',
+      '受け渡し・返却',
+    ]);
   });
 });
 
@@ -320,6 +339,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       'お知らせ',
       '締切と予定',
       'シフト・作業',
+      'テント等の貸し出し',
       '共通',
     ]);
     const furniture = within(aside()).getByRole('group', { name: '机椅子' });
@@ -347,6 +367,12 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       ['シフト表', '/shifts'],
       ['作業一覧', '/tasks'],
     ]);
+    // T21：テント等の貸し出しの見出しに「備品と割り当て」「受け渡し・返却」
+    const lending = within(aside()).getByRole('group', { name: 'テント等の貸し出し' });
+    expect(within(lending).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['備品と割り当て', '/lending'],
+      ['受け渡し・返却', '/lending/records'],
+    ]);
     // 見出しは h2。「ホーム」だけ sr-only（項目が「ホーム」1つなので同じ言葉を2つ並べない）
     const heads = within(aside()).getAllByRole('heading', { level: 2 });
     expect(heads.map((h) => [h.textContent, h.classList.contains('sr-only')])).toEqual([
@@ -355,6 +381,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       ['お知らせ', false],
       ['締切と予定', false],
       ['シフト・作業', false],
+      ['テント等の貸し出し', false],
       ['共通', false],
     ]);
   });
@@ -381,6 +408,9 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       '自分のシフト',
       'シフト表',
       '作業一覧',
+      // T21：テント等の貸し出し
+      '備品と割り当て',
+      '受け渡し・返却',
       'マスタ設定',
       '履歴',
     ]);

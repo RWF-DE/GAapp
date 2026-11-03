@@ -74,6 +74,8 @@ function HistoryBody({ yearId, yearLabel, adminOfOpenYear }: { yearId: string; y
       // シフト・作業（T20）：持ち場の名前と時間枠の日時
       duties: o?.duties ?? new Map(),
       slots: o?.slots ?? new Map(),
+      // テント等の貸し出し（T21）：備品の名前
+      lendingItems: o?.lendingItems ?? new Map(),
     };
   }, [o, n, yearId, yearLabel]);
 

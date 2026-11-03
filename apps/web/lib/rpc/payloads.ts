@@ -97,6 +97,19 @@ export const yearPatchPayload = z
   })
   .refine((p) => Object.keys(p).length > 0, { message: '変える項目がありません' });
 
+// ---- テント等の貸し出し（T21・D-57） ----
+
+/**
+ * save_lending_assignments の p_changes（1〜1000 件。同じ団体・備品は1つだけ）。count は 0〜10000 の整数か null（行を消して未入力に
+ * 戻す）、updatedAt は行があれば読んだときの updated_at の文字列、なければ null（DB と同じ形。4つのキーだけ）
+ */
+export const lendingAssignmentChangesPayload = z
+  .array(z.strictObject({ groupId: uuid, itemId: uuid, count: count0.nullable(), updatedAt: updatedAt.nullable() }))
+  .min(1, { message: '変更がありません' })
+  .max(1000, { message: '変更が多すぎます。保存してから続けてください' })
+  .refine((cs) => new Set(cs.map((c) => `${c.groupId}:${c.itemId}`)).size === cs.length, { message: '同じ団体・備品の変更が重なっています' });
+export type LendingAssignmentChange = z.output<typeof lendingAssignmentChangesPayload>[number];
+
 // ---- RPC ごとの引数 ----
 
 export const RPC_ARGS = {
@@ -182,6 +195,10 @@ export const RPC_ARGS = {
     p_slots: z.array(z.object({ starts_at: isoDateTimeSchema, ends_at: isoDateTimeSchema })).min(1).max(96),
     p_needs: z.array(z.object({ duty_id: uuid, required_count: z.number().int().min(0).max(100) })).max(100),
   }),
+  // テント等の貸し出し（T21・D-57）。確定の理由は DB が決まった文を置く（p_reason は解除のときだけ使う）
+  save_lending_assignments: z.object({ p_year_id: uuid, p_changes: lendingAssignmentChangesPayload }),
+  set_lending_confirmed: z.object({ p_year_id: uuid, p_confirmed: z.boolean(), p_reason: optionalReasonSchema.optional() }),
+  previous_year_lending_items: z.object({ p_year_id: uuid }),
 } as const;
 
 // ---- jsonb の返り値 ----
@@ -220,8 +237,11 @@ export const RPC_RESULTS = {
     ),
   }),
   invite: z.object({ invitation_ids: z.array(uuid), applied: z.boolean() }),
+  // テント等の割り当て（T21）：changes の順の行（消した・何もしなかった行は count・updatedAt が null）
+  save_lending_assignments: z.array(z.object({ groupId: uuid, itemId: uuid, count: count0.nullable(), updatedAt: z.string().nullable() })),
 } as const;
 
 export type SaveAutoAllocationsResult = z.output<(typeof RPC_RESULTS)['save_auto_allocations']>;
 export type SaveAllocationRowsResult = z.output<(typeof RPC_RESULTS)['save_allocation_rows']>;
 export type InviteResult = z.output<(typeof RPC_RESULTS)['invite']>;
+export type SaveLendingAssignmentsResult = z.output<(typeof RPC_RESULTS)['save_lending_assignments']>;

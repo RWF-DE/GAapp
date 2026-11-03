@@ -488,3 +488,61 @@ describe('T20 シフト・作業の文言（04「シフト表」「作業一覧�
     expect(msg(p0001('invalid_input', { field: 'status' }), rpc)).toBe('入力の形が違います（状態）');
   });
 });
+
+describe('T21 テント等の貸し出しの文言（04「テント等の貸し出し」のエラー、notes/T21.md「画面の約束」12）', () => {
+  const m = (e: unknown, ctx: MessageContext = {}) => messageFor(classifyError(e), ctx);
+  const G = '33333333-3333-4333-8333-333333333333';
+  const I1 = '44444444-4444-4444-8444-444444444441';
+  const I2 = '44444444-4444-4444-8444-444444444442';
+  const names = { group: (id: string) => (id === G ? '模擬店01' : undefined), item: (id: string) => ({ [I1]: 'テント', [I2]: '重し' })[id] };
+  const save = { rpc: 'save_lending_assignments', names };
+  const confirm = { rpc: 'set_lending_confirmed', names };
+
+  it('割り当ての保存：確定中は「割り当ては確定中です…」（机椅子の確定中の文言と分ける）、終了は今の文言', () => {
+    expect(m(p0001('invalid_state', { reason: 'confirmed' }), save)).toBe('割り当ては確定中です。直すときは「確定を解除」してください');
+    expect(m(p0001('invalid_state', { reason: 'confirmed' }), { rpc: 'save_allocation_rows' })).toBe('確定中は振り分けを変えられません。確定を解除してから');
+    expect(m(p0001('invalid_state', { status: 'closed' }), save)).toBe('年度が「終了」のため、この操作はできません');
+  });
+
+  it('割り当ての保存の conflict は「{団体}の{備品}の割り当てを、ほかの人が先に変えました。読み直しました」（名前がなければ名前なし）', () => {
+    expect(m(p0001('conflict', { group_id: G, lending_item_id: I1 }), save)).toBe('模擬店01のテントの割り当てを、ほかの人が先に変えました。読み直しました');
+    expect(m(p0001('conflict', { group_id: 'x', lending_item_id: I1 }), save)).toBe('ほかの人が先に割り当てを変えました。読み直しました');
+  });
+
+  it('割り当ての保存の invalid_input：not_in_year は読み直す文言、ほかは「（テント等の割り当て）」（「振り分けの変更」と読まない）', () => {
+    expect(m(p0001('invalid_input', { field: 'groupId', reason: 'not_in_year', group_id: G }), save)).toBe('団体か備品が見つかりません（消された可能性があります）。読み直しました');
+    expect(m(p0001('invalid_input', { field: 'changes', reason: 'not_in_year' }), save)).toBe('団体か備品が見つかりません（消された可能性があります）。読み直しました');
+    expect(m(p0001('invalid_input', { field: 'changes', reason: 'shape' }), save)).toBe('入力の形が違います（テント等の割り当て）');
+    expect(m(p0001('invalid_input', { field: 'changes' }), save)).toBe('入力の形が違います（テント等の割り当て）');
+    // 送る前の確かめ（lib/rpc の zod）に落ちたときも同じ
+    expect(messageFor(appError('input', 'client_validation', { field: 'changes' }).info, save)).toBe('入力の形が違います（テント等の割り当て）');
+    expect(m(p0001('invalid_input', { field: 'changes' }), { rpc: 'save_allocation_rows' })).toBe('入力の形が違います（振り分けの変更）');
+  });
+
+  it('確定：締切の前・在庫超過（備品の名前）・未入力（備品の名前）・同じ状態（確定中・確定前）', () => {
+    expect(m(p0001('invalid_state', { reason: 'before_deadline' }), confirm)).toBe('受付の締切の後に確定できます');
+    expect(m(p0001('invalid_state', { reason: 'over_stock', lending_item_ids: [I1, I2] }), confirm)).toBe('在庫を超えている備品があるので確定できません：テント・重し');
+    expect(m(p0001('invalid_state', { reason: 'unassigned', lending_item_ids: [I2, 'gone'] }), confirm)).toBe('申請があるのに割り当てていない団体があるので確定できません：重し');
+    expect(m(p0001('invalid_state', { reason: 'unassigned', lending_item_ids: [] }), confirm)).toBe('申請があるのに割り当てていない団体があるので確定できません');
+    expect(m(p0001('invalid_state', { reason: 'unchanged', confirmed: true }), confirm)).toBe('すでに確定されています（読み直しました）');
+    expect(m(p0001('invalid_state', { reason: 'unchanged', confirmed: false }), confirm)).toBe('確定されていません（読み直しました）');
+    expect(m(p0001('reason_required'), confirm)).toBe('理由を入力してください');
+    expect(m(p0001('invalid_input', { field: 'reason' }), confirm)).toBe('理由は 500 字までです');
+  });
+
+  it('備品：確定中の在庫の守り（割り当ての合計つき）、削除の 23503、登録の 23505（同じ名前）。申請・記録の 23503 と区分で申請できない備品', () => {
+    expect(m(p0001('invalid_state', { reason: 'confirmed', lending_item_id: I1, assigned: 5, stock: 3 }), { table: 'lending_items' })).toBe(
+      '割り当ての確定中は、在庫を割り当ての合計（5）より少なくできません',
+    );
+    expect(m(pg('23503'), { table: 'lending_items' })).toBe('申請・割り当て・記録のある備品は削除できません');
+    expect(m(pg('23505'), { table: 'lending_items' })).toBe('同じ名前の備品がすでにあります');
+    expect(m(pg('23503'), { table: 'lending_requests' })).toBe('団体か備品が見つかりません（消された可能性があります）。読み直しました');
+    expect(m(pg('23503'), { table: 'lending_records' })).toBe('団体か備品が見つかりません（消された可能性があります）。読み直しました');
+    expect(m(p0001('invalid_input', { field: 'lending_item_id', reason: 'not_requestable', group_id: G, lending_item_id: I1 }), { table: 'lending_requests' })).toBe(
+      'この備品は、この団体の区分では申請できません',
+    );
+    // ほかの表は今の文言のまま
+    expect(m(pg('23503'))).toBe('ほかのデータから使われているので削除できません');
+    expect(m(pg('23505'))).toBe('同じものがすでにあります（ほかの人が先に足した可能性があります）');
+  });
+});

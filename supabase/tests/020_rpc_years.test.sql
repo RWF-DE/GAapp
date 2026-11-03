@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(115);
+select plan(117);
 
 -- エラーの message と detail（invalid_input の field を確かめる）。成功したら 'ok'
 create function tests.error_of(p_sql text) returns text language plpgsql as $$
@@ -266,6 +266,9 @@ select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y2', date 
 select throws_ok($$ select public.create_year_from(tests.id('Y2'), 'T-Y3', date '2028-10-01') $$, 'P0001', 'forbidden', 'ロールのない年度は複製できない（他の年度のデータを読み出せない）');
 select tests.logout();
 
+-- テント等の貸し出し（T21）：複製元（Y1）の割り当ても確定しておく（下で、確定の印も写らないことを確かめる）
+insert into public.lending_years (year_id, confirmed_at, confirmed_by) values (tests.id('Y1'), now(), tests.id('head'));
+
 -- 7月の流れ：前年度は closed で、ほかに開いている年度がない admin が次の年度を作る
 select tests.set_scenario('closed');
 select tests.login_as('admin');
@@ -314,6 +317,18 @@ select is((select count(*)::int from public.shift_duties where year_id = tests.i
           + (select count(*)::int from public.shift_assignments where year_id = tests.id('Y3'))
           + (select count(*)::int from public.tasks where year_id = tests.id('Y3')), 0,
   'シフト・作業（持ち場を含む5表）は複製しない（T20。D-56。日時と人が年ごとに違い、持ち場も毎年入れ直す）');
+create function pg_temp.lending_counts(p_year_id uuid) returns text language sql stable as $f$
+  select format('items=%s requests=%s assignments=%s records=%s confirmed=%s',
+                (select count(*) from public.lending_items where year_id = p_year_id),
+                (select count(*) from public.lending_requests where year_id = p_year_id),
+                (select count(*) from public.lending_assignments where year_id = p_year_id),
+                (select count(*) from public.lending_records where year_id = p_year_id),
+                (select count(*) from public.lending_years where year_id = p_year_id and confirmed_at is not null))
+$f$;
+select is(pg_temp.lending_counts(tests.id('Y1')), 'items=4 requests=4 assignments=2 records=2 confirmed=1',
+  '複製元の Y1 にはテント等の備品・申請・割り当て・記録・確定の印がある（fixture。次の「複製しない」が空振りでない。T21）');
+select is(pg_temp.lending_counts(tests.id('Y3')), 'items=0 requests=0 assignments=0 records=0 confirmed=0',
+  'テント等の5表は複製しない（備品は画面の「前年度から読み込む」で写す。T21。D-57）');
 select is((select reason from public.audit_logs where table_name = 'years' and row_pk ->> 'id' = tests.id('Y3')::text), 'T-Y1改 から複製',
   '複製の理由が監査に残る');
 

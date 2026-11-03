@@ -75,6 +75,12 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   shift_needs: '必要人数',
   shift_assignments: 'シフトの割り当て',
   tasks: '作業',
+  // テント等の貸し出し（T21。D-57）
+  lending_items: 'テント等の備品',
+  lending_requests: 'テント等の申請',
+  lending_assignments: 'テント等の割り当て',
+  lending_records: 'テント等の受け渡し・返却',
+  lending_years: 'テント等の割り当ての確定',
 };
 
 /** 監査ログの操作（audit_logs.action） */

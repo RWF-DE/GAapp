@@ -27,6 +27,8 @@ import { appError, toAppError } from '@/lib/errors';
 import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
+import { lendingRecordsOptions, lendingRequestItemsOptions, lendingRequestTabOptions } from '@/lib/modules/lending/queries';
+import { lendingSoumuOptions } from '@/lib/modules/lending/summary';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
 import { shiftsPortalOptions } from '@/lib/modules/shifts/portal-read';
 import { myShiftsOptions, shiftMembersOptions, soumuNamesOptions, tasksOptions } from '@/lib/modules/shifts/reads';
@@ -210,7 +212,24 @@ export function repRequestOptions(yearId: string | null | undefined, groupId: st
 export function planRequestPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
   const wanted = ctx.params.get('group');
   const groupId = ctx.groupIds.find((g) => g === wanted) ?? ctx.groupIds[0];
-  return groupId ? [{ groupId, options: repRequestOptions(ctx.yearId, groupId) }] : [];
+  if (!groupId) return [];
+  return [
+    { groupId, options: repRequestOptions(ctx.yearId, groupId) },
+    // テント等のタブ（T21）：タブを出すかを決める備品（その団体の割り当てと記録を埋め込む）はいつも、`?tab=lending` で開いたときは
+    // テント等のタブの読み取りも
+    { groupId, options: lendingRequestItemsOptions(ctx.yearId, groupId) },
+    ...(ctx.params.get('tab') === 'lending' ? [{ groupId, options: lendingRequestTabOptions(ctx.yearId, groupId) }] : []),
+  ];
+}
+
+// ---------------------------------------------------------------- 受け渡し・返却 /lending/records（T21）
+
+/**
+ * /lending/records の先読み（D-45。T21）：ロールが総務なら、受け渡し・返却の読み取り（備品・団体・割り当て・記録・確定の印）。
+ * 版を使わない画面なので、記録・先送りの許可リスト（EARLY_FETCH_PATHS）にも入る。立場が届いて総務でなくなったら使わない。
+ */
+export function planLendingRecordsPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
+  return isSoumu(ctx.role) ? [{ options: lendingRecordsOptions(ctx.yearId), usable: (m) => isSoumu(m.role) }] : [];
 }
 
 // ---------------------------------------------------------------- 自団体の振り分け /my（T13）
@@ -340,6 +359,9 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
  * 立場が届いて、総務・閲覧のみでなくなった・代表する団体が変わった（予定と締切は、ロールがついた・団体がなくなった）ときは使わない
  * （usable。settleEarlyLoad が消す）。予定と締切（T18）は、団体代表の / が 4G で 2 秒以内のままであることを `pnpm e2e:perf` で
  * 確かめて足した（notes/T18.md「実行したコマンドと結果（パート B）」、D-45 の T18 の直し）。
+ * テント等の貸し出し（T21）は総務の分（lendingSoumuOptions）だけ足した。店長・副店長の分（lendingRepOptions。代表する団体に割り当てと
+ * 記録を埋め込んだ1本）は足さない（初めて開いたときは、欄が最初の描画の後に読み始めても、代表する団体のカードの表示を待たせない。
+ * 2回目からは、欄が読むので記録・先送りで JS より先に送られる。notes/T21.md の「レビューで直したこと」、D-45 の T21 の直し）。
  *
  * @example
  * planHomePrefetch({ yearId, groupIds: [], role: 'staff', params }) // 机椅子の総務の読み取り、総務内のお知らせの新着、予定と締切の項目
@@ -353,6 +375,8 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
     // シフト・作業（T20・D-56）：部門長以上と総務部門員で別のキー（段が同じときだけ使う）
     const lead = isLead(ctx.role);
     list.push({ options: shiftsPortalOptions(ctx.yearId, lead ? 'lead' : 'staff'), usable: (m) => isSoumu(m.role) && isLead(m.role) === lead });
+    // テント等の貸し出しの総務の読み取り（T21。要対応とカードが同じキーを読む。店長・副店長の分は足さない。上の説明）
+    list.push({ options: lendingSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
   }
   if (ctx.role === 'viewer') {
     list.push({ options: noticesLatestOptions(ctx.yearId, 'viewer'), usable: (m) => m.role === 'viewer' });
@@ -415,6 +439,8 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
   // シフト・作業（T20・D-56）：版を使わない画面（シフト表 /shifts と印刷は入れない）
   '/shift': planShiftPrefetch,
   '/tasks': planTasksPrefetch,
+  // 受け渡し・返却（T21。スマホ。版を使わない）
+  '/lending/records': planLendingRecordsPrefetch,
 };
 
 /**
