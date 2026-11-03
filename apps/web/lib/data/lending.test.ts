@@ -1,4 +1,5 @@
-// テント等の貸し出しの読み書き（T21。notes/T21.md「画面の約束」2・9）：/lending の読み取り（閲覧のみは申請・記録を読まない）、
+// テント等の貸し出しの読み書き（T21。notes/T21.md「画面の約束」2・9）：/lending の読み取り（閲覧のみは申請・記録を読まない）、申請の
+// テント等のタブの読み取りと、タブを出すかの読み取り（割り当ては年度の確定の印があるときだけ数える。記録は確定の前でも）、
 // 割り当ての未保存の変更と送る形（count null・updatedAt）・返り値の当て方・読み直しの決め方、(A) の決め方（申請・記録。保存されていた・
 // ほかの人・自分の書いたもの）、備品の (B1)（登録の 23505・応答なし・conflict・消えていた・削除）、upsert の形、RPC の zod。
 import { describe, expect, it, vi } from 'vitest';
@@ -13,7 +14,9 @@ import {
   decideLendingRecordSave,
   decideLendingRequestSave,
   fetchLendingBoard,
+  fetchLendingRequestItems,
   fetchLendingRequestTab,
+  LENDING_REQUEST_ITEMS_SELECT,
   LENDING_REQUEST_TAB_SELECT,
   lendingBoardOptions,
   lendingInvalidateKeys,
@@ -110,6 +113,48 @@ describe('T21 申請のテント等のタブの読み取り（レビューの T2
     expect(await fetchLendingRequestTab(Y, G1, none.client)).toMatchObject({ requests: [], confirmedAt: null, assignments: [], records: [] });
     const failed = createFakeSupabase(() => ({ error: { code: 'XX000', message: 'boom' }, status: 500 }));
     await expect(fetchLendingRequestTab(Y, G1, failed.client)).rejects.toBeInstanceOf(AppError);
+  });
+});
+
+describe('T21 申請のテント等のタブを出すかの読み取り（2026-11-01 のリードの決定・タブの直しのレビューの T21-R6）', () => {
+  const ITEM = { id: TENT, name: 'テント', unit: '張', requestable_categories: ['stall'], sort_order: 1 };
+  const CONFIRMED = '2026-10-12T08:00:00Z';
+  /** 備品1つ（その団体の割り当て・記録の埋め込みと、年度の確定の印 years を返す）を読む */
+  const read = async (embeds: { assigned: boolean; lent: boolean; years: unknown }) => {
+    const calls: FakeCall[] = [];
+    const { client } = createFakeSupabase((call) => {
+      calls.push(call);
+      return {
+        data: [
+          {
+            ...ITEM,
+            lending_assignments: embeds.assigned ? [{ lending_item_id: TENT }] : [],
+            lending_records: embeds.lent ? [{ lending_item_id: TENT }] : [],
+            years: embeds.years,
+          },
+        ],
+      };
+    });
+    const items = await fetchLendingRequestItems(Y, G1, client);
+    expect(calls).toHaveLength(1);
+    expect(opArgs(calls[0]!, 'select')[0]![0]).toBe(LENDING_REQUEST_ITEMS_SELECT);
+    return items;
+  };
+
+  it('割り当ては年度の確定の印があるときだけ数える（管理者が団体の代表を兼ねると確定前の割り当ても RLS が返す）。確定の印はオブジェクトでも配列でも読み、埋め込みは返す備品に残さない', async () => {
+    // 確定前（確定の印の行がない・解除して confirmed_at が null・年度が読めない）
+    for (const years of [{ lending_years: null }, { lending_years: { confirmed_at: null } }, null, [{ lending_years: [] }]]) {
+      expect(await read({ assigned: true, lent: false, years }), JSON.stringify(years)).toEqual([{ ...ITEM, assigned: false, lent: false }]);
+    }
+    // 確定後
+    for (const years of [{ lending_years: { confirmed_at: CONFIRMED } }, [{ lending_years: [{ confirmed_at: CONFIRMED }] }]]) {
+      expect(await read({ assigned: true, lent: false, years }), JSON.stringify(years)).toEqual([{ ...ITEM, assigned: true, lent: false }]);
+    }
+  });
+
+  it('記録（渡した数が1以上）は確定の前でも数える', async () => {
+    expect(await read({ assigned: false, lent: true, years: { lending_years: null } })).toEqual([{ ...ITEM, assigned: false, lent: true }]);
+    expect(await read({ assigned: true, lent: true, years: { lending_years: { confirmed_at: CONFIRMED } } })).toEqual([{ ...ITEM, assigned: true, lent: true }]);
   });
 });
 

@@ -3,7 +3,9 @@
 // - タブを出すか（その団体の区分で申請できる備品があるか、その団体に読める割り当て〔数が1以上。確定後〕か渡した記録〔渡した数が
 //   1以上〕があるとき。2026-11-01 のリードの決定）、読み込みの失敗（机・椅子のまま）、机・椅子のパネルを作り直さない（入力が残る）、
 //   `?tab=lending`。
-// - 申請できる備品のない団体（企業）：タブを出すかの読み取り（1本。埋め込みの絞り）、確定前・数が 0 だけでは出さない、ダッシュボードの
+// - 申請できる備品のない団体（企業）：タブを出すかの読み取り（1本。埋め込みの絞りと年度の確定の印）、確定前・数が 0 だけでは出さない、
+//   管理者が代表を兼ねて確定前の割り当てを読めても確定前は出さない（ダッシュボードの「割り当てが決まりました」も。タブの直しの
+//   レビューの T21-R6）、ダッシュボードの
 //   要対応（割り当てが決まりました・返してください）の行き先でタブを開く（同じ偽の DB を、ダッシュボードと同じ読み取りで読んで作った
 //   href）、申請の欄と保存を出さず、数は総務が決める旨の1行と割り当て・記録を読むだけで出す。
 // - テント等のパネル：申請できる備品の欄・保存（(A)。すべて 0 の確かめ・申請できる備品の全部の行の upsert・保存されていた・ほかの人の
@@ -21,14 +23,14 @@ import { AppLink } from '@/components/common/app-link';
 import { UnsavedChangesProvider } from '@/components/common/unsaved-changes-guard';
 import type { MembershipState } from '@/lib/auth/auth-provider';
 import { useGuardedSetYear } from '@/lib/auth/guarded';
-import type { GroupSummary, Membership, YearStatus } from '@/lib/auth/membership';
+import type { AppRole, GroupSummary, Membership, YearStatus } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
 import { draftKey, saveDraft, type DraftKey } from '@/lib/drafts';
 import { queryKeys } from '@/lib/query';
 import { lendingPortal } from '@/lib/modules/lending/portal';
 import { LENDING_REQUEST_ITEMS_SELECT } from '@/lib/modules/lending/queries';
 import { loadLendingRep } from '@/lib/modules/lending/summary';
-import type { PortalContext } from '@/lib/modules/portal';
+import type { PortalContext, TodoItem } from '@/lib/modules/portal';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 import { lendingHandler, nextAt, pgError, type FakeGroup, type FakeLendingDb } from '@/lib/testing/fake-lending-db';
 import { LEAVE_MESSAGES } from '@/lib/unsaved-changes';
@@ -166,10 +168,15 @@ let db: FakeLendingDb = seed();
 let issued: FakeCall[] = [];
 /** 偽の DB の前に差し込む応答（Promise を返すと、その間は応答を止められる） */
 let override: ((call: FakeCall) => FakeResult | PromiseLike<FakeResult> | undefined) | null = null;
+/**
+ * 割り当てを確定の前も読める人として読む（管理者が団体の代表を兼ねている。02 の権限：admin は同じ年度の団体代表を兼ねられ、
+ * 割り当ての RLS は admin に確定前の行も返す）。既定は店長・副店長（確定後だけ読める）
+ */
+let seesAllAssignments = false;
 
-function member(status: YearStatus, groups: GroupSummary[] = [G1s]): Membership {
+function member(status: YearStatus, groups: GroupSummary[] = [G1s], role: AppRole | null = null): Membership {
   const year = { id: Y, label: 'R8', status, festival_start: '2026-10-17' };
-  return { displayName: 'テスト', year, role: null, groups, years: [year], latestYear: year, adminOfOpenYear: false };
+  return { displayName: 'テスト', year, role, groups, years: [year], latestYear: year, adminOfOpenYear: role === 'admin' };
 }
 
 /** 机・椅子のパネルの代わり（入力が残るか＝作り直さないかを見る） */
@@ -204,8 +211,8 @@ function tree() {
 }
 
 /**
- * 偽の Supabase の受け手（店長・副店長として読む：割り当ては確定後だけ読める〔RLS〕。申請は受付期間内だけ書ける）。
- * ダッシュボードの読み取り（loadLendingRep）にも同じものを使う
+ * 偽の Supabase の受け手（店長・副店長として読む：割り当ては確定後だけ読める〔RLS〕。seesAllAssignments の間は、代表を兼ねた
+ * 管理者として確定前も読める。申請は受付期間内だけ書ける）。ダッシュボードの読み取り（loadLendingRep）にも同じものを使う
  */
 function handler(): (call: FakeCall) => FakeResult | PromiseLike<FakeResult> {
   const handle = lendingHandler(db, {
@@ -214,7 +221,7 @@ function handler(): (call: FakeCall) => FakeResult | PromiseLike<FakeResult> {
     canRecord: () => false,
     canRequest: () => h.status === 'requesting' && Date.now() < Date.parse(CLOSE),
     closed: () => h.status === 'closed',
-    seesAssignments: () => !!db.confirmedAt,
+    seesAssignments: () => seesAllAssignments || !!db.confirmedAt,
   });
   return (call) => {
     const o = override?.(call);
@@ -227,11 +234,11 @@ function handler(): (call: FakeCall) => FakeResult | PromiseLike<FakeResult> {
   };
 }
 
-function renderTabs(opts: { status?: YearStatus; search?: string; now?: string; groups?: GroupSummary[] } = {}) {
+function renderTabs(opts: { status?: YearStatus; search?: string; now?: string; groups?: GroupSummary[]; role?: AppRole | null } = {}) {
   const status = opts.status ?? 'requesting';
   h.status = status;
   h.params = new URLSearchParams(opts.search ?? '');
-  h.membership = { status: 'ready', membership: member(status, opts.groups) };
+  h.membership = { status: 'ready', membership: member(status, opts.groups, opts.role ?? null) };
   vi.setSystemTime(new Date(opts.now ?? OPEN_NOW));
   const fake = createFakeSupabase(handler());
   issued = fake.issued;
@@ -249,6 +256,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   db = seed();
   override = null;
+  seesAllAssignments = false;
   toast.info.mockClear();
   toast.error.mockClear();
   toast.success.mockClear();
@@ -592,15 +600,20 @@ describe('T21 割り当てか記録のある団体のテント等のタブ（202
   const NOT_REQUESTABLE = '企業の団体はテント等を申請しません。数は総務が決めます';
 
   /**
-   * ダッシュボード（店長・副店長）の要対応の行き先：同じ偽の DB を、ダッシュボードと同じ読み取り（loadLendingRep。割り当ては RLS で
-   * 確定後だけ）で読み、lendingPortal が作った要対応の href を返す
+   * ダッシュボード（店長・副店長の分）の要対応：同じ偽の DB を、ダッシュボードと同じ読み取り（loadLendingRep。割り当ては RLS で
+   * 確定後だけ。seesAllAssignments の間は、代表を兼ねた管理者として確定前も読める）で読み、lendingPortal が作る
    */
-  async function portalHref(todoId: string, opts: { status: YearStatus; now: string }): Promise<string> {
+  async function repTodos(opts: { status: YearStatus; now: string; role?: AppRole | null }): Promise<readonly TodoItem[]> {
     h.status = opts.status;
     const { client } = createFakeSupabase(handler());
     const raw = await loadLendingRep([G3], client);
-    const ctx: PortalContext = { kind: 'rep', year: yearRow(opts.status), role: null, groups: [G3s], audiences: ['rep'], now: Date.parse(opts.now) };
-    const todo = lendingPortal({ kind: 'rep', ...raw }, ctx).todos.find((t) => t.id === todoId);
+    const ctx: PortalContext = { kind: 'rep', year: yearRow(opts.status), role: opts.role ?? null, groups: [G3s], audiences: ['rep'], now: Date.parse(opts.now) };
+    return lendingPortal({ kind: 'rep', ...raw }, ctx).todos;
+  }
+
+  /** ダッシュボード（店長・副店長の分）の要対応の行き先（/request の `?` の後ろ） */
+  async function portalHref(todoId: string, opts: { status: YearStatus; now: string; role?: AppRole | null }): Promise<string> {
+    const todo = (await repTodos(opts)).find((t) => t.id === todoId);
     expect(todo, `要対応 ${todoId}`).toBeDefined();
     const url = new URL(todo!.href, 'http://localhost');
     expect(url.pathname).toBe('/request');
@@ -617,7 +630,7 @@ describe('T21 割り当てか記録のある団体のテント等のタブ（202
     db.groups.push(G3_ROW);
   });
 
-  it('タブを出すかを決める読み取りは1本：備品に、その団体の割り当て（数が1以上）と記録（渡した数が1以上）の備品の id だけを埋め込む（埋め込みの列に count を選ばない）', async () => {
+  it('タブを出すかを決める読み取りは1本：備品に、その団体の割り当て（数が1以上）と記録（渡した数が1以上）の備品の id だけと、年度の確定の印を埋め込む（埋め込みの列に count を選ばない）', async () => {
     renderTabs({ search: `group=${G3}`, groups: [G1s, G3s] });
     await decided();
     const calls = issued.filter((c) => c.table === 'lending_items');
@@ -625,7 +638,7 @@ describe('T21 割り当てか記録のある団体のテント等のタブ（202
     const call = calls[0]!;
     expect(opArgs(call, 'select')[0]![0]).toBe(LENDING_REQUEST_ITEMS_SELECT);
     expect(LENDING_REQUEST_ITEMS_SELECT).toBe(
-      'id, name, unit, requestable_categories, sort_order, lending_assignments(lending_item_id), lending_records(lending_item_id)',
+      'id, name, unit, requestable_categories, sort_order, lending_assignments(lending_item_id), lending_records(lending_item_id), years(lending_years(confirmed_at))',
     );
     const sorted = (xs: unknown[][]) => xs.map((x) => JSON.stringify(x)).sort();
     expect(sorted(opArgs(call, 'eq'))).toEqual(sorted([['year_id', Y], ['lending_assignments.group_id', G3], ['lending_records.group_id', G3]]));
@@ -655,6 +668,34 @@ describe('T21 割り当てか記録のある団体のテント等のタブ（202
     await decided();
     expect(screen.queryByTestId('request-tabs')).toBeNull();
     expect(screen.queryByTestId('lending-request')).toBeNull();
+  });
+
+  it('管理者が団体の代表を兼ねていると確定前の割り当ても読める（RLS）が、数えるのは確定後の割り当てだけ：確定前は割り当てだけではタブも要対応「割り当てが決まりました」も出さず、確定すると要対応の行き先でタブを開いて割り当てを出す（タブの直しのレビューの T21-R6）', async () => {
+    // 02 の権限：admin は同じ年度の団体代表を兼ねられ、割り当ての RLS は admin に確定前の行も返す
+    seesAllAssignments = true;
+    db.assignments.push({ group_id: G3, lending_item_id: TENT, year_id: Y, count: 1, updated_by: 'u-head', updated_at: V0 });
+    renderTabs({ search: `group=${G3}&tab=lending`, groups: [G1s, G3s], status: 'allocating', now: AFTER_CLOSE, role: 'admin' });
+    await decided();
+    // タブを出すかの読み取りは確定前の割り当てを返している（読める範囲は RLS のまま）が、年度の確定の印がないので数えない
+    const read = issued.find((c) => c.table === 'lending_items')!;
+    const res = (await handler()(read)) as { data: { id: string; lending_assignments: unknown[] }[] };
+    expect(res.data.find((i) => i.id === TENT)?.lending_assignments).toHaveLength(1);
+    expect(screen.queryByTestId('request-tabs')).toBeNull();
+    expect(screen.queryByTestId('lending-request')).toBeNull();
+    expect(screen.getByTestId('furniture-input').closest('[hidden]')).toBeNull();
+    // ダッシュボードの店長・副店長の分も、確定前の割り当てでは「割り当てが決まりました」を出さない（出すと、その行き先でタブが開かない）
+    expect((await repTodos({ status: 'allocating', now: AFTER_CLOSE, role: 'admin' })).map((t) => t.id)).toEqual([]);
+    cleanup();
+
+    // 確定すると、「割り当てが決まりました」の行き先でテント等のタブを開き、割り当てを出す
+    db.confirmedAt = '2026-10-12T08:00:00Z';
+    const search = await portalHref(`lending:rep:${G3}:assigned`, { status: 'allocating', now: AFTER_CLOSE, role: 'admin' });
+    expect(search).toBe(`group=${G3}&tab=lending`);
+    renderTabs({ search, groups: [G1s, G3s], status: 'allocating', now: AFTER_CLOSE, role: 'admin' });
+    const panel = await screen.findByTestId('lending-request');
+    expect(screen.getByTestId('request-tab-lending').getAttribute('aria-selected')).toBe('true');
+    expect(within(panel).getByTestId('lending-request-not-requestable').textContent).toBe(NOT_REQUESTABLE);
+    expect(within(within(panel).getByTestId('lending-request-assigned')).getAllByRole('listitem').map((li) => li.textContent)).toEqual(['割り当て：テント 1 張']);
   });
 
   it('確定後に割り当て（1以上）があれば、ダッシュボードの「割り当てが決まりました」の行き先でテント等のタブを開く。申請の欄・保存・締切・保存した日時はなく、数は総務が決める旨の1行と割り当てを読むだけで出す', async () => {

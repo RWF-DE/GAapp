@@ -1,8 +1,9 @@
 // テスト専用：テント等の貸し出しの表を小さくまねる偽の DB（T21。components/lending の部品のテストだけが使う。アプリのコードから import しない）。
 // lib/testing/fake-supabase.ts の問い合わせ（from(表)…・rpc）を受け、eq・in・gt で絞った行を返す（団体・備品への埋め込みは select にある
-// 表だけで、`表.列` の絞りは埋め込みの行だけを絞る）。読み取りの RLS は割り当て（店長・副店長は確定後だけ。FakeActor.seesAssignments）
-// だけをまねる。書き込みは RLS の段（部門長以上・総務・店長・副店長の受付期間）と楽観ロック（updated_at）・一意のキー（23505）・
-// 外部キー（23503）と、RPC（save_lending_assignments・set_lending_confirmed・previous_year_lending_items）の決め方を小さくまねる。
+// 表〔と年度の確定の印 years(lending_years(…))〕だけで、`表.列` の絞りは埋め込みの行だけを絞る）。読み取りの RLS は割り当て（店長・
+// 副店長は確定後だけ。管理者が代表を兼ねると確定前も読める。FakeActor.seesAssignments）だけをまねる。書き込みは RLS の段（部門長以上・
+// 総務・店長・副店長の受付期間）と楽観ロック（updated_at）・一意のキー（23505）・外部キー（23503）と、RPC（save_lending_assignments・
+// set_lending_confirmed・previous_year_lending_items）の決め方を小さくまねる。
 import { opArgs, type FakeCall, type FakeResult } from './fake-supabase';
 
 export interface FakeItem {
@@ -68,8 +69,8 @@ export interface FakeActor {
   /** 年度が終了か（RPC の invalid_state） */
   closed: () => boolean;
   /**
-   * 割り当てを読めるか（RLS。店長・副店長は確定後だけ読める。既定はいつも読める〔総務〕）。割り当ての読み取りと、団体・備品への
-   * 埋め込みに効く
+   * 割り当てを読めるか（RLS。店長・副店長は確定後だけ読める。既定はいつも読める〔総務。団体の代表を兼ねた管理者も〕）。割り当ての
+   * 読み取りと、団体・備品への埋め込みに効く
    */
   seesAssignments?: () => boolean;
 }
@@ -175,16 +176,23 @@ export function lendingHandler(db: FakeLendingDb, actor: FakeActor) {
 
   /**
    * 備品に埋め込む表（select にあるものだけ。選んだ列だけを返す）。`表.列` の eq・gt で埋め込みの行を絞る（申請のテント等のタブを
-   * 出すかの読み取り：その団体の割り当て〔数が1以上〕と記録〔渡した数が1以上〕）。割り当ては呼んだ人が読める行だけ（RLS）
+   * 出すかの読み取り：その団体の割り当て〔数が1以上〕と記録〔渡した数が1以上〕と、年度の確定の印）。割り当ては呼んだ人が読める
+   * 行だけ（RLS）。確定の印は団体への埋め込みと同じ形（確定の行がなければ null）
    */
   function embedInItem(call: FakeCall, it: FakeItem): object {
+    const select = String(opArgs(call, 'select')[0]?.[0] ?? '');
     const embed = (table: 'lending_assignments' | 'lending_records', rows: readonly (FakePair | FakeRecord)[]) => {
       const cols = embeddedColumns(call, table);
       if (!cols) return {};
       const mine = filterRows(call, rows.filter((r) => r.lending_item_id === it.id), table);
       return { [table]: mine.map((r) => pickColumns(r, cols)) };
     };
-    return { ...it, ...embed('lending_assignments', visibleAssignments()), ...embed('lending_records', db.records) };
+    return {
+      ...it,
+      ...embed('lending_assignments', visibleAssignments()),
+      ...embed('lending_records', db.records),
+      ...(select.includes('years(lending_years(') ? { years: { lending_years: db.confirmedAt ? { confirmed_at: db.confirmedAt } : null } } : {}),
+    };
   }
 
   function items(call: FakeCall): FakeResult {

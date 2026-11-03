@@ -1,6 +1,7 @@
 // テント等の貸し出しがダッシュボードに出すもの（T21・D-57。notes/T21.md「画面の約束」7）：立場（総務・閲覧のみ・店長・副店長・兼ねた人）
 // ごとのカードと要対応、段（部門長以上と部門員）、年度の状態（準備中・受付中の締切の前後・振り分け中・確定・終了）、canOpen、id と並び、
-// カードの3行目の「未返却 K 団体」と要対応が2日目の 0 時（Asia/Tokyo）の前後で出し分かれること、祭の後の急ぎ、読み取り（select と絞り方）。
+// カードの3行目の「未返却 K 団体」と要対応が2日目の 0 時（Asia/Tokyo）の前後で出し分かれること、祭の後の急ぎ、読み取り（select と絞り方。
+// 店長・副店長の割り当ては年度の確定の印があるときだけ数える）。
 import { describe, expect, it } from 'vitest';
 import type { Audience, GroupSummary, YearStatus } from '@/lib/auth/membership';
 import type { AppRole } from '@/lib/auth/roles';
@@ -296,7 +297,10 @@ describe('T21 プロバイダと読み取り', () => {
     expect(opArgs(calls.find((c) => c.table === 'lending_requests')!, 'gt')).toEqual([['count', 0]]);
   });
 
-  it('店長・副店長の読み取り：代表する団体に割り当てと記録（備品の名前・単位・並びつき）を埋め込んで1本（レビューの T21-R2）。団体がなければ読まない', async () => {
+  it('店長・副店長の読み取り：代表する団体に割り当てと記録（備品の名前・単位・並びつき）と年度の確定の印を埋め込んで1本（レビューの T21-R2・タブの直しのレビューの T21-R6）。団体がなければ読まない', async () => {
+    expect(LENDING_REP_SELECT).toBe(
+      'id, lending_assignments(lending_item_id, count, lending_items(name, unit, sort_order)), lending_records(lending_item_id, lent_count, returned_count, lending_items(name, unit, sort_order)), years(lending_years(confirmed_at))',
+    );
     const calls: FakeCall[] = [];
     const { client } = createFakeSupabase((call) => {
       calls.push(call);
@@ -309,9 +313,10 @@ describe('T21 プロバイダと読み取り', () => {
               { lending_item_id: TENT.id, count: 1, lending_items: [{ name: 'テント', unit: '張', sort_order: 1 }] },
             ],
             lending_records: [{ lending_item_id: TENT.id, lent_count: 1, returned_count: 0, lending_items: null }],
+            years: { lending_years: { confirmed_at: '2026-10-12T08:00:00Z' } },
           },
           // 確定前（割り当ては RLS が返さない）で記録もない団体
-          { id: 'g2', lending_assignments: [], lending_records: [] },
+          { id: 'g2', lending_assignments: [], lending_records: [], years: { lending_years: null } },
         ],
       };
     });
@@ -331,5 +336,40 @@ describe('T21 プロバイダと読み取り', () => {
     const none = createFakeSupabase(() => ({ data: [] }));
     expect(await loadLendingRep([], none.client)).toEqual({ assignments: [], records: [] });
     expect(none.issued).toEqual([]);
+  });
+
+  it('店長・副店長の読み取り：割り当ては年度の確定の印があるときだけ数える（管理者が代表を兼ねると確定前の割り当ても RLS が返す。タブの直しのレビューの T21-R6）。記録は確定の前でも。確定の印は配列で返っても読む', async () => {
+    const tent = { name: 'テント', unit: '張', sort_order: 1 };
+    const read = (years: unknown, lent = 1) =>
+      loadLendingRep(
+        ['g1'],
+        createFakeSupabase(() => ({
+          data: [
+            {
+              id: 'g1',
+              lending_assignments: [{ lending_item_id: TENT.id, count: 1, lending_items: tent }],
+              lending_records: [{ lending_item_id: TENT.id, lent_count: lent, returned_count: 0, lending_items: tent }],
+              years,
+            },
+          ],
+        })).client,
+      );
+    const record = { group_id: 'g1', lending_item_id: TENT.id, lent_count: 1, returned_count: 0, item: tent };
+    // 確定前（確定の印の行がない・解除して confirmed_at が null・年度が読めない）：割り当てを数えない。記録はそのまま
+    for (const years of [{ lending_years: null }, { lending_years: { confirmed_at: null } }, null, [{ lending_years: [] }]]) {
+      expect(await read(years), JSON.stringify(years)).toEqual({ assignments: [], records: [record] });
+    }
+    // 確定後（埋め込みがオブジェクトでも配列でも）
+    const assignment = { group_id: 'g1', lending_item_id: TENT.id, count: 1, item: tent };
+    for (const years of [{ lending_years: { confirmed_at: '2026-10-12T08:00:00Z' } }, [{ lending_years: [{ confirmed_at: '2026-10-12T08:00:00Z' }] }]]) {
+      expect(await read(years), JSON.stringify(years)).toEqual({ assignments: [assignment], records: [record] });
+    }
+    // 管理者が代表を兼ねて確定前の割り当てを読んでも、店長・副店長の分の要対応「割り当てが決まりました」は出さない（確定後は出す。
+    // 渡した数がすべて 0 のとき）
+    const repCtx = ctx('rep', year('allocating'), { role: 'admin', groups: [G1], now: AFTER_CLOSE });
+    expect(ids(lendingPortal({ kind: 'rep', ...(await read({ lending_years: null }, 0)) }, repCtx).todos)).toEqual([]);
+    expect(ids(lendingPortal({ kind: 'rep', ...(await read({ lending_years: { confirmed_at: '2026-10-12T08:00:00Z' } }, 0)) }, repCtx).todos)).toEqual([
+      'lending:rep:g1:assigned',
+    ]);
   });
 });

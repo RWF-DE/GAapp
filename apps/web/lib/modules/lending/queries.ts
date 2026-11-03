@@ -22,30 +22,49 @@ function confirmedAtOf(res: Res): string | null {
   return (res.data as { confirmed_at: string | null } | null)?.confirmed_at ?? null;
 }
 
+type One<T> = T | T[] | null | undefined;
+const oneOf = <T>(v: One<T>): T | null => (Array.isArray(v) ? (v[0] ?? null) : (v ?? null));
+
+/** 年度〔years〕に埋め込んだ確定の印（select の `years(lending_years(confirmed_at))`） */
+type EmbeddedYearConfirmation = One<{ lending_years?: One<{ confirmed_at: string | null }> }>;
+
+/**
+ * 年度に埋め込んだ確定の印の確定の日時（確定の印の行がない・解除の後・年度が読めなければ null。埋め込みは多対一と一対一なので
+ * オブジェクトで返るが、配列で返っても最初のものを読む。ダッシュボードの summary.ts も同じ読み方をする）
+ */
+function embeddedConfirmedAt(years: EmbeddedYearConfirmation): string | null {
+  return oneOf(oneOf(years)?.lending_years)?.confirmed_at ?? null;
+}
+
 // ---------------------------------------------------------------- 申請のテント等のタブ
 
 /**
  * タブを出すかを決める備品の列（申請できる区分を含む）と、その団体の割り当て・記録の埋め込み（備品の id だけ。2026-11-01 のリードの
- * 決定：申請できる備品がなくても、割り当てか渡した記録があればタブを出す）。埋め込みの列に count を選ばない（PostgREST の件数の数え方と
- * 取り違えないため。数は絞り〔count > 0・lent_count > 0〕にだけ使う）
+ * 決定：申請できる備品がなくても、確定後の割り当てか渡した記録があればタブを出す）と、年度の確定の印。埋め込みの列に count を選ばない
+ * （PostgREST の件数の数え方と取り違えないため。数は絞り〔count > 0・lent_count > 0〕にだけ使う）。確定の印は、割り当てを読む人に
+ * よらず確定後のものだけ数えるため（管理者が団体の代表を兼ねると、RLS が確定前の割り当ても返す。タブの直しのレビューの T21-R6）
  */
 export const LENDING_REQUEST_ITEMS_SELECT =
-  'id, name, unit, requestable_categories, sort_order, lending_assignments(lending_item_id), lending_records(lending_item_id)';
+  'id, name, unit, requestable_categories, sort_order, lending_assignments(lending_item_id), lending_records(lending_item_id), years(lending_years(confirmed_at))';
 export type LendingRequestItem = Pick<Tables<'lending_items'>, 'id' | 'name' | 'unit' | 'requestable_categories' | 'sort_order'> & {
-  /** その団体にこの備品の割り当て（数が1以上）があり、読める（店長・副店長は確定後だけ RLS が返す） */
+  /**
+   * その団体にこの備品の確定後の割り当て（数が1以上）がある（年度の確定の印があるときだけ真。店長・副店長には RLS が確定後だけ
+   * 返すが、団体の代表を兼ねた管理者には確定前の割り当ても返すので、読む人によらず確定の印で確かめる）
+   */
   assigned: boolean;
-  /** その団体にこの備品を渡した記録（渡した数が1以上）がある */
+  /** その団体にこの備品を渡した記録（渡した数が1以上）がある（確定の前でも） */
   lent: boolean;
 };
 
 type RequestItemRow = Omit<LendingRequestItem, 'assigned' | 'lent'> & {
   lending_assignments?: unknown[] | null;
   lending_records?: unknown[] | null;
+  years?: EmbeddedYearConfirmation;
 };
 
 /**
- * 年度の備品と、その団体に割り当て・渡した記録があるか（タブを出すか・タブの欄。1本で読む。店長・副店長は代表である年度の備品と、
- * 自団体の記録・確定後の割り当てを RLS で読める）。埋め込みの絞りは埋め込みの行だけを絞る（備品はどれも返る）
+ * 年度の備品と、その団体に確定後の割り当て・渡した記録があるか（タブを出すか・タブの欄。1本で読む。店長・副店長は代表である年度の
+ * 備品と確定の印、自団体の記録・確定後の割り当てを RLS で読める）。埋め込みの絞りは埋め込みの行だけを絞る（備品はどれも返る）
  */
 export async function fetchLendingRequestItems(yearId: string, groupId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingRequestItem[]> {
   const res = await client
@@ -58,9 +77,10 @@ export async function fetchLendingRequestItems(yearId: string, groupId: string, 
     .gt('lending_records.lent_count', 0)
     .order('sort_order')
     .order('id');
-  return rowsOf<RequestItemRow>(res).map(({ lending_assignments: a, lending_records: r, ...item }) => ({
+  return rowsOf<RequestItemRow>(res).map(({ lending_assignments: a, lending_records: r, years, ...item }) => ({
     ...item,
-    assigned: (a?.length ?? 0) > 0,
+    // 割り当ては確定後のものだけ数える（確定前の割り当てだけでタブを出すと、タブは割り当てを出さないので中身が空になる）
+    assigned: embeddedConfirmedAt(years) !== null && (a?.length ?? 0) > 0,
     lent: (r?.length ?? 0) > 0,
   }));
 }
@@ -111,8 +131,6 @@ export async function readGroupLendingRequests(groupId: string, client: AppSupab
 export const LENDING_REQUEST_TAB_SELECT =
   'id, lending_requests(group_id, lending_item_id, count, updated_by, updated_at), lending_assignments(group_id, lending_item_id, count), lending_records(group_id, lending_item_id, lent_count, returned_count, damaged_count), years(lending_years(confirmed_at))';
 
-type One<T> = T | T[] | null | undefined;
-const oneOf = <T>(v: One<T>): T | null => (Array.isArray(v) ? (v[0] ?? null) : (v ?? null));
 const byItem = <T extends { lending_item_id: string }>(rows: readonly T[] | null | undefined): T[] =>
   [...(rows ?? [])].sort((a, b) => (a.lending_item_id < b.lending_item_id ? -1 : a.lending_item_id > b.lending_item_id ? 1 : 0));
 
@@ -121,7 +139,7 @@ type RequestTabGroupRow = {
   lending_requests?: LendingRequestRow[] | null;
   lending_assignments?: LendingAssignmentCount[] | null;
   lending_records?: LendingRecordCount[] | null;
-  years?: One<{ lending_years?: One<{ confirmed_at: string | null }> }>;
+  years?: EmbeddedYearConfirmation;
 };
 
 /**
@@ -134,7 +152,7 @@ export async function fetchLendingRequestTab(yearId: string, groupId: string, cl
   const g = res.data as RequestTabGroupRow | null;
   return {
     requests: byItem(g?.lending_requests),
-    confirmedAt: oneOf(oneOf(g?.years)?.lending_years)?.confirmed_at ?? null,
+    confirmedAt: embeddedConfirmedAt(g?.years),
     assignments: byItem(g?.lending_assignments),
     records: byItem(g?.lending_records),
     loadedAt: new Date().toISOString(),
