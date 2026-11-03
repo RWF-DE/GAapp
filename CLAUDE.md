@@ -69,6 +69,6 @@
 - RLS で拒否された update・delete はエラーにならず 0 行で成功する。直接の更新と削除は `.select()` で変わった行を受け取り、0 行を成功として扱わない。
 - 年度をまたぐ表（rooms・items・distance_overrides）に行を足すと、振り分け中のすべての年度の allocation_version が上がる。E2E では並行のテストの前に1回だけ入れ、テストの途中で変えない。
 - アイコンは Next のファイルの規約（app/icon.png など）で置く（metadata に文字列で書くと basePath が付かない）。マニフェストの JSON の中の URL には basePath を自分で付ける。
-- Storage の物（storage.objects の行）は SQL では消せない（storage.protect_delete。`set local storage.allow_delete_query = 'true'` がなければ 42501。E2E の片付けだけがこれを立てる）。消すのは Storage API（画面の remove）。DB の行を消すと「どの提出にも属さないファイル」が残るので、画面が消す。年度・団体・提出物を SQL で消さない。
+- Storage の物（storage.objects の行）は SQL では消せない（storage.protect_delete。`set local storage.allow_delete_query = 'true'` がなければ 42501。これを立てるのは pgTAP〔013・027〕の巻き戻すトランザクションの中だけで、E2E の片付けも Storage API の remove で消す）。消すのは Storage API（画面の remove）。DB の行を消すと「どの提出にも属さないファイル」が残るので、画面が消す。年度・団体・提出物を SQL で消さない。
 - 提出物のファイルを上げられるのは、DB が予約した path（reserve_document_file の object_path）だけ（storage.objects の insert のポリシー）。update のポリシーはないので、上書き・移動・upsert はできない（upload は `upsert: false`）。path に日本語や個人名を入れない。
 - 署名つき URL（createSignedUrl）は押したときに 60 秒だけ作り、キャッシュ・下書き・ログに残さない（その間は URL を知る誰でも開ける）。
