@@ -470,7 +470,8 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
 
 /**
  * 開いたときのリクエストを覚え、次に開いたときに <head> の script が JS より先に送ってよい画面のパス（lib/boot/early-fetch.ts。
- * 許可リスト）。版を使わない画面（先読みの表と同じ。/・/stock・/request・/my）だけで、振り分けに関わる画面（/furniture・
+ * 許可リスト）。版を使わない画面（先読みの表と同じ。/・/stock・/request・/my と、T19〜T21 で足した /document・/shift・/tasks・
+ * /lending/records）だけで、振り分けに関わる画面（/furniture・
  * /allocation・/swaps）は入れない（スナップショット〔lib/data/snapshot.ts〕は年度の行〔版〕を読み終えてから残りを読む。D-33）。
  * ダッシュボード（/）は版・振り分けの行を読まないので、T16 で入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）
  */

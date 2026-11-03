@@ -11,6 +11,7 @@ import {
   earlyPath,
   finishRecording,
   MAX_PATHS,
+  MAX_RECORDED,
   readRecorded,
   requestKey,
   requestsKey,
@@ -29,7 +30,7 @@ const ROOM = '11111111-2222-4333-8444-555555555555';
 const USER = '00000000-0000-4000-8000-000000000002';
 const TOKEN = 'token-1';
 const PREFIX = 'gaapp:prefetch:';
-/** 先送りしてよい画面（lib/data/screen-queries.ts の EARLY_FETCH_PATHS と同じ。T16 でダッシュボード〔/〕を足した。D-45・D-51） */
+/** 先送りしてよい画面（lib/data/screen-queries.ts の EARLY_FETCH_PATHS のうち T14 の3つと、T16 で足したダッシュボード〔/〕。D-45・D-51） */
 const PATHS = ['/', '/stock', '/request', '/my'];
 /** 記録・先送りしないパス：振り分けに関わる画面（/furniture・/allocation・/swaps。スナップショットで版を先に読む。D-33） */
 const SNAPSHOT_PATHS = ['/furniture', '/allocation', '/swaps'];
@@ -95,7 +96,7 @@ describe('記録', () => {
     const key = requestsKey(USER, PREFIX);
     const old: Record<string, RecordedRequest[]> = {};
     for (let i = 0; i < MAX_PATHS; i++) old[`/p${i}`] = [{ m: 'GET', u: `/rest/v1/t${i}`, h: {} }];
-    // 先送りしてよい画面が MAX_PATHS より多いときの上限を確かめる（いまの許可リストは 3 つ）
+    // 先送りしてよい画面が MAX_PATHS より多いときの上限を確かめる（いまの許可リスト〔EARLY_FETCH_PATHS〕は 8 つ）
     const allowed = [...PATHS, ...Object.keys(old)];
     window.localStorage.setItem(key, JSON.stringify({ paths: old }));
     window.history.replaceState(null, '', '/my/');
@@ -335,5 +336,77 @@ describe('<head> の script（EARLY_FETCH_SOURCE）', () => {
     const s = earlyFetchScript({ ...config, b: '</script><script>alert(1)</script>' });
     expect(s).not.toContain('</script>');
     expect(s.startsWith('(function (c)')).toBe(true);
+  });
+});
+
+describe('覚える数の上限（MAX_RECORDED。FU3 の案 2）', () => {
+  const config = { u: URL0, a: 'pk', k: 'sb-db-auth-token', p: PREFIX, b: '/GAapp', post: EARLY_POSTS, paths: PATHS };
+  const run = () => (0, eval)(`(${EARLY_FETCH_SOURCE})`)(config);
+  const session = () =>
+    window.localStorage.setItem(config.k, JSON.stringify({ access_token: TOKEN, expires_at: Math.floor(Date.now() / 1000) + 3600, user: { id: USER } }));
+  /** 別々の読み取り n 本（覚えた順に並ぶ） */
+  const reads = (n: number) => Array.from({ length: n }, (_, i) => `/rest/v1/t${String(i).padStart(2, '0')}?select=id`);
+  /**
+   * 管理者で店長・副店長も務める人の / は、開いたときに 29 本を送る（立場の5本〔accept_my_invitations を含む〕とダッシュボードの 24 本。
+   * FU3 の計測）。上限が 24 本だった間は後の5本（シフト・作業の3本と、代表する団体の提出物・テント等の2本）を覚えず、2回目も
+   * <head> の script が先に送らなかった
+   */
+  const ADMIN_REP_HOME = 29;
+
+  it('管理者で団体代表の / の 29 本をすべて覚え、次に開いたときに <head> の script が 29 本とも先に送り、アプリは送らずに受け取る', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')));
+    const key = requestsKey(USER, PREFIX);
+    const gets = reads(ADMIN_REP_HOME - 1);
+    window.history.replaceState(null, '', '/GAapp/');
+    startRecording('/', window.location);
+    await earlyAwareFetch(`${URL0}/rest/v1/rpc/accept_my_invitations`, { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
+    for (const u of gets) await earlyAwareFetch(`${URL0}${u}`, { method: 'GET', headers: { Accept: 'application/json' } });
+    expect(finishRecording(key, true, window.localStorage, PATHS)).toBe(true);
+    const list = readRecorded(key, window.localStorage)?.paths['/'] ?? [];
+    expect(list).toHaveLength(ADMIN_REP_HOME);
+    expect(list.at(-1)).toEqual<RecordedRequest>({ m: 'GET', u: gets.at(-1)!, h: { accept: 'application/json' } });
+
+    // 次に開いたとき：<head> の script が覚えた 29 本をすべて送る
+    const sent: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        sent.push(url);
+        return new Response('"early"');
+      }),
+    );
+    session();
+    run();
+    expect(sent).toEqual([`${URL0}/rest/v1/rpc/accept_my_invitations`, ...gets.map((u) => `${URL0}${u}`)]);
+    expect(Object.keys((win()[EARLY_GLOBAL] as { r: Record<string, unknown> }).r)).toHaveLength(ADMIN_REP_HOME);
+
+    // アプリ（supabase-js）が送る 29 本目（前は覚えなかった分）も、送らずに先送りの応答を受け取る
+    const app = vi.fn(async () => new Response('"app"'));
+    vi.stubGlobal('fetch', app);
+    const res = await earlyAwareFetch(`${URL0}${gets.at(-1)!}`, { method: 'GET', headers: { Authorization: `Bearer ${TOKEN}`, Accept: 'application/json' } });
+    expect(await res.json()).toBe('early');
+    expect(app).not.toHaveBeenCalled();
+  });
+
+  it('覚えるのは1つのパスで MAX_RECORDED 本まで。localStorage にそれより多く入っていても、<head> の script は MAX_RECORDED 本までしか送らない', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')));
+    const key = requestsKey(USER, PREFIX);
+    window.history.replaceState(null, '', '/GAapp/');
+    startRecording('/', window.location);
+    for (const u of reads(MAX_RECORDED + 5)) await earlyAwareFetch(`${URL0}${u}`, { method: 'GET' });
+    expect(finishRecording(key, true, window.localStorage, PATHS)).toBe(true);
+    expect(readRecorded(key, window.localStorage)?.paths['/']?.map((e) => e.u)).toEqual(reads(MAX_RECORDED));
+
+    const f = vi.fn(async () => new Response('[]'));
+    vi.stubGlobal('fetch', f);
+    session();
+    const tooMany: RecordedRequest[] = reads(MAX_RECORDED + 12).map((u) => ({ m: 'GET', u, h: {} }));
+    window.localStorage.setItem(key, JSON.stringify({ paths: { '/': tooMany } }));
+    run();
+    expect(f).toHaveBeenCalledTimes(MAX_RECORDED);
+    // HTML に入る形（earlyFetchScript）も同じ数
+    f.mockClear();
+    (0, eval)(earlyFetchScript(config));
+    expect(f).toHaveBeenCalledTimes(MAX_RECORDED);
   });
 });
