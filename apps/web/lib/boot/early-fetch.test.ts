@@ -347,13 +347,14 @@ describe('覚える数の上限（MAX_RECORDED。FU3 の案 2）', () => {
   /** 別々の読み取り n 本（覚えた順に並ぶ） */
   const reads = (n: number) => Array.from({ length: n }, (_, i) => `/rest/v1/t${String(i).padStart(2, '0')}?select=id`);
   /**
-   * 管理者で店長・副店長も務める人の / は、開いたときに 29 本を送る（立場の5本〔accept_my_invitations を含む〕とダッシュボードの 24 本。
-   * FU3 の計測）。上限が 24 本だった間は後の5本（シフト・作業の3本と、代表する団体の提出物・テント等の2本）を覚えず、2回目も
-   * <head> の script が先に送らなかった
+   * 管理者で店長・副店長も務める人の / は、FU3 の案 3（総務の机椅子とテント等の読み取りをまとめる。今は 21 本）の前は、開いたときに
+   * 29 本を送っていた（立場の5本〔accept_my_invitations を含む〕とダッシュボードの 24 本。FU3 の計測）。上限が 24 本だった間は後の5本
+   * （シフト・作業の3本と、代表する団体の提出物・テント等の2本）を覚えず、2回目も <head> の script が先に送らなかった。前の上限（24 本）を
+   * 超える数の確かめとして、この 29 本のまま確かめる
    */
   const ADMIN_REP_HOME = 29;
 
-  it('管理者で団体代表の / の 29 本をすべて覚え、次に開いたときに <head> の script が 29 本とも先に送り、アプリは送らずに受け取る', async () => {
+  it('前の上限（24 本）を超える 29 本（案 3 の前の管理者で団体代表の /）をすべて覚え、次に開いたときに <head> の script が 29 本とも先に送り、アプリは送らずに受け取る', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]')));
     const key = requestsKey(USER, PREFIX);
     const gets = reads(ADMIN_REP_HOME - 1);

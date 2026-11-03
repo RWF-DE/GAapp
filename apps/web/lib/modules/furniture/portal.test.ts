@@ -656,77 +656,138 @@ describe('T16 furniturePortal の約束', () => {
 
 // ---------------------------------------------------------------- 読み取り
 
-/** 偽のクライアントが返す行（join の列つき） */
-function rowsFor(call: FakeCall): unknown[] {
+/** 団体・場所の id（uuid の小文字の形。並びの順と id の順を変えて、組み立てで id の順に戻ることを見る） */
+const GA = 'a1000000-0000-4000-8000-000000000000';
+const GB = 'b2000000-0000-4000-8000-000000000000';
+const GC = 'c3000000-0000-4000-8000-000000000000';
+const RA = 'a1000000-0000-4000-8000-0000000000aa';
+const RB = 'b2000000-0000-4000-8000-0000000000bb';
+const RC = 'c3000000-0000-4000-8000-0000000000cc';
+const SUBMITTED = '2026-10-01T00:00:00Z';
+
+/**
+ * 偽のクライアントが返す行（PostgREST の埋め込みの形。並びの順〔sort_order → id〕は C → A → B）。提出の記録は団体ごとに1行まで
+ * なので一対一（オブジェクトか null）で返るが、配列で返っても読む。在庫の行は場所ごとに1行まで（limit）
+ */
+function embedRowsFor(call: FakeCall): unknown[] {
   switch (call.table) {
     case 'groups':
-      return [{ id: 'g1', name: '模擬店01', category: 'stall', sort_order: 1 }];
-    case 'request_submissions':
-      return [{ group_id: 'g1', submitted_at: '2026-10-01T00:00:00Z', groups: { year_id: Y } }];
+      return [
+        // 提出した（オブジェクト）。了承の行が2つ（品目の組の順）
+        { id: GC, name: '模擬店03', category: 'stall', sort_order: 1, request_submissions: { submitted_at: SUBMITTED }, substitution_consents: [{ status: 'asked' }, { status: 'declined' }] },
+        // 提出の記録はあるが未提出（配列で返った形）。了承の行が1つ
+        { id: GA, name: '模擬店01', category: 'stall', sort_order: 2, request_submissions: [{ submitted_at: null }], substitution_consents: [{ status: 'accepted' }] },
+        // 提出の記録がない・了承の行がない
+        { id: GB, name: '部門02', category: 'department', sort_order: 2, request_submissions: null, substitution_consents: [] },
+      ];
     case 'rooms':
-      return [{ id: 'r1', name: '1-1', is_storage: true, sort_order: 1 }];
-    case 'room_years':
-      return [{ room_id: 'r1', usable: true }];
-    case 'stocks':
-      return [{ room_id: 'r1' }, { room_id: 'r1' }, { room_id: 'r2' }];
-    case 'substitution_consents':
-      return [{ group_id: 'g1', status: 'asked', groups: { year_id: Y } }];
+      return [
+        // 保管場所で、今年は使用不可（今年の使用の行がオブジェクトで返った形）。在庫の行がある
+        { id: RC, name: '倉庫C', is_storage: true, sort_order: 1, room_years: { usable: false }, stocks: [{ room_id: RC }] },
+        // 保管場所で、在庫の行がない。今年の使用の行がない
+        { id: RB, name: '倉庫B', is_storage: true, sort_order: 2, room_years: [], stocks: [] },
+        // 保管場所でない。今年は使用可。在庫の行がある（埋め込みが null・抜けている形も読む）
+        { id: RA, name: '1-1', is_storage: false, sort_order: 3, room_years: [{ usable: true }], stocks: [{ room_id: RA }] },
+      ];
     default:
       throw new Error(`読まない表：${call.table}`);
   }
 }
 
-describe('T16 loadFurnitureSoumu（総務の軽い読み取り）', () => {
-  it('6つの表を年度で絞って読む。版（years）・振り分けの行・ルール・申請の行・品目・距離は読まない', async () => {
-    const { client, issued } = createFakeSupabase((call) => ({ data: rowsFor(call) }));
-    const raw = await loadFurnitureSoumu(Y, client);
-    expect(issued.map((c) => c.table).sort()).toEqual(['groups', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']);
+describe('T16 loadFurnitureSoumu（総務の軽い読み取り。FU3 の案 3 で埋め込みの2本）', () => {
+  it('2本を並行に読む：団体（年度で絞る）に提出の記録と了承、場所（全部）に今年の使用と在庫の行（年度で絞り、場所ごとに1行まで）を埋め込む。版（years）・振り分けの行・ルール・申請の行・品目・距離は読まない', async () => {
+    const { client, issued } = createFakeSupabase((call) => ({ data: embedRowsFor(call) }));
+    await loadFurnitureSoumu(Y, client);
+    expect(issued.map((c) => c.table).sort()).toEqual(['groups', 'rooms']);
     const call = (t: string) => issued.find((c) => c.table === t)!;
-    for (const [table, select] of Object.entries(FURNITURE_SOUMU_SELECT)) expect(opArgs(call(table), 'select'), table).toEqual([[select]]);
     expect(FURNITURE_SOUMU_SELECT).toEqual({
-      groups: 'id, name, category, sort_order',
-      request_submissions: 'group_id, submitted_at, groups!inner(year_id)',
-      rooms: 'id, name, is_storage, sort_order',
-      room_years: 'room_id, usable',
-      stocks: 'room_id',
-      substitution_consents: 'group_id, status, groups!inner(year_id)',
+      groups: 'id, name, category, sort_order, request_submissions(submitted_at), substitution_consents(status)',
+      rooms: 'id, name, is_storage, sort_order, room_years(usable), stocks(room_id)',
     });
+    for (const [table, select] of Object.entries(FURNITURE_SOUMU_SELECT)) expect(opArgs(call(table), 'select'), table).toEqual([[select]]);
+    // 団体：年度で絞り、並びの順。了承は品目の組の順（表ごとに読んだときの並び）
     expect(opArgs(call('groups'), 'eq')).toEqual([['year_id', Y]]);
-    expect(opArgs(call('request_submissions'), 'eq')).toEqual([['groups.year_id', Y]]);
-    expect(opArgs(call('rooms'), 'eq')).toEqual([]); // 年度をまたぐ表
-    expect(opArgs(call('room_years'), 'eq')).toEqual([['year_id', Y]]);
-    expect(opArgs(call('stocks'), 'eq')).toEqual([['year_id', Y]]);
-    expect(opArgs(call('stocks'), 'range')).toEqual([[0, 999]]);
-    expect(opArgs(call('substitution_consents'), 'eq')).toEqual([['groups.year_id', Y]]);
-
-    // join の列を外し、在庫の場所は重ねない
-    expect(raw).toEqual({
-      groups: [{ id: 'g1', name: '模擬店01', category: 'stall', sort_order: 1 }],
-      submissions: [{ group_id: 'g1', submitted_at: '2026-10-01T00:00:00Z' }],
-      rooms: [{ id: 'r1', name: '1-1', is_storage: true, sort_order: 1 }],
-      roomYears: [{ room_id: 'r1', usable: true }],
-      stockRoomIds: ['r1', 'r2'],
-      consents: [{ group_id: 'g1', status: 'asked' }],
-    });
-  });
-
-  it('在庫の行が 1000 を超えれば続きのページを読む', async () => {
-    const { client, issued } = createFakeSupabase((call) => {
-      if (call.table !== 'stocks') return { data: [] };
-      const [[from]] = opArgs(call, 'range') as [[number, number]];
-      return { data: from === 0 ? Array.from({ length: 1000 }, (_, k) => ({ room_id: `r${k % 3}` })) : [{ room_id: 'r9' }] };
-    });
-    const raw = await loadFurnitureSoumu(Y, client);
-    expect(issued.filter((c) => c.table === 'stocks').map((c) => opArgs(c, 'range')[0])).toEqual([
-      [0, 999],
-      [1000, 1999],
+    expect(opArgs(call('groups'), 'order')).toEqual([
+      ['sort_order'],
+      ['id'],
+      ['from_item_id', { referencedTable: 'substitution_consents' }],
+      ['to_item_id', { referencedTable: 'substitution_consents' }],
     ]);
-    expect(raw.stockRoomIds).toEqual(['r0', 'r1', 'r2', 'r9']);
+    expect(opArgs(call('groups'), 'limit')).toEqual([]);
+    // 場所：年度をまたぐ表なので場所は絞らず、埋め込みの今年の使用と在庫の行を年度で絞る。在庫の行は場所ごとに1行まで
+    expect(opArgs(call('rooms'), 'eq')).toEqual([
+      ['room_years.year_id', Y],
+      ['stocks.year_id', Y],
+    ]);
+    expect(opArgs(call('rooms'), 'limit')).toEqual([[1, { referencedTable: 'stocks' }]]);
+    expect(opArgs(call('rooms'), 'order')).toEqual([['sort_order'], ['id']]);
+    // 埋め込みの絞り込みだけ（!inner にしない。埋め込みの行がない団体・場所も返る）。全部を読むので range で切らない
+    for (const c of issued) {
+      expect(String(opArgs(c, 'select')[0]![0])).not.toContain('!inner');
+      expect(opArgs(c, 'range')).toEqual([]);
+    }
   });
 
-  it('読み取りの失敗は AppError（欄がその機能の分だけ失敗を出す）', async () => {
-    const { client } = createFakeSupabase((call) => (call.table === 'rooms' ? { error: { code: '42501', message: 'denied' }, status: 403 } : { data: [] }));
-    await expect(loadFurnitureSoumu(Y, client)).rejects.toBeInstanceOf(AppError);
+  it('埋め込みを表ごとに読んだときと同じ形・並びに戻す（提出・了承は団体の id の順、今年の使用・在庫は場所の id の順。埋め込みがオブジェクトでも配列でも）', async () => {
+    const { client } = createFakeSupabase((call) => ({ data: embedRowsFor(call) }));
+    const raw = await loadFurnitureSoumu(Y, client);
+    expect(raw).toEqual({
+      groups: [
+        { id: GC, name: '模擬店03', category: 'stall', sort_order: 1 },
+        { id: GA, name: '模擬店01', category: 'stall', sort_order: 2 },
+        { id: GB, name: '部門02', category: 'department', sort_order: 2 },
+      ],
+      submissions: [
+        { group_id: GA, submitted_at: null },
+        { group_id: GC, submitted_at: SUBMITTED },
+      ],
+      rooms: [
+        { id: RC, name: '倉庫C', is_storage: true, sort_order: 1 },
+        { id: RB, name: '倉庫B', is_storage: true, sort_order: 2 },
+        { id: RA, name: '1-1', is_storage: false, sort_order: 3 },
+      ],
+      roomYears: [
+        { room_id: RA, usable: true },
+        { room_id: RC, usable: false },
+      ],
+      stockRoomIds: [RA, RC],
+      consents: [
+        { group_id: GA, status: 'accepted' },
+        { group_id: GC, status: 'asked' },
+        { group_id: GC, status: 'declined' },
+      ],
+    });
+    // 数え方は前と同じ（未提出 2 団体、使用不可を除く保管場所 1 か所のうち数えたのは 0、了承の依頼中 1 団体）
+    const counts = furnitureSoumuCounts(raw);
+    expect(counts.submissions).toMatchObject({ submitted: 1, total: 3 });
+    expect(counts.submissions.unsubmitted.map((g) => g.id)).toEqual([GA, GB]);
+    expect(counts.storages).toMatchObject({ counted: 0, total: 1 });
+    expect(counts.consents).toEqual({ groups: 2, notAsked: 0, asked: 1, accepted: 1, declined: 1 });
+  });
+
+  it('埋め込みが null・抜けている・空の行も読む。団体も場所もなければ全部が空', async () => {
+    const sparse = createFakeSupabase((call) =>
+      call.table === 'groups'
+        ? { data: [{ id: GA, name: '模擬店01', category: 'stall', sort_order: 1 }] }
+        : { data: [{ id: RA, name: '倉庫A', is_storage: true, sort_order: 1, room_years: null, stocks: null }] },
+    );
+    expect(await loadFurnitureSoumu(Y, sparse.client)).toEqual({
+      groups: [{ id: GA, name: '模擬店01', category: 'stall', sort_order: 1 }],
+      submissions: [],
+      rooms: [{ id: RA, name: '倉庫A', is_storage: true, sort_order: 1 }],
+      roomYears: [],
+      stockRoomIds: [],
+      consents: [],
+    });
+    const none = createFakeSupabase(() => ({ data: [] }));
+    expect(await loadFurnitureSoumu(Y, none.client)).toEqual({ groups: [], submissions: [], rooms: [], roomYears: [], stockRoomIds: [], consents: [] });
+  });
+
+  it('読み取りの失敗は AppError（欄がその機能の分だけ失敗を出す）。どちらの1本が失敗しても', async () => {
+    for (const table of ['groups', 'rooms']) {
+      const { client } = createFakeSupabase((call) => (call.table === table ? { error: { code: '42501', message: 'denied' }, status: 403 } : { data: [] }));
+      await expect(loadFurnitureSoumu(Y, client), table).rejects.toBeInstanceOf(AppError);
+    }
   });
 });
 

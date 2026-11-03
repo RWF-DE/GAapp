@@ -45,13 +45,19 @@ async function expectNoOverflow(page: Page): Promise<void> {
 
 const furnitureCard = (page: Page) => page.locator('[data-testid="module-card"][data-module="furniture"]');
 
+/**
+ * 机椅子の総務の読み取りのうち、団体に提出の記録と了承を埋め込んだ1本（FU3 の案 3 で6本を埋め込みの2本にした。04「机椅子の状況」の
+ * 「ダッシュボードに出すもの」）。欄の読み込み中と失敗を作る route に使う
+ */
+const isFurnitureSoumuGroupsRead = (u: URL) => u.pathname.endsWith('/rest/v1/groups') && (u.searchParams.get('select') ?? '').includes('request_submissions(');
+
 test.describe('T16 管理者', () => {
   test.use({ storageState: storageStateFor('admin'), viewport: PC });
 
   test('T16 管理者のダッシュボード・机椅子の状況・見出しごとのナビ・欄の読み込み中と失敗（受付中で締切を過ぎた年度）', async ({ page }) => {
     test.setTimeout(180_000);
     const s = await createScenario({ status: 'requesting', requestWindow: 'closed', dataset: 'synthetic', roles: { admin: true } });
-    const route = '**/rest/v1/request_submissions*';
+    const route = isFurnitureSoumuGroupsRead;
     let release: () => void = () => undefined;
     try {
       // 未提出を6団体、数えていない保管場所を2か所に。祭は2週間後
@@ -81,9 +87,9 @@ test.describe('T16 管理者', () => {
       await shoot(page, 'T16', 'nav-grouped-pc');
       await shoot(page, 'T16', 'furniture-pc', { fullPage: true });
 
-      // 欄の読み込み中：机椅子の読み込み（提出の記録）を止める。年度の行だけで決まる項目は先に出ている。締切と予定の欄には机椅子の
+      // 欄の読み込み中：机椅子の読み込み（団体に提出の記録と了承を埋め込んだ1本）を止める。年度の行だけで決まる項目は先に出ている。締切と予定の欄には机椅子の
       // 読み込み中を出さない（机椅子の日付は年度の行だけで決まる。決定 7。この欄の締切と予定の機能・提出物・シフト・作業の分は届くのを
-      // 待つ）。2回目の / なので覚えた id で机椅子の読み取りを先に始める（先読み。D-45）が、その提出の記録も同じ route で止まる。欄は
+      // 待つ）。2回目の / なので覚えた id で机椅子の読み取りを先に始める（先読み。D-45）が、その1本も同じ route で止まる。欄は
       // 機能ごとに読み込み中を出し、止めていない機能の読み取りの届く順は回ごとに変わるので、確かめは止めた机椅子の分に絞り、撮る前に
       // 机椅子以外の読み込み中（お知らせ・テント等の貸し出しなど）が消えるのを待つ（写るものを毎回同じにする。FU3）
       const held = new Promise<void>((r) => (release = r));

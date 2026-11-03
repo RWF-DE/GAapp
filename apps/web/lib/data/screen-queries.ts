@@ -347,7 +347,7 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
 
 /**
  * / の先読み（D-45・D-51。04「ダッシュボード」の読むもの）：立場の種類ごとに、ダッシュボードの欄が読むクエリと同じもの。
- * - 総務（ロールが総務）：机椅子の軽い読み取り（6つの表。furnitureSoumuOptions。要対応とカードが同じキーを読む）と、
+ * - 総務（ロールが総務）：机椅子の軽い読み取り（6つの表を埋め込みの2本で。furnitureSoumuOptions。要対応とカードが同じキーを読む）と、
  *   総務内のお知らせの新着（noticesLatestOptions の soumu。総務内のお知らせの欄と同じキー。T17）と、予定と締切の項目
  *   （calendarDatedOptions の soumu。締切と予定の欄と同じキー。T18）
  * - 閲覧のみ（ロールが閲覧のみ）：団体あてのお知らせの新着（noticesLatestOptions の viewer。お知らせの欄と同じキー。T17）と、

@@ -104,21 +104,23 @@ function member(role: AppRole | null, groups: GroupSummary[], status: YearStatus
   return { displayName: 'テスト', year, role, groups, years: [year], latestYear: year, adminOfOpenYear: role === 'admin' };
 }
 
-/** 総務の読み取りの行：未提出 1 団体（模擬店02）・数えていない保管場所 1 か所（1-2）・了承の依頼中 1 団体（模擬店01） */
+/**
+ * 総務の読み取りの行：未提出 1 団体（模擬店02）・数えていない保管場所 1 か所（1-2）・了承の依頼中 1 団体（模擬店01）。机椅子の総務の
+ * 読み取りは埋め込みの2本（FU3 の案 3）：団体に提出の記録（一対一なのでオブジェクトか null）と了承を、場所に今年の使用と在庫の行を埋め込む
+ */
 const SOUMU_ROWS: Record<string, unknown[]> = {
   groups: [
-    { id: 'g1', name: '模擬店01', category: 'stall', sort_order: 1 },
-    { id: 'g2', name: '模擬店02', category: 'stall', sort_order: 2 },
+    { id: 'g1', name: '模擬店01', category: 'stall', sort_order: 1, request_submissions: { submitted_at: '2026-10-01T00:00:00Z' }, substitution_consents: [{ status: 'asked' }] },
+    { id: 'g2', name: '模擬店02', category: 'stall', sort_order: 2, request_submissions: null, substitution_consents: [] },
   ],
-  request_submissions: [{ group_id: 'g1', submitted_at: '2026-10-01T00:00:00Z', groups: { year_id: Y } }],
   rooms: [
-    { id: 'r1', name: '1-1', is_storage: true, sort_order: 1 },
-    { id: 'r2', name: '1-2', is_storage: true, sort_order: 2 },
+    { id: 'r1', name: '1-1', is_storage: true, sort_order: 1, room_years: [], stocks: [{ room_id: 'r1' }] },
+    { id: 'r2', name: '1-2', is_storage: true, sort_order: 2, room_years: [], stocks: [] },
   ],
-  room_years: [],
-  stocks: [{ room_id: 'r1' }],
-  substitution_consents: [{ group_id: 'g1', status: 'asked', groups: { year_id: Y } }],
 };
+
+/** 総務の机椅子の読み取りの表（埋め込みの2本） */
+const SOUMU_TABLES = ['groups', 'rooms'];
 
 /** 団体代表（模擬店01）の読み取りの行：未提出・交換の依頼あり */
 const REP_ROWS: Record<string, unknown[]> = {
@@ -329,15 +331,15 @@ describe('T16 ダッシュボード：立場ごとの欄と h1', () => {
 // ---------------------------------------------------------------- 読むもの
 
 describe('T16 ダッシュボード：読むもの（版・振り分けの行・ルールを読まない。D-51）', () => {
-  it('総務：机椅子の軽い読み取りの6つの表と、T17 総務内のお知らせの新着と、T18 予定と締切を1回ずつ（欄が3つでも同じキーは1回）。years・allocations・rules・requests は読まない', async () => {
+  it('総務：机椅子の軽い読み取り（6つの表を埋め込みの2本。FU3 の案 3）と、T17 総務内のお知らせの新着と、T18 予定と締切を1回ずつ（欄が3つでも同じキーは1回）。years・allocations・rules・requests は読まない', async () => {
     renderPortal(member('admin', [], 'requesting'));
     await screen.findByTestId('module-card');
     await screen.findByTestId('portal-notices-empty');
-    await waitFor(() =>
-      expect(tablesRead()).toEqual(['events', 'groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']),
-    );
-    const stocks = issued.find((c) => c.table === 'stocks')!;
-    expect(opArgs(stocks, 'select')).toEqual([['room_id']]);
+    await waitFor(() => expect(tablesRead()).toEqual(['events', ...SOUMU_TABLES, 'notices'].sort()));
+    // 在庫は場所に埋め込んだ room_id だけ（場所ごとに1行まで）
+    const rooms = issued.find((c) => c.table === 'rooms')!;
+    expect(opArgs(rooms, 'select')).toEqual([['id, name, is_storage, sort_order, room_years(usable), stocks(room_id)']]);
+    expect(opArgs(rooms, 'limit')).toEqual([[1, { referencedTable: 'stocks' }]]);
   });
 });
 
@@ -360,7 +362,7 @@ describe('T16 ダッシュボード：最後に読み込んだ日時と「読み
       who: '総務（管理者）',
       m: () => member('admin', [], 'requesting'),
       ready: 'module-card',
-      tables: ['events', 'groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents'],
+      tables: ['events', ...SOUMU_TABLES, 'notices'].sort(),
     },
     {
       who: '店長',
@@ -410,7 +412,7 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
   it('読み込み中：年度の行だけで決まる項目（締切を過ぎた・締切と予定）は先に出し、机椅子の分は要対応とカードの欄に Skeleton（portal-loading）', async () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => (release = r));
-    override = (call) => (call.table === 'request_submissions' ? gate.then(() => ({ data: SOUMU_ROWS.request_submissions })) : undefined);
+    override = (call) => (call.table === 'groups' ? gate.then(() => ({ data: SOUMU_ROWS.groups })) : undefined);
     renderPortal(member('admin', [], 'requesting'));
     const todos = screen.getByTestId('portal-todos');
     expect(todoIds()).toEqual(['furniture:lead:close-requests']);
@@ -431,7 +433,7 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
 
   it('机椅子の読み込みの失敗：要対応とカードの欄に失敗と「もう一度」。年度だけの要対応・締切と予定・立場の一覧は出る。もう一度で直る', async () => {
     let fail = true;
-    override = (call) => (call.table === 'request_submissions' && fail ? NETWORK : undefined);
+    override = (call) => (call.table === 'groups' && fail ? NETWORK : undefined);
     const user = userEvent.setup({ advanceTimers: () => {} });
     renderPortal(member('admin', [], 'requesting'));
     const todos = screen.getByTestId('portal-todos');
@@ -467,7 +469,7 @@ describe('T16 ダッシュボード：欄ごとの読み込み中と失敗（04�
   it('読み直しだけの失敗（data がある）は、前の data を出し続ける（失敗を出さない）', async () => {
     const qc = renderPortal(member('admin', [], 'requesting'));
     await screen.findByTestId('module-card');
-    override = (call) => (call.table === 'request_submissions' ? NETWORK : undefined);
+    override = (call) => (call.table === 'groups' ? NETWORK : undefined);
     await qc.refetchQueries({ queryKey: ['year', Y, 'portal'] });
     // 読み直しは失敗している（キャッシュは error で data を持つ）。描画に知らせが届くまで待つ
     expect(qc.getQueryState(['year', Y, 'portal', 'furniture', 'soumu'])?.status).toBe('error');
@@ -795,7 +797,7 @@ describe('T17 ダッシュボード：お知らせの欄（04「ダッシュボ�
   });
 
   it('机椅子の読み込みの失敗は、お知らせの欄に出ない（お知らせは出る）', async () => {
-    override = (call) => (call.table === 'request_submissions' ? NETWORK : undefined);
+    override = (call) => (call.table === 'groups' ? NETWORK : undefined);
     noticeRows = [notice('s1', 'soumu', '2026-10-02T00:00:00Z')];
     renderPortal(member('admin', [], 'requesting'));
     await within(screen.getByTestId('portal-todos')).findByTestId('portal-module-error');
@@ -952,7 +954,7 @@ describe('T18 ダッシュボード：締切と予定の欄（04「ダッシュ�
 
   it('机椅子の読み込みの失敗は、締切と予定の欄に出ない（項目は出る）', async () => {
     eventRows = [eventRow('e1', { starts_at: '2026-10-08T04:00:00Z' })];
-    override = (call) => (call.table === 'request_submissions' ? NETWORK : undefined);
+    override = (call) => (call.table === 'groups' ? NETWORK : undefined);
     renderPortal(member('admin', [], 'requesting'));
     await within(screen.getByTestId('portal-todos')).findByTestId('portal-module-error');
     await waitFor(() => expect(datedIds()).toContain('calendar:e1'));
