@@ -857,6 +857,12 @@ T21 の「確認したいこと」の 11 の (b)（ユーザーの回答の Q3 �
 - script が動いた時刻も確かめた（diag3。上の印に、script が最初に読む window.__gaappSent を、読まれた時刻と値で記録する印を足した。直した書き出しで again の http1 × 3 画面 × 50 回。トレースつき）：150 回とも script は動き、146 回は HTML を読んでいる間（243〜436 ms）だった。4 回（/stock 2・/document 1・/lending/records 1）は DOMContentLoaded の後、アプリが自分で送った 44〜72 ms 後（1,389〜1,515 ms）に動き、印が立っているのを見て何も送らなかった（Supabase へのリクエストはアプリの 7・10 本だけ）。
 - 速さは PERF_AB で計っていない：起きるのは again の http1 の 1〜2.5%（トレースつき）・0.15%（トレースなし。A/A と案 1〜4 の計測の 5,000 回ほどで 2 回）で、12 組のマスでは見えない。変わるのは起きた回だけ（二重に送らない）。
 
+**直した後の全部の E2E で見つけて直したこと**（2026-11-03 21:31〜。案 6 を戻した後の最後の確かめ。下の表の 21:31 から）
+- `pnpm e2e`（全部）で、e2e/t16-portal.spec.ts の「T16 総務の / は版・振り分けの行・ルールを読まない（…）。先読みと、2回目の先送りでも1回ずつ」が「<head> の script が覚えた読み取りを送った」（0 本）で落ちた（chromium は 211 件が通って 1 件が落ち、serial の 17 件は通った）。トレース：この spec の2回目は同じページでもう一度開くので、JS が HTTP のキャッシュから（304）すぐに動き、HTML を頼んでから 164 ms でアプリが立場と画面の読み取りを送っていた。script の読み取りはなく、トークンの更新もなかった（トークンの余裕で止めたのではない）。
+- 原因は spec の期待：この spec は「どちらの順でも中身は正しい」として、アプリが先に送る回も通す形だったが、「script が送った（1本以上）」も見ていた。直す前は、アプリが先に送っても script が後から同じ読み取りを全部送っていた（二重。上の (1) そのもの）ので通っていた。直した後は、アプリが先なら script は何も送らないので落ちる（04 と直しのとおりの動き）。直す前の spec をこの枝の書き出しで 20 回流すと 8 回落ちた（19:27 の全部の E2E と案 5 の E2E では、たまたま script が先だった）。アプリのコードは直していない。
+- spec を直した：2回目はそのままの順で、アプリと script を合わせて表ごとに1回（二重に送らない）と、版を読まないことを見る（どちらの順でも通る。どちらだったかを注記〔2回目の順〕に残す）。3回目は、script が先送りを置く（window.__gaappEarly）まで JS のチャンクを返さない route（3 秒で諦めて返す）で script が先に動く順にして、script が覚えた読み取りを送り、アプリがその応答を使う（合わせて1回ずつ）ことを見る。
+- 確かめ：直した spec を 20 回ずつ流した。この枝の書き出しでは 2 回（40 回）とも通った（2回目の順を注記に残した後の 20 回で、script が先 11 回・アプリが先 9 回）。直す前の書き出し（7958900。A の worktree で書き出し、直した spec を写して流した）では 7 回落ち、どれも 2回目の「アプリと <head> の script を合わせて、表ごとに1回」だった（アプリの後に script が同じ読み取りを送り、11 本のうち 10 本が二重）。この E2E は、送り直しの直しを（アプリが先の回に）見張る形になった。直した後に全部の E2E をもう一度流した（下の表）。
+
 **実行したコマンドと結果**（2026-11-03 UTC。共有のローカル Supabase に触れるものは db-lock.sh のロックの中で流し、どの回も `supabase db reset` → `notify pgrst, 'reload schema'` → 匿名の `POST /rest/v1/rpc/set_group_member_role`〔名前つきの引数〕が 401 になる〔どの回も 1 回目〕のを確かめてから流した。ポートは E2E_PORT=3400・E2E_BASEPATH_PORT=3401・E2E_PERF_H2_PORT=3402。作業用のスクリプト・ログ・perf.json は scratchpad の FU3B/resend〔session.sh・e2e.sh・headtimes.py。コミットしない〕）
 
 | いつ（UTC） | コマンド | 結果 |
@@ -870,6 +876,14 @@ T21 の「確認したいこと」の 11 の (b)（ユーザーの回答の Q3 �
 | 19:27〜19:38（ロック。e2e-full） | `REQUIRE_LIBREOFFICE=1 E2E_PORT=3400 E2E_BASEPATH_PORT=3401 pnpm e2e` | chromium 212 件（9.5 分。setup 6 件を含む）・serial 17 件（1.3 分）がすべて通った |
 | 19:39（ロックの外） | apps/web の `tsc --noEmit`、`eslint apps/web/lib/boot` | どちらも通った |
 | 19:38〜19:49（ロック。diag3） | script が読む印を足した perf.spec.ts で、同じに `PERF_ONLY=document,stock,records PERF_RUNS=50` | 7 件が通った（9.4 分）。上の diag3 |
+| 21:31〜21:43（ロック。案 6 の e2e-full） | `REQUIRE_LIBREOFFICE=1 pnpm e2e`（案 6 を戻した形。作業用のログは scratchpad の FU3B/c6） | chromium 212 件（setup 6 件を含む）のうち 211 件が通り、t16-portal の1件が落ちた（9.1 分）。serial 17 件は通った（1.3 分）。上の「直した後の全部の E2E で見つけて直したこと」 |
+| 21:43〜21:45（ロック。t16-repro） | 直す前の spec で `playwright test --project=chromium e2e/t16-portal.spec.ts -g 2回目の先送りでも1回ずつ --repeat-each 20 --workers 2` | 20 回のうち 8 回が「script が送った」（0 本）で落ちた |
+| 21:46〜21:47（ロックの外） | spec を直して `eslint e2e/t16-portal.spec.ts`・`tsc --noEmit -p tsconfig.json` | どちらも通った |
+| 21:47〜21:50（ロック。t16-new） | 直した spec で同じ（20 回） | 26 件（setup 6 件を含む）がすべて通った |
+| 21:50〜21:51（ロックの外） | A の worktree を `git checkout --detach 7958900`（直す前）に移して `pnpm install --frozen-lockfile --offline`・`pnpm build:e2e`（Supabase の URL と publishable キーを渡す）、両方の書き出しの <head> の script を取り出して比べた | 通った。A の script には `__gaappSent` の確かめがなく、トークンの余裕は 30 秒（この枝は 90 秒） |
+| 21:51〜21:53（ロック。t16-prefix） | A に直した spec を写し、A で同じ（20 回。流した後に写した spec は戻した） | 20 回のうち 7 回が、2回目の「アプリと <head> の script を合わせて、表ごとに1回」で落ちた（10 本が二重） |
+| 21:53〜21:55（ロック。t16-new2） | 2回目の順を注記に残す形にして、この枝で同じ（20 回。`--reporter=list,json`） | 26 件がすべて通った。2回目の順は script が先 11 回・アプリが先 9 回 |
+| 21:55〜22:07（ロック。e2e-full2） | 直した spec で `REQUIRE_LIBREOFFICE=1 pnpm e2e`（全部） | chromium 212 件（setup 6 件を含む。9.6 分）・serial 17 件（1.3 分）がすべて通った |
 | （どのロックの終わりも） | psql：後片付けの確かめ | 年度 1・auth.users 6・提出物 0・テント等の備品 0・時間枠 0・Storage の物 0。rooms は 4 → 65（E2E の db-setup が入れる年度をまたぐ表。前の回と同じ） |
 
 #### 案 5：/document の書き込みの JS を初めて使うときに読む（2026-11-03）

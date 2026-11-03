@@ -340,22 +340,35 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       expect(recordedTables.filter((t) => ['allocations', 'rules', 'requests', 'items', 'distance_overrides'].includes(t))).toEqual([]);
       expect(recorded.filter((r) => r.u.includes('select=allocation_version'))).toEqual([]);
 
-      // 2回目：<head> の script が覚えた読み取りを JS より先に送り、アプリは同じリクエストならその応答を使う（送らない）。JS が
-      // ブラウザのキャッシュからすぐに動くと、script より先にアプリが送ることがある（どちらの順でも中身は正しい。速さは e2e:perf で
-      // 計る）ので、アプリの読み取りは表ごとに1回まで、script は覚えた読み取りだけ、合わせて8つの表がそろい、版を読まないことを見る
-      // （提出物〔T19〕の部門長以上の3本・シフト・作業〔T20〕の2本・テント等の貸し出し〔T21〕の総務の5つの表も同じ形でそろう）
+      // 2回目：<head> の script が覚えた読み取りを JS より先に送り、アプリは同じリクエストならその応答を使う（送らない）。この開き方では
+      // JS が HTTP のキャッシュからすぐに動き、script より先にアプリが送ることが多い（そのときは script は何も送らない。FU3 の送り直しの
+      // 直し。04「共通レイアウト」の読み込みの項）。どちらの順でも、アプリと script を合わせて表ごとに1回だけ送り（二重に送らない）、
+      // 8つの表がそろい、版を読まないことを見る（提出物〔T19〕の部門長以上の3本・シフト・作業〔T20〕の2本・テント等の貸し出し〔T21〕の
+      // 総務の5つの表も同じ形でそろう）
+      const opened = async (label: string) => {
+        await openPortal(page, 'ダッシュボード');
+        await expect(furnitureCard(page)).toBeVisible();
+        await page.waitForLoadState('networkidle');
+        const byApp = readsBeyondMembership(reads.filter((r) => r.app));
+        const early = readsBeyondMembership(reads.filter((r) => !r.app));
+        expect([...byApp, ...early].sort(), `${label}：アプリと <head> の script を合わせて、表ごとに1回`).toEqual(FURNITURE_READS);
+        expect(reads.filter(isVersionRead), `${label}：版だけの読み取り`).toEqual([]);
+        return early;
+      };
       reads.length = 0;
-      await openPortal(page, 'ダッシュボード');
-      await expect(furnitureCard(page)).toBeVisible();
-      await page.waitForLoadState('networkidle');
-      const byApp = readsBeyondMembership(reads.filter((r) => r.app));
-      const early = readsBeyondMembership(reads.filter((r) => !r.app));
-      expect(early.length, '<head> の script が覚えた読み取りを送った').toBeGreaterThan(0);
-      expect(new Set(byApp).size, 'アプリの読み取りは表ごとに1回まで').toBe(byApp.length);
-      expect(new Set(early).size, '<head> の script の読み取りは表ごとに1回まで').toBe(early.length);
-      for (const r of early) expect(FURNITURE_READS).toContain(r);
-      expect([...new Set([...byApp, ...early])].sort()).toEqual(FURNITURE_READS);
-      expect(reads.filter(isVersionRead), '版だけの読み取り').toEqual([]);
+      const second = await opened('2回目');
+      test.info().annotations.push({ type: '2回目の順', description: second.length > 0 ? 'script が先に送った' : 'アプリが先に送った（script は送らない）' });
+
+      // 3回目：script が先に動く順。script が先送りを置く（window.__gaappEarly）まで JS のチャンクを返さず（3 秒で諦めて返す。route を
+      // 使う間は HTTP のキャッシュも使わない）、script が覚えた読み取りを送って、アプリがその応答を使う（送り直さない）ことを見る
+      const chunks = '**/_next/static/chunks/**';
+      await page.route(chunks, async (route) => {
+        await page.waitForFunction(() => '__gaappEarly' in globalThis, undefined, { timeout: 3_000, polling: 20 }).catch(() => undefined);
+        await route.continue();
+      });
+      reads.length = 0;
+      expect((await opened('3回目')).length, '3回目：<head> の script が覚えた読み取りを送った').toBeGreaterThan(0);
+      await page.unroute(chunks);
     } finally {
       await s.cleanup();
     }
