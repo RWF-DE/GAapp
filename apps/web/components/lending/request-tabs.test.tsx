@@ -12,7 +12,9 @@
 //   変更の確かめ）・受付の前と締切後の読み取り専用・時計のずれ（42501）・確定後の割り当て（0・未定）と記録・2日目からの未返却。
 // - 下書き・離れるときの確かめ（レビューの T21-R3）：アンマウントで下書きが残る → 開き直すと DraftNotice →「戻す」で入力と入力の元
 //   （保存の確かめに使う）／「捨てる」／保存できると下書きを消す／未保存の間は、テント等のタブを隠していても移る前に確かめる。
-// - `?tab=lending` で開いたときは、タブを出すかの読み取りを待たずにパネルの JS を読み始める（レビューの T21-R1）。
+// - テント等のパネルは /request の最初に読む JS に入れた（FU3 の PR B の案 4。T21 の「確認したいこと」の 11 の (b)）：タブを出すと決めた
+//   描画でパネルを出す（パネルの JS の読み込みを待たない）。パネルを作るのは初めて開いたとき。`?tab=lending` で開いたときは、テント等の
+//   パネルを出した後に机・椅子のパネルを作る（レビューの T21-R1）。
 // 机・椅子のパネルは本物の RequestScreen の代わりに入力が1つの部品を置く（RequestScreen は request-screen.test.tsx が確かめる）。
 // ナビと年度の選択の代わりに、同じ部品と関数（AppLink・useGuardedSetYear）で未保存の入力の確かめを通す（calendar.test.tsx と同じ）。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -28,7 +30,7 @@ import type { YearRow } from '@/lib/db/types';
 import { draftKey, saveDraft, type DraftKey } from '@/lib/drafts';
 import { queryKeys } from '@/lib/query';
 import { lendingPortal } from '@/lib/modules/lending/portal';
-import { LENDING_REQUEST_ITEMS_SELECT } from '@/lib/modules/lending/queries';
+import { LENDING_REQUEST_ITEMS_SELECT, LENDING_REQUEST_TAB_SELECT } from '@/lib/modules/lending/queries';
 import { loadLendingRep } from '@/lib/modules/lending/summary';
 import type { PortalContext, TodoItem } from '@/lib/modules/portal';
 import { createFakeSupabase, opArgs, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
@@ -70,20 +72,6 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/request',
   useSearchParams: () => h.params,
 }));
-// テント等のパネルの JS の読み込み（読み始めた回数を数える。中身は本物）
-// （fail の間は読めない〔通信が切れた〕ことにし、forget の間は読み終えたものを覚えていないことにする）
-const loader = vi.hoisted(() => ({ calls: 0, fail: false, forget: false }));
-vi.mock('./request-panel-loader', async (orig) => {
-  const m = await orig<typeof import('./request-panel-loader')>();
-  return {
-    ...m,
-    loadLendingRequestPanel: () => {
-      loader.calls++;
-      return loader.fail ? Promise.reject(new Error('ChunkLoadError')) : m.loadLendingRequestPanel();
-    },
-    loadedLendingRequestPanel: () => (loader.forget ? null : m.loadedLendingRequestPanel()),
-  };
-});
 vi.mock('next/link', () => ({
   // Next の Link と同じく、移る前に onNavigate を呼び、preventDefault されたら移らない（AppLink の未保存の入力の確かめ）。移るときは h.push
   default: (props: Record<string, unknown> & { href: string; children: React.ReactNode }) => {
@@ -251,6 +239,8 @@ function renderTabs(opts: { status?: YearStatus; search?: string; now?: string; 
 
 const user = () => userEvent.setup({ advanceTimers: () => {} });
 const upserts = () => issued.filter((c) => c.table === 'lending_requests' && c.ops.some((o) => o.op === 'upsert'));
+/** テント等のタブの読み取り（その団体に申請・割り当て・記録と確定の印を埋め込んだ1本。パネルを作ると送る） */
+const isTabRead = (c: FakeCall) => c.table === 'groups' && opArgs(c, 'select')[0]?.[0] === LENDING_REQUEST_TAB_SELECT;
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -263,9 +253,6 @@ beforeEach(() => {
   h.push.mockClear();
   h.replace.mockClear();
   h.setYear.mockClear();
-  loader.calls = 0;
-  loader.fail = false;
-  loader.forget = false;
   localStorage.clear();
 });
 afterEach(() => {
@@ -533,8 +520,14 @@ describe('T21 申請のテント等のパネル：下書き・離れるときの
   });
 });
 
-describe('T21 テント等のパネルの JS の読み始め（レビューの T21-R1）', () => {
-  it('`?tab=lending` で開いたら、タブを出すかを決める読み取り（備品）を待たずに、パネルの JS を読み始める（読み取りと並行に）', async () => {
+describe('T21 テント等のパネルの JS（FU3 の PR B の案 4：/request の最初に読む JS に入れる）', () => {
+  /** テント等のタブのパネルの見出し（パネルを出した印。中身はタブの読み取りが届くまで読み込み中） */
+  const lendingPanelHeading = () => {
+    const panel = document.getElementById('request-panel-lending');
+    return panel ? within(panel).queryByRole('heading', { name: '申請' }) : null;
+  };
+
+  it('`?tab=lending` で開いたら、タブを出すと決めた描画でテント等のパネルを出す（パネルの JS の読み込みを待たない）。決まるまではタブも両方のパネルも出さない', async () => {
     let release: () => void = () => undefined;
     const held = new Promise<void>((resolve) => {
       release = resolve;
@@ -543,12 +536,14 @@ describe('T21 テント等のパネルの JS の読み始め（レビューの T
     override = (call) => (call.table === 'lending_items' ? held.then(() => ({ data: db.items })) : undefined);
     renderTabs({ search: 'tab=lending' });
     await waitFor(() => expect(issued.some((c) => c.table === 'lending_items')).toBe(true));
-    await waitFor(() => expect(loader.calls).toBeGreaterThan(0));
     expect(screen.queryByTestId('request-tabs')).toBeNull();
-    expect(screen.queryByTestId('lending-request')).toBeNull();
+    expect(document.getElementById('request-panel-lending')).toBeNull();
     // 机・椅子のパネルは、タブを出すかが決まるまで作らない（テント等を先に出す）
     expect(screen.queryByTestId('furniture-input')).toBeNull();
     release();
+    await screen.findByTestId('request-tabs');
+    // タブと同じ描画で、テント等のパネルが出ている（パネルの JS の読み込み中を挟まない）
+    expect(lendingPanelHeading()).not.toBeNull();
     expect(await screen.findByTestId('lending-request')).toBeTruthy();
   });
 
@@ -565,30 +560,16 @@ describe('T21 テント等のパネルの JS の読み始め（レビューの T
     expect(screen.getByTestId('lending-request').closest('[hidden]')).not.toBeNull();
   });
 
-  it('パネルの JS を読めなければ「テント等の申請を読み込めませんでした」と「もう一度読み込む」（読み直す）。机・椅子は使える', async () => {
-    loader.forget = true;
-    loader.fail = true;
-    const r = renderTabs({ search: 'tab=lending' });
-    const failed = await screen.findByText(REQUEST_TABS_ERROR, { selector: '#request-panel-lending *' });
-    expect(failed).toBeTruthy();
-    expect(screen.queryByTestId('lending-request')).toBeNull();
-    loader.fail = false;
-    await user().click(within(document.getElementById('request-panel-lending')!).getByRole('button', { name: 'もう一度読み込む' }));
-    expect(await screen.findByTestId('lending-request')).toBeTruthy();
-    // 机・椅子のタブはそのまま使える
-    h.params = new URLSearchParams('');
-    r.rerenderTree();
-    expect(screen.getByTestId('furniture-input').closest('[hidden]')).toBeNull();
-  });
-
-  it('`?tab=lending` でなければ、テント等のタブを開くまでパネルの JS を読まない（机・椅子のタブを軽く保つ）', async () => {
+  it('`?tab=lending` でなければ、テント等のタブを開くまでパネルを作らない（タブの読み取りも送らない）。開くと、同じ描画でパネルを出す（パネルの JS の読み込みを待たない）', async () => {
     const r = renderTabs();
     await screen.findByTestId('request-tabs');
-    expect(loader.calls).toBe(0);
+    expect(document.getElementById('request-panel-lending')).toBeNull();
+    expect(issued.some(isTabRead)).toBe(false);
     h.params = new URLSearchParams('tab=lending');
     r.rerenderTree();
+    expect(lendingPanelHeading()).not.toBeNull();
     expect(await screen.findByTestId('lending-request')).toBeTruthy();
-    expect(loader.calls).toBeGreaterThan(0);
+    expect(issued.some(isTabRead)).toBe(true);
   });
 });
 
