@@ -609,6 +609,70 @@ test('T19 同時の操作：店長と副店長が同時に「提出した」を�
   }
 });
 
+test('T19 確かめのダイアログの開き直し：閉じる動きの途中（覆いは消え、中身が残る間）に同じ確かめを開き直しても、覆いは中身の上に来ず「提出する」を押せる（共有の部品。04「共通レイアウト」のダイアログの重なり、D-52 の T19 の直し・3）', async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const deputy = await createUser({ purpose: 'deputy', name: 'E2E 副店長' });
+  const s = await createScenario({
+    status: 'requesting',
+    dataset: 'small',
+    repGroup: A,
+    groupMembers: [{ userId: deputy.id, group: A, role: 'deputy_manager' }],
+  });
+  let page: Page | null = null;
+  try {
+    const ga = s.ids.groups[A]!;
+    const [docId] = await insertDocuments(s.yearId, [{ title: 'E2E 開き直しの提出', deadline: tokyoDeadline(3), categories: ['stall'], createdBy: H }]);
+    await uploadFileAs(await apiToken('rep'), { documentId: docId, groupId: ga, body: makePdf('E2E T19 reopen') });
+    // 副店長の年度はシナリオの年度だけ（最新の年度）なので、「提出した」の前に最新でない年度の確かめは出ない
+    page = await loginAsUser(browser, deputy);
+    await openDocument(page);
+    const card = documentCard(page, docId);
+    const overlay = page.locator('body > [data-slot="alert-dialog-overlay"]');
+    const content = page.locator('body > [data-slot="alert-dialog-content"]');
+    // 中身の閉じる動きだけを長くする（覆いの 150 ms はそのまま）。覆いが先に消えて中身が残る間（ふだんは 50 ms ほど。CI では
+    // Playwright の押し直しがちょうどここに当たった）を、時間によらずに作る
+    await page.addStyleTag({ content: '[data-slot="alert-dialog-content"][data-state="closed"] { animation-duration: 600s !important; }' });
+    await card.getByTestId('document-submit').click();
+    await expect(content).toContainText('「E2E 開き直しの提出」を提出しますか');
+    await content.getByRole('button', { name: 'やめる' }).click();
+    await expect(overlay).toHaveCount(0);
+    await expect(content).toHaveAttribute('data-state', 'closed');
+    // 閉じる途中の中身がまだ画面の真ん中に残っているので、カードのボタンには押下のイベントを直接送る（React の onClick に届く）
+    await card.getByTestId('document-submit').dispatchEvent('click');
+    await expect(content).toHaveAttribute('data-state', 'open');
+    await expect(overlay).toHaveCount(1);
+    // 「提出する」の真ん中でいちばん上にあるのはそのボタン。覆いは中身の前（同じ z-50 なので、body の中で後ろの中身が上）
+    // （直す前は、付け直した覆いが body の最後〔中身の後ろ〕に付いて中身の上に来て、押下を受けていた）
+    const confirm = content.getByRole('button', { name: '提出する' });
+    const onTop = await confirm.evaluate((button) => {
+      const r = button.getBoundingClientRect();
+      const top = button.ownerDocument.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return button.contains(top) ? '提出する' : (top?.getAttribute('data-slot') ?? top?.tagName ?? null);
+    });
+    expect(onTop).toBe('提出する');
+    const order = await content.evaluate((el) => {
+      const slots: string[] = [];
+      const children = el.ownerDocument.body.children;
+      for (let i = 0; i < children.length; i++) {
+        const slot = children[i]?.getAttribute('data-slot') ?? '';
+        if (slot.startsWith('alert-dialog-')) slots.push(slot);
+      }
+      return slots;
+    });
+    expect(order).toEqual(['alert-dialog-overlay', 'alert-dialog-content']);
+    await confirm.click({ timeout: 10_000 });
+    await expect(page.getByText('「E2E 開き直しの提出」を提出しました')).toBeVisible();
+    await expect(card).toHaveAttribute('data-status', 'submitted');
+    expect((await submissionOf(docId, ga))?.status).toBe('submitted');
+  } finally {
+    await page?.context().close();
+    await cleanupDocumentsScenario(s);
+    await deputy.cleanup();
+  }
+});
+
 test('T19 通信の失敗：オフラインで足したファイルは「アップロードできませんでした」になり（読み直しはつながるまで待つ）、つながってから「もう一度」で送れる。上げた応答も読み直しも届かなくても、もう一度で「もう届いていた」（409）として済む。「提出した」の応答が届かなくても「提出されていました」', async ({
   browser,
 }) => {
