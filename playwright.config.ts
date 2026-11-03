@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { defineConfig, devices, type Project } from '@playwright/test';
 import { localDbUrl, localSupabaseEnv } from './scripts/local-supabase-env.mjs';
 
@@ -8,6 +9,10 @@ const PORT = Number(process.env.E2E_PORT ?? 3100);
 // basePath のスモーク（T14。E2E_BASEPATH=1 のときだけ）：pnpm build:e2e -- --base-path /GAapp の書き出し（apps/web/out-basepath）を
 // 別のポートで配る。E2E_BASEPATH_PORT はポートを避けたいときだけ（既定 3101）
 const BASEPATH_PORT = Number(process.env.E2E_BASEPATH_PORT ?? 3101);
+// 4G の速さを2つの書き出しで交互に計る（FU3。e2e/perf.spec.ts の PERF_AB）：PERF_AB の書き出し（A。ふつうは main の apps/web/out）を
+// E2E と同じ serve で E2E_PERF_AB_PORT（既定 3103）に配る（B〔この checkout の apps/web/out〕の E2E_PORT と同じ作りにする）
+const PERF_AB_OUT = process.env.E2E_PERF && process.env.PERF_AB ? path.resolve(process.env.PERF_AB) : '';
+const PERF_AB_PORT = Number(process.env.E2E_PERF_AB_PORT ?? 3103);
 
 // テスト（e2e/helpers.ts）が Supabase の API を直接呼ぶときの URL と publishable キー
 Object.assign(process.env, localSupabaseEnv());
@@ -68,7 +73,9 @@ if (process.env.E2E_BASEPATH) {
   });
 }
 if (process.env.E2E_PERF) {
-  projects.push({ name: 'perf', testMatch: /e2e\/perf\.spec\.ts$/, dependencies: ['auth-setup'], workers: 1, use: { ...desktop } });
+  // トレースは取らない（retain-on-failure は計るコンテキストをすべて記録し、計る機械の負荷を上げていた。FU3。リクエストの並びは
+  // PERF_TRACE で出す）
+  projects.push({ name: 'perf', testMatch: /e2e\/perf\.spec\.ts$/, dependencies: ['auth-setup'], workers: 1, use: { ...desktop, trace: 'off' } });
 }
 
 export default defineConfig({
@@ -100,6 +107,18 @@ export default defineConfig({
             command: `pnpm exec serve apps/web/out-basepath --listen ${BASEPATH_PORT} --no-clipboard`,
             url: `http://localhost:${BASEPATH_PORT}/GAapp/`,
             reuseExistingServer: !process.env.CI,
+            timeout: 30_000,
+          },
+        ]
+      : []),
+    // PERF_AB の書き出し（A）。ほかのサーバーがそのポートで別の書き出しを配っていると比べ違えるので、使い回さない（ポートが使われて
+    // いれば止まる）
+    ...(PERF_AB_OUT
+      ? [
+          {
+            command: `pnpm exec serve ${JSON.stringify(PERF_AB_OUT)} --listen ${PERF_AB_PORT} --no-clipboard`,
+            url: `http://localhost:${PERF_AB_PORT}/`,
+            reuseExistingServer: false,
             timeout: 30_000,
           },
         ]
