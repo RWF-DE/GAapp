@@ -310,6 +310,7 @@ describe('ダイアログの上にダイアログを開いたときの覆い（�
     await user.click(remove);
     await settle();
     expect(coveredSlots()).toEqual(['sheet-overlay']);
+    expect(part('alert-dialog-overlay').className).toContain('data-covered:bg-transparent');
     await user.click(screen.getByRole('button', { name: 'やめる' }));
     await settle();
     expect(layers()).toEqual(['sheet-overlay:open', 'sheet-content:open', 'alert-dialog-overlay:closed', 'alert-dialog-content:closed']);

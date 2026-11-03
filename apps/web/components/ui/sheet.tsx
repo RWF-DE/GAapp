@@ -5,6 +5,7 @@
 // SheetContent は、覆いと中身を Radix の Portal（子ごとに別々の portal。元の SheetPortal。ほかに使う所がないので消した）でなく
 // 1つの portal（DialogLayer）に覆い → 中身の順で置く（閉じる途中で開き直しても、覆いがシートの上に来ない。04「共通レイアウト」の
 // ダイアログの重なり、D-52 の T19 の直し・3。2026-11-03）。
+// 覆いは、上に開いたダイアログの覆いがある間は透明にする（DialogLayer が付ける印 data-covered。いちばん上の覆いだけが暗くする。FU3）。
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { XIcon } from "lucide-react"
@@ -36,7 +37,7 @@ function SheetOverlay({
     <SheetPrimitive.Overlay
       data-slot="sheet-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        "fixed inset-0 z-50 bg-black/50 transition-[background-color] data-covered:bg-transparent data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
         className
       )}
       {...props}
