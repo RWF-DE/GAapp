@@ -2,12 +2,15 @@
 
 // shadcn/ui（new-york v4）の dialog。元：https://github.com/shadcn-ui/ui/blob/96da9cc7f1aa10580a3741664e2a77c721206c00/apps/v4/registry/new-york-v4/ui/dialog.tsx
 // （MIT License, Copyright (c) 2023 shadcn）。import の別名と、読み上げの文言（Close → 閉じる）を書き換えた。T09a（画面の設計 1.4）。
+// DialogContent は、覆いと中身を Radix の Portal（子ごとに別々の portal）でなく1つの portal（DialogLayer）に覆い → 中身の順で置く
+// （閉じる途中で開き直しても、覆いが中身の上に来ない。04「共通レイアウト」のダイアログの重なり、D-52 の T19 の直し・3。2026-11-03）。
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
+import { DialogLayer } from "@/components/ui/dialog-layer"
 
 function Dialog({
   ...props
@@ -58,7 +61,7 @@ function DialogContent({
   showCloseButton?: boolean
 }) {
   return (
-    <DialogPortal data-slot="dialog-portal">
+    <DialogLayer>
       <DialogOverlay />
       <DialogPrimitive.Content
         data-slot="dialog-content"
@@ -79,7 +82,7 @@ function DialogContent({
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>
-    </DialogPortal>
+    </DialogLayer>
   )
 }
 

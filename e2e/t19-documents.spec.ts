@@ -569,8 +569,8 @@ test('T19 同時の操作：店長と副店長が同時に「提出した」を�
     const winnerCard = winner === rep ? repCard : depCard;
     await expect(loserCard.getByTestId('document-error')).toHaveText('すでに提出されています。読み直しました');
     await expect(winnerCard.getByTestId('document-error')).toHaveCount(0);
-    // 確かめのダイアログが閉じきってから次へ（人が次のカードを押すのと同じ。閉じる途中で同じダイアログを開き直すと、重なった覆いが
-    // 残って押せなくなることがある。notes/T19.md の「パート C で見つけたこと」）
+    // どちらの確かめのダイアログも閉じた（題で探すので、閉じる動きの途中でも 0。閉じる途中で同じダイアログを開き直しても覆いは中身の上に
+    // 来ないので、閉じきるのは待たない。04「共通レイアウト」のダイアログの重なり、D-52 の T19 の直し・3）
     await expect(repDialog).toHaveCount(0);
     await expect(depDialog).toHaveCount(0);
     expect((await submissionOf(same, ga))?.status).toBe('submitted');
@@ -589,10 +589,8 @@ test('T19 同時の操作：店長と副店長が同時に「提出した」を�
     await expect(depStale.getByTestId('document-file')).toHaveCount(2);
     await expect(depStale).toHaveAttribute('data-status', 'not_submitted');
     expect((await submissionOf(stale, ga))?.status).toBe('not_submitted');
-    // 押し直す前に、前の確かめのダイアログが閉じきるのを待つ（上の 1. と同じ。閉じる途中で同じダイアログを開き直すと、覆いが中身の上に
-    // 残って「提出する」を押せなくなる。共有の ConfirmDialog の動きで、T19〜T21 の後の片付けで扱う。notes/T19.md の「main の取り込み
-    // （2026-11-03）」の「E2E の1件の失敗」）
-    await expect(staleDialog).toHaveCount(0);
+    // すぐに押し直す（前の確かめのダイアログが閉じる途中でもよい。CI では、この押し直しが覆いだけが消えて中身が残る間に当たり、付け直した
+    // 覆いが中身の上に来て次の「提出する」が押せなかった。共有の部品で直した。notes/T19.md の「CI の E2E の失敗の直し（2026-11-03）」）
     await depStale.getByTestId('document-submit').click();
     await expect(staleDialog.getByTestId('document-submit-confirm')).toHaveText('ファイル 2 つを提出します。');
     await staleDialog.getByRole('button', { name: '提出する' }).click();
