@@ -589,6 +589,10 @@ test('T19 同時の操作：店長と副店長が同時に「提出した」を�
     await expect(depStale.getByTestId('document-file')).toHaveCount(2);
     await expect(depStale).toHaveAttribute('data-status', 'not_submitted');
     expect((await submissionOf(stale, ga))?.status).toBe('not_submitted');
+    // 押し直す前に、前の確かめのダイアログが閉じきるのを待つ（上の 1. と同じ。閉じる途中で同じダイアログを開き直すと、覆いが中身の上に
+    // 残って「提出する」を押せなくなる。共有の ConfirmDialog の動きで、T19〜T21 の後の片付けで扱う。notes/T19.md の「main の取り込み
+    // （2026-11-03）」の「E2E の1件の失敗」）
+    await expect(staleDialog).toHaveCount(0);
     await depStale.getByTestId('document-submit').click();
     await expect(staleDialog.getByTestId('document-submit-confirm')).toHaveText('ファイル 2 つを提出します。');
     await staleDialog.getByRole('button', { name: '提出する' }).click();
