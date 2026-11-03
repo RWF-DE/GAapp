@@ -437,7 +437,8 @@ test.describe('T15b 閲覧のみ（確定前の振り分け）', () => {
       const alert = page.getByRole('alert').filter({ hasText: '権限がありません' });
       await expect(alert).toBeVisible();
       await expect(alert).toContainText('振り分けは確定後に表示されます。');
-      expect(await navLabels(page)).toEqual(['ホーム', 'お知らせ一覧', '締切と予定の一覧']);
+      // 備品と割り当て（T21）は閲覧のみも開ける（割り当ての確定によらない）
+      expect(await navLabels(page)).toEqual(['ホーム', 'お知らせ一覧', '締切と予定の一覧', '備品と割り当て']);
     } finally {
       await s.cleanup();
     }

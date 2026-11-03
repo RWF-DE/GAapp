@@ -161,6 +161,18 @@ const DOCUMENTS_LEAD_READS = {
   statuses: 'GET v_document_status?select=document_id,status',
 };
 
+/**
+ * ダッシュボードのテント等の貸し出しの総務の読み取り（T21。04「テント等の貸し出し」の「ダッシュボードに出すもの」：確定の印・備品・
+ * 申請〔数が1以上〕・割り当て・記録の要る列だけを年度で絞って5本。並びは sort の順）。閲覧のみは読まない
+ */
+const LENDING_SOUMU_READS = [
+  'GET lending_assignments?select=group_id,lending_item_id,count',
+  'GET lending_items?select=id,name,unit,stock,sort_order',
+  'GET lending_records?select=group_id,lending_item_id,lent_count,returned_count',
+  'GET lending_requests?select=group_id,lending_item_id,count',
+  'GET lending_years?select=year_id,confirmed_at',
+];
+
 /** 机椅子の申請の締切の、締切と予定の欄の日付（曜日つき。「12/1（火）17:05」。T18）と相対の言い方（「あと 30 日」） */
 async function closeDated(yearId: string): Promise<{ when: string; relative: string }> {
   const today = tokyoToday();
@@ -268,18 +280,23 @@ test.describe('T16 ダッシュボード（管理者）', () => {
   }) => {
     const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
     // 机椅子の6つの表と、総務内のお知らせの新着（T17。本文・宛先の団体・書いた人は読まない）と、予定と締切の項目（T18。対象・メモ・
-    // 書いた人は読まない）。並びは sort の順
+    // 書いた人は読まない）と、テント等の貸し出しの総務の5本（T21。確定の印・備品・申請〔1以上〕・割り当て・記録の要る列だけ。メモ・
+    // 書いた人は読まない）。提出物の部門長以上の3本（T19。DOCUMENTS_LEAD_READS）とシフト・作業の2本（T20。下の注）も。並びは sort の順
     const FURNITURE_READS = [
       DOCUMENTS_LEAD_READS.docs,
       `GET ${EVENTS_DATED_READ}`,
       'GET groups?select=id,name,category,sort_order',
+      ...LENDING_SOUMU_READS,
       `GET ${NOTICES_LATEST_READ}`,
       'GET request_submissions?select=group_id,submitted_at,groups!inner(year_id)',
       'GET room_years?select=room_id,usable',
       'GET rooms?select=id,name,is_storage,sort_order',
       DOCUMENTS_LEAD_READS.usage,
+      // シフト・作業（T20）：部門長以上は時間枠のますと作業の全部も読む（自分の割り当てと作業は year_roles に埋め込む＝立場と同じ表）
+      'GET shift_slots?select=id,starts_at,ends_at,shift_needs(duty_id,required_count,shift_assignments(user_id,year_roles(role)))',
       'GET stocks?select=room_id',
       'GET substitution_consents?select=group_id,status,groups!inner(year_id)',
+      'GET tasks?select=id,title,status,due_at,assignee_id,year_roles(role)',
       DOCUMENTS_LEAD_READS.statuses,
     ];
     try {
@@ -302,12 +319,15 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       for (const t of ['events', 'groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']) expect(recordedTables).toContain(t);
       // 提出物（T19）の部門長以上の読み取りも覚える（使った量は GET の RPC）
       for (const t of ['documents', 'v_document_status', 'rpc/document_storage_usage']) expect(recordedTables).toContain(t);
+      // テント等の貸し出し（T21）の総務の読み取りも覚える
+      for (const t of ['lending_years', 'lending_items', 'lending_requests', 'lending_assignments', 'lending_records']) expect(recordedTables).toContain(t);
       expect(recordedTables.filter((t) => ['allocations', 'rules', 'requests', 'items', 'distance_overrides'].includes(t))).toEqual([]);
       expect(recorded.filter((r) => r.u.includes('select=allocation_version'))).toEqual([]);
 
       // 2回目：<head> の script が覚えた読み取りを JS より先に送り、アプリは同じリクエストならその応答を使う（送らない）。JS が
       // ブラウザのキャッシュからすぐに動くと、script より先にアプリが送ることがある（どちらの順でも中身は正しい。速さは e2e:perf で
       // 計る）ので、アプリの読み取りは表ごとに1回まで、script は覚えた読み取りだけ、合わせて8つの表がそろい、版を読まないことを見る
+      // （提出物〔T19〕の部門長以上の3本・シフト・作業〔T20〕の2本・テント等の貸し出し〔T21〕の総務の5つの表も同じ形でそろう）
       reads.length = 0;
       await openPortal(page, 'ダッシュボード');
       await expect(furnitureCard(page)).toBeVisible();
@@ -394,9 +414,10 @@ test('T16 部門長以上の要対応：受付期間が空・受付開始（過�
   const staff = await openAs(browser, 'staff', s);
   try {
     // 準備中で受付期間が空 → マスタ設定の年度へ
+    // テント等の貸し出し（T21）：準備中で備品がない年度なので、「備品と在庫を登録」（ふつう）も出る（機能の登録の順で机椅子の後）
     await sql('update public.years set request_open_at = null, request_close_at = null where id = $1', [s.yearId]);
     await openPortal(head, 'ダッシュボード');
-    expect(await todoIds(head)).toEqual(['furniture:lead:request-window']);
+    expect(await todoIds(head)).toEqual(['furniture:lead:request-window', 'lending:lead:no-items']);
     const requestWindow = todo(head, 'furniture:lead:request-window');
     await expect(requestWindow).toContainText('申請の受付期間を入れてください（受付開始には未来の締切が要ります）');
     await expect(requestWindow.getByRole('link')).toHaveAttribute('href', /\/settings\/?\?tab=years$/);
@@ -409,7 +430,7 @@ test('T16 部門長以上の要対応：受付期間が空・受付開始（過�
       [s.yearId],
     );
     await openPortal(head, 'ダッシュボード');
-    expect(await todoIds(head)).toEqual(['furniture:lead:open-requests']);
+    expect(await todoIds(head)).toEqual(['furniture:lead:open-requests', 'lending:lead:no-items']);
     const openTodo = todo(head, 'furniture:lead:open-requests');
     await expect(openTodo).toHaveAttribute('data-severity', 'normal');
     await expect(openTodo).toContainText('受付期間が入りました。準備ができたら「受付開始」を押してください');
@@ -418,7 +439,7 @@ test('T16 部門長以上の要対応：受付期間が空・受付開始（過�
     // 受付開始の日時を過ぎた → 急ぎ。押すと机椅子の状況で「受付開始」を押せる
     await sql(`update public.years set request_open_at = now() - interval '1 hour' where id = $1`, [s.yearId]);
     await openPortal(head, 'ダッシュボード');
-    expect(await todoIds(head)).toEqual(['furniture:lead:open-requests']);
+    expect(await todoIds(head)).toEqual(['furniture:lead:open-requests', 'lending:lead:no-items']);
     await expect(openTodo).toHaveAttribute('data-severity', 'urgent');
     await expect(openTodo).toContainText('受付開始の日時を過ぎました。「受付開始」を押してください');
     await openTodo.getByRole('link').click();
@@ -567,10 +588,12 @@ test.describe('T16 ホーム（団体代表）', () => {
 
       // 読むのは立場と、自団体の提出と了承と、お知らせの新着（T17）と予定と締切の項目（T18）だけ（先読み・代表する団体のカード・
       // 要対応・お知らせ・締切と予定の欄が同じ読み込みを使うので、1回ずつ）
+      // テント等の貸し出し（T21）：自団体の割り当て（確定後だけ RLS が返す）と記録を、代表する団体（groups）に埋め込んで1本
       await page.waitForLoadState('networkidle');
       expect(reads.some((r) => r.table === 'year_roles'), '立場の読み込みを見ている').toBe(true);
       expect(readsBeyondMembership(reads).map((r) => r.split('?')[0]).sort()).toEqual([
         'GET events',
+        'GET groups',
         'GET notices',
         'GET request_submissions',
         'GET substitution_consents',
@@ -670,11 +693,18 @@ test.describe('T16 ナビの見出し（管理者・PC）', () => {
     const calendar = nav.getByRole('group', { name: '締切と予定' });
     await expect(calendar.getByRole('heading', { level: 2, name: '締切と予定' })).toBeVisible();
     await expect(calendar.getByRole('link')).toHaveText(['締切と予定の一覧']);
-    // 提出物（T19）：締切と予定の後・共通の前。項目は「提出状況」（見出しと同じ言葉を縦に並べない）
+    // 提出物（T19）：締切と予定の後・シフト・作業の前。項目は「提出状況」（見出しと同じ言葉を縦に並べない）
     const documents = nav.getByRole('group', { name: '提出物' });
     await expect(documents.getByRole('heading', { level: 2, name: '提出物' })).toBeVisible();
     await expect(documents.getByRole('link')).toHaveText(['提出状況']);
-    await expect(nav.getByRole('group')).toHaveCount(6);
+    // シフト・作業（T20）：提出物の後・テント等の貸し出しの前（総務だけ。印刷はナビに出さない）
+    await expect(nav.getByRole('group', { name: 'シフト・作業' }).getByRole('link')).toHaveText(['自分のシフト', 'シフト表', '作業一覧']);
+    // テント等の貸し出し（T21）：シフト・作業の後・共通の前
+    const lending = nav.getByRole('group', { name: 'テント等の貸し出し' });
+    await expect(lending.getByRole('heading', { level: 2, name: 'テント等の貸し出し' })).toBeVisible();
+    await expect(lending.getByRole('link')).toHaveText(['備品と割り当て', '受け渡し・返却']);
+    // ホーム・机椅子・お知らせ・締切と予定・提出物（T19）・シフト・作業（T20）・テント等の貸し出し（T21）・共通
+    await expect(nav.getByRole('group')).toHaveCount(8);
     const common = nav.getByRole('group', { name: '共通' });
     await expect(common.getByRole('heading', { level: 2, name: '共通' })).toBeVisible();
     await expect(common.getByRole('link')).toHaveText(['マスタ設定', '履歴']);
@@ -702,13 +732,17 @@ test.describe('T16 ナビの見出し（総務部門員・スマホ）', () => {
     await open.click();
     const menu = page.locator('#app-mobile-nav');
     const nav = menu.getByRole('navigation', { name: 'メインメニュー' });
-    await expect(nav.getByRole('group')).toHaveCount(5);
+    // ホーム・机椅子・お知らせ・締切と予定・提出物（T19）・シフト・作業（T20）・テント等の貸し出し（T21）。T20 と T21 が同じ 4 → 5 の
+    // 書き換えをしていたので T21 のマージで 6、T19（提出物）も 4 → 5 にしていたので、T19 のマージで 7
+    await expect(nav.getByRole('group')).toHaveCount(7);
     await expect(nav.getByRole('group', { name: 'ホーム' }).getByRole('link')).toHaveText(['ホーム']);
     const furniture = nav.getByRole('group', { name: '机椅子' });
     await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
     await expect(nav.getByRole('group', { name: 'お知らせ' }).getByRole('link')).toHaveText(['お知らせ一覧']);
     await expect(nav.getByRole('group', { name: '締切と予定' }).getByRole('link')).toHaveText(['締切と予定の一覧']);
     await expect(nav.getByRole('group', { name: '提出物' }).getByRole('link')).toHaveText(['提出状況']);
+    await expect(nav.getByRole('group', { name: 'シフト・作業' }).getByRole('link')).toHaveText(['自分のシフト', 'シフト表', '作業一覧']);
+    await expect(nav.getByRole('group', { name: 'テント等の貸し出し' }).getByRole('link')).toHaveText(['備品と割り当て', '受け渡し・返却']);
     await expect(nav.getByRole('group', { name: '共通' })).toHaveCount(0);
     expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(MOBILE.width);
 

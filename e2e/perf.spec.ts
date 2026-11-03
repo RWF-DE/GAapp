@@ -1,6 +1,7 @@
 // 4G での表示の速さ（00「性能と可用性」の「画面はスマホの 4G でも 2 秒以内に開く」。画面の設計 7.7。T14）。
 // pnpm e2e:perf（E2E_PERF=1。CI では流さない。機械の速さで結果がぶれるため）。pnpm build:e2e の書き出し（apps/web/out）を使う。
 // スマホで使う画面（/stock?room=…・/request・/my と、T16 で足した団体代表の /〔ダッシュボード。代表する団体のカードが出るまで〕）を、
+// T20 で足した総務部門員の /〔机椅子とシフト・作業のカードが出るまで〕・/shift〔自分の枠と同じますの人の名前〕・/tasks〔作業と担当者の名前〕も、
 // Chromium の CDP で回線を Fast 4G 相当（下り 9 Mbps・上り 1.5 Mbps・
 // 遅延 170 ms。T00 と同じ）に絞り、CPU を 4 倍遅くして、キャッシュなしの新しいコンテキスト（storageState でログイン済み）で
 // page.goto から画面の主な内容が見えるまでを3回ずつ計る。中央値と内訳を annotations・console・test-results/perf/perf.json に出し、
@@ -25,6 +26,9 @@
 // T19 で、団体代表の自団体の提出物（/document。スマホ。PERF_ONLY の document）を足した。その年度に提出物6つ（模擬店・部門・企業が対象。
 // 飲食だけのものを含む）と、模擬店・部門の提出の状況（承認・承認待ち・差し戻し）を入れ、模擬店10 には PDF を2つ上げて計る（どの団体代表の
 // / も提出物の読み取りが中身のある形になる）。Storage の物は計った後に Storage API で消す（cleanupDocumentsScenario）。
+// T21 で、テント等の貸し出しのスマホの画面（部員の /lending/records と、団体代表の /request?tab=lending）を足した（PERF_ONLY の
+// records・request-lending）。その年度に、模擬店・部門の申請・割り当て（確定）と、模擬店の半分の受け渡しの記録を入れて計る
+// （どの団体代表の画面もテント等の読み取りが中身のある形になる）。
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import http2 from 'node:http2';
@@ -44,6 +48,8 @@ import {
   uploadFileAs,
   type SubmissionInput,
 } from './support/documents';
+import { confirmLending, insertLendingAssignments, insertLendingItems, insertLendingRecords, insertLendingRequests } from './support/lending';
+import { insertShiftVolume } from './support/shifts';
 import { MOBILE } from './support/shots';
 import { SEED_USER_IDS } from './support/users';
 import { pinYear } from './support/year';
@@ -61,7 +67,14 @@ const H2_PORT = Number(process.env.E2E_PERF_H2_PORT ?? 3102);
 
 interface Target {
   /** PERF_ONLY で選ぶ名前 */
-  id: 'stock' | 'request' | 'my' | 'home' | 'document';
+  id:
+    | 'stock' | 'request' | 'my' | 'home'
+    // 提出物（T19）：団体代表の /document
+    | 'document'
+    // シフト・作業（T20）：総務部門員の /・/shift・/tasks
+    | 'soumu-home' | 'shift' | 'tasks'
+    // テント等の貸し出し（T21）：部員の /lending/records・団体代表の /request?tab=lending
+    | 'records' | 'request-lending';
   name: string;
   user: StoredUser;
   /**
@@ -106,6 +119,33 @@ const SHOWN = {
     const name = document.querySelector('[data-testid="document-group-name"]');
     const card = document.querySelector('[data-testid="document-card"]');
     return !!name && name.textContent.trim() === a.group && !!card && card.offsetParent !== null;
+  }`,
+  // シフト・作業（T20）：総務部門員の / は机椅子とシフト・作業のカードが出て、欄の読み込み中がない。/shift は自分の枠が出て、同じますの人の
+  // 名前が読めている（表示名を並行に読むので、名前が届くまでを入れる）。/tasks は進み具合と作業が出て、担当者の名前が読めている
+  soumuHome: `() => {
+    const f = document.querySelector('[data-testid="module-card"][data-module="furniture"]');
+    const s = document.querySelector('[data-testid="module-card"][data-module="shifts"]');
+    return !!f && !!s && f.offsetParent !== null && s.offsetParent !== null && !document.querySelector('[data-testid="portal-loading"]');
+  }`,
+  shift: `() => {
+    const items = document.querySelectorAll('[data-testid="my-shift-item"]');
+    return items.length > 0 && [...document.querySelectorAll('[data-testid="my-shift-mates"]')].every((m) => !m.textContent.includes('名前を表示できません'));
+  }`,
+  tasks: `() => {
+    const items = document.querySelectorAll('[data-testid="tasks-item"]');
+    return items.length > 0 && !!document.querySelector('[data-testid="tasks-progress"]') &&
+      [...document.querySelectorAll('[data-testid="tasks-item-assignee"]')].every((x) => !x.textContent.includes('名前を表示できません'));
+  }`,
+  // T21：受け渡し・返却の一覧に、団体代表の団体（割り当てのある団体）が出た
+  records: `(a) => {
+    const row = [...document.querySelectorAll('[data-testid="records-group"]')].find((r) => r.textContent.includes(a.group));
+    return !!row && row.offsetParent !== null;
+  }`,
+  // T21：テント等のタブのパネル（団体名と、申請できる備品の ＋－）が出た
+  requestLending: `(a) => {
+    const panel = document.querySelector('[data-testid="lending-request"]');
+    const item = document.querySelector('[data-testid="lending-request-item"]');
+    return !!panel && panel.offsetParent !== null && panel.textContent.includes(a.group) && !!item;
   }`,
 };
 
@@ -171,6 +211,69 @@ const ALL_TARGETS: Target[] = [
     },
     shown: SHOWN.document,
   },
+  // シフト・作業（T20。D-56）：総務部門員の /（机椅子とシフト・作業のカード）・/shift・/tasks。どれも先読み・先送りの表にある（D-45）。
+  // データは insertShiftVolume（1年の量の見込み。部門員 100 人・時間枠 50・ます 250・割り当て 800・作業 200）
+  {
+    id: 'soumu-home',
+    name: '/（総務部門員）',
+    user: 'staff',
+    records: true,
+    url: () => '/',
+    ready: async (page) => {
+      await expect(page.locator('[data-testid="module-card"][data-module="shifts"]')).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator('[data-testid="module-card"][data-module="furniture"]')).toBeVisible({ timeout: 30_000 });
+    },
+    shown: SHOWN.soumuHome,
+  },
+  {
+    id: 'shift',
+    name: '/shift（総務部門員）',
+    user: 'staff',
+    records: true,
+    url: () => '/shift/',
+    ready: async (page) => {
+      await expect(page.getByTestId('my-shift-item').first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId('my-shift-mates').filter({ hasText: '名前を表示できません' })).toHaveCount(0, { timeout: 30_000 });
+    },
+    shown: SHOWN.shift,
+  },
+  {
+    id: 'tasks',
+    name: '/tasks（総務部門員）',
+    user: 'staff',
+    records: true,
+    url: () => '/tasks/',
+    ready: async (page) => {
+      await expect(page.getByTestId('tasks-item').first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByTestId('tasks-progress')).toBeVisible({ timeout: 30_000 });
+    },
+    shown: SHOWN.tasks,
+  },
+  // テント等の貸し出し（T21）：部員の受け渡し・返却（スマホ。先読み・記録・先送りの表にある）。表示の印は一覧に模擬店10 が出たこと
+  {
+    id: 'records',
+    name: '/lending/records（部員）',
+    user: 'staff',
+    records: true,
+    url: () => '/lending/records/',
+    ready: async (page) => {
+      await expect(page.getByTestId('records-group').filter({ hasText: REP_GROUP })).toBeVisible({ timeout: 30_000 });
+    },
+    shown: SHOWN.records,
+  },
+  // テント等の貸し出し（T21）：団体代表の申請のテント等のタブ（`?tab=lending` で開く。/request は先読み・記録・先送りの表にある）
+  {
+    id: 'request-lending',
+    name: '/request?tab=lending（団体代表）',
+    user: 'rep',
+    records: true,
+    url: () => '/request/?tab=lending',
+    ready: async (page) => {
+      await expect(page.getByTestId('lending-request')).toContainText(REP_GROUP, { timeout: 30_000 });
+      await expect(page.getByTestId('lending-request-item').first()).toBeVisible({ timeout: 30_000 });
+    },
+    shown: SHOWN.requestLending,
+  },
 ];
 
 /**
@@ -208,6 +311,36 @@ async function seedDocuments(s: Scenario): Promise<void> {
   const repToken = await apiToken('rep');
   const groupId = s.ids.groups[REP_GROUP]!;
   for (const label of ['E2E T19 perf one', 'E2E T19 perf two']) await uploadFileAs(repToken, { documentId: plan, groupId, body: makePdf(label) });
+}
+
+/**
+ * テント等の貸し出し（T21）の行：備品3つ（テント・重し・三方幕〔模擬店だけ〕）、模擬店と部門の申請と同じ数の割り当て（確定）、
+ * 模擬店の半分（並びの奇数）の受け渡しの記録（テントを渡して、まだ返っていない）
+ */
+async function seedLending(s: Scenario): Promise<void> {
+  const [tent, weight, curtain] = await insertLendingItems(s.yearId, [
+    { name: 'テント', unit: '張', stock: 60 },
+    { name: '重し', stock: 240 },
+    { name: '三方幕', unit: '枚', stock: 50, categories: ['stall'] },
+  ]);
+  const names = Object.keys(s.ids.groups).sort();
+  const stalls = names.filter((n) => n.startsWith('模擬店'));
+  const departments = names.filter((n) => n.startsWith('部門'));
+  const counts = [
+    ...stalls.flatMap((n) => [
+      { groupId: s.ids.groups[n]!, itemId: tent, count: 1 },
+      { groupId: s.ids.groups[n]!, itemId: weight, count: 4 },
+      { groupId: s.ids.groups[n]!, itemId: curtain, count: 1 },
+    ]),
+    ...departments.map((n) => ({ groupId: s.ids.groups[n]!, itemId: tent, count: 1 })),
+  ];
+  await insertLendingRequests(s.yearId, counts);
+  await insertLendingAssignments(s.yearId, counts);
+  await insertLendingRecords(
+    s.yearId,
+    stalls.filter((_, k) => k % 2 === 0).map((n) => ({ groupId: s.ids.groups[n]!, itemId: tent, lent: 1 })),
+  );
+  await confirmLending(s.yearId, null);
 }
 
 /** 先読みのために覚えた id の localStorage のキー（apps/web/lib/boot/early-load.ts の PREFETCH_HINT_PREFIX と同じ） */
@@ -473,8 +606,11 @@ test('T14 4G での表示の速さ：/stock?room=・/request・/my・団体代�
   const h2 = tls ? await startH2(tls) : null;
   const s = await createScenario({ dataset: 'synthetic', status: 'requesting', roles: { staff: true }, repGroup: REP_GROUP });
   const results: { server: string; visit: Visit; page: string; runs: Run[]; medianMs: number }[] = [];
+  // シフト・作業（T20）：総務部門員の /・/shift・/tasks を計るときだけ、1年の量の見込みのシフト・作業を入れる
+  const shifts = TARGETS.some((t) => ['soumu-home', 'shift', 'tasks'].includes(t.id)) ? await insertShiftVolume(s.yearId, SEED_USER_IDS.staff) : null;
   try {
     await seedDocuments(s);
+    await seedLending(s);
     const servers: { name: string; origin: string | null }[] = [{ name: 'http1', origin: null }, ...(h2 ? [{ name: 'h2', origin: h2.origin }] : [])];
     for (const server of servers) {
       for (const visit of VISITS) {
@@ -498,6 +634,7 @@ test('T14 4G での表示の速さ：/stock?room=・/request・/my・団体代�
     }
   } finally {
     await cleanupDocumentsScenario(s);
+    await shifts?.cleanup();
     await h2?.close();
   }
   const out = path.join(testInfo.project.outputDir, 'perf.json');

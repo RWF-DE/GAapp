@@ -97,6 +97,16 @@ export const ROUTES: readonly RouteDef[] = [
   // 閲覧のみには見出しごと出ない（Q5）。項目は見出し（提出物）と同じ言葉を縦に並べない
   { href: '/documents', label: '提出状況', section: 'documents', audiences: SOUMU, nav: true, ticket: 'T19' },
   { href: '/document', label: '自団体の提出物', section: 'documents', audiences: REP, nav: true, ticket: 'T19' },
+  // シフト・作業（shifts。T20・D-56）：総務だけ（閲覧のみ・店長・副店長には見出しごと出ない）。印刷はシフト表から開く
+  { href: '/shift', label: '自分のシフト', section: 'shifts', audiences: SOUMU, nav: true, ticket: 'T20' },
+  { href: '/shifts', label: 'シフト表', section: 'shifts', audiences: SOUMU, nav: true, ticket: 'T20' },
+  { href: '/shifts/print', label: 'シフト表の印刷', section: 'shifts', audiences: SOUMU, nav: false, ticket: 'T20' },
+  { href: '/tasks', label: '作業一覧', section: 'shifts', audiences: SOUMU, nav: true, ticket: 'T20' },
+  // テント等の貸し出し（lending。T21・D-57）：備品と割り当ては総務と閲覧のみ（閲覧のみは割り当ての確定によらず開ける。確定前は画面の
+  // 中で「割り当ては確定後に表示されます」。finalOnly は年度の状態なので使わない）、受け渡し・返却は総務。店長・副店長は見出しごと
+  // 出ない（申請〔/request〕の「テント等」のタブから入る）
+  { href: '/lending', label: '備品と割り当て', section: 'lending', audiences: [...SOUMU, 'viewer'], nav: true, ticket: 'T21' },
+  { href: '/lending/records', label: '受け渡し・返却', section: 'lending', audiences: SOUMU, nav: true, ticket: 'T21' },
   // 共通（部門長・副部門長はマスタ設定の一部のタブだけ。settingsTabsFor）
   { href: '/settings', label: 'マスタ設定', section: 'common', audiences: LEAD, nav: true, ticket: 'T09' },
   { href: '/history', label: '履歴', section: 'common', audiences: LEAD, nav: true, ticket: 'T14' },

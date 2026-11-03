@@ -73,6 +73,18 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   documents: '提出物',
   document_submissions: '提出物の提出',
   document_files: '提出物のファイル',
+  // シフト・作業（T20。作業の状態の表示名は lib/modules/shifts/labels.ts）
+  shift_duties: '持ち場',
+  shift_slots: 'シフトの時間枠',
+  shift_needs: '必要人数',
+  shift_assignments: 'シフトの割り当て',
+  tasks: '作業',
+  // テント等の貸し出し（T21。D-57）
+  lending_items: 'テント等の備品',
+  lending_requests: 'テント等の申請',
+  lending_assignments: 'テント等の割り当て',
+  lending_records: 'テント等の受け渡し・返却',
+  lending_years: 'テント等の割り当ての確定',
 };
 
 /** 監査ログの操作（audit_logs.action） */
@@ -129,6 +141,11 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   content_type: 'ファイルの形',
   size: 'ファイルの大きさ',
   document_ids: '写す提出物',
+  // シフト・作業（add_shift_slots・set_task_status。T20）。overlap・not_soumu・needs の not_in_year は lib/errors.ts が専用の文言にする
+  slots: '時間枠',
+  needs: '必要人数',
+  status: '状態',
+  starts_at: '始まり',
 };
 
 /** 表にない値は、そのまま出さず fallback にする（新しい列挙が増えても画面が壊れない） */

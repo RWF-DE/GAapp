@@ -21,6 +21,8 @@ import {
   historyEmptyNote,
   historyHref,
   isDateParam,
+  DELETED_LENDING_ITEM,
+  fetchLendingItemNames,
   NAME_UNKNOWN,
   OUTSIDE_LABEL,
   parseHistoryParams,
@@ -161,7 +163,8 @@ describe('差の表示', () => {
   });
 
   it('T17 お知らせ：表の絞り込みの最後に notices・notice_groups（足すだけ）。表の名前、対象（題名・宛先の団体の名前）、宛先と書いた人の値', () => {
-    expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('notices'), AUDIT_TABLES.indexOf('notices') + 2)).toEqual(['notices', 'notice_groups']);
+    // 締切と予定（T18）の前（その後ろに T19 の提出物の3表、T20 のシフト・作業の5表と T21 のテント等の5表）
+    expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('notices'), AUDIT_TABLES.indexOf('notices') + 3)).toEqual(['notices', 'notice_groups', 'events']);
     expect(AUDIT_TABLES.slice(0, 2)).toEqual(['requests', 'request_submissions']);
     expect(tableLabel('notices')).toBe('お知らせ');
     expect(tableLabel('notice_groups')).toBe('宛先の団体');
@@ -177,6 +180,7 @@ describe('差の表示', () => {
   });
 
   it('T18 締切と予定：表の絞り込みの最後に events（足すだけ）。表の名前は「締切と予定」、対象は題名、種類・対象は表示名（お知らせの宛先と取り違えない）', () => {
+    // お知らせの後に足した（その後ろに T19 の提出物の3表、T20 のシフト・作業の5表と T21 のテント等の5表）
     expect(AUDIT_TABLES.indexOf('events')).toBe(AUDIT_TABLES.indexOf('notice_groups') + 1);
     expect(new Set(AUDIT_TABLES).size).toBe(AUDIT_TABLES.length);
     expect(tableLabel('events')).toBe('締切と予定');
@@ -204,6 +208,66 @@ describe('差の表示', () => {
     expect(formatAuditValue('events', 'starts_at', '2027-10-15T15:00:00+00:00')).toBe('2027/10/16 00:00');
     expect(formatAuditValue('events', 'all_day', true)).toBe('はい');
     expect(formatAuditValue('events', 'updated_by', U, lookups)).toBe('総務 太郎');
+  });
+
+  it('T21 テント等の貸し出し：5表を最後に足す。表の名前・対象（備品は名前、申請・割り当て・記録は団体と備品、確定の印は年度名）', () => {
+    expect(AUDIT_TABLES.slice(-5)).toEqual(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years']);
+    // T19〜T21 のマージの後の並び：T19 の提出物の3表、T20 のシフト・作業の5表の後
+    expect(AUDIT_TABLES.slice(-10, -5)).toEqual(['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']);
+    expect(AUDIT_TABLES.slice(-13, -10)).toEqual(['documents', 'document_submissions', 'document_files']);
+    expect(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years'].map(tableLabel)).toEqual([
+      'テント等の備品',
+      'テント等の申請',
+      'テント等の割り当て',
+      'テント等の受け渡し・返却',
+      'テント等の割り当ての確定',
+    ]);
+    const lookups = { groups: new Map([[G, '模擬店01']]), lendingItems: new Map([[I, 'テント']]), users: new Map([[U, '総務 太郎']]), years: new Map([[Y, 'R8']]) };
+    const row = (table_name: string, after: Record<string, unknown> | null, before: Record<string, unknown> | null = null) => ({
+      table_name,
+      row_pk: null,
+      group_id: null,
+      before,
+      after,
+    });
+    expect(auditTarget(row('lending_items', { id: I, name: 'テント' }), lookups)).toBe('テント');
+    expect(auditTarget(row('lending_items', null, { id: I, name: '消した備品' }), lookups)).toBe('消した備品');
+    for (const t of ['lending_requests', 'lending_assignments', 'lending_records']) {
+      expect(auditTarget(row(t, { group_id: G, lending_item_id: I }), lookups)).toBe('模擬店01・テント');
+      expect(auditTarget(row(t, { group_id: G, lending_item_id: 'gone' }), lookups)).toBe(`模擬店01・${DELETED_LENDING_ITEM}`);
+    }
+    expect(auditTarget(row('lending_years', { year_id: Y, confirmed_at: null }), lookups)).toBe('R8');
+  });
+
+  it('T21 テント等の5表だけ、変わった列の名前を日本語にする。区分は表示名、備品は名前、確定した人・書いた人は表示名', () => {
+    const lookups = { lendingItems: new Map([[I, 'テント']]), users: new Map([[U, '総務 太郎']]) };
+    expect(formatDiffEntry('lending_items', { key: 'stock', before: 3, after: 5 })).toBe('在庫：3 → 5');
+    expect(formatDiffEntry('lending_items', { key: 'requestable_categories', before: ['stall', 'department'], after: ['stall'] })).toBe(
+      '申請できる区分：模擬店、部門 → 模擬店',
+    );
+    expect(formatDiffEntry('lending_items', { key: 'requestable_categories', before: undefined, after: [] })).toBe('申請できる区分：（空）');
+    expect(formatDiffEntry('lending_records', { key: 'lent_count', before: 0, after: 2 })).toBe('渡した数：0 → 2');
+    expect(formatDiffEntry('lending_records', { key: 'returned_count', before: 0, after: 1 })).toBe('返った数：0 → 1');
+    expect(formatDiffEntry('lending_records', { key: 'damaged_count', before: undefined, after: 1 })).toBe('破損の数：1');
+    expect(formatDiffEntry('lending_records', { key: 'note', before: null, after: '破れ' })).toBe('メモ：なし → 破れ');
+    expect(formatDiffEntry('lending_assignments', { key: 'lending_item_id', before: undefined, after: I }, lookups)).toBe('備品：テント');
+    expect(formatDiffEntry('lending_assignments', { key: 'count', before: 2, after: 0 })).toBe('数：2 → 0');
+    expect(formatDiffEntry('lending_requests', { key: 'updated_by', before: undefined, after: U }, lookups)).toBe('書いた人：総務 太郎');
+    expect(formatDiffEntry('lending_years', { key: 'confirmed_by', before: U, after: null }, lookups)).toBe('確定した人：総務 太郎 → なし');
+    expect(formatDiffEntry('lending_years', { key: 'confirmed_at', before: null, after: '2026-10-12T08:00:00+00:00' })).toBe('確定した日時：なし → 2026/10/12 17:00');
+    expect(formatAuditValue('lending_records', 'lending_item_id', 'gone', lookups)).toBe(DELETED_LENDING_ITEM);
+    // ほかの表は列名のまま
+    expect(formatDiffEntry('requests', { key: 'count', before: 1, after: 2 })).toBe('count：1 → 2');
+    expect(formatDiffEntry('events', { key: 'note', before: null, after: 'x' })).toBe('note：なし → x');
+  });
+
+  it('T21 テント等の備品の名前を読む（年度で絞る）。読めなければ空の表（履歴は出す）', async () => {
+    const ok = createFakeSupabase(() => ({ data: [{ id: I, name: 'テント' }] }));
+    expect(await fetchLendingItemNames(Y, ok.client)).toEqual(new Map([[I, 'テント']]));
+    expect(ok.issued[0]!.table).toBe('lending_items');
+    expect(opArgs(ok.issued[0]!, 'eq')).toEqual([['year_id', Y]]);
+    const bad = createFakeSupabase(() => ({ error: { code: '42501', message: 'denied' } }));
+    expect(await fetchLendingItemNames(Y, bad.client)).toEqual(new Map());
   });
 });
 
@@ -387,6 +451,9 @@ describe('T19 提出物の履歴（04「提出状況」の履歴、notes/T19.md�
   it('表の絞り込みの最後に3表（足すだけ）。表の名前は「提出物」「提出物の提出」「提出物のファイル」', () => {
     expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('documents'), AUDIT_TABLES.indexOf('documents') + 3)).toEqual(['documents', 'document_submissions', 'document_files']);
     expect(AUDIT_TABLES.indexOf('documents')).toBeGreaterThan(AUDIT_TABLES.indexOf('events'));
+    // T19〜T21 のマージの後の並び：締切と予定の後、T20 のシフト・作業の5表の前
+    expect(AUDIT_TABLES.indexOf('documents')).toBe(AUDIT_TABLES.indexOf('events') + 1);
+    expect(AUDIT_TABLES.indexOf('shift_duties')).toBe(AUDIT_TABLES.indexOf('document_files') + 1);
     expect(['documents', 'document_submissions', 'document_files'].map(tableLabel)).toEqual(['提出物', '提出物の提出', '提出物のファイル']);
     expect(new Set(AUDIT_TABLES).size).toBe(AUDIT_TABLES.length);
   });
@@ -427,5 +494,59 @@ describe('T19 提出物の履歴（04「提出状況」の履歴、notes/T19.md�
     expect(opArgs(ok.issued[0]!, 'eq')).toEqual([['year_id', Y]]);
     const failed = createFakeSupabase(() => ({ error: { code: '42501', message: 'x' }, status: 403 }));
     expect(await fetchDocumentTitles(Y, failed.client)).toEqual(new Map());
+  });
+});
+
+describe('T20 シフト・作業の履歴（04「シフト表」の履歴、notes/T20.md「画面の約束」12）', () => {
+  const D = '66666666-6666-4666-8666-666666666666';
+  const S = '77777777-7777-4777-8777-777777777777';
+  const row = (table_name: string, data: Record<string, unknown>, before: Record<string, unknown> | null = null) => ({
+    table_name,
+    row_pk: {},
+    group_id: null,
+    before,
+    after: data,
+  });
+  const lookups = { users: new Map([[U, '部門員A']]), duties: new Map([[D, '受付']]), slots: new Map([[S, '10/15 09:00〜10:00']]) };
+
+  it('表の絞り込みの最後に5表（足すだけ）。表の名前', () => {
+    expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('shift_duties'), AUDIT_TABLES.indexOf('shift_duties') + 5)).toEqual([
+      'shift_duties',
+      'shift_slots',
+      'shift_needs',
+      'shift_assignments',
+      'tasks',
+    ]);
+    expect(['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks'].map(tableLabel)).toEqual([
+      '持ち場',
+      'シフトの時間枠',
+      '必要人数',
+      'シフトの割り当て',
+      '作業',
+    ]);
+    expect(new Set(AUDIT_TABLES).size).toBe(AUDIT_TABLES.length);
+  });
+
+  it('対象：持ち場は名前、時間枠は「11/5 09:00〜10:00」、ますは持ち場の名前（なければ消えた持ち場）、割り当ては人と持ち場、作業は題名', () => {
+    expect(auditTarget(row('shift_duties', { id: D, name: '受付（旧）' }), lookups)).toBe('受付');
+    expect(auditTarget(row('shift_duties', { id: 'gone', name: '運搬' }), lookups)).toBe('運搬');
+    expect(auditTarget(row('shift_slots', { id: S, starts_at: '2027-11-05T00:00:00+00:00', ends_at: '2027-11-05T01:00:00+00:00' }), lookups)).toBe(
+      '11/5 09:00〜10:00',
+    );
+    expect(auditTarget(row('shift_needs', { slot_id: S, duty_id: D, required_count: 2 }), lookups)).toBe('受付');
+    expect(auditTarget(row('shift_needs', { slot_id: S, duty_id: 'gone', required_count: 2 }), lookups)).toBe('消えた持ち場');
+    expect(auditTarget(row('shift_assignments', { slot_id: S, duty_id: D, user_id: U }), lookups)).toBe('部門員A・受付');
+    expect(auditTarget(row('tasks', { id: 't', title: '名札を作る' }), lookups)).toBe('名札を作る');
+  });
+
+  it('値：作業の状態は表示名、担当者は表示名、持ち場・時間枠は今の名前と日時（引けなければ id）', () => {
+    expect(formatAuditValue('tasks', 'status', 'doing')).toBe('作業中');
+    expect(formatAuditValue('tasks', 'assignee_id', U, lookups)).toBe('部門員A');
+    expect(formatAuditValue('tasks', 'assignee_id', 'x', lookups)).toBe(NAME_UNKNOWN);
+    expect(formatAuditValue('shift_assignments', 'duty_id', D, lookups)).toBe('受付');
+    expect(formatAuditValue('shift_needs', 'slot_id', S, lookups)).toBe('10/15 09:00〜10:00');
+    expect(formatAuditValue('shift_needs', 'slot_id', 'x', lookups)).toBe('x');
+    // 年度の状態の status は今までどおり
+    expect(formatAuditValue('years', 'status', 'closed')).toBe('終了');
   });
 });

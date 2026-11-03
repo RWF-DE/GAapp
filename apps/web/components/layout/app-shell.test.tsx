@@ -289,6 +289,13 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       '締切と予定の一覧',
       // T19：提出物
       '提出状況',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
+      // T21：テント等の貸し出し
+      '備品と割り当て',
+      '受け渡し・返却',
       'マスタ設定',
       '履歴',
     ]);
@@ -311,6 +318,13 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       '締切と予定の一覧',
       // T19：提出物（部門員は状況だけ）
       '提出状況',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
+      // T21：テント等の貸し出し
+      '備品と割り当て',
+      '受け渡し・返却',
     ]);
   });
 });
@@ -330,6 +344,8 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       'お知らせ',
       '締切と予定',
       '提出物',
+      'シフト・作業',
+      'テント等の貸し出し',
       '共通',
     ]);
     const furniture = within(aside()).getByRole('group', { name: '机椅子' });
@@ -353,6 +369,19 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
     // T19：提出物の見出しに「提出状況」（管理者。店長・副店長を兼ねなければ「自団体の提出物」は出ない）
     const documents = within(aside()).getByRole('group', { name: '提出物' });
     expect(within(documents).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['提出状況', '/documents']]);
+    // T20：シフト・作業の見出しに自分のシフト・シフト表・作業一覧（印刷はナビに出さない）
+    const shifts = within(aside()).getByRole('group', { name: 'シフト・作業' });
+    expect(within(shifts).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['自分のシフト', '/shift'],
+      ['シフト表', '/shifts'],
+      ['作業一覧', '/tasks'],
+    ]);
+    // T21：テント等の貸し出しの見出しに「備品と割り当て」「受け渡し・返却」
+    const lending = within(aside()).getByRole('group', { name: 'テント等の貸し出し' });
+    expect(within(lending).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['備品と割り当て', '/lending'],
+      ['受け渡し・返却', '/lending/records'],
+    ]);
     // 見出しは h2。「ホーム」だけ sr-only（項目が「ホーム」1つなので同じ言葉を2つ並べない）
     const heads = within(aside()).getAllByRole('heading', { level: 2 });
     expect(heads.map((h) => [h.textContent, h.classList.contains('sr-only')])).toEqual([
@@ -361,6 +390,8 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       ['お知らせ', false],
       ['締切と予定', false],
       ['提出物', false],
+      ['シフト・作業', false],
+      ['テント等の貸し出し', false],
       ['共通', false],
     ]);
   });
@@ -383,7 +414,15 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       'キャスター机交換',
       'お知らせ一覧',
       '締切と予定の一覧',
+      // T19：提出物
       '提出状況',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
+      // T21：テント等の貸し出し
+      '備品と割り当て',
+      '受け渡し・返却',
       'マスタ設定',
       '履歴',
     ]);

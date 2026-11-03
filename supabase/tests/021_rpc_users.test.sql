@@ -4,7 +4,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(172);
+select plan(185);
 
 -- auth.users に直接ユーザーを入れ、続けて identity を入れる（GoTrue の代わり）。メールは <name>@pgtap.test。
 -- provider が google なら Google の identity、email なら email_verified: true の email の identity
@@ -586,6 +586,77 @@ select is((select count(*)::int from public.year_roles yr join tests.ids u on u.
   '兼任は作られない（ac_both の staff だけが付く）');
 select is((select role from public.group_members where group_id = tests.id('G3') and user_id = tests.id('ac_years')),
   'deputy_manager'::public.group_role, '違う年度の団体の招待は、招待の立場（副店長）で付く');
+
+-- ================================================================ ロールを外したとき・変えたとき（T20。D-56）：シフト・作業
+-- 割り当ての (year_id, user_id) → year_roles は on delete cascade、作業の担当者は on delete set null (assignee_id)。remove_role の連鎖が、
+-- その年度のその人の割り当てを消し、作業の担当者を空にする（状態はそのまま）。連鎖の行の監査に remove_role の理由・外した人・年度が残る。
+-- ほかの年度の割り当て・作業は残る。set_role で部門長にしても、閲覧のみにしても行は残る（閲覧のみの人を新しく割り当てるのは not_soumu）。
+-- 終了した年度の remove_role も連鎖する（year_roles・remove_role・set_role は T20 で変えていない）
+select tests.set_scenario('requesting');
+select tests.create_user(n) from unnest(array['sh_a', 'sh_b', 'sh_c']) n;
+insert into public.year_roles (year_id, user_id, role) values
+  (tests.id('Y1'), tests.id('sh_a'), 'staff'), (tests.id('Y2'), tests.id('sh_a'), 'staff'),
+  (tests.id('Y1'), tests.id('sh_b'), 'staff'), (tests.id('Y1'), tests.id('sh_c'), 'staff');
+insert into public.shift_assignments (year_id, slot_id, duty_id, user_id) values
+  (tests.id('Y1'), tests.id('SL1'), tests.id('DU1'), tests.id('sh_a')),
+  (tests.id('Y1'), tests.id('SL2'), tests.id('DU1'), tests.id('sh_a')),
+  (tests.id('Y2'), tests.id('SL_Y2B'), tests.id('DU_Y2'), tests.id('sh_a')),
+  (tests.id('Y1'), tests.id('SL2'), tests.id('DU1'), tests.id('sh_b')),
+  (tests.id('Y1'), tests.id('SL1'), tests.id('DU2'), tests.id('sh_c'));
+with t as (
+  insert into public.tasks (year_id, title, assignee_id, status) values
+    (tests.id('Y1'), 'T-TK_SHA', tests.id('sh_a'), 'doing'),
+    (tests.id('Y2'), 'T-TK_SHA_Y2', tests.id('sh_a'), 'todo'),
+    (tests.id('Y1'), 'T-TK_SHB', tests.id('sh_b'), 'todo'),
+    (tests.id('Y1'), 'T-TK_SHC', tests.id('sh_c'), 'done')
+  returning id, title)
+insert into tests.ids select substr(title, 3), id from t;
+select coalesce(max(id), 0) as r0 from public.audit_logs \gset
+select tests.login_as('admin');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('sh_a'), '交代（シフト）') $$,
+  'シフトの割り当てと作業の担当のある staff のロールを外せる');
+select tests.logout();
+select is((select format('Y1=%s Y2=%s', count(*) filter (where year_id = tests.id('Y1')), count(*) filter (where year_id = tests.id('Y2')))
+           from public.shift_assignments where user_id = tests.id('sh_a')),
+  'Y1=0 Y2=1', 'ロールを外すと、その年度（Y1）の割り当て2つが消え、ほかの年度（Y2）の割り当ては残る');
+select is((select format('%s %s %s %s', coalesce(assignee_id::text, 'null'), status, (year_id = tests.id('Y1'))::text, (updated_by = tests.id('admin'))::text)
+           from public.tasks where id = tests.id('TK_SHA')),
+  'null doing true true', 'その年度の作業の担当者が空になる（状態〔作業中〕・年度はそのまま。updated_by は外した人）');
+select is((select assignee_id from public.tasks where id = tests.id('TK_SHA_Y2')), tests.id('sh_a'), 'ほかの年度（Y2）の作業の担当者は残る');
+select is((select string_agg(format('%s %s %s %s %s', table_name, action, coalesce(reason, 'null'), (user_id = tests.id('admin'))::text,
+                                    (year_id = tests.id('Y1'))::text), ' / ' order by table_name collate "C", action collate "C", id)
+           from public.audit_logs where id > :r0 and table_name in ('shift_assignments', 'tasks', 'year_roles')),
+  'shift_assignments delete 交代（シフト） true true / shift_assignments delete 交代（シフト） true true / tasks update 交代（シフト） true true / '
+  || 'year_roles delete 交代（シフト） true true',
+  'remove_role の理由・外した人・年度が、year_roles と、連鎖で消えた割り当て・担当者を空にした作業の監査に残る');
+select tests.login_as('admin');
+select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('sh_b'), 'head', '部門長に') $$, '割り当てと作業の担当のある staff を部門長にする');
+select tests.logout();
+select is((select format('%s %s', (select count(*) from public.shift_assignments where user_id = tests.id('sh_b')),
+                         (select (assignee_id = tests.id('sh_b'))::text from public.tasks where id = tests.id('TK_SHB')))),
+  '1 true', '部門長にしても、割り当てと作業の担当は残る');
+select tests.login_as('admin');
+select lives_ok($$ select public.set_role(tests.id('Y1'), tests.id('sh_b'), 'viewer', '閲覧のみに') $$, '閲覧のみにする（管理者だけ）');
+select tests.logout();
+select is((select format('%s %s', (select count(*) from public.shift_assignments where user_id = tests.id('sh_b')),
+                         (select (assignee_id = tests.id('sh_b'))::text from public.tasks where id = tests.id('TK_SHB')))),
+  '1 true', '閲覧のみにしても、割り当てと作業の担当の行は残る（画面が「総務でない人」と出し、人数に数えない。D-56）');
+select tests.login_as('admin');
+select is(tests.error_json(tests.sql('insert into public.shift_assignments (year_id, slot_id, duty_id, user_id) values (:Y1, :SL1, :DU1, :sh_b)')),
+  '{"code": "invalid_input", "detail": {"field": "user_id", "reason": "not_soumu"}}'::jsonb, '閲覧のみにした人を新しく割り当てることはできない（not_soumu）');
+select tests.logout();
+select tests.set_scenario('closed');
+select coalesce(max(id), 0) as r1 from public.audit_logs \gset
+select tests.login_as('admin');
+select lives_ok($$ select public.remove_role(tests.id('Y1'), tests.id('sh_c'), '年度末') $$, '終了した年度でも、割り当てと作業の担当のある人のロールを外せる');
+select tests.logout();
+select is((select format('%s %s %s', (select count(*) from public.shift_assignments where user_id = tests.id('sh_c')),
+                         coalesce(t.assignee_id::text, 'null'), t.status) from public.tasks t where t.id = tests.id('TK_SHC')),
+  '0 null done', '終了した年度の remove_role も連鎖する（割り当てが消え、作業の担当者が空になる。状態〔完了〕はそのまま）');
+select is((select count(*)::int from public.audit_logs
+           where id > :r1 and table_name in ('shift_assignments', 'tasks') and reason = '年度末' and user_id = tests.id('admin')), 2,
+  '終了した年度の連鎖の監査にも、理由と外した人が残る');
+select tests.set_scenario('requesting');
 
 select * from finish();
 rollback;

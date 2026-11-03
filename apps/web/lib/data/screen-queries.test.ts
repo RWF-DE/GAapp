@@ -2,6 +2,8 @@
 // T16：ダッシュボード（/）の先読み（planHomePrefetch。欄が読むクエリと同じキー。版・スナップショットを読まない）と、
 // ルートのレイアウトの JS に机椅子の数え方・スナップショット・検証を入れないこと
 // T18：/ の先読みに予定と締切の項目（締切と予定の欄と同じキー。4G の計測で団体代表の / が 2 秒以内のままと確かめて足した）
+// T21：/ の先読みに総務のテント等の読み取り（店長・副店長の分は足さない。D-45 の T21 の直し）、/request にテント等のタブを
+// 出すかの備品（`?tab=lending` ならタブの読み取りも）、/lending/records（総務。先送りの許可リストにも入る）
 import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
 import type { AppRole, GroupSummary, Membership } from '@/lib/auth/membership';
@@ -10,7 +12,11 @@ import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
 import { documentsSoumuPortalOptions, repDocumentsOptions } from '@/lib/modules/documents/reads';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
+import { lendingRecordsOptions, lendingRequestItemsOptions, lendingRequestTabOptions } from '@/lib/modules/lending/queries';
+import { lendingRepOptions, lendingSoumuOptions } from '@/lib/modules/lending/summary';
 import { noticesLatestOptions } from '@/lib/modules/notices/latest';
+import { shiftsPortalOptions } from '@/lib/modules/shifts/portal-read';
+import { myShiftsOptions, shiftMembersOptions, soumuNamesOptions, tasksOptions } from '@/lib/modules/shifts/reads';
 import { PORTAL_WIDGETS, portalContextsOf, portalWidgetQuery } from '@/lib/modules/portal';
 import { PORTAL_PROVIDERS } from '@/lib/modules/providers';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
@@ -24,9 +30,12 @@ import {
   loadMyData,
   planDocumentPrefetch,
   planHomePrefetch,
+  planLendingRecordsPrefetch,
   planMyPrefetch,
   planRequestPrefetch,
+  planShiftPrefetch,
   planStockPrefetch,
+  planTasksPrefetch,
   SCREEN_PREFETCH,
 } from './screen-queries';
 import { seedYearRows } from './year';
@@ -55,8 +64,8 @@ describe('先読みの決め方（URL と覚えた id から）', () => {
   });
 
   it('/request・/my：?group= が覚えた団体ならその団体、なければ最初の団体。団体がなければ読まない', () => {
-    expect(planRequestPrefetch(ctx(`group=${G2}`, [G1, G2])).map((e) => e.groupId)).toEqual([G2]);
-    expect(planRequestPrefetch(ctx('group=other', [G1, G2])).map((e) => e.groupId)).toEqual([G1]);
+    expect(planRequestPrefetch(ctx(`group=${G2}`, [G1, G2])).map((e) => e.groupId)).toEqual([G2, G2]);
+    expect(planRequestPrefetch(ctx('group=other', [G1, G2])).map((e) => e.groupId)).toEqual([G1, G1]);
     expect(planRequestPrefetch(ctx('', []))).toEqual([]);
     expect(keys(planMyPrefetch(ctx(`group=${G2}`, [G1, G2])))).toEqual([queryKeys.yearPart(Y, 'my', G2)]);
     expect(planMyPrefetch(ctx('', []))).toEqual([]);
@@ -86,12 +95,48 @@ function fakeClient(rows: Record<string, unknown>, gates: Record<string, Promise
   return { client, log };
 }
 
+describe('T21 テント等の先読み（/request のタブ・/lending/records）', () => {
+  it('/request：申請と、テント等のタブを出すかを決める備品（いつも）。`?tab=lending` ならその団体のテント等のタブも', () => {
+    expect(keys(planRequestPrefetch(ctx(`group=${G2}`, [G1, G2])))).toEqual([
+      queryKeys.yearPart(Y, 'request', G2),
+      lendingRequestItemsOptions(Y, G2).queryKey,
+    ]);
+    expect(keys(planRequestPrefetch(ctx(`group=${G2}&tab=lending`, [G1, G2])))).toEqual([
+      queryKeys.yearPart(Y, 'request', G2),
+      lendingRequestItemsOptions(Y, G2).queryKey,
+      lendingRequestTabOptions(Y, G2).queryKey,
+    ]);
+    // タブを出すかを決める読み取りは、その団体の割り当てと記録を埋め込むので団体ごとのキー（2026-11-01 のリードの決定）
+    expect(lendingRequestItemsOptions(Y, G2).queryKey).toEqual(['year', Y, 'lending', 'request-items', G2]);
+    // 知らないタブは机・椅子（テント等のタブの読み取りはしない）
+    expect(keys(planRequestPrefetch(ctx('tab=other', [G1])))).toEqual([queryKeys.yearPart(Y, 'request', G1), lendingRequestItemsOptions(Y, G1).queryKey]);
+  });
+
+  it('/lending/records：ロールが総務なら受け渡し・返却の読み取り（総務のままのときだけ使う）。ほかは読まない', () => {
+    for (const role of ['admin', 'head', 'deputy_head', 'staff'] as const) {
+      const [e] = planLendingRecordsPrefetch(ctx('', [], role));
+      expect(e!.options.queryKey).toEqual(lendingRecordsOptions(Y).queryKey);
+    }
+    expect(planLendingRecordsPrefetch(ctx('', [], 'viewer'))).toEqual([]);
+    expect(planLendingRecordsPrefetch(ctx('', [G1], null))).toEqual([]);
+    const [e] = planLendingRecordsPrefetch(ctx('', [], 'staff'));
+    const member = (role: AppRole | null) => ({ role, groups: [] }) as unknown as Membership;
+    expect(e!.usable!(member('head'))).toBe(true);
+    expect(e!.usable!(member('viewer'))).toBe(false);
+    expect(e!.usable!(member(null))).toBe(false);
+    expect(SCREEN_PREFETCH['/lending/records']).toBe(planLendingRecordsPrefetch);
+  });
+});
+
 describe('先送りしてよい画面（EARLY_FETCH_PATHS）', () => {
   it('版を使わない画面（先読みの表と同じ /・/stock・/request・/my）だけで、振り分けに関わる画面（版を先に読む。D-33）は入らない', () => {
     // T16：ダッシュボード（/）は版・振り分けの行を読まないので入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）
     // T19：自団体の提出物（/document）も版を使わない画面（提出状況〔/documents〕は入れない。D-55）
-    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/', '/document', '/my', '/request', '/stock']);
+    // T20：自分のシフト（/shift）と作業一覧（/tasks）も版を使わない画面（シフト表〔/shifts〕と印刷は入れない。D-56）
+    // T21：受け渡し・返却（/lending/records）も版を使わないので入れた（/lending〔PC〕は入れない）
+    expect([...EARLY_FETCH_PATHS].sort()).toEqual(['/', '/document', '/lending/records', '/my', '/request', '/shift', '/stock', '/tasks']);
     expect(EARLY_FETCH_PATHS).not.toContain('/documents');
+    expect(EARLY_FETCH_PATHS).not.toContain('/lending');
     expect(EARLY_FETCH_PATHS).toEqual(Object.keys(SCREEN_PREFETCH));
     expect(SCREEN_PREFETCH['/']).toBe(planHomePrefetch);
     // 振り分けに関わる画面（スナップショットで版を先に読む：机椅子の状況・振り分け・キャスター机交換）
@@ -122,7 +167,9 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
         if (p.moduleId === 'documents' && c.kind === 'rep') continue;
         for (const w of PORTAL_WIDGETS) {
           const q = portalWidgetQuery(p, c, w);
-          if (q) out.set(JSON.stringify(q.queryKey), q.queryKey);
+          // T21：店長・副店長のテント等の読み取りは先読みに足さない（欄が最初の描画の後に読んでも、代表する団体のカードの表示を
+          // 待たせない。notes/T21.md の「レビューで直したこと」、D-45 の T21 の直し）
+          if (q && !(p.moduleId === 'lending' && c.kind === 'rep')) out.set(JSON.stringify(q.queryKey), q.queryKey);
         }
       }
     }
@@ -139,6 +186,10 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
         calendarDatedOptions(Y, 'soumu').queryKey,
         // T19：提出物（部門長以上と総務部門員で別のキー）
         documentsSoumuPortalOptions(Y, role === 'staff' ? 'staff' : 'lead').queryKey,
+        // T20：シフト・作業（部門長以上と総務部門員で別のキー）
+        shiftsPortalOptions(Y, role === 'staff' ? 'staff' : 'lead').queryKey,
+        // T21：テント等の貸し出しの総務の読み取り
+        lendingSoumuOptions(Y).queryKey,
       ]);
     },
   );
@@ -160,6 +211,8 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
       noticesLatestOptions(Y, 'soumu').queryKey,
       calendarDatedOptions(Y, 'soumu').queryKey,
       documentsSoumuPortalOptions(Y, 'lead').queryKey,
+      shiftsPortalOptions(Y, 'lead').queryKey,
+      lendingSoumuOptions(Y).queryKey,
       furnitureRepOptions(Y, [G1]).queryKey,
       noticesLatestOptions(Y, 'rep', [G1]).queryKey,
     ]);
@@ -216,7 +269,7 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     for (const m of [member('admin', [G1g]), member('staff'), member('viewer', [G2g]), member(null, [G1g, G2g])]) {
       for (const key of keys(home(m))) {
         expect(key.slice(0, 3)).toEqual(['year', Y, 'portal']);
-        expect(['furniture', 'notices', 'calendar', 'documents']).toContain(key[3]);
+        expect(['furniture', 'notices', 'calendar', 'documents', 'shifts', 'lending']).toContain(key[3]);
       }
     }
   });
@@ -251,6 +304,16 @@ describe('T16 / の先読み（planHomePrefetch）', () => {
     expect(repNotices!.usable!(member('viewer', [G1g, G2g]))).toBe(false);
     expect(repNotices!.usable!(member(null, [G1g]))).toBe(false);
   });
+
+  it('T21 店長・副店長のテント等の読み取りは / の先読みに入れない（D-45 の T21 の直し）。総務の分は欄と同じキー', () => {
+    for (const m of [member(null, [G1g]), member('admin', [G1g]), member('viewer', [G1g])]) {
+      expect(keys(home(m))).not.toContainEqual(lendingRepOptions(Y, [G1]).queryKey);
+    }
+    const lending = home(member('staff')).find((e) => e.options.queryKey[3] === 'lending');
+    expect(lending!.options.queryKey).toEqual(lendingSoumuOptions(Y).queryKey);
+    expect(lending!.usable!(member('head'))).toBe(true);
+    expect(lending!.usable!(member('viewer'))).toBe(false);
+  });
 });
 
 describe('T16 ルートのレイアウトの JS（Providers が先読みの表を読む）', () => {
@@ -284,6 +347,11 @@ describe('T16 ルートのレイアウトの JS（Providers が先読みの表�
     expect(g.files).toContain('lib/modules/calendar/dated.ts');
     expect(g.files.filter((f) => f.includes('calendar') && f !== 'lib/modules/calendar/dated.ts')).toEqual([]);
     expect(g.files).not.toContain('lib/datetime-weekday.ts');
+    // T21：テント等は読み取りとキー（summary.ts・queries.ts）だけ。数え方・組み立て・CSV・言葉・/lending の読み書き・入力の zod・
+    // 画面の部品は入れない
+    expect(g.files).toContain('lib/modules/lending/summary.ts');
+    expect(g.files).toContain('lib/modules/lending/queries.ts');
+    expect(g.files.filter((f) => f.includes('lending') && !['lib/modules/lending/summary.ts', 'lib/modules/lending/queries.ts'].includes(f))).toEqual([]);
   });
 });
 
@@ -462,5 +530,56 @@ describe('T19 /document と / の提出物の先読み（planDocumentPrefetch・
     }
     expect(graph.files).toContain('lib/modules/documents/reads.ts');
     expect(graph.packages.filter((p) => /^(@gaapp\/|zod)/.test(p))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------- 自分のシフト /shift・作業一覧 /tasks（T20）
+
+describe('T20 /shift・/tasks の先読み（planShiftPrefetch・planTasksPrefetch）', () => {
+  const member = (role: AppRole | null): Membership => {
+    const year = { id: Y, label: 'R9', status: 'requesting' as const, festival_start: '2027-10-16' };
+    return { displayName: null, year, role, groups: [], years: [year], latestYear: year, adminOfOpenYear: role === 'admin' };
+  };
+
+  it('/shift：総務なら自分の割り当てと表示名（2本）。総務でなければ読まない。立場が総務でなくなったら使わない', () => {
+    for (const role of ['admin', 'head', 'deputy_head', 'staff'] as const) {
+      expect(keys(planShiftPrefetch(ctx('', [], role)))).toEqual([myShiftsOptions(Y).queryKey, soumuNamesOptions(Y).queryKey]);
+    }
+    expect(planShiftPrefetch(ctx('', [], 'viewer'))).toEqual([]);
+    expect(planShiftPrefetch(ctx('', [], null))).toEqual([]);
+    const [mine] = planShiftPrefetch(ctx('', [], 'staff'));
+    expect(mine!.usable!(member('head'))).toBe(true);
+    expect(mine!.usable!(member('viewer'))).toBe(false);
+    expect(SCREEN_PREFETCH['/shift']).toBe(planShiftPrefetch);
+  });
+
+  it('/tasks：総務なら作業と表示名、部門長以上はロールの一覧も。段が変わったら使わない', () => {
+    expect(keys(planTasksPrefetch(ctx('', [], 'staff')))).toEqual([tasksOptions(Y).queryKey, soumuNamesOptions(Y).queryKey]);
+    expect(keys(planTasksPrefetch(ctx('', [], 'head')))).toEqual([tasksOptions(Y).queryKey, soumuNamesOptions(Y).queryKey, shiftMembersOptions(Y).queryKey]);
+    expect(planTasksPrefetch(ctx('', [], 'viewer'))).toEqual([]);
+    const [tasks] = planTasksPrefetch(ctx('', [], 'staff'));
+    expect(tasks!.usable!(member('staff'))).toBe(true);
+    expect(tasks!.usable!(member('admin'))).toBe(false);
+    expect(SCREEN_PREFETCH['/tasks']).toBe(planTasksPrefetch);
+    // シフト表と印刷は先読みしない（版を使わないが、PC の画面で読む量が多い）
+    expect(Object.keys(SCREEN_PREFETCH)).not.toContain('/shifts');
+  });
+
+  it('/ の先読みのシフト・作業：段が同じときだけ使う（部門員の先読みは部門長になったら使わない）', () => {
+    const entry = planHomePrefetch(ctx('', [], 'staff')).find((e) => e.options.queryKey[3] === 'shifts')!;
+    expect(entry.options.queryKey).toEqual(shiftsPortalOptions(Y, 'staff').queryKey);
+    expect(entry.usable!(member('staff'))).toBe(true);
+    expect(entry.usable!(member('head'))).toBe(false);
+    expect(entry.usable!(member('viewer'))).toBe(false);
+  });
+
+  it('ルートのレイアウト（screen-queries.ts）にシフト表の組み立て・書き込み・ダイアログ・組み立てたダッシュボードを入れない', () => {
+    const g = staticImportGraph('lib/data/screen-queries.ts');
+    for (const f of ['lib/modules/shifts/board.ts', 'lib/modules/shifts/portal.ts', 'lib/data/shifts.ts', 'lib/data/tasks.ts', 'lib/schemas/shifts.ts', 'lib/schemas/tasks.ts']) {
+      expect(g.files).not.toContain(f);
+    }
+    expect(g.files.filter((f) => f.startsWith('components/'))).toEqual([]);
+    expect(g.files).toContain('lib/modules/shifts/reads.ts');
+    expect(g.files).toContain('lib/modules/shifts/portal-read.ts');
   });
 });
