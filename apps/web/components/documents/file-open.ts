@@ -4,7 +4,12 @@
 // - 保存：押したときに download の名前つきの署名つき URL（Content-Disposition: attachment）を作り、その URL へ移る（画面は離れない）。
 // 署名つき URL は押したときに作り、60 秒だけ使う。キャッシュ・下書き・ログ・画面の URL に入れない（返さず、その場でタブ・移動に渡すだけ）。
 // window はイベントの中だけで使う（プリレンダーの間はない）。テストは fileWindow の関数を差し替える。
-import { signDocumentFile } from '@/lib/data/documents';
+// 署名つき URL を作る関数（lib/data/documents.ts）は、初めて開く・保存するときに読む（document-writes.ts。/document の最初に読む JS に
+// 入れない。FU3 の PR B の案 5）。読めなければ、開くはタブを閉じ、どちらも failed（通信の失敗）を返す。
+import { loadDocumentWrites } from './document-writes';
+
+/** 署名つき URL を作る（初めてなら書き込みの JS を読んでから） */
+const signLazily = (path: string, download?: string): Promise<string> => loadDocumentWrites().then((w) => w.signDocumentFile(path, download));
 
 /** タブを開けなかった（ポップアップを止められた） */
 export const POPUP_BLOCKED_MESSAGE = '新しいタブを開けませんでした。ポップアップを許可してから、もう一度「開く」を押してください';
@@ -27,7 +32,7 @@ export type FileOpenResult = { type: 'opened' } | { type: 'blocked' } | { type: 
  * const r = await openDocumentFile(file.object_path);
  * if (r.type === 'blocked') setError(POPUP_BLOCKED_MESSAGE);
  */
-export async function openDocumentFile(objectPath: string, sign: (path: string) => Promise<string> = (p) => signDocumentFile(p)): Promise<FileOpenResult> {
+export async function openDocumentFile(objectPath: string, sign: (path: string) => Promise<string> = (p) => signLazily(p)): Promise<FileOpenResult> {
   const tab = fileWindow.openBlank();
   if (!tab) return { type: 'blocked' };
   try {
@@ -52,7 +57,7 @@ export async function openDocumentFile(objectPath: string, sign: (path: string) 
 export async function saveDocumentFile(
   objectPath: string,
   downloadName: string,
-  sign: (path: string, download: string) => Promise<string> = (p, d) => signDocumentFile(p, d),
+  sign: (path: string, download: string) => Promise<string> = (p, d) => signLazily(p, d),
 ): Promise<FileOpenResult> {
   try {
     const url = await sign(objectPath, downloadName);

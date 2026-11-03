@@ -27,8 +27,6 @@ export const reviewNoteSchema = z
   .refine((s) => s.length > 0, { message: REVIEW_NOTE_MESSAGES.returnRequired })
   .refine((s) => charCount(s) <= REVIEW_NOTE_MAX, { message: REVIEW_NOTE_MESSAGES.returnTooLong });
 
-/** 前後の空白を除いた理由・メモ（空なら null）。DB の RPC と同じ形にそろえる（送る前と、(B1) の比べ方） */
-export function normalizeReviewNote(note: string | null | undefined): string | null {
-  const t = (note ?? '').trim();
-  return t === '' ? null : t;
-}
+// 前後の空白を除いた理由・メモ（空なら null）。/document の最初に読む JS（(B1) の比べ方）も使うので、zod を読まない
+// lib/modules/documents/review-note.ts に置き、ここから同じ名前で出し直す（FU3 の PR B の案 5）
+export { normalizeReviewNote } from '@/lib/modules/documents/review-note';
