@@ -18,6 +18,7 @@ import {
   normalizeIssues,
   parseDetails,
   STORAGE_ERROR_MESSAGES,
+  STORAGE_SIGN_DENIED_MESSAGE,
   toAppError,
   unknownOutcomeMessage,
   type MessageContext,
@@ -586,6 +587,17 @@ describe('T19 提出物の RPC と Storage の文言（04「提出物」のエ�
     expect(Object.keys(STORAGE_ERROR_MESSAGES)).toEqual(['storage_denied', 'storage_missing', 'storage_too_large', 'storage_mime', 'storage_failed']);
     expect(effectOf(appError('forbidden', 'storage_denied').info).reload).toBe('year');
     expect(effectOf(appError('not_found', 'storage_missing').info).reload).toBe('data');
+  });
+
+  it('開く・保存（署名つき URL。文脈 storage: sign）の 403 は開く・保存の文言（アップロードとも、読み直しましたとも言わない。レビューの UX-4）', () => {
+    const sign = (kind: 'forbidden' | 'not_found' | 'input' | 'unknown', reason: string) => messageFor(appError(kind, reason).info, { storage: 'sign' });
+    expect(sign('forbidden', 'storage_denied')).toBe('ファイルを開けませんでした。立場が変わった可能性があります');
+    expect(STORAGE_SIGN_DENIED_MESSAGE).toBe('ファイルを開けませんでした。立場が変わった可能性があります');
+    // ほかの理由は文脈によらず同じ（404 は一覧を読み直すので「読み直しました」のまま）
+    expect(sign('not_found', 'storage_missing')).toBe('ファイルを開けませんでした（消された可能性があります）。読み直しました');
+    expect(sign('unknown', 'storage_failed')).toBe('ファイルの置き場で問題が起きました。少し待ってから、もう一度');
+    // 文脈がなければ（アップロード）今の文言
+    expect(messageFor(appError('forbidden', 'storage_denied').info, { storage: 'upload' })).toBe(STORAGE_ERROR_MESSAGES.storage_denied);
   });
 
   it('定数の名前は DOCUMENT_・STORAGE_ で始め、文言の表は 04 のとおり', () => {

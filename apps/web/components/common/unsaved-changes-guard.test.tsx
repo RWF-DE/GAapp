@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useEffect } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,7 +8,8 @@ import { useAuth } from '@/lib/auth/auth-provider';
 import { draftKey, saveDraft } from '@/lib/drafts';
 import { fakeAuth, sourceOf } from '@/lib/testing/fake-auth';
 import { TestProviders } from '@/lib/testing/providers';
-import { UnsavedChangesGuard } from './unsaved-changes-guard';
+import { LEAVE_MESSAGES, useUnsavedChangesApi, type LeaveKind } from '@/lib/unsaved-changes';
+import { UnsavedChangesGuard, UnsavedChangesProvider, useUnsavedChanges } from './unsaved-changes-guard';
 
 vi.mock('@/lib/supabase/client', async () => (await import('@/lib/testing/fake-auth')).supabaseClientModule);
 vi.mock('@/lib/auth/load-membership', async () => (await import('@/lib/testing/fake-auth')).loadMembershipModule);
@@ -125,5 +126,101 @@ describe('UnsavedChangesGuard：年度の切り替え（D-31）', () => {
     await user.click(await screen.findByRole('button', { name: '切り替える' }));
     await vi.waitFor(() => expect(screen.getByTestId('current-year').textContent).toBe('R8・終了'));
     expect(window.localStorage.getItem(draftKey(draft))).not.toBeNull();
+  });
+});
+
+// 画面が渡す確かめの文（2026-11-03。D-52 の T19 の直し・2。04「共通レイアウト」の確かめの文）。渡さない画面は今の文のまま（後方互換）
+describe('UnsavedChangesProvider：画面が渡した確かめの文（D-52 の T19 の直し・2）', () => {
+  const UPLOADING = {
+    navigate: { title: 'アップロード中です', description: '離れると、残りのファイルは送られません。', confirm: '移る', cancel: 'やめる（アップロードを続ける）' },
+    signOut: { title: 'アップロード中です', description: 'ログアウトすると、残りのファイルは送られません。', confirm: 'ログアウトする', cancel: 'やめる（アップロードを続ける）' },
+  } as const;
+  const answers: boolean[] = [];
+
+  function Source({ dirty, messages }: { dirty: boolean; messages?: Parameters<typeof useUnsavedChanges>[1] }) {
+    useUnsavedChanges(dirty, messages);
+    return null;
+  }
+  function Ask({ kind }: { kind: LeaveKind }) {
+    const { confirmLeave } = useUnsavedChangesApi();
+    return (
+      <button type="button" onClick={() => void confirmLeave(kind).then((ok) => answers.push(ok))}>
+        {`確かめる：${kind}`}
+      </button>
+    );
+  }
+  function Harness({ plain, custom }: { plain: boolean; custom: boolean }) {
+    return (
+      <UnsavedChangesProvider>
+        <Source dirty={plain} />
+        <Source dirty={custom} messages={UPLOADING} />
+        <Ask kind="navigate" />
+        <Ask kind="year" />
+        <Ask kind="signOut" />
+      </UnsavedChangesProvider>
+    );
+  }
+  const ask = async (user: ReturnType<typeof userEvent.setup>, kind: LeaveKind) => {
+    await user.click(screen.getByRole('button', { name: `確かめる：${kind}` }));
+    return screen.findByRole('alertdialog');
+  };
+
+  beforeEach(() => {
+    answers.length = 0;
+  });
+
+  it('渡した種類はその見出し・文・2つのボタンで確かめ、下書きの文を出さない。続ければ true', async () => {
+    const user = userEvent.setup();
+    render(<Harness plain={false} custom />);
+    const dialog = await ask(user, 'navigate');
+    expect(within(dialog).getByRole('heading').textContent).toBe('アップロード中です');
+    expect(dialog.textContent).toContain('離れると、残りのファイルは送られません。');
+    expect(dialog.textContent).not.toContain('下書き');
+    expect(within(dialog).getByRole('button', { name: 'やめる（アップロードを続ける）' })).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: '移る' }));
+    await vi.waitFor(() => expect(answers).toEqual([true]));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('やめれば false。渡していない種類（年度の切り替え）は今の文とボタン', async () => {
+    const user = userEvent.setup();
+    render(<Harness plain={false} custom />);
+    const signOut = await ask(user, 'signOut');
+    expect(signOut.textContent).toContain('ログアウトすると、残りのファイルは送られません。');
+    await user.click(within(signOut).getByRole('button', { name: 'やめる（アップロードを続ける）' }));
+    await vi.waitFor(() => expect(answers).toEqual([false]));
+    const year = await ask(user, 'year');
+    expect(within(year).getByRole('heading').textContent).toBe(LEAVE_MESSAGES.year.title);
+    expect(year.textContent).toContain(LEAVE_MESSAGES.year.description);
+    expect(within(year).getByRole('button', { name: 'やめる（入力を続ける）' })).toBeTruthy();
+    expect(within(year).getByRole('button', { name: LEAVE_MESSAGES.year.confirm })).toBeTruthy();
+  });
+
+  it('文を渡さない部品と一緒に知らせているときも、渡した文を出す。渡した部品が知らせをやめると今の文に戻る', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<Harness plain custom />);
+    const both = await ask(user, 'navigate');
+    expect(within(both).getByRole('heading').textContent).toBe('アップロード中です');
+    await user.click(within(both).getByRole('button', { name: 'やめる（アップロードを続ける）' }));
+    await vi.waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    rerender(<Harness plain custom={false} />);
+    const plainOnly = await ask(user, 'navigate');
+    expect(within(plainOnly).getByRole('heading').textContent).toBe(LEAVE_MESSAGES.navigate.title);
+    expect(plainOnly.textContent).toContain(LEAVE_MESSAGES.navigate.description);
+    expect(within(plainOnly).getByRole('button', { name: 'やめる（入力を続ける）' })).toBeTruthy();
+    expect(within(plainOnly).getByRole('button', { name: LEAVE_MESSAGES.navigate.confirm })).toBeTruthy();
+  });
+
+  it('文を渡さない画面は今までどおり（今の文・「やめる（入力を続ける）」）。知らせがなければ確かめずに true', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<Harness plain custom={false} />);
+    const dialog = await ask(user, 'navigate');
+    expect(dialog.textContent).toContain(LEAVE_MESSAGES.navigate.description);
+    await user.click(within(dialog).getByRole('button', { name: LEAVE_MESSAGES.navigate.confirm }));
+    await vi.waitFor(() => expect(answers).toEqual([true]));
+    rerender(<Harness plain={false} custom={false} />);
+    await user.click(screen.getByRole('button', { name: '確かめる：navigate' }));
+    await vi.waitFor(() => expect(answers).toEqual([true, true]));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
   });
 });

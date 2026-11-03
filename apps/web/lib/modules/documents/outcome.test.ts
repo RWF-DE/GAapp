@@ -72,4 +72,11 @@ describe('T19 前年度から写すの締切（shiftDeadline・deadlineInRange�
     expect(copySummary(3, 1)).toBe('1 件を写しました（同じ題名の 2 件は写しませんでした）');
     expect(copySummary(0, 0)).toBe('0 件を写しました');
   });
+
+  it('copySummary：応答が届かなかった後のもう一度では、写らなかったものを「同じ題名」と言い切らない（前に写されていた可能性。レビューの T19BC-1）', () => {
+    expect(copySummary(2, 0, true)).toBe('0 件を写しました（2 件は、前に写されていたか同じ題名があったので写しませんでした）');
+    expect(copySummary(2, 1, true)).toBe('1 件を写しました（1 件は、前に写されていたか同じ題名があったので写しませんでした）');
+    expect(copySummary(2, 2, true)).toBe('2 件を写しました');
+    expect(copySummary(2, 1, false)).toBe('1 件を写しました（同じ題名の 1 件は写しませんでした）');
+  });
 });

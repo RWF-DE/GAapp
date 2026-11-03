@@ -38,8 +38,15 @@ export function deadlineInRange(deadline: string): boolean {
   return day >= DEADLINE_MIN_DATE && day <= DEADLINE_MAX_DATE;
 }
 
-/** 写した後の知らせ（「{N} 件を写しました」。選んだのに写らなかったもの〔同じ題名〕があれば「（同じ題名の {k} 件は写しませんでした）」を添える） */
-export function copySummary(selected: number, copied: number): string {
+/**
+ * 写した後の知らせ（「{N} 件を写しました」。選んだのに写らなかったもの〔同じ題名〕があれば「（同じ題名の {k} 件は写しませんでした）」を添える）。
+ * afterUnknown（前の送信の応答が届かなかった後のもう一度）では、写らなかったものは前の送信で写されていた可能性があるので、「同じ題名」と言い切らず
+ * 「（{k} 件は、前に写されていたか同じ題名があったので写しませんでした）」にする（2026-11-03。レビューの T19BC-1）。
+ */
+export function copySummary(selected: number, copied: number, afterUnknown = false): string {
   const skipped = Math.max(0, selected - copied);
-  return `${copied} 件を写しました${skipped > 0 ? `（同じ題名の ${skipped} 件は写しませんでした）` : ''}`;
+  if (skipped === 0) return `${copied} 件を写しました`;
+  return afterUnknown
+    ? `${copied} 件を写しました（${skipped} 件は、前に写されていたか同じ題名があったので写しませんでした）`
+    : `${copied} 件を写しました（同じ題名の ${skipped} 件は写しませんでした）`;
 }

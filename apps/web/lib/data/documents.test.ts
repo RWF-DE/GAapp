@@ -17,12 +17,14 @@ import {
   BOARD_STATUS_SELECT,
   cleanupDocumentOrphans,
   copyPreviousDocuments,
+  countDocumentSubmissions,
   deleteDocument,
   deleteYearDocumentFiles,
   discardDocumentFile,
   DOCUMENT_COLUMNS,
   DOCUMENT_FILE_SELECT,
   DOCUMENT_TITLE_TAKEN_REASON,
+  documentSubmissionCountOptions,
   documentsBoardOptions,
   documentsInvalidateKeys,
   documentStorageUsageOptions,
@@ -163,6 +165,22 @@ describe('T19 提出状況の読み取り（loadDocumentsBoard）', () => {
     expect(documentsBoardOptions(Y, 'staff').queryKey).toEqual(queryKeys.yearPart(Y, 'documents', 'board', 'staff'));
     expect(documentsBoardOptions(Y, 'lead').queryKey).toEqual(queryKeys.yearPart(Y, 'documents', 'board', 'lead'));
     expect(documentsBoardOptions(null, 'lead').enabled).toBe(false);
+  });
+
+  it('削除の確かめの提出の数：表 document_submissions をその提出物で、未提出でないものだけ読む（今の対象によらない。レビューの UX-5）。失敗は AppError', async () => {
+    const { client, issued } = fake(() => ({ data: [{ group_id: G }, { group_id: 'g2' }] }));
+    expect(await countDocumentSubmissions(D, client)).toBe(2);
+    const [call] = issued;
+    expect(call!.table).toBe('document_submissions');
+    expect(opArgs(call!, 'eq')).toEqual([['document_id', D]]);
+    expect(opArgs(call!, 'neq')).toEqual([['status', 'not_submitted']]);
+    expect(opArgs(call!, 'order')[0]![0]).toBe('group_id');
+    const failed = fake(() => NETWORK);
+    expect((await caught(countDocumentSubmissions(D, failed.client))).kind).toBe('network');
+    const options = documentSubmissionCountOptions(Y, D);
+    expect(options.queryKey).toEqual(queryKeys.yearPart(Y, 'documents', 'delete-count', D));
+    expect([options.staleTime, options.gcTime, options.enabled]).toEqual([0, 0, true]);
+    expect(documentSubmissionCountOptions(Y, null).enabled).toBe(false);
   });
 
   it('使った量・前年度の提出物のキー（前年度は開くたびに読む）', () => {

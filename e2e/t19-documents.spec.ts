@@ -200,7 +200,8 @@ test('T19 通しの流れ：部門長が提出物を登録し、店長（スマ�
     const cellA = documentsCell(head, docId, ga);
     await expect(cellA).toHaveAttribute('data-status', 'submitted');
     await expect(cellA.getByTestId('documents-cell-files')).toHaveText('ファイル 1');
-    await expect(cellA).toHaveAccessibleName(`${A}・${title}：承認待ち`);
+    // 読み上げの名前は、見えている印とファイルの数も含む（レビューの UX-3）
+    await expect(cellA).toHaveAccessibleName(`${A}・${title}：承認待ち、ファイル 1`);
     await expect(documentsCell(head, docId, gb)).toHaveAttribute('data-status', 'not_submitted');
     await expect(head.locator('[data-testid="documents-filter-item"][data-status="submitted"]')).toHaveAttribute('data-count', '1');
     await expect(head.locator('[data-testid="documents-col"]')).toContainText(['承認 0／2']);
@@ -650,9 +651,15 @@ test('T19 通信の失敗：オフラインで足したファイルは「アッ�
     const readRoutes = ['**/rest/v1/v_document_status*', '**/rest/v1/v_document_files*'];
     let uploads = 0;
     const statuses: number[] = [];
+    // 上げている間を確かめるため、upload を止めておく（下の確かめの後に放す）
+    let releaseUpload: () => void = () => {};
+    const uploadHeld = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
     await rep.route(uploadRoute, async (route) => {
       if (route.request().method() !== 'POST') return route.fallback();
       uploads++;
+      await uploadHeld;
       const res = await route.fetch();
       statuses.push(res.status());
       await route.abort('failed');
@@ -661,6 +668,25 @@ test('T19 通信の失敗：オフラインで足したファイルは「アッ�
     await card.getByTestId('document-file-input').setInputFiles({ name: 'e2e-lost.pdf', mimeType: 'application/pdf', buffer: pdf2 });
     await confirmNotLatest(rep, '変更');
     const second = card.getByTestId('document-file').nth(1);
+    // 上げている間（レビューの UX-1・UX-2・F2）：上げているファイルは届く前から行として出し、読み上げの欄（role="status"）の中身が変わる。
+    // 「保存」は押せず理由を出す（ページを離れる確かめを出さない）。年度を切り替える前は「アップロード中です。離れると、残りのファイルは
+    // 送られません」で確かめ（下書きの文は出さない）、やめれば切り替えない
+    await expect(second).toHaveAttribute('data-state', 'uploading');
+    await expect(second.getByTestId('document-file-label')).toHaveText('ファイル 2（PDF・1 KB）');
+    await expect(card.getByRole('status')).toContainText('アップロード中…（1/1）');
+    await expect(card.getByTestId('document-file-save').first()).toBeDisabled();
+    await expect(card).toContainText('アップロード中は「保存」を押せません（終わってから押してください）');
+    const yearSelect = rep.getByTestId('year-select');
+    const otherYear = await yearSelect.locator('option').evaluateAll((os, cur) => os.map((o) => o.getAttribute('value')).find((v) => v && v !== cur), s.yearId);
+    await yearSelect.selectOption(otherYear!);
+    const leave = rep.getByRole('alertdialog').filter({ hasText: 'アップロード中です' });
+    await expect(leave).toContainText('離れると、残りのファイルは送られません。');
+    await expect(leave).not.toContainText('下書き');
+    await expect(leave.getByRole('button', { name: '切り替える' })).toBeVisible();
+    await leave.getByRole('button', { name: 'やめる（アップロードを続ける）' }).click();
+    await expect(leave).toHaveCount(0);
+    await expect(yearSelect).toHaveValue(s.yearId);
+    releaseUpload();
     await expect(second).toHaveAttribute('data-state', 'failed', { timeout: 20_000 });
     await expect(card.getByTestId('document-file-retry')).toBeEnabled({ timeout: 20_000 });
     expect([uploads, statuses]).toEqual([1, [200]]);

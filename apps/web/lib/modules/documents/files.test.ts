@@ -162,6 +162,14 @@ describe('T19 1件の状態と「提出した」を押せない理由', () => {
     expect(fileStateOf({ id: 'x', uploaded: false })).toBe('missing');
   });
 
+  it('fileStateOf：そのタブで上げ終えて読み直しを待つもの（sent）は、行の uploaded が古くても届いたとして出す（「届いていません」を一瞬出さない。レビューの UX-2）', () => {
+    const local = { uploading: new Set(['u']), failed: new Set(['f']), sent: new Set(['s', 'f']) };
+    expect(fileStateOf({ id: 's', uploaded: false }, local)).toBe('uploaded');
+    expect(fileStateOf({ id: 'u', uploaded: false }, local)).toBe('uploading');
+    // 失敗の印が付いていれば失敗（もう一度の前の状態）
+    expect(fileStateOf({ id: 'f', uploaded: false }, local)).toBe('failed');
+  });
+
   it('submitBlocker：アップロード中 → 届いていないファイル → ファイルが要るのに 0（DB の no_file・not_uploaded と同じ条件）', () => {
     expect(submitBlocker(true, [], false)).toBe(SUBMIT_BLOCKERS.noFile);
     expect(submitBlocker(false, [], false)).toBeNull();

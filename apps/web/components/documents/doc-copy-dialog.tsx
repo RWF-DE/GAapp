@@ -7,6 +7,8 @@
 //   （exists_in_year）は「同じ題名があります（写しません）」と出して選べなくする。前年度の提出物がなければ「前年度の提出物はありません」。
 // - 「写す（{N} 件）」→ copy_previous_documents →「{N} 件を写しました」（写さなかったものがあれば「（同じ題名の {k} 件は写しませんでした）」）。
 //   何度しても同じ結果になる（同じ題名は飛ばす）ので、応答が届かなければもう一度押してよい。止められたら文言を出し、前年度の一覧を読み直す。
+//   応答が届かなかった（写せたか分からない）ときも前年度の一覧を読み直し（写されていれば同じ題名として選べなくなる）、読み直している間は
+//   「写す」を押せない。その後のもう一度で写らなかったものは「前に写されていたか同じ題名」と言う（2026-11-03。レビューの T19BC-1）。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { toast } from 'sonner';
@@ -18,7 +20,7 @@ import { useAuthErrorHandler } from '@/lib/auth/guarded';
 import { copyPreviousDocuments, invalidateDocuments, previousYearDocumentsOptions, type PreviousYearDocument } from '@/lib/data/documents';
 import { tokyoDate } from '@/lib/datetime';
 import { formatShortDateTimeWeekday } from '@/lib/datetime-weekday';
-import { classifyError, effectOf, messageFor } from '@/lib/errors';
+import { classifyError, effectOf, isUnknownOutcome, messageFor } from '@/lib/errors';
 import { CATEGORY_LABELS } from '@/lib/labels';
 import { copySummary } from '@/lib/modules/documents/copy';
 import { cn } from '@/lib/utils';
@@ -28,6 +30,8 @@ import { sendWithAuth } from './submission-write';
 export const COPY_EMPTY_TEXT = '前年度の提出物はありません';
 /** 同じ題名がこの年度にある（写さない） */
 export const COPY_EXISTS_TEXT = '同じ題名があります（写しません）';
+/** ダイアログの説明（何の「1日目」の差かを書く。2026-11-03。レビューの UX-6） */
+export const COPY_HELP_TEXT = '締切は、前年度と今年度の祭の1日目の差の日数だけずらします（時刻は同じ）。写した後に直せます。';
 
 /** 締切の短い形（「10/5（月）17:00」。年は付けない。その日時の Asia/Tokyo の年で読む） */
 function shortDeadline(iso: string): string {
@@ -77,6 +81,10 @@ function CopyBody({ onClose, yearId, onReloadMembership }: { onClose: () => void
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 前の送信の応答が届かなかった（写せたか分からない）。次の知らせで、写らなかったものを「同じ題名」と言い切らない
+  const [afterUnknown, setAfterUnknown] = useState(false);
+  // 前年度の一覧を読み直している（通信を待っている間も）。古い一覧で写さない
+  const rereading = q.data !== undefined && q.fetchStatus !== 'idle';
   const rows = q.data ?? [];
   const choosable = rows.filter((r) => !r.exists_in_year);
   const picked = choosable.filter((r) => selected.has(r.document_id));
@@ -90,7 +98,7 @@ function CopyBody({ onClose, yearId, onReloadMembership }: { onClose: () => void
     });
 
   const copy = async () => {
-    if (pending || picked.length === 0) return;
+    if (pending || rereading || picked.length === 0) return;
     setError(null);
     setPending(true);
     try {
@@ -104,7 +112,7 @@ function CopyBody({ onClose, yearId, onReloadMembership }: { onClose: () => void
       );
       if (sent.ok) {
         invalidateDocuments(queryClient, yearId);
-        toast.success(copySummary(picked.length, sent.value.length));
+        toast.success(copySummary(picked.length, sent.value.length, afterUnknown));
         onClose();
         return;
       }
@@ -112,8 +120,10 @@ function CopyBody({ onClose, yearId, onReloadMembership }: { onClose: () => void
       setError(messageFor(c, { rpc: 'copy_previous_documents' }));
       const effect = effectOf(c);
       if (effect.reload === 'year') onReloadMembership();
-      // 止められた（前年度にない・同じ題名ができた）ら前年度の一覧とこの年度を読み直す
-      if (effect.reload !== 'none' || c.kind === 'input') {
+      const unknown = isUnknownOutcome(sent.error);
+      if (unknown) setAfterUnknown(true);
+      // 止められた（前年度にない・同じ題名ができた）・写せたか分からない（写されていれば同じ題名になる）ら、前年度の一覧とこの年度を読み直す
+      if (effect.reload !== 'none' || c.kind === 'input' || unknown) {
         invalidateDocuments(queryClient, yearId);
         void q.refetch();
       }
@@ -137,7 +147,7 @@ function CopyBody({ onClose, yearId, onReloadMembership }: { onClose: () => void
     >
       <DialogHeader className="border-b px-6 pt-6 pb-4">
         <DialogTitle>前年度から写す</DialogTitle>
-        <DialogDescription>締切は1日目の差の日数だけずらします（時刻は同じ）。写した後に直せます。</DialogDescription>
+        <DialogDescription>{COPY_HELP_TEXT}</DialogDescription>
       </DialogHeader>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-4">
         {error ? (
@@ -200,7 +210,12 @@ function CopyBody({ onClose, yearId, onReloadMembership }: { onClose: () => void
         <Button variant="outline" onClick={onClose} disabled={pending}>
           やめる
         </Button>
-        <Button data-testid="doc-copy-submit" onClick={() => void copy()} disabled={pending || picked.length === 0} aria-busy={pending || undefined}>
+        <Button
+          data-testid="doc-copy-submit"
+          onClick={() => void copy()}
+          disabled={pending || rereading || picked.length === 0}
+          aria-busy={pending || rereading || undefined}
+        >
           {pending ? '写しています…' : `写す（${picked.length} 件）`}
         </Button>
       </DialogFooter>

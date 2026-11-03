@@ -8,9 +8,11 @@
 // - カード（document-card.tsx）を締切の早い順に。出す操作は店長・副店長の決まり（repDocumentActions。管理者が兼ねていても同じ。
 //   部門長以上の操作は提出状況で行う）。終了した年度は書くためのものを出さず、帯を出す（開く・保存はできる）。
 // - ファイル（use-document-uploader.ts）：確かめ → 写真の作り直し → 予約 → 上げる → 読み直す。届いたファイルを外すときは確かめる。
-//   開く・保存は押したときに署名つき URL（60 秒）を作る（file-open.ts。URL は残さない）。
+//   開く・保存は押したときに署名つき URL（60 秒）を作る（file-open.ts。URL は残さない）。上げている間は、どのカードの「保存」も押せない
+//   （保存はこのページを URL へ移すので、ページを離れる確かめが出るため。レビューの F2）。開く・保存の 403 は開く・保存の文言（UX-4）。
 // - 「提出した」・「提出を取り消す」は確かめてから送る（submission-write.ts の (B1)。版はカードの updated_at）。止められたら読み直して今の
-//   状態とエラーの文言を出し、読み直せなければ「読み直す」を出す。forbidden・invalid_state は年度の行と立場も読み直す。
+//   状態とエラーの文言を出し、読み直せなければ「読み直す」を出す。forbidden・invalid_state は年度の行と立場も読み直す。成功したら押した
+//   ボタンが消えるので、確かめが閉じた後にフォーカスをそのカードの題名へ移す（focus-after-dialog.ts。レビューの F4）。
 // - 最新でない年度：上に「最新の年度に切り替える」を出し、書き込みの前に確かめる（D-31。ファイルを足す・外すは「変更」、「提出した」は
 //   「提出」、取り消すは「取り消し」）。
 // 変数名は doc・docs（ブラウザの document を隠さない）。/documents の部品（表・シート・設定・ダイアログ）は import しない。
@@ -33,9 +35,10 @@ import { repDocumentActions } from '@/lib/modules/documents/permissions';
 import { buildRepDocumentCards, highlightedCard, pickDocumentGroup, type RepDocumentCard } from '@/lib/modules/documents/rep';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
-import { DocumentCard, type CardNote } from './document-card';
+import { cardTitleId, DocumentCard, type CardNote } from './document-card';
 import { fileEntriesOf, REMOVE_CONFIRM_TEXT, type FileEntry } from './document-file-list';
 import { openDocumentFile, POPUP_BLOCKED_MESSAGE, saveDocumentFile, type FileOpenResult } from './file-open';
+import { focusAfterDialogs } from './focus-after-dialog';
 import {
   REREAD_AGAIN_FAILED_MESSAGE,
   REREAD_FAILED_NOTICE,
@@ -230,6 +233,8 @@ function DocumentBoard({
           if (r.before) toast.success(SUBMISSION_DONE_BEFORE[action]);
           else if (action === 'submit') toast.success(submittedMessage(card.doc.title, r.row?.submitted_at, card.doc.deadline));
           else toast.success(`「${card.doc.title}」の提出を取り消しました`);
+          // 押したボタンは消えた。確かめが閉じた後に、フォーカスをそのカードの題名へ（レビューの F4）
+          focusAfterDialogs(() => window.document.getElementById(cardTitleId(documentId)));
           return;
         case 'unknown':
           setNote(documentId, { note: { kind: 'error', message: SUBMISSION_UNKNOWN[action] }, unknownAction: action });
@@ -276,7 +281,8 @@ function DocumentBoard({
       return;
     }
     const c = classifyError(r.error);
-    uploader.setError(slot, messageFor(c));
+    // 開く・保存（署名つき URL）の 403 はアップロードの文言にしない（レビューの UX-4）
+    uploader.setError(slot, messageFor(c, { storage: 'sign' }));
     reloadYear(r.error);
     if (c.kind === 'not_found') void rereadList();
   };
@@ -288,7 +294,8 @@ function DocumentBoard({
   };
 
   const onSave = async (card: RepDocumentCard, entry: FileEntry) => {
-    if (!entry.row) return;
+    // 上げている間は押せない（このページを移すと、ページを離れる確かめが出る。レビューの F2）
+    if (!entry.row || uploader.active) return;
     uploader.setError(slotOf(card), null);
     const name = downloadNameFor(card.doc.title, group.name, entry.n, entry.row.content_type);
     showOpenResult(card, await saveDocumentFile(entry.row.object_path, name));
@@ -369,7 +376,7 @@ function DocumentBoard({
                 const slot = slotOf(card);
                 const rowIds = new Set(card.files.map((f) => f.file.id));
                 const localOnly = uploader.localOnly(slot, rowIds);
-                const entries = fileEntriesOf(card.files, localOnly, uploader.uploading, uploader.failed);
+                const entries = fileEntriesOf(card.files, localOnly, uploader.uploading, uploader.failed, uploader.sent);
                 const uploadBusy = uploader.busy(slot);
                 const blocker = submitBlocker(
                   card.doc.requires_file === true,
@@ -386,6 +393,7 @@ function DocumentBoard({
                     entries={entries}
                     fileCount={card.files.length + localOnly.length}
                     busy={uploadBusy || pendingDoc === documentId}
+                    saveBlocked={uploader.active}
                     progress={uploader.progress(slot)}
                     fileError={uploader.error(slot)}
                     note={notes.get(documentId)?.note ?? null}

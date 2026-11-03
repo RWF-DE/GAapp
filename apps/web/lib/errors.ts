@@ -265,6 +265,11 @@ export interface MessageContext {
    * 招待があるメールかもしれないと添える（部門長・副部門長にはその招待が見えず、DB は理由を返さない。D-48）
    */
   canChangeRoles?: boolean;
+  /**
+   * Storage の操作（T19。2026-11-03。レビューの UX-4）：'sign' は開く・保存の署名つき URL（403 を開く・保存の文言にする）、'upload'・省略は
+   * アップロード（今の文言）
+   */
+  storage?: 'upload' | 'sign';
 }
 
 const statusLabel = (s: unknown): string | undefined =>
@@ -433,6 +438,11 @@ export const STORAGE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   storage_mime: 'PDF・JPEG・PNG のファイルを選んでください',
   storage_failed: 'ファイルの置き場で問題が起きました。少し待ってから、もう一度',
 };
+/**
+ * 開く・保存（署名つき URL。MessageContext の storage: 'sign'）の 403（立場が変わった・ログインが切れた）。読み直すのは年度の行と立場だけ
+ * なので「読み直しました」は付けない（2026-11-03。レビューの UX-4。04 のエラーの文言）
+ */
+export const STORAGE_SIGN_DENIED_MESSAGE = 'ファイルを開けませんでした。立場が変わった可能性があります';
 
 /** 提出物の invalid_state の文言（当てはまらなければ null。status: closed〔reason なし〕は今の文言） */
 function documentStateMessage(d: Record<string, unknown>, ctx: MessageContext): string | null {
@@ -574,7 +584,9 @@ function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
 
 /** 分類したエラーの文言（2.5 の表と details の表）。MessageContext で RPC の名前・名前の引き方を渡す */
 export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string {
-  // Storage API のエラー（T19。lib/data/documents.ts の toStorageAppError の reason。kind は forbidden・not_found・input・unknown）
+  // Storage API のエラー（T19。lib/data/documents.ts の toStorageAppError の reason。kind は forbidden・not_found・input・unknown）。
+  // 開く・保存（storage: 'sign'）の 403 はアップロードの文言にしない（レビューの UX-4）
+  if (e.reason === 'storage_denied' && ctx.storage === 'sign') return STORAGE_SIGN_DENIED_MESSAGE;
   const storage = labelOf(STORAGE_ERROR_MESSAGES, e.reason);
   if (storage) return storage;
   switch (e.kind) {

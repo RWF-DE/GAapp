@@ -12,7 +12,8 @@
 // - 提出状況：表（狭い幅では提出物ごとの一覧）・絞り込み・目立たせ（documents-board.tsx）、セルのシート（documents-sheet.tsx。`?document=` と
 //   `?group=` の両方があれば開き、閉じると2つを外す）、「CSV で保存」（部門長以上。押したときに csv.ts を読み込む）。
 // - 終了した年度：「終了した年度のため、提出物は読むだけです」の帯を出し、書くためのもの（設定の登録・編集・削除・写す、シートの操作）を出さない。
-//   開く・保存・CSV はできる。管理者には年度のファイルの削除（delete-year-files.tsx）。
+//   開く・保存・CSV はできる。管理者には年度のファイルの削除（delete-year-files.tsx）。使った量を読み込めなければ、削除と片付けの欄を黙って消さずに
+//   「ファイルの件数と大きさを読み込めませんでした：{文言}」と「もう一度」を出す（2026-11-03。レビューの T19BC-2）。
 // 変数名は doc・docs（ブラウザの document を隠さない）。/document（店長・副店長）の画面の部品は import しない。
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { FileDown } from 'lucide-react';
@@ -64,6 +65,8 @@ export const EMPTY_DOCUMENTS_HINT = '「提出物の設定」から登録でき�
 export const NO_TARGETS_TEXT = '対象の団体がありません（団体の区分と、提出物の対象を確かめてください）';
 /** 絞り込みに合う提出がない */
 export const FILTER_EMPTY_TEXT = '条件に合う提出はありません';
+/** 使った量（document_storage_usage）を読み込めない（終了した年度の部門長以上。後ろに文言を続ける） */
+export const USAGE_ERROR_PREFIX = 'ファイルの件数と大きさを読み込めませんでした：';
 
 /** 開いたときの片付けを済ませた年度（そのタブの QueryClient ごと。アプリには1つ。テストは毎回新しい QueryClient を作る） */
 const cleanedYears = new WeakMap<QueryClient, Set<string>>();
@@ -246,6 +249,21 @@ function DocumentsBoardScreen({ membership: m, yearId, tier, userId }: { members
                 />
               ) : (
                 <div className="space-y-4">
+                  {closed && lead && usageQ.isError && usageQ.data === undefined ? (
+                    <div
+                      role="alert"
+                      data-testid="documents-usage-error"
+                      className="space-y-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm"
+                    >
+                      <p className="font-medium text-destructive">
+                        {USAGE_ERROR_PREFIX}
+                        {messageFor(classifyError(usageQ.error), { rpc: 'document_storage_usage' })}
+                      </p>
+                      <Button size="sm" variant="outline" disabled={usageQ.isFetching} onClick={() => void usageQ.refetch()}>
+                        もう一度
+                      </Button>
+                    </div>
+                  ) : null}
                   {closed && lead ? (
                     <DeleteYearFiles
                       yearId={yearId}

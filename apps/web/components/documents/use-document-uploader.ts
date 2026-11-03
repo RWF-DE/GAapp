@@ -15,15 +15,17 @@
 //   - 通信の失敗・Storage が拒んだ（403・413・415）・そのほか：「アップロードできませんでした」（もう一度・外す）にして次のファイルへ。
 //     「もう一度」は同じ file_id で予約し直し（同じ行が返る）、同じ path へ上げ直す（409 はもう届いていた）。
 // - 全部終わったら（止めたときも）その団体の提出物を読み直し、届くまでその提出の操作を止める（予約で提出の版が進むので、古い版で
-//   「提出した」を送らない）。
+//   「提出した」を送らない）。届いたものがあれば「ファイル {n} つをアップロードしました」と知らせる（toast。読み上げにも届く。レビューの UX-2）。
+// - 上げている・上げ終えて読み直しを待つファイルは、届く前から一覧の行として出す（localOnly と sent。番号・形・大きさ。レビューの UX-2）。
 // - 部品が外れたら（団体・年度を切り替えた、画面を離れた）残りのファイルは送らない（送っている1つは止められない）。
 // 署名つきアップロードの URL は作らない（upload だけ）。元のファイル名はどこにも持たない。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { discardDocumentFile, newDocumentUuid, reserveDocumentFile, uploadDocumentFile, type DocumentFileRow } from '@/lib/data/documents';
 import { classifyError, effectOf, messageFor } from '@/lib/errors';
 import { checkPicked, checkPrepared, IMAGE_DECODE_MESSAGE, SNIFF_BYTES, sniffContentType, type PickedFile } from '@/lib/modules/documents/files';
 import type { DocumentContentType } from '@/lib/modules/documents/labels';
-import { useUnsavedChanges } from '@/lib/unsaved-changes';
+import { useUnsavedChanges, type LeaveKind, type LeaveMessage } from '@/lib/unsaved-changes';
 import { sendWithAuth, type AuthErrorHandler } from './submission-write';
 
 /** アップロード中の文（{k}/{n} は今送っているファイルの番号と、送る数） */
@@ -32,6 +34,21 @@ export function uploadingText(p: UploadProgress): string {
 }
 /** アップロード中に添える文（離れるときの確かめと同じ中身） */
 export const UPLOADING_LEAVE_MESSAGE = 'アップロード中です。離れると、残りのファイルは送られません';
+/**
+ * アップロード中に離れる前の確かめ（共有の未保存の入力の守りに渡す文。04「提出物」のファイルの扱い、D-52 の T19 の直し・2。レビューの UX-1）。
+ * 選んだファイルは下書きにならず、離れると送っていないファイルと「もう一度」の材料（そのタブの Blob）は消えるので、共有の既定の文
+ * （入力は下書きに残り、開き直すと戻せます）を出さない。
+ */
+export const UPLOADING_LEAVE_MESSAGES: Readonly<Record<LeaveKind, LeaveMessage>> = {
+  navigate: { title: 'アップロード中です', description: '離れると、残りのファイルは送られません。', confirm: '移る', cancel: 'やめる（アップロードを続ける）' },
+  year: { title: 'アップロード中です', description: '離れると、残りのファイルは送られません。', confirm: '切り替える', cancel: 'やめる（アップロードを続ける）' },
+  signOut: {
+    title: 'アップロード中です',
+    description: 'ログアウトすると、残りのファイルは送られません（下書きも消えます）。',
+    confirm: 'ログアウトする',
+    cancel: 'やめる（アップロードを続ける）',
+  },
+};
 /** 1件の状態の文 */
 export const FILE_STATE_TEXTS = {
   uploading: 'アップロード中…',
@@ -40,6 +57,10 @@ export const FILE_STATE_TEXTS = {
 } as const;
 /** 外すの応答が届かず、外せたか分からない（04 の書き込みの決まり） */
 export const DISCARD_UNKNOWN_MESSAGE = '外せたか分かりません。もう一度「外す」を押すと、確かめてから送ります';
+/** 上げ終えた知らせ（届いた数。04「ファイルの扱い」の読み上げ。レビューの UX-2） */
+export function uploadedMessage(n: number): string {
+  return `ファイル ${n} つをアップロードしました`;
+}
 
 /** どの提出物・団体のファイルか */
 export interface DocumentFileTarget {
@@ -103,7 +124,12 @@ export interface DocumentUploader {
   uploading: ReadonlySet<string>;
   /** そのタブで失敗したファイル */
   failed: ReadonlyMap<string, FailedUpload>;
-  /** そのタブだけにある失敗（DB の行がない。予約の応答が届かなかった）。rowIds はその提出の今のファイルの行の id */
+  /** そのタブで上げ終えて、一覧の読み直しを待っているファイル（file_id。行は「届いた」として出す） */
+  sent: ReadonlySet<string>;
+  /**
+   * そのタブだけにあって一覧の行にまだないファイル：失敗（予約の応答が届かなかった）と、上げている・上げ終えて読み直しを待っているもの（始めた順。
+   * 届く前から行として出す）。rowIds はその提出の今のファイルの行の id
+   */
   localOnly: (slot: string, rowIds: ReadonlySet<string>) => FailedUpload[];
   /** どれかの提出のファイルを上げている */
   active: boolean;
@@ -161,12 +187,18 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
   const [removing, setRemoving] = useState<ReadonlySet<string>>(() => new Set());
   const [uploading, setUploading] = useState<ReadonlySet<string>>(() => new Set());
   const [failed, setFailed] = useState<ReadonlyMap<string, FailedUpload>>(() => new Map());
+  // 上げている・上げ終えて読み直しを待っているファイル（file_id → 送る物。終わった後の読み直しで消す）と、そのうち上げ終えたもの
+  const [inflight, setInflight] = useState<ReadonlyMap<string, FailedUpload>>(() => new Map());
+  const [sent, setSent] = useState<ReadonlySet<string>>(() => new Set());
   const [errors, setErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
   // 同じ提出の操作を重ねない（描き直しを待たずに見る）
   const busyRef = useRef(new Set<string>());
+  // 提出ごとの、今の送信で行に出したファイル（終わった後の読み直しで仮の行を外す）
+  const shownRef = useRef(new Map<string, Set<string>>());
 
   const active = progressMap.size > 0;
-  useUnsavedChanges(active);
+  // 上げている間は離れる前に確かめる（文は「アップロード中です。離れると、残りのファイルは送られません」。下書きの文は出さない）
+  useUnsavedChanges(active, UPLOADING_LEAVE_MESSAGES);
 
   const setProgress = useCallback((slot: string, p: UploadProgress | null) => {
     setProgressMap((prev) => {
@@ -199,6 +231,30 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
       const next = new Map(prev);
       if (item) next.set(fileId, item);
       else next.delete(fileId);
+      return next;
+    });
+  }, []);
+  /** 上げている（sending）・上げ終えた（sent）として行に出す。null は行から外す（失敗・送らない） */
+  const putInflight = useCallback((item: FailedUpload, state: 'sending' | 'sent' | null) => {
+    const slot = uploadSlot(item);
+    if (state) {
+      const ids = shownRef.current.get(slot) ?? new Set<string>();
+      ids.add(item.fileId);
+      shownRef.current.set(slot, ids);
+    } else shownRef.current.get(slot)?.delete(item.fileId);
+    setInflight((prev) => {
+      if (!state && !prev.has(item.fileId)) return prev;
+      const next = new Map(prev);
+      if (state) next.set(item.fileId, item);
+      else next.delete(item.fileId);
+      return next;
+    });
+    setSent((prev) => {
+      const on = state === 'sent';
+      if (on === prev.has(item.fileId)) return prev;
+      const next = new Set(prev);
+      if (on) next.add(item.fileId);
+      else next.delete(item.fileId);
       return next;
     });
   }, []);
@@ -238,17 +294,35 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
     if (effectOf(classifyError(error)).reload === 'year') optsRef.current.onYearEffect(error);
   }, []);
 
-  /** 終わった後：その団体の提出物を読み直す（届くまで操作を止めたまま） */
+  /**
+   * 終わった後：その団体の提出物を読み直す（届くまで操作を止めたまま）。上げ終えたファイルの仮の行を外し（読み直した行に替わる）、届いたものが
+   * あれば知らせる（uploaded は届いた数）
+   */
   const finish = useCallback(
-    async (target: DocumentFileTarget) => {
+    async (target: DocumentFileTarget, uploaded: number) => {
       try {
         await optsRef.current.reread(target);
       } catch {
         // 読み直せなくても終える（画面の読み取りの失敗の表示と「読み直す」が出る）
       }
       const slot = uploadSlot(target);
+      const shown = shownRef.current.get(slot);
+      shownRef.current.delete(slot);
+      if (shown && shown.size > 0) {
+        setInflight((prev) => {
+          const next = new Map(prev);
+          for (const id of shown) next.delete(id);
+          return next;
+        });
+        setSent((prev) => {
+          const next = new Set(prev);
+          for (const id of shown) next.delete(id);
+          return next;
+        });
+      }
       busyRef.current.delete(slot);
       setProgress(slot, null);
+      if (uploaded > 0 && !unmounted.current) toast.success(uploadedMessage(uploaded));
     },
     [setProgress],
   );
@@ -261,6 +335,7 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
       setError(slot, null);
       setProgress(slot, { current: 0, total: files.length });
       let sent = false;
+      let uploaded = 0;
       try {
         // 1. 中身・形・数（作り直す前）
         const picked = await Promise.all(files.map(pickOf));
@@ -301,30 +376,36 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
         }
         // 3. 最新でない年度なら確かめる（D-31）
         if (!(await optsRef.current.confirmWrite()) || unmounted.current) return;
-        // 4. 1つずつ予約して上げる
+        // 4. 1つずつ予約して上げる（上げているファイルは、届く前から行として出す）
         sent = true;
         for (let k = 0; k < prepared.length; k++) {
           if (unmounted.current) break;
           setProgress(slot, { current: k + 1, total: prepared.length });
           const item: FailedUpload = { ...target, fileId: newDocumentUuid(), blob: prepared[k]!.blob, contentType: prepared[k]!.contentType };
           markUploading(item.fileId, true);
+          putInflight(item, 'sending');
           const r = await sendOne(item);
           markUploading(item.fileId, false);
-          if (r.type === 'done') continue;
+          if (r.type === 'done') {
+            putInflight(item, 'sent');
+            uploaded += 1;
+            continue;
+          }
+          putInflight(item, null);
           setError(slot, r.message);
           yearEffect(r.error);
           if (r.type === 'failed') putFailed(item, item.fileId);
           if (r.type === 'stopped') break;
         }
       } finally {
-        if (sent) await finish(target);
+        if (sent) await finish(target, uploaded);
         else {
           busyRef.current.delete(slot);
           setProgress(slot, null);
         }
       }
     },
-    [finish, markUploading, putFailed, sendOne, setError, setProgress, yearEffect],
+    [finish, markUploading, putFailed, putInflight, sendOne, setError, setProgress, yearEffect],
   );
 
   const retry = useCallback(
@@ -342,22 +423,29 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
         setProgress(slot, null);
         return;
       }
+      let uploaded = 0;
       try {
         setProgress(slot, { current: 1, total: 1 });
         markUploading(fileId, true);
         putFailed(null, fileId);
+        putInflight(item, 'sending');
         const r = await sendOne(item);
         markUploading(fileId, false);
-        if (r.type === 'done') return;
+        if (r.type === 'done') {
+          putInflight(item, 'sent');
+          uploaded = 1;
+          return;
+        }
+        putInflight(item, null);
         setError(slot, r.message);
         yearEffect(r.error);
         // 予約の入力の誤り（番号の重なりなど）は、もう一度でも同じなので失敗の印を外す（足し直してもらう）
         if (r.type !== 'dropped') putFailed(item, fileId);
       } finally {
-        await finish(target);
+        await finish(target, uploaded);
       }
     },
-    [failed, finish, markUploading, putFailed, sendOne, setError, setProgress, yearEffect],
+    [failed, finish, markUploading, putFailed, putInflight, sendOne, setError, setProgress, yearEffect],
   );
 
   const remove = useCallback(
@@ -401,8 +489,9 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
   );
 
   const localOnly = useCallback(
-    (slot: string, rowIds: ReadonlySet<string>) => [...failed.values()].filter((f) => uploadSlot(f) === slot && !rowIds.has(f.fileId)),
-    [failed],
+    (slot: string, rowIds: ReadonlySet<string>) =>
+      [...failed.values(), ...[...inflight.values()].filter((f) => !failed.has(f.fileId))].filter((f) => uploadSlot(f) === slot && !rowIds.has(f.fileId)),
+    [failed, inflight],
   );
 
   return useMemo(
@@ -416,9 +505,10 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
       setError,
       uploading,
       failed,
+      sent,
       localOnly,
       active,
     }),
-    [add, retry, remove, progressMap, removing, errors, setError, uploading, failed, localOnly, active],
+    [add, retry, remove, progressMap, removing, errors, setError, uploading, failed, sent, localOnly, active],
   );
 }

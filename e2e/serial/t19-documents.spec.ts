@@ -62,6 +62,8 @@ test('T19 前年度から写す：前年度の提出物を締切の順に、ず�
     await page.getByTestId('documents-settings-copy').click();
     const dialog = page.getByTestId('doc-copy-dialog');
     await expect(dialog.getByRole('heading', { name: '前年度から写す' })).toBeVisible();
+    // 説明は何の「1日目」の差かを書く（レビューの UX-6）
+    await expect(dialog).toContainText('締切は、前年度と今年度の祭の1日目の差の日数だけずらします（時刻は同じ）。写した後に直せます。');
     await expect(dialog.getByTestId('doc-copy-item')).toHaveCount(2);
     // 締切の順（食品の届け 10/1 → 出店計画書 10/5）
     expect(await dialog.getByTestId('doc-copy-item').evaluateAll((els) => els.map((e) => e.getAttribute('data-document-id')))).toEqual([food, plan]);

@@ -7,8 +7,10 @@
 // - 登録・編集は doc-form-dialog.tsx、前年度から写すは doc-copy-dialog.tsx。
 // - 削除：「提出 {N} 件とファイル {M} 件も消えます。元に戻せません。」（N は未提出でない提出の数、M はファイルの数。どちらも 0 なら「元に戻せ
 //   ません。」だけ）と確かめ、読んだときの updated_at を条件に入れて delete（doc-write.ts の (B1)）→ どの提出にも属さなくなったファイルの片付け
-//   →「「{題名}」を削除しました」。
-import { useQueryClient } from '@tanstack/react-query';
+//   →「「{題名}」を削除しました」。N は、確かめを開いたときに表 document_submissions をその提出物で読んで数える（今の対象から外れた団体の
+//   提出も一緒に消えるため。v_document_status は今の対象の団体だけ。2026-11-03。レビューの UX-5）。数えている間は押せず、読めなければ
+//   数を言わずに確かめる。
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Plus } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -19,6 +21,7 @@ import { useAuthErrorHandler } from '@/lib/auth/guarded';
 import {
   cleanupDocumentOrphans,
   deleteDocument,
+  documentSubmissionCountOptions,
   invalidateDocuments,
   readDocument,
   type DocumentRow,
@@ -26,7 +29,6 @@ import {
 } from '@/lib/data/documents';
 import { classifyError, effectOf, messageFor, unknownOutcomeMessage } from '@/lib/errors';
 import { buildDocumentsBoard } from '@/lib/modules/documents/board';
-import { statusOf } from '@/lib/modules/documents/labels';
 import { DocCopyDialog, targetText } from './doc-copy-dialog';
 import { DocFormDialog, type DocFormTarget } from './doc-form-dialog';
 import { runDocDelete } from './doc-write';
@@ -45,6 +47,10 @@ export const DOC_DELETE_CHANGED_MESSAGE = 'ほかの人がこの提出物を先�
 export function deleteConfirmText(submissions: number, files: number): string {
   return submissions === 0 && files === 0 ? '元に戻せません。' : `提出 ${submissions} 件とファイル ${files} 件も消えます。元に戻せません。`;
 }
+/** 削除の確かめで、消える提出を数えている（「削除する」は押せない） */
+export const DELETE_COUNTING_TEXT = '消える提出とファイルを数えています…';
+/** 削除の確かめで、消える提出の数を読めなかった（押せる） */
+export const DELETE_COUNT_FAILED_TEXT = '提出とファイルの記録も消えます（数を読み込めませんでした）。元に戻せません。';
 
 export interface DocumentsSettingsProps {
   data: DocumentsBoardData;
@@ -71,11 +77,13 @@ export function DocumentsSettings({ data, yearId, userId, writable, hasPrevYear,
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const canWrite = writable && !!userId;
 
-  /** 削除の確かめの数（未提出でない提出・ファイル。提出は今の対象の団体の分） */
-  const deleteCounts = (doc: DocumentRow) => ({
-    submissions: data.statuses.filter((s) => s.document_id === doc.id && statusOf(s.status) !== 'not_submitted').length,
-    files: (data.files ?? []).filter((f) => f.document_id === doc.id).length,
-  });
+  // 削除の確かめの提出の数（開いたときに読む。今の対象から外れた団体の提出も数える。レビューの UX-5）
+  const countQ = useQuery(documentSubmissionCountOptions(yearId, deleting?.id ?? null));
+  /** 削除の確かめの説明（提出は読んだ数、ファイルはその提出物の全部〔v_document_files。対象によらない〕） */
+  const deleteDescription = (doc: DocumentRow): string => {
+    if (countQ.data !== undefined) return deleteConfirmText(countQ.data, (data.files ?? []).filter((f) => f.document_id === doc.id).length);
+    return countQ.isError ? DELETE_COUNT_FAILED_TEXT : DELETE_COUNTING_TEXT;
+  };
 
   const confirmDelete = async () => {
     const doc = deleting;
@@ -114,7 +122,7 @@ export function DocumentsSettings({ data, yearId, userId, writable, hasPrevYear,
     }
   };
 
-  const counts = deleting ? deleteCounts(deleting) : null;
+  const counting = deleting !== null && countQ.data === undefined && !countQ.isError;
 
   return (
     <div data-testid="documents-settings" className="space-y-4">
@@ -235,10 +243,11 @@ export function DocumentsSettings({ data, yearId, userId, writable, hasPrevYear,
           }
         }}
         title={deleting ? `「${deleting.title}」を削除しますか` : ''}
-        description={counts ? deleteConfirmText(counts.submissions, counts.files) : undefined}
+        description={deleting ? deleteDescription(deleting) : undefined}
         confirmLabel="削除する"
         pendingLabel="削除しています…"
         destructive
+        confirmDisabled={counting}
         onConfirm={confirmDelete}
       >
         <div data-testid="documents-delete-confirm">

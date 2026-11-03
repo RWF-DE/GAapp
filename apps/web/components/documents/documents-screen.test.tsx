@@ -23,7 +23,7 @@ import { UnsavedChangesProvider } from '@/components/common/unsaved-changes-guar
 import type { MembershipState } from '@/lib/auth/auth-provider';
 import type { AppRole, GroupSummary, Membership, YearStatus } from '@/lib/auth/membership';
 import type { YearRow } from '@/lib/db/types';
-import { DOCUMENT_CONFLICT_MESSAGE, DOCUMENT_NOT_EDITABLE_MESSAGES } from '@/lib/errors';
+import { DOCUMENT_CONFLICT_MESSAGE, DOCUMENT_NOT_EDITABLE_MESSAGES, STORAGE_SIGN_DENIED_MESSAGE } from '@/lib/errors';
 import { DOCUMENT_FORM_MESSAGES } from '@/lib/schemas/documents';
 import { REVIEW_NOTE_MESSAGES } from '@/lib/schemas/document-fields';
 import { queryKeys } from '@/lib/query';
@@ -36,7 +36,8 @@ import { DOC_CONFLICT_NOTICE, narrowingText } from './doc-form-dialog';
 import { DOCUMENT_TITLE_TAKEN_MESSAGE } from './doc-write';
 import { DELETE_FILES_HELP, leftoverText } from './delete-year-files';
 import { CLOSED_DOCUMENTS, DocumentsScreen, EMPTY_DOCUMENTS, EMPTY_DOCUMENTS_HINT, FILTER_EMPTY_TEXT, NO_TARGETS_TEXT } from './documents-screen';
-import { deleteConfirmText } from './documents-settings';
+import { DELETE_COUNT_FAILED_TEXT, DELETE_COUNTING_TEXT, deleteConfirmText } from './documents-settings';
+import { SAVE_BLOCKED_TEXT } from './document-file-list';
 import { PROXY_CONFIRM_TEXT, PROXY_SUBMIT_UNKNOWN, STAFF_FILES_NOTE, UNKNOWN_ACTOR } from './documents-sheet';
 import { fileWindow } from './file-open';
 import { NOTE_VISIBLE_HELP, RETURN_REASON_HELP } from './review-dialogs';
@@ -408,7 +409,8 @@ function rpc(name: string, a: Record<string, unknown>): FakeResult {
       };
     }
     case 'previous_year_documents':
-      return { data: db.previous };
+      // exists_in_year は、今の年度に同じ題名の提出物があるか（写した後に読み直すと真になる）
+      return { data: db.previous.map((p) => ({ ...p, exists_in_year: db.docs.some((d) => d.title === p.title) })) };
     case 'copy_previous_documents': {
       const ids = a.p_document_ids as string[];
       const out: DbDoc[] = [];
@@ -513,6 +515,12 @@ function handler(call: FakeCall): FakeResult | Promise<FakeResult> {
       return { data: db.groups.map((g) => ({ ...g })) };
     case 'profiles':
       return { data: db.profiles };
+    case 'document_submissions': {
+      // 表そのもの（v_document_status と違い、今の対象から外れた団体の行も返す）
+      const neq = call.ops.filter((o) => o.op === 'neq').map((o) => o.args as [keyof DbSub, unknown]);
+      const rows = db.subs.filter((s) => (!eq.document_id || s.document_id === eq.document_id) && neq.every(([k, v]) => s[k] !== v));
+      return { data: rows.map((s) => ({ group_id: s.group_id, status: s.status })) };
+    }
     case 'v_document_status': {
       const rows = statusRows();
       if (eq.document_id) return { data: rows.find((r) => r.document_id === eq.document_id && r.group_id === eq.group_id) ?? null };
@@ -704,7 +712,10 @@ describe('T19 提出状況：表', () => {
     expect(late.tagName).toBe('BUTTON');
     expect(late.getAttribute('data-status')).toBe('submitted');
     expect(late.getAttribute('data-late')).toBe('true');
-    expect(late.getAttribute('aria-label')).toBe('模擬店02・出店計画書：承認待ち');
+    // 読み上げの名前（aria-label は中身の文字より先に読まれる）に、見えている印とファイルの数も入れる（レビューの UX-3）
+    expect(late.getAttribute('aria-label')).toBe('模擬店02・出店計画書：承認待ち、締切の後、ファイル 2');
+    expect(cellOf(D_FOOD, G1.id).getAttribute('aria-label')).toBe('模擬店01・食品の届け：承認待ち、代理、ファイル 1');
+    expect(cellOf(D_NOTE, G4.id).getAttribute('aria-label')).toBe('企業A・保健所への報告：承認、紙');
     expect(within(late).getByTestId('documents-cell-files').textContent).toBe('ファイル 2');
     expect(late.textContent).toContain('締切の後');
     expect(cellOf(D_FOOD, G1.id).getAttribute('data-proxy')).toBe('true');
@@ -713,6 +724,7 @@ describe('T19 提出状況：表', () => {
     expect(overdue.getAttribute('data-status')).toBe('not_submitted');
     expect(overdue.getAttribute('data-overdue')).toBe('true');
     expect(overdue.textContent).toContain('締切を過ぎた');
+    expect(overdue.getAttribute('aria-label')).toBe('A模擬店・出店計画書：未提出、締切を過ぎた');
     // ファイルのないセルは数を出さない
     expect(within(overdue).queryByTestId('documents-cell-files')).toBeNull();
     const none = cellOf(D_FOOD, G2.id);
@@ -775,6 +787,8 @@ describe('T19 提出状況：表', () => {
       [G2.id, 'submitted'],
       [G3.id, 'returned'],
     ]);
+    // 読み上げの名前は表のセルと同じ（印とファイルの数を含む）
+    expect(items[2]!.getAttribute('aria-label')).toBe('模擬店02・出店計画書：承認待ち、締切の後、ファイル 2');
   });
 
   it('空の表示：提出物がない（部門長以上には設定の案内）・対象の団体がない', async () => {
@@ -827,6 +841,7 @@ describe('T19 提出状況：段ごとの出し分け', () => {
     expect(screen.queryByTestId('documents-tab-settings')).toBeNull();
     expect(screen.queryByTestId('documents-csv')).toBeNull();
     expect(screen.queryAllByTestId('documents-cell-files')).toHaveLength(0);
+    expect(cellOf(D_PLAN, G2.id).getAttribute('aria-label')).toBe('模擬店02・出店計画書：承認待ち、締切の後');
     expect(reads('v_document_files')).toBe(0);
     expect(rpcCalls('document_storage_usage')).toHaveLength(0);
     expect(rpcCalls('document_orphan_paths')).toHaveLength(0);
@@ -1049,6 +1064,7 @@ describe('T19 提出状況：セルのシート', () => {
     await waitFor(() => expect(within(sheet()).getAllByTestId('documents-sheet-file').every((f) => f.getAttribute('data-state') === 'uploaded')).toBe(true));
     expect(rpcArgs(rpcCalls('reserve_document_file')[0]!)).toMatchObject({ p_document_id: D_PLAN, p_group_id: G3.id, p_content_type: 'application/pdf', p_size: 4000 });
     expect(storageCalls.filter((c) => c.op === 'upload')).toHaveLength(1);
+    expect(toast.success).toHaveBeenCalledWith('ファイル 1 つをアップロードしました');
     // 開く（先にタブ）・保存（名前）
     const tab = { opener: {}, location: { href: '' }, close: vi.fn() };
     vi.spyOn(fileWindow, 'openBlank').mockReturnValue(tab as unknown as Window);
@@ -1066,6 +1082,71 @@ describe('T19 提出状況：セルのシート', () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('ファイル 1 を外しました'));
     expect(rpcCalls('discard_document_file')).toHaveLength(1);
     await waitFor(() => expect(within(sheet()).getAllByTestId('documents-sheet-file')).toHaveLength(1));
+  });
+
+  it('上げている間は「保存」を押せず理由を出す（開くは押せる）。進み具合はいつも置いた1つの role="status" の中身だけを変え、終わったら知らせる（レビューの F2・UX-2）', async () => {
+    const gate: { release: (() => void) | null } = { release: null };
+    storageOverride = (c) =>
+      c.op === 'upload'
+        ? new Promise((resolve) => {
+            gate.release = () => {
+              const [path, blob] = c.args as [string, Blob];
+              db.objects.set(path, blob.size);
+              resolve({ data: { path }, error: null });
+            };
+          })
+        : undefined;
+    renderScreen();
+    await openSheet(D_PLAN, G3.id);
+    const region = within(sheet()).getByRole('status');
+    expect(region.textContent).toBe('');
+    const assign = vi.spyOn(fileWindow, 'assign').mockImplementation(() => {});
+    fireEvent.change(within(sheet()).getByTestId('documents-sheet-file-input'), { target: { files: [pdf()] } });
+    await waitFor(() => expect(within(sheet()).getByRole('status').textContent).toContain('アップロード中…（1/1）'));
+    expect(within(sheet()).getByRole('status')).toBe(region);
+    // 届いていた1つ目のファイルの「保存」は押せない（理由を出す）。「開く」は押せる
+    const first = within(sheet()).getAllByTestId('documents-sheet-file')[0]!;
+    const save = within(first).getByTestId('documents-sheet-file-save') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(within(sheet()).getByText(SAVE_BLOCKED_TEXT)).toBeTruthy();
+    expect((within(first).getByTestId('documents-sheet-file-open') as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(save);
+    expect(assign).not.toHaveBeenCalled();
+    await waitFor(() => expect(gate.release).not.toBeNull());
+    await act(async () => gate.release!());
+    await waitFor(() => expect(within(sheet()).queryByTestId('documents-sheet-uploading')).toBeNull());
+    expect(within(sheet()).getByRole('status')).toBe(region);
+    expect(region.textContent).toBe('');
+    expect(toast.success).toHaveBeenCalledWith('ファイル 1 つをアップロードしました');
+    expect(within(sheet()).queryByText(SAVE_BLOCKED_TEXT)).toBeNull();
+    expect((within(within(sheet()).getAllByTestId('documents-sheet-file')[0]!).getByTestId('documents-sheet-file-save') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('開く・保存が 403（立場が変わった）→「ファイルを開けませんでした。立場が変わった可能性があります」（アップロードとは言わない。レビューの UX-4）', async () => {
+    storageOverride = (c) => (c.op === 'createSignedUrl' ? { data: null, error: storageError('403', 'AccessDenied') } : undefined);
+    const tab = { opener: {}, location: { href: '' }, close: vi.fn() };
+    vi.spyOn(fileWindow, 'openBlank').mockReturnValue(tab as unknown as Window);
+    renderScreen();
+    const user = await openSheet(D_PLAN, G3.id);
+    await user.click(within(sheet()).getAllByTestId('documents-sheet-file-open')[0]!);
+    await waitFor(() => expect(within(sheet()).getByTestId('documents-sheet-file-error').textContent).toBe(STORAGE_SIGN_DENIED_MESSAGE));
+    expect(STORAGE_SIGN_DENIED_MESSAGE).toBe('ファイルを開けませんでした。立場が変わった可能性があります');
+    expect(tab.close).toHaveBeenCalled();
+  });
+
+  it('代わりに提出する・承認するが成功したら、ダイアログが閉じた後にフォーカスをシートの見出しに移す（押したボタンは消える。レビューの F4）', async () => {
+    renderScreen();
+    const user = await openSheet(D_NOTE, G1.id);
+    await user.click(within(sheet()).getByTestId('documents-sheet-submit'));
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('「模擬店01」の代わりに提出しました'));
+    await waitFor(() => expect(document.activeElement).toBe(within(sheet()).getByTestId('documents-sheet-title')));
+    // 承認する（ダイアログ）→ 閉じた後に見出しへ
+    await user.click(within(sheet()).getByTestId('documents-sheet-approve'));
+    await user.click(within(screen.getByTestId('documents-approve-dialog')).getByTestId('documents-approve-submit'));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('承認しました'));
+    await waitFor(() => expect(within(sheet()).queryByTestId('documents-sheet-approve')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(within(sheet()).getByTestId('documents-sheet-title')));
   });
 
   it('上げている間はシートを閉じない（×を出さない）。進み具合はそのセルだけに出る', async () => {
@@ -1091,6 +1172,38 @@ describe('T19 提出状況：セルのシート', () => {
     await act(async () => gate.release!());
     await waitFor(() => expect(within(sheet()).queryByTestId('documents-sheet-uploading')).toBeNull());
     expect(within(sheet()).getByRole('button', { name: '閉じる' })).toBeTruthy();
+  });
+
+  it('代理で上げている間に離れるときは「アップロード中です。離れると、残りのファイルは送られません」で確かめる（下書きの文は出さない）', async () => {
+    const gate: { release: (() => void) | null } = { release: null };
+    storageOverride = (c) =>
+      c.op === 'upload'
+        ? new Promise((resolve) => {
+            gate.release = () => {
+              const [path, blob] = c.args as [string, Blob];
+              db.objects.set(path, blob.size);
+              resolve({ data: { path }, error: null });
+            };
+          })
+        : undefined;
+    renderScreen();
+    await openSheet(D_PLAN, G3.id);
+    fireEvent.change(within(sheet()).getByTestId('documents-sheet-file-input'), { target: { files: [pdf()] } });
+    await waitFor(() => expect(within(sheet()).getByTestId('documents-sheet-uploading')).toBeTruthy());
+    // アプリの中で移る前（シートの外のリンク。押せない覆いの下なので、クリックの出来事だけを送る）
+    fireEvent.click(screen.getByTestId('probe-nav'));
+    const leave = await screen.findByRole('alertdialog');
+    expect(within(leave).getByRole('heading').textContent).toBe('アップロード中です');
+    expect(leave.textContent).toContain('離れると、残りのファイルは送られません。');
+    expect(leave.textContent).not.toContain('下書き');
+    expect(leave.textContent).not.toContain(LEAVE_MESSAGES.navigate.title);
+    expect(within(leave).getByRole('button', { name: '移る' })).toBeTruthy();
+    fireEvent.click(within(leave).getByRole('button', { name: 'やめる（アップロードを続ける）' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(h.push).not.toHaveBeenCalled();
+    await waitFor(() => expect(gate.release).not.toBeNull());
+    await act(async () => gate.release!());
+    await waitFor(() => expect(within(sheet()).queryByTestId('documents-sheet-uploading')).toBeNull());
   });
 
   it('下書き：理由を入れたまま離れようとすると確かめ、開き直すと「戻す」で戻せる。成功したら消す', async () => {
@@ -1248,11 +1361,51 @@ describe('T19 提出状況：提出物の設定', () => {
     expect(deleteConfirmText(0, 0)).toBe('元に戻せません。');
   });
 
+  it('削除の数は、今の対象から外れた団体の提出も数える（表 document_submissions をその提出物で読む。数えている間は押せない）', async () => {
+    // 食品の届けは飲食の模擬店だけが対象。飲食でない模擬店02 の提出（差し戻し）とファイルは、対象から外れても残っていて、消すと一緒に消える
+    db.subs.push(sub(D_FOOD, G2.id, { status: 'returned', submitted_at: '2026-10-04T00:00:00+00:00', submitted_by: U_REP, reviewed_at: '2026-10-05T00:00:00+00:00', reviewed_by: U_ADMIN, review_note: '対象の前' }));
+    const f = dbFile(uuid(306), D_FOOD, G2.id);
+    db.files.push(f);
+    db.objects.set(f.object_path, f.size);
+    let release: (() => void) | null = null;
+    override = (call) =>
+      call.table === 'document_submissions' && release === null
+        ? new Promise<FakeResult>((resolve) => {
+            release = () => resolve(handler({ ...call, table: 'document_submissions' }));
+          })
+        : undefined;
+    const user = await openSettings();
+    const row = screen.getAllByTestId('documents-settings-row').find((r) => r.getAttribute('data-document-id') === D_FOOD)!;
+    await user.click(within(row).getByTestId('documents-settings-delete'));
+    const confirm = screen.getByRole('alertdialog');
+    // 数えている間は「削除する」を押せない
+    await waitFor(() => expect(confirm.textContent).toContain(DELETE_COUNTING_TEXT));
+    expect((within(confirm).getByRole('button', { name: '削除する' }) as HTMLButtonElement).disabled).toBe(true);
+    override = null;
+    await act(async () => release!());
+    // 対象の模擬店01 の承認待ちと、対象から外れた模擬店02 の差し戻し（2 件）。ファイルは 2 件
+    await waitFor(() => expect(confirm.textContent).toContain(deleteConfirmText(2, 2)));
+    const read = issued.find((c) => c.table === 'document_submissions')!;
+    expect(eqOf(read)).toEqual({ document_id: D_FOOD });
+    expect((within(confirm).getByRole('button', { name: '削除する' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('削除の数を読み込めなければ「提出とファイルの記録も消えます（数を読み込めませんでした）」で確かめる（押せる）', async () => {
+    override = (call) => (call.table === 'document_submissions' ? NETWORK : undefined);
+    const user = await openSettings();
+    await user.click(screen.getAllByTestId('documents-settings-delete')[0]!);
+    const confirm = screen.getByRole('alertdialog');
+    await waitFor(() => expect(confirm.textContent).toContain(DELETE_COUNT_FAILED_TEXT));
+    expect((within(confirm).getByRole('button', { name: '削除する' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('前年度から写す：同じ題名は選べない。選んだものを写して「{N} 件を写しました」', async () => {
     const user = await openSettings();
     await user.click(screen.getByTestId('documents-settings-copy'));
     const dialog = screen.getByTestId('doc-copy-dialog');
     await waitFor(() => expect(within(dialog).getAllByTestId('doc-copy-item')).toHaveLength(3));
+    // 説明：何の「1日目」の差かを書く（レビューの UX-6）
+    expect(dialog.textContent).toContain('締切は、前年度と今年度の祭の1日目の差の日数だけずらします（時刻は同じ）。写した後に直せます。');
     const items = within(dialog).getAllByTestId('doc-copy-item');
     expect(items[0]!.getAttribute('data-exists')).toBe('true');
     expect(items[0]!.textContent).toContain(COPY_EXISTS_TEXT);
@@ -1266,6 +1419,55 @@ describe('T19 提出状況：提出物の設定', () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('2 件を写しました'));
     expect(rpcArgs(rpcCalls('copy_previous_documents')[0]!)).toEqual({ p_year_id: Y, p_document_ids: [uuid(502), uuid(503)] });
     await waitFor(() => expect(screen.getAllByTestId('documents-settings-row')).toHaveLength(5));
+  });
+});
+
+describe('T19 提出状況：前年度から写すの応答が届かなかったとき（レビューの T19BC-1）', () => {
+  it('写せていた（応答だけが届かない）→ 前年度の一覧を読み直し、写されたものは選べなくなる（もう一度押して「0 件を写しました」にしない）', async () => {
+    override = (call) => {
+      if (call.table !== 'rpc:copy_previous_documents') return undefined;
+      rpc('copy_previous_documents', rpcArgs(call));
+      return NETWORK;
+    };
+    const user = await openSettings();
+    await user.click(screen.getByTestId('documents-settings-copy'));
+    const dialog = screen.getByTestId('doc-copy-dialog');
+    await waitFor(() => expect(within(dialog).getAllByTestId('doc-copy-item')).toHaveLength(3));
+    const reads0 = rpcCalls('previous_year_documents').length;
+    await user.click(within(within(dialog).getAllByTestId('doc-copy-item')[1]!).getByTestId('doc-copy-check'));
+    await user.click(within(dialog).getByTestId('doc-copy-submit'));
+    await waitFor(() => expect(within(dialog).getByTestId('doc-copy-error').textContent).toBe('通信できませんでした。電波の良い所でもう一度'));
+    // 前年度の一覧を読み直した：写された「火気の使用届」は同じ題名があるので選べない
+    await waitFor(() => expect(rpcCalls('previous_year_documents').length).toBeGreaterThan(reads0));
+    await waitFor(() => expect(within(dialog).getAllByTestId('doc-copy-item')[1]!.getAttribute('data-exists')).toBe('true'));
+    expect(within(within(dialog).getAllByTestId('doc-copy-item')[1]!).getByTestId('doc-copy-check').hasAttribute('disabled')).toBe(true);
+    expect((within(dialog).getByTestId('doc-copy-submit') as HTMLButtonElement).disabled).toBe(true);
+    expect(within(dialog).getByTestId('doc-copy-submit').textContent).toBe('写す（0 件）');
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('読み直せないままもう一度押して、写されていたものが返らなかった → 「同じ題名」と言わずに、前に写されていた可能性を言う', async () => {
+    let first = true;
+    override = (call) => {
+      if (call.table === 'rpc:copy_previous_documents' && first) {
+        first = false;
+        rpc('copy_previous_documents', rpcArgs(call));
+        return NETWORK;
+      }
+      // 応答が届かなかった後の前年度の読み直しも届かない
+      if (call.table === 'rpc:previous_year_documents' && !first) return NETWORK;
+      return undefined;
+    };
+    const user = await openSettings();
+    await user.click(screen.getByTestId('documents-settings-copy'));
+    const dialog = screen.getByTestId('doc-copy-dialog');
+    await waitFor(() => expect(within(dialog).getAllByTestId('doc-copy-item')).toHaveLength(3));
+    await user.click(within(within(dialog).getAllByTestId('doc-copy-item')[1]!).getByTestId('doc-copy-check'));
+    await user.click(within(dialog).getByTestId('doc-copy-submit'));
+    await waitFor(() => expect(within(dialog).getAllByTestId('doc-copy-error').length).toBeGreaterThan(0));
+    await waitFor(() => expect((within(dialog).getByTestId('doc-copy-submit') as HTMLButtonElement).disabled).toBe(false));
+    await user.click(within(dialog).getByTestId('doc-copy-submit'));
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('0 件を写しました（1 件は、前に写されていたか同じ題名があったので写しませんでした）'));
   });
 });
 
@@ -1306,6 +1508,21 @@ describe('T19 提出状況：終了した年度', () => {
     expect([...db.objects.keys()].filter((p) => p.startsWith(`${Y}/`))).toEqual([]);
     await waitFor(() => expect(screen.getByTestId('documents-files-deleted').textContent).toBe('この年度のファイルは 2026/10/06 12:00 に削除しました'));
     expect(screen.queryByTestId('documents-delete-files')).toBeNull();
+  });
+
+  it('使った量（document_storage_usage）を読み込めなければ、黙って消さずに「ファイルの件数と大きさを読み込めませんでした」と「もう一度」（レビューの T19BC-2）', async () => {
+    let fail = true;
+    override = (call) => (call.table === 'rpc:document_storage_usage' && fail ? NETWORK : undefined);
+    const user = setUser();
+    renderScreen({ role: 'admin', status: 'closed' });
+    await loaded();
+    const err = await screen.findByTestId('documents-usage-error');
+    expect(err.textContent).toContain('ファイルの件数と大きさを読み込めませんでした：通信できませんでした。電波の良い所でもう一度');
+    expect(screen.queryByTestId('documents-delete-files')).toBeNull();
+    fail = false;
+    await user.click(within(err).getByRole('button', { name: 'もう一度' }));
+    expect(await screen.findByTestId('documents-delete-files')).toBeTruthy();
+    expect(screen.queryByTestId('documents-usage-error')).toBeNull();
   });
 
   it('片付けで消せなかった物が残れば「置き場から消せなかったファイルが k 件あります」と「片付ける」', async () => {

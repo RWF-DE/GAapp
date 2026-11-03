@@ -186,6 +186,39 @@ export function documentsBoardOptions(yearId: string | null | undefined, tier: D
   });
 }
 
+/**
+ * 提出物の削除の確かめに出す提出の数（未提出でない提出。今の対象から外れた団体の分も数える。消すと cascade で一緒に消えるため。2026-11-03。
+ * レビューの UX-5。04「提出状況」の提出物の設定の削除）。表 document_submissions をその提出物で読む（部門長以上は RLS でその年度の全部を読める。
+ * v_document_status は今の対象の団体だけなので使わない）。読めなければ AppError を投げる。
+ */
+export async function countDocumentSubmissions(documentId: string, client: AppSupabaseClient = getSupabase()): Promise<number> {
+  const rows = await fetchAll<{ group_id: string }>(
+    (from, to) =>
+      client
+        .from('document_submissions')
+        .select('group_id')
+        .eq('document_id', documentId)
+        .neq('status', 'not_submitted')
+        .order('group_id')
+        .range(from, to) as unknown as PromiseLike<PageResult<{ group_id: string }>>,
+  );
+  return rows.length;
+}
+
+/**
+ * 削除の確かめの提出の数のクエリ（キーは `['year', yearId, 'documents', 'delete-count', documentId]`。確かめのダイアログを開いている間だけ使い、
+ * 開くたびに読む〔古い数を出さない〕ので、読んだものをすぐ古いとし、閉じたら残さない）
+ */
+export function documentSubmissionCountOptions(yearId: string, documentId: string | null) {
+  return queryOptions({
+    queryKey: queryKeys.yearPart(yearId, 'documents', 'delete-count', documentId ?? ''),
+    queryFn: () => countDocumentSubmissions(documentId!),
+    enabled: !!documentId,
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
 /** 使った量のクエリ（キーは `['year', yearId, 'documents', 'usage']`。部門長以上。GET の document_storage_usage） */
 export function documentStorageUsageOptions(yearId: string | null | undefined) {
   return queryOptions({

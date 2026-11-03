@@ -12,8 +12,10 @@
 //   updated_at（行がなければ null）。成功したらシートを開いたまま読み直す。止められたら読み直して今の状態とエラーの文言を出し、読み直せなければ
 //   「読み直す」を出す（submission-write.ts の (B1)）。forbidden・invalid_state は年度の行と立場も読み直す。
 // - 送っている・上げている間はシートを閉じない（送っている1つは止められないので、終わるまで待つ）。
-// 署名つき URL は押したときに作る（file-open.ts。60 秒。残さない）。変数名は doc（ブラウザの document を隠さない）。
-import { useState } from 'react';
+// - 操作が成功すると押したボタンが消えるので、ダイアログが閉じた後にフォーカスをシートの見出しへ移す（focus-after-dialog.ts。レビューの F4）。
+// 署名つき URL は押したときに作る（file-open.ts。60 秒。残さない）。その画面で上げている間は「保存」を押せない（F2）。開く・保存の 403 は開く・
+// 保存の文言（UX-4）。変数名は doc（ブラウザの document を隠さない）。
+import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { TokyoTime } from '@/components/common/tokyo-time';
@@ -39,8 +41,9 @@ import { DOCUMENT_MARK_LABELS, SOUMU_STATUS_LABELS } from '@/lib/modules/documen
 import { leadDocumentActions, RETURN_KIND_LABELS, type LeadDocumentActions } from '@/lib/modules/documents/permissions';
 import { cn } from '@/lib/utils';
 import { DocumentFileAdder, DocumentFileList, fileEntriesOf, REMOVE_CONFIRM_TEXT, SHEET_ADDER_TESTIDS, SHEET_FILE_TESTIDS, type FileEntry } from './document-file-list';
-import { columnDeadlineText, COLUMN_OVERDUE_TEXT } from './documents-board';
+import { cellMarkLabels, columnDeadlineText, COLUMN_OVERDUE_TEXT } from './documents-board';
 import { openDocumentFile, POPUP_BLOCKED_MESSAGE, saveDocumentFile, type FileOpenResult } from './file-open';
+import { focusAfterDialogs } from './focus-after-dialog';
 import { ReviewNoteDialog, type ReviewKind, type ReviewNoteDialogProps, type ReviewOutcome, type ReviewTarget } from './review-dialogs';
 import { DOCUMENT_MARK_CLASS, DocumentStatusBadge } from './status-badge';
 import {
@@ -182,11 +185,18 @@ function SheetBody({
   const [withdrawBase, setWithdrawBase] = useState<{ base: string | null } | null>(null);
   const [removeTarget, setRemoveTarget] = useState<FileEntry | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  // 見出し（操作が成功して押したボタンが消えた後のフォーカスの行き先。レビューの F4）
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  const focusTitleAfterDialogs = () =>
+    focusAfterDialogs(
+      () => titleRef.current,
+      () => titleRef.current?.closest('[role="dialog"]') ?? null,
+    );
 
   const numbered = numberFiles(files ?? []);
   const rowIds = new Set(numbered.map((f) => f.file.id));
   const localOnly = showFiles ? uploader.localOnly(slot, rowIds) : [];
-  const entries = fileEntriesOf(numbered, localOnly, uploader.uploading, uploader.failed);
+  const entries = fileEntriesOf(numbered, localOnly, uploader.uploading, uploader.failed, uploader.sent);
   const uploadBusy = uploader.busy(slot);
   const busy = pending || uploadBusy || rereading;
   const blocker = submitBlocker(doc.requires_file, [...numbered.map((f) => f.file), ...localOnly.map(() => ({ uploaded: false }))], uploadBusy);
@@ -243,6 +253,7 @@ function SheetBody({
           // 届くまで待ってから知らせる（シートを新しい状態にしてから。止められた後の読み直しはもう済んでいる）
           if (!r.before) await rereadBoard();
           toast.success(r.before ? SUBMISSION_DONE_BEFORE[action] : reviewDoneMessage(action, group.name));
+          focusTitleAfterDialogs();
           return { type: 'done' };
         case 'unknown':
           return { type: 'keep', kind: 'unknown', message: SUBMISSION_UNKNOWN[action] };
@@ -304,6 +315,7 @@ function SheetBody({
         case 'done':
           if (!r.before) await rereadBoard();
           toast.success(r.before ? SUBMISSION_DONE_BEFORE[action] : reviewDoneMessage(action, group.name));
+          focusTitleAfterDialogs();
           return;
         case 'unknown':
           setNote({ kind: 'error', message: action === 'submit' ? PROXY_SUBMIT_UNKNOWN : SUBMISSION_UNKNOWN[action], unknownAction: action });
@@ -349,7 +361,8 @@ function SheetBody({
       return;
     }
     const c = classifyError(r.error);
-    uploader.setError(slot, messageFor(c));
+    // 開く・保存（署名つき URL）の 403 はアップロードの文言にしない（レビューの UX-4）
+    uploader.setError(slot, messageFor(c, { storage: 'sign' }));
     onYearEffect(r.error);
     if (c.kind === 'not_found') void rereadBoard();
   };
@@ -361,7 +374,8 @@ function SheetBody({
   };
 
   const onSaveFile = async (entry: FileEntry) => {
-    if (!entry.row) return;
+    // 上げている間は押せない（このページを移すと、ページを離れる確かめが出る。レビューの F2）
+    if (!entry.row || uploader.active) return;
     uploader.setError(slot, null);
     showOpenResult(await saveDocumentFile(entry.row.object_path, downloadNameFor(doc.title, group.name, entry.n, entry.row.content_type)));
   };
@@ -401,11 +415,7 @@ function SheetBody({
   const reviewNote = row.review_note && row.review_note.trim() !== '' ? row.review_note : null;
   const noteLabel =
     status === 'returned' ? '差し戻しの理由' : status === 'submitted' && reviewNote ? '前回の差し戻しの理由' : status === 'approved' && reviewNote ? '承認のメモ' : null;
-  const marks: string[] = [];
-  if (cell.marks.late) marks.push(DOCUMENT_MARK_LABELS.late);
-  if (cell.marks.proxy) marks.push(DOCUMENT_MARK_LABELS.proxy);
-  if (cell.marks.paper) marks.push(DOCUMENT_MARK_LABELS.paper);
-  if (cell.marks.overdue) marks.push(DOCUMENT_MARK_LABELS.overdue);
+  const marks = cellMarkLabels(cell);
   const isRep = repGroupIds.has(cell.groupId);
   const titleText = `${group.name}・${doc.title}`;
 
@@ -430,7 +440,7 @@ function SheetBody({
         }}
       >
         <SheetHeader className="border-b pr-10">
-          <SheetTitle data-testid="documents-sheet-title" className="[overflow-wrap:anywhere]">
+          <SheetTitle ref={titleRef} tabIndex={-1} data-testid="documents-sheet-title" className="outline-none [overflow-wrap:anywhere]">
             {titleText}
           </SheetTitle>
           <SheetDescription>
@@ -493,6 +503,7 @@ function SheetBody({
                 canRemovePending={actions.removePending}
                 canRetry={actions.addFile}
                 disabled={busy}
+                saveBlocked={uploader.active}
                 onOpen={(e) => void onOpenFile(e)}
                 onSave={(e) => void onSaveFile(e)}
                 onRemove={(e) => void onRemoveFile(e)}

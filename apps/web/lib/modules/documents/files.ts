@@ -207,17 +207,22 @@ export function objectPathFor(yearId: string, groupId: string, documentId: strin
 /** 1件の状態（data-state）：届いた・そのタブで上げている・そのタブで失敗した・届いていない（ほかの人・ほかのタブの予約や、開き直した） */
 export type FileState = 'uploaded' | 'uploading' | 'failed' | 'missing';
 
-/** そのタブの上げている・失敗したファイルの id */
+/** そのタブの上げている・失敗した・上げ終えて読み直しを待つ（sent）ファイルの id */
 export interface LocalUploads {
   uploading?: ReadonlySet<string>;
   failed?: ReadonlySet<string>;
+  sent?: ReadonlySet<string>;
 }
 
-/** 1件の状態（届いたかは v_document_files の uploaded、届いていないものはそのタブの状態で分ける） */
+/**
+ * 1件の状態（届いたかは v_document_files の uploaded、届いていないものはそのタブの状態で分ける）。そのタブで上げ終えて読み直しを待つもの
+ * （sent）は、読んだ行の uploaded が古くても届いたとする（「届いていません」を一瞬出さない。2026-11-03。レビューの UX-2）
+ */
 export function fileStateOf(f: { id: string; uploaded: boolean | null }, local: LocalUploads = {}): FileState {
   if (f.uploaded) return 'uploaded';
   if (local.uploading?.has(f.id)) return 'uploading';
   if (local.failed?.has(f.id)) return 'failed';
+  if (local.sent?.has(f.id)) return 'uploaded';
   return 'missing';
 }
 

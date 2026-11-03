@@ -22,6 +22,11 @@ export const NO_FILE_TEXT = 'ファイルは要りません（「提出した」
 /** 差し戻しの枠の最後の文 */
 export const RETURNED_HINT = '直してから、もう一度「提出した」を押してください';
 
+/** カードの題名の id（aria-labelledby と、提出・取り消しの後のフォーカスの行き先） */
+export function cardTitleId(documentId: string): string {
+  return `document-card-title-${documentId}`;
+}
+
 /** カードの知らせ（提出・取り消しの失敗。unread は「読み直す」も出す） */
 export interface CardNote {
   kind: 'error' | 'unread';
@@ -39,6 +44,8 @@ export interface DocumentCardProps {
   fileCount: number;
   /** 上げている・外している・送っている（足す・外す・提出・取り消しを押せない） */
   busy: boolean;
+  /** その画面のどこかで上げている（「保存」を押せない。レビューの F2） */
+  saveBlocked: boolean;
   progress: UploadProgress | null;
   fileError: string | null;
   note: CardNote | null;
@@ -64,7 +71,7 @@ export function DocumentCard(props: DocumentCardProps) {
     if (highlighted) ref.current?.scrollIntoView?.({ block: 'start' });
   }, [highlighted]);
   const relative = deadlineRelative(doc.deadline, now);
-  const titleId = `document-card-title-${doc.document_id}`;
+  const titleId = cardTitleId(doc.document_id);
   const showFiles = props.entries.length > 0 || actions.addFile || props.progress !== null || props.fileError !== null;
   return (
     <article
@@ -78,7 +85,8 @@ export function DocumentCard(props: DocumentCardProps) {
       className={cn('scroll-mt-20 space-y-3 rounded-lg border bg-card p-4', highlighted && 'ring-2 ring-amber-300')}
     >
       <header className="space-y-1.5">
-        <h2 id={titleId} data-testid="document-card-title" className="text-base font-semibold [overflow-wrap:anywhere]">
+        {/* 「提出した」「提出を取り消す」の後は押したボタンが消えるので、ここへフォーカスを移す（tabIndex -1。レビューの F4） */}
+        <h2 id={titleId} tabIndex={-1} data-testid="document-card-title" className="text-base font-semibold outline-none [overflow-wrap:anywhere]">
           {doc.title}
         </h2>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -163,6 +171,7 @@ export function DocumentCard(props: DocumentCardProps) {
             canRemovePending={actions.removePending}
             canRetry={actions.addFile}
             disabled={busy}
+            saveBlocked={props.saveBlocked}
             onOpen={props.onOpen}
             onSave={props.onSave}
             onRemove={props.onRemove}

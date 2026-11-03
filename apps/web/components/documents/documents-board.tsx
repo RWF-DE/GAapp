@@ -4,7 +4,9 @@
 // 約束」6。T19・D-55）。組み立ては lib/modules/documents/board.ts（純粋な関数）。
 // - 表（lg 以上）：行は団体（sort_order → 名前 → id）、列は提出物（締切 → 題名 → id）。団体の列を固定し、列が多ければ表の中だけを横に送る。
 //   列の見出しは題名・締切（過ぎていれば「締切を過ぎました」）・承認の数。セルは状態の印（締切の後・代理・紙・締切を過ぎた）と、部門長以上には
-//   届いたファイルの数（「ファイル 2」。0 は出さない）。その団体が対象でないセルは「—」（押せない）。セルは押せるボタン（読み上げの名前は「{団体}・{提出物}：{状態}」）。
+//   届いたファイルの数（「ファイル 2」。0 は出さない）。その団体が対象でないセルは「—」（押せない）。セルは押せるボタン（読み上げの名前は
+//   「{団体}・{提出物}：{状態}」に、見えている印とファイルの数を「、」でつないだもの。名前は中身より先に読まれるので、印を名前から落とさない。
+//   2026-11-03。レビューの UX-3）。
 // - 狭い幅（lg 未満）：提出物ごとの一覧（提出物の見出しの下に、対象の団体ごとに1行）。表と一覧はどちらか一方だけを描く（同じセルを2回描かない。
 //   幅は画面を描いた後に決め、最初の描画は表）。
 // - 絞り込み（`?status=`。件数つき）で、合うセルのある行と列だけを出し、その中の合わないセルを薄くする（一覧も同じ）。
@@ -56,20 +58,34 @@ export function approvedCountText(column: Pick<BoardColumn, 'approved' | 'target
   return `承認 ${column.approved}／${column.targets}`;
 }
 
-/** セルの読み上げの名前（「{団体}・{提出物}：{状態}」） */
-export function cellLabel(groupName: string, title: string, cell: BoardCell): string {
-  return `${groupName}・${title}：${SOUMU_STATUS_LABELS[cell.marks.status]}`;
+/** セルの状態のほかの印（締切の後・代理・紙・締切を過ぎた。この順で、見えている印と読み上げの名前で同じもの） */
+export function cellMarkLabels(cell: Pick<BoardCell, 'marks'>): string[] {
+  const marks: string[] = [];
+  if (cell.marks.late) marks.push(DOCUMENT_MARK_LABELS.late);
+  if (cell.marks.proxy) marks.push(DOCUMENT_MARK_LABELS.proxy);
+  if (cell.marks.paper) marks.push(DOCUMENT_MARK_LABELS.paper);
+  if (cell.marks.overdue) marks.push(DOCUMENT_MARK_LABELS.overdue);
+  return marks;
+}
+
+/**
+ * セルの読み上げの名前：「{団体}・{提出物}：{状態}」に、見えている印と、showFiles（部門長以上）なら届いたファイルの数（「ファイル 2」。0 は
+ * 出さない）を「、」でつなぐ。aria-label は中身の文字より先に読まれるので、見えている印を名前から落とさない（レビューの UX-3）。
+ *
+ * @example
+ * cellLabel('模擬店01', '出店計画書', cell, true) // '模擬店01・出店計画書：承認待ち、締切の後、ファイル 2'
+ */
+export function cellLabel(groupName: string, title: string, cell: Pick<BoardCell, 'marks' | 'files'>, showFiles = false): string {
+  const parts = [SOUMU_STATUS_LABELS[cell.marks.status], ...cellMarkLabels(cell)];
+  if (showFiles && cell.files) parts.push(`ファイル ${cell.files}`);
+  return `${groupName}・${title}：${parts.join('、')}`;
 }
 
 const bool = (v: boolean) => (v ? 'true' : 'false');
 
 /** 状態のほかの印（締切の後・代理・紙・締切を過ぎた）。色だけで表さず、文字を出す */
 function CellMarks({ cell, className }: { cell: BoardCell; className?: string }) {
-  const marks: string[] = [];
-  if (cell.marks.late) marks.push(DOCUMENT_MARK_LABELS.late);
-  if (cell.marks.proxy) marks.push(DOCUMENT_MARK_LABELS.proxy);
-  if (cell.marks.paper) marks.push(DOCUMENT_MARK_LABELS.paper);
-  if (cell.marks.overdue) marks.push(DOCUMENT_MARK_LABELS.overdue);
+  const marks = cellMarkLabels(cell);
   if (marks.length === 0) return null;
   return (
     <span className={cn('flex flex-wrap gap-1', className)}>
@@ -311,7 +327,7 @@ function CellButton({
       data-overdue={bool(cell.marks.overdue)}
       data-dimmed={bool(!cell.matches)}
       data-highlighted={bool(highlighted)}
-      aria-label={cellLabel(group.name, column.doc.title, cell)}
+      aria-label={cellLabel(group.name, column.doc.title, cell, showFiles)}
       onClick={() => onOpenCell(cell.documentId, cell.groupId)}
       className={cn(
         'flex w-full min-w-28 flex-col items-start gap-1 rounded-md px-2 py-1.5 text-left outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50',
@@ -354,7 +370,7 @@ function BoardList({ board, showFiles, now, highlightDocumentId, highlightGroupI
                       data-document-id={cell.documentId}
                       data-group-id={cell.groupId}
                       data-status={cell.marks.status}
-                      aria-label={cellLabel(group.name, column.doc.title, cell)}
+                      aria-label={cellLabel(group.name, column.doc.title, cell, showFiles)}
                       onClick={() => onOpenCell(cell.documentId, cell.groupId)}
                       className={cn(
                         'flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-left text-sm outline-none hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50',
