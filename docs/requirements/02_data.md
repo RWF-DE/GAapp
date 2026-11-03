@@ -56,6 +56,8 @@ app_role の head（総務部門長）と deputy_head（総務副部門長）は
 
 0018_lending.sql（テント等の貸し出しの表 lending_items・lending_requests・lending_assignments・lending_records・lending_years とそのトリガー・RLS、判定と集合の関数 private.can_record_lending・lending_confirmed_year_ids、RPC save_lending_assignments・set_lending_confirmed・previous_year_lending_items。列挙型は足さない。足すだけで、今の表と関数は変えない。D-57）は T21 で作る（番号はリードが割り当てた。並行して作る T19 の 0016・T20 の 0017 の物は使わず、どの順に流しても通る）。
 
+0019_set_reason_trim.sql（監査の理由を置く private.set_reason を `create or replace` で置き換え、理由の前後から除く空白を画面の trim と同じ 25 文字にそろえる。引数・戻り値・権限・500 字の上限は変えず、表と呼び手の RPC も変えない。下の「設計上の決めごと」の理由の項）は T19〜T21 の後の片付け（FU3）で作る。
+
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
 
 文字列と数には上限を付ける。自由記述（note・memo・problem_note）は 2000 字、名前・表示名・ラベルは 100 字（年度名は 50 字）、コードと建物は 50 字、aliases は 20 個・合計 1000 字、rules.params は 20000 字、数（count）は 10000 まで。団体代表と部員も書ける列があるので、大きな値で無料プランの容量（500MB）を使い切らせず、解けない申請を入れさせないため。
