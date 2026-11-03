@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 // HTML の中の script で Supabase への読み取りを先に送る（D-45）：記録・照らし合わせ・<head> の script の本体
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EARLY_FETCH_SOURCE,
   EARLY_GLOBAL,
   EARLY_POSTS,
+  EARLY_TOKEN_MARGIN_MS,
   EARLY_TTL_MS,
   earlyAwareFetch,
   earlyFetchScript,
@@ -339,6 +342,114 @@ describe('<head> の script（EARLY_FETCH_SOURCE）', () => {
   });
 });
 
+describe('<head> の script がアプリより後に動いたとき（FU3 の送り直しの調べ）', () => {
+  // async の script（data: の URL）は、ふつうは HTML を読んでいる間（JS より前）に動くが、まれにブラウザがページの JS の後に動かす
+  // （2026-11-03 の計測で /stock・/shift・/document・/lending/records の http1・again に出た。アプリが自分で読み取りを送った後に、script が
+  // 覚えた読み取りを全部送り直し、同じ読み取りが二重に送られていた。notes/FU3.md の「送り直しの調べ」）
+  const config = { u: URL0, a: 'pk', k: 'sb-db-auth-token', p: PREFIX, b: '/GAapp', post: EARLY_POSTS, paths: PATHS };
+  const run = () => (0, eval)(`(${EARLY_FETCH_SOURCE})`)(config);
+  const recorded: RecordedRequest[] = [
+    { m: 'GET', u: '/rest/v1/profiles?select=display_name', h: { accept: 'application/json' } },
+    { m: 'GET', u: '/rest/v1/stocks?room_id=eq.{{room}}', h: {} },
+    { m: 'POST', u: '/rest/v1/rpc/accept_my_invitations', h: { 'content-type': 'application/json' }, b: '{}' },
+  ];
+  const profiles = `${URL0}/rest/v1/profiles?select=display_name`;
+  const appInit = { method: 'GET', headers: { Authorization: `Bearer ${TOKEN}`, Accept: 'application/json' } };
+  beforeEach(() => {
+    window.localStorage.setItem(config.k, JSON.stringify({ access_token: TOKEN, expires_at: Math.floor(Date.now() / 1000) + 3600, user: { id: USER } }));
+    window.localStorage.setItem(`${PREFIX}${USER}:requests`, JSON.stringify({ paths: { '/stock': recorded } }));
+    window.history.replaceState(null, '', `/GAapp/stock/?room=${ROOM}`);
+  });
+
+  it('アプリが自分で Supabase の /rest/v1/ へ送った後に動いたら、何も送らない（HTML に入る形も同じ）', async () => {
+    const app = vi.fn(async () => new Response('[]'));
+    vi.stubGlobal('fetch', app);
+    // JS が先に動いた：先送りの応答がないので、アプリ（supabase-js）が自分で送る
+    await earlyAwareFetch(profiles, appInit);
+    expect(app).toHaveBeenCalledTimes(1);
+    const late = vi.fn(async () => new Response('[]'));
+    vi.stubGlobal('fetch', late);
+    run();
+    (0, eval)(earlyFetchScript(config));
+    expect(late).not.toHaveBeenCalled();
+    expect(win()[EARLY_GLOBAL]).toBeUndefined();
+  });
+
+  it('アプリが送ったのが Auth（トークンの更新など）だけなら、今までどおり先に送り、アプリは受け取る', async () => {
+    const f = vi.fn(async () => new Response('"early"'));
+    vi.stubGlobal('fetch', f);
+    await earlyAwareFetch(`${URL0}/auth/v1/token?grant_type=refresh_token`, { method: 'POST', body: '{}' });
+    f.mockClear();
+    run();
+    expect(f).toHaveBeenCalledTimes(3);
+    const app = vi.fn(async () => new Response('"app"'));
+    vi.stubGlobal('fetch', app);
+    const res = await earlyAwareFetch(`${URL0}/rest/v1/stocks?room_id=eq.${ROOM}`, { method: 'GET', headers: { Authorization: `Bearer ${TOKEN}` } });
+    expect(await res.json()).toBe('early');
+    expect(app).not.toHaveBeenCalled();
+  });
+
+  it('先送りの応答を受け取っただけなら送ったことにしない。先送りが失敗していて（null）アプリが自分で送ったら、送ったことにする', async () => {
+    const early = vi.fn(async () => new Response('"early"'));
+    vi.stubGlobal('fetch', early);
+    run();
+    expect(early).toHaveBeenCalledTimes(3);
+    const app = vi.fn(async () => new Response('"app"'));
+    vi.stubGlobal('fetch', app);
+    expect(await (await earlyAwareFetch(profiles, appInit)).json()).toBe('early');
+    expect(app).not.toHaveBeenCalled();
+    // もう一度 script を動かすと（テストだけの形）、アプリはまだ自分で送っていないので送る
+    early.mockClear();
+    vi.stubGlobal('fetch', early);
+    run();
+    expect(early).toHaveBeenCalledTimes(3);
+    // 先送りが失敗していた（null）：アプリが自分で送る。その後に script が動いても送らない
+    win()[EARLY_GLOBAL] = { t: TOKEN, at: Date.now(), p: window.location.pathname, r: { [requestKey('GET', '/rest/v1/profiles?select=display_name', { accept: 'application/json' })]: Promise.resolve(null) } };
+    vi.stubGlobal('fetch', app);
+    expect(await (await earlyAwareFetch(profiles, appInit)).json()).toBe('app');
+    early.mockClear();
+    vi.stubGlobal('fetch', early);
+    delete win()[EARLY_GLOBAL];
+    run();
+    expect(early).not.toHaveBeenCalled();
+    expect(win()[EARLY_GLOBAL]).toBeUndefined();
+  });
+});
+
+describe('トークンの期限が近いとき（FU3 の送り直しの調べ）', () => {
+  // supabase-js（auth-js）は、開いたとき（getSession）にトークンの期限まで EXPIRY_MARGIN_MS（90 秒）より短ければ、先にトークンを更新し、
+  // 更新したトークンで送る。<head> の script が古いトークンで送った読み取りは照らし合わず、アプリがすべて送り直していた（2026-11-03 の
+  // 計測の、1 時間の回の終わりの管理者で団体代表の / の HTTP/2・again：script 24 本 + アプリ 29 本 + トークンの更新 1 本）
+  const config = { u: URL0, a: 'pk', k: 'sb-db-auth-token', p: PREFIX, b: '', post: EARLY_POSTS, paths: PATHS };
+  const run = () => (0, eval)(`(${EARLY_FETCH_SOURCE})`)(config);
+  const session = (expiresInSec: number) =>
+    window.localStorage.setItem(config.k, JSON.stringify({ access_token: TOKEN, expires_at: Math.floor(Date.now() / 1000) + expiresInSec, user: { id: USER } }));
+  beforeEach(() => {
+    window.localStorage.setItem(`${PREFIX}${USER}:requests`, JSON.stringify({ paths: { '/my': [{ m: 'GET', u: '/rest/v1/groups?select=id', h: {} }] } }));
+    window.history.replaceState(null, '', '/my/');
+  });
+
+  it('期限まで 90 秒以内なら送らない（supabase-js が先にトークンを更新するので、古いトークンの応答は使われない）。90 秒より長ければ送る', () => {
+    const f = vi.fn(async () => new Response('[]'));
+    vi.stubGlobal('fetch', f);
+    for (const sec of [10, 60, 85]) {
+      session(sec);
+      run();
+    }
+    expect(f).not.toHaveBeenCalled();
+    expect(win()[EARLY_GLOBAL]).toBeUndefined();
+    session(150);
+    run();
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
+  it('script の余裕（EARLY_TOKEN_MARGIN_MS）は、入っている supabase-js（auth-js）の EXPIRY_MARGIN_MS と同じ', () => {
+    const fromWeb = createRequire(path.join(process.cwd(), 'package.json'));
+    const authConstants = createRequire(fromWeb.resolve('@supabase/supabase-js'))('@supabase/auth-js/dist/main/lib/constants.js') as { EXPIRY_MARGIN_MS: number };
+    expect(EARLY_TOKEN_MARGIN_MS).toBe(authConstants.EXPIRY_MARGIN_MS);
+  });
+});
+
 describe('覚える数の上限（MAX_RECORDED。FU3 の案 2）', () => {
   const config = { u: URL0, a: 'pk', k: 'sb-db-auth-token', p: PREFIX, b: '/GAapp', post: EARLY_POSTS, paths: PATHS };
   const run = () => (0, eval)(`(${EARLY_FETCH_SOURCE})`)(config);
@@ -367,7 +478,8 @@ describe('覚える数の上限（MAX_RECORDED。FU3 の案 2）', () => {
     expect(list).toHaveLength(ADMIN_REP_HOME);
     expect(list.at(-1)).toEqual<RecordedRequest>({ m: 'GET', u: gets.at(-1)!, h: { accept: 'application/json' } });
 
-    // 次に開いたとき：<head> の script が覚えた 29 本をすべて送る
+    // 次に開いたとき（新しいページ。記録したページでアプリが自分で送った印は残らない）：<head> の script が覚えた 29 本をすべて送る
+    resetEarlyFetchForTest();
     const sent: string[] = [];
     vi.stubGlobal(
       'fetch',
@@ -398,6 +510,7 @@ describe('覚える数の上限（MAX_RECORDED。FU3 の案 2）', () => {
     expect(finishRecording(key, true, window.localStorage, PATHS)).toBe(true);
     expect(readRecorded(key, window.localStorage)?.paths['/']?.map((e) => e.u)).toEqual(reads(MAX_RECORDED));
 
+    resetEarlyFetchForTest(); // 次に開いたとき（新しいページ）
     const f = vi.fn(async () => new Response('[]'));
     vi.stubGlobal('fetch', f);
     session();
