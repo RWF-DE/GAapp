@@ -19,10 +19,12 @@ describe('T16 機能の登録（MODULES）', () => {
     expect(MODULES.map((m) => m.id).slice(0, 3)).toEqual(['furniture', 'notices', 'calendar']);
   });
 
-  it('T21 テント等の貸し出し：名前は「テント等の貸し出し」、入口は /lending（備品と割り当て。締切と予定の後に足した）', () => {
+  it('T21 テント等の貸し出し：名前は「テント等の貸し出し」、入口は /lending（備品と割り当て。締切と予定・シフト・作業の後に足した）', () => {
     const k = MODULES.findIndex((m) => m.id === 'lending');
     expect(MODULES[k]).toEqual({ id: 'lending', label: 'テント等の貸し出し', homeHref: '/lending' });
     expect(k).toBeGreaterThan(MODULES.findIndex((m) => m.id === 'calendar'));
+    // T19〜T21 のマージの後の並び（機能のチケットの番号の順。T20 のシフト・作業の後）
+    expect(MODULES.map((m) => m.id)).toEqual(['furniture', 'notices', 'calendar', 'shifts', 'lending']);
   });
 
   it('id は英字の小文字で重ならない。名前も重ならない', () => {
@@ -100,10 +102,12 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
     expect(PORTAL_PROVIDERS.map((p) => p.moduleId).slice(0, 3)).toEqual(['furniture', 'notices', 'calendar']);
   });
 
-  it('T21 テント等の貸し出しのプロバイダは登録と同じ並び（締切と予定の後）', () => {
+  it('T21 テント等の貸し出しのプロバイダは登録と同じ並び（締切と予定・シフト・作業の後）', () => {
     const ids = PORTAL_PROVIDERS.map((p) => p.moduleId);
     expect(ids).toContain('lending');
     expect(ids.indexOf('lending')).toBeGreaterThan(ids.indexOf('calendar'));
+    expect(ids).toEqual(['furniture', 'notices', 'calendar', 'shifts', 'lending']);
+    expect(ids).toEqual(MODULES.map((m) => m.id));
   });
 
   it('T21 テント等のプロバイダとダッシュボードの読み取り（summary.ts）は、/lending の表・CSV・記録の部品・lib/data・入力の zod を読まない', () => {
@@ -158,5 +162,23 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
     expect(g.files).toContain('lib/modules/query-key.ts');
     expect(staticImportGraph('lib/modules/query-key.ts')).toEqual({ files: ['lib/modules/query-key.ts'], packages: [] });
     expect(g.packages.filter((p) => p.startsWith('@gaapp/'))).toEqual([]);
+  });
+});
+
+describe('T20 シフト・作業（機能の登録・プロバイダ）', () => {
+  it('名前は「シフト・作業」、入口は /shifts（締切と予定の後に1行足した）。プロバイダも同じ並び', () => {
+    const k = MODULES.findIndex((m) => m.id === 'shifts');
+    expect(MODULES[k]).toEqual({ id: 'shifts', label: 'シフト・作業', homeHref: '/shifts' });
+    expect(MODULES[k - 1]?.id).toBe('calendar');
+    const ids = PORTAL_PROVIDERS.map((p) => p.moduleId);
+    expect(ids.indexOf('shifts')).toBe(ids.indexOf('calendar') + 1);
+  });
+
+  it('プロバイダ（providers.ts）からシフト表の組み立て・作業一覧の組み立て・書き込み・画面の部品を読まない', () => {
+    const g = staticImportGraph('lib/modules/providers.ts');
+    expect(g.files).toContain('lib/modules/shifts/portal.ts');
+    for (const f of ['lib/modules/shifts/board.ts', 'lib/modules/shifts/my-shift.ts', 'lib/data/shifts.ts', 'lib/data/tasks.ts', 'lib/schemas/shifts.ts', 'lib/schemas/tasks.ts']) {
+      expect(g.files).not.toContain(f);
+    }
   });
 });

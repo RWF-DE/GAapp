@@ -43,6 +43,8 @@ describe('生成された型（database.types.ts）', () => {
       consent_status: ['not_asked', 'asked', 'accepted', 'declined'],
       delivery_kind: ['furniture', 'tent', 'weight', 'side_curtain'],
       delivery_status: ['pending', 'done', 'problem'],
+      // 提出の状態：未提出・提出済み・差し戻し・承認（T19 の 0016。D-55）
+      document_status: ['not_submitted', 'submitted', 'returned', 'approved'],
       // 予定と締切の対象（総務・団体・全員）と種類（締切・予定）：T18 の 0015。D-54
       event_audience: ['soumu', 'groups', 'all'],
       event_kind: ['deadline', 'event'],
@@ -54,6 +56,8 @@ describe('生成された型（database.types.ts）', () => {
       notice_audience: ['soumu', 'all_groups', 'groups'],
       room_kind: ['room', 'gym', 'outdoor', 'other'],
       rule_kind: ['substitute', 'source_restrict', 'fixed_request', 'keep'],
+      // 作業の状態：未着手・作業中・完了（T20 の 0017。D-56）
+      task_status: ['todo', 'doing', 'done'],
       year_status: ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'],
     });
   });
@@ -64,7 +68,7 @@ describe('生成された型（database.types.ts）', () => {
     expect(year.status).toBe('allocating');
   });
 
-  it('RPC は 04_screens_api.md の DB 関数の表の 23 個（型のテスト）', () => {
+  it('RPC は 04_screens_api.md の DB 関数の表の 36 個（型のテスト）', () => {
     type Rpc = keyof Database['public']['Functions'];
     const rpcs = [
       'set_year_status',
@@ -88,6 +92,21 @@ describe('生成された型（database.types.ts）', () => {
       // お知らせ（T17）
       'save_notice',
       'delete_notice',
+      // 提出物（T19）
+      'reserve_document_file',
+      'discard_document_file',
+      'submit_document',
+      'withdraw_document',
+      'approve_document',
+      'return_document',
+      'previous_year_documents',
+      'copy_previous_documents',
+      'delete_year_document_files',
+      'document_orphan_paths',
+      'document_storage_usage',
+      // シフト・作業（T20）
+      'set_task_status',
+      'add_shift_slots',
       // テント等の貸し出し（T21）
       'save_lending_assignments',
       'set_lending_confirmed',
@@ -97,7 +116,7 @@ describe('生成された型（database.types.ts）', () => {
     type Missing = Exclude<Rpc, (typeof rpcs)[number]>;
     const noneMissing: [Missing] extends [never] ? true : false = true;
     expect(noneMissing).toBe(true);
-    expect(new Set(rpcs).size).toBe(23);
+    expect(new Set(rpcs).size).toBe(36);
     // invite は T15 で p_group_role（省略可）を足した5引数の版だけ。今の画面の呼び方（ロールか団体のどちらか）も型が通る
     const inviteRole: Database['public']['Functions']['invite']['Args'] = {
       p_year_id: '00000000-0000-0000-0000-000000000000',
@@ -211,5 +230,129 @@ describe('生成された型（database.types.ts）', () => {
     const kinds: Enums<'event_kind'>[] = ['deadline', 'event'];
     const audiences: Enums<'event_audience'>[] = ['soumu', 'groups', 'all'];
     expect([row.updated_at, kinds.length, audiences.length]).toEqual([row.created_at, 2, 3]);
+  });
+
+  it('提出物の表・ビュー・RPC を画面から使う形で使える（T19。型のテスト）', () => {
+    type Fns = Database['public']['Functions'];
+    const Y = '00000000-0000-0000-0000-000000000001';
+    const G = '00000000-0000-0000-0000-000000000002';
+    const D = '00000000-0000-0000-0000-000000000005';
+    const F = '00000000-0000-0000-0000-000000000006';
+    const path = `${Y}/${G}/${D}/${F}.pdf`;
+    // 提出物の登録（画面から直接）：要るのは年度・題名・締切・対象の区分だけ（id は画面が作って送れる。
+    // 説明・飲食だけ・ファイルが要るは省ける。書いた人・ファイルを削除した日時・日時は DB が入れる）
+    const insert: TablesInsert<'documents'> = {
+      id: D,
+      year_id: Y,
+      title: '出店計画書',
+      deadline: '2027-10-01T17:00:00+09:00',
+      target_categories: ['stall', 'department'],
+    };
+    expect(Object.keys(insert)).toEqual(['id', 'year_id', 'title', 'deadline', 'target_categories']);
+    const patch: TablesUpdate<'documents'> = { description: null, food_only: true, requires_file: false };
+    expect(patch.food_only).toBe(true);
+    // 提出の状況（ビュー）：提出の行がなければ状態は未提出、版（updated_at）は null。題名・締切もビューから読む
+    const status: Pick<
+      Tables<'v_document_status'>,
+      'document_id' | 'group_id' | 'title' | 'status' | 'late' | 'review_note' | 'updated_at'
+    > = {
+      document_id: D,
+      group_id: G,
+      title: '出店計画書',
+      status: 'not_submitted',
+      late: false,
+      review_note: null,
+      updated_at: null,
+    };
+    // ファイル（ビュー）：届いたか・実際の大きさ
+    const file: Pick<Tables<'v_document_files'>, 'id' | 'object_path' | 'uploaded' | 'stored_size'> = {
+      id: F,
+      object_path: path,
+      uploaded: false,
+      stored_size: null,
+    };
+    expect([status.status, file.uploaded]).toEqual(['not_submitted', false]);
+    // 予約：返り値はファイルの行（DB が作った path）
+    const reserve: Fns['reserve_document_file']['Args'] = {
+      p_document_id: D,
+      p_group_id: G,
+      p_file_id: F,
+      p_content_type: 'application/pdf',
+      p_size: 1024,
+    };
+    const reserved: Pick<Fns['reserve_document_file']['Returns'], 'id' | 'object_path' | 'size'> = { id: F, object_path: path, size: 1024 };
+    expect([reserve.p_size, reserved.object_path, file.object_path]).toEqual([1024, path, path]);
+    // 提出・承認・差し戻しは提出の行を返す（次の版の updated_at を持つ）。年度のファイルの削除の理由は省ける
+    const submitted: Pick<Fns['submit_document']['Returns'], 'status' | 'proxy' | 'updated_at'> = {
+      status: 'submitted',
+      proxy: false,
+      updated_at: '2027-09-20T01:00:00.123+00:00',
+    };
+    const purge: Fns['delete_year_document_files']['Args'] = { p_year_id: Y };
+    const usage: Fns['document_storage_usage']['Returns'][number] = {
+      bucket_bytes: 0,
+      limit_bytes: 943718400,
+      file_count: 0,
+      file_bytes: 0,
+      orphan_count: 0,
+    };
+    const states: Enums<'document_status'>[] = ['not_submitted', 'submitted', 'returned', 'approved'];
+    expect([submitted.status, Object.keys(purge), usage.limit_bytes, states.length]).toEqual([
+      'submitted',
+      ['p_year_id'],
+      943718400,
+      4,
+    ]);
+  });
+
+  it('シフト・作業の表と RPC を画面から呼ぶ形で使える（T20。型のテスト）', () => {
+    type Fns = Database['public']['Functions'];
+    const Y = '00000000-0000-0000-0000-000000000001';
+    const D = '00000000-0000-0000-0000-000000000005';
+    const S = '00000000-0000-0000-0000-000000000006';
+    const T = '00000000-0000-0000-0000-000000000007';
+    const U = '00000000-0000-0000-0000-000000000008';
+    // 持ち場・時間枠・作業を足す：画面が id を作って送る（場所・説明・並び・締切・担当者は省ける。日時・書いた人は DB が入れる）
+    const duty: TablesInsert<'shift_duties'> = { id: D, year_id: Y, name: '受付', place: null, note: null, sort_order: 1 };
+    const slot: TablesInsert<'shift_slots'> = { id: S, year_id: Y, starts_at: '2027-10-15T09:00:00+09:00', ends_at: '2027-10-15T10:00:00+09:00' };
+    const need: TablesInsert<'shift_needs'> = { year_id: Y, slot_id: S, duty_id: D, required_count: 2 };
+    const assign: TablesInsert<'shift_assignments'> = { year_id: Y, slot_id: S, duty_id: D, user_id: U };
+    const task: TablesInsert<'tasks'> = { id: T, year_id: Y, title: '机の数を数える' };
+    expect(Object.keys(task)).toEqual(['id', 'year_id', 'title']);
+    expect([duty.name, slot.starts_at, need.required_count, assign.user_id]).toEqual(['受付', '2027-10-15T09:00:00+09:00', 2, U]);
+    // 移す（duty_id の update）、作業を直す（担当者を空に・締切つき）
+    const move: TablesUpdate<'shift_assignments'> = { duty_id: D };
+    const edit: TablesUpdate<'tasks'> = { title: '机の数を数える', note: null, assignee_id: null, due_at: '2027-10-10T17:00:00+09:00' };
+    expect([move.duty_id, edit.assignee_id]).toEqual([D, null]);
+    // 作業の状態：読んだときの updated_at の文字列をそのまま版にする。返り値は作業の行（次の版の updated_at を持つ）
+    const setStatus: Fns['set_task_status']['Args'] = { p_task_id: T, p_status: 'doing', p_base_updated_at: '2026-11-01T12:34:56.789+00:00' };
+    const saved: Fns['set_task_status']['Returns'] = {
+      id: T,
+      year_id: Y,
+      title: '机の数を数える',
+      note: null,
+      assignee_id: null,
+      due_at: null,
+      status: 'done',
+      created_by: null,
+      updated_by: null,
+      created_at: '2026-11-01T12:34:56.789+00:00',
+      updated_at: '2026-11-01T12:34:56.789+00:00',
+    };
+    const taskRow: Tables<'tasks'> = saved;
+    expect([setStatus.p_status, taskRow.status]).toEqual(['doing', 'done']);
+    // 1日分をまとめて作る：時間枠（オフセットつきの ISO 8601）と、全部の時間枠に同じ持ち場のます（省ける）。返り値は作った時間枠の配列
+    const addDay: Fns['add_shift_slots']['Args'] = {
+      p_year_id: Y,
+      p_slots: [{ starts_at: '2027-10-15T09:00:00+09:00', ends_at: '2027-10-15T10:00:00+09:00' }],
+      p_needs: [{ duty_id: D, required_count: 1 }],
+    };
+    const slotsOnly: Fns['add_shift_slots']['Args'] = { p_year_id: Y, p_slots: [] };
+    const made: Fns['add_shift_slots']['Returns'] = [
+      { id: S, year_id: Y, starts_at: '2027-10-15T00:00:00+00:00', ends_at: '2027-10-15T01:00:00+00:00', created_at: '', updated_at: '' },
+    ];
+    const slotRow: Tables<'shift_slots'> = made[0]!;
+    const statuses: Enums<'task_status'>[] = ['todo', 'doing', 'done'];
+    expect([Object.keys(slotsOnly), slotRow.id, statuses.length, Array.isArray(addDay.p_needs)]).toEqual([['p_year_id', 'p_slots'], S, 3, true]);
   });
 });

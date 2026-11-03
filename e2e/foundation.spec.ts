@@ -16,6 +16,9 @@ import { pinYear } from './support/year';
 const ALL_PAGES = [
   '/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/',
   '/request/', '/my/', '/notices/', '/calendar/',
+  // シフト・作業（T20）：総務だけ
+  '/shift/', '/shifts/', '/shifts/print/', '/tasks/',
+  // テント等の貸し出し（T21）：備品と割り当ては総務と閲覧のみ、受け渡し・返却は総務
   '/lending/', '/lending/records/',
 ];
 
@@ -23,11 +26,11 @@ const ALL_PAGES = [
 // 項目の平らな一覧。お知らせ一覧（T17）と締切と予定の一覧（T18）は招待されている全員
 // テント等の貸し出し（T21。D-57）は締切と予定の後・共通の前：備品と割り当ては総務と閲覧のみ、受け渡し・返却は総務（店長・副店長は出ない）
 const NAV: Record<StoredUser, string[]> = {
-  admin: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', '締切と予定の一覧', '備品と割り当て', '受け渡し・返却', 'マスタ設定', '履歴'],
+  admin: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', '締切と予定の一覧', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却', 'マスタ設定', '履歴'],
   // 総務部門長（部門長以上）のナビは管理者と同じ（マスタ設定の中のタブは段で分ける。D-50。e2e/t15b-roles.spec.ts）
-  head: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', '締切と予定の一覧', '備品と割り当て', '受け渡し・返却', 'マスタ設定', '履歴'],
+  head: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', '締切と予定の一覧', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却', 'マスタ設定', '履歴'],
   // Q1（D-39）：総務部門員は振り分けをいつでも読み取り専用で開ける。机椅子の状況は総務（T16）
-  staff: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定の一覧', '備品と割り当て', '受け渡し・返却'],
+  staff: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定の一覧', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却'],
   // 閲覧のみは振り分けが確定・終了の年度だけ。R8 は申請受付中なのでホームとお知らせ一覧と締切と予定の一覧と、備品と割り当て（T21。
   // 割り当ての確定によらず開ける）だけ
   viewer: ['ホーム', 'お知らせ一覧', '締切と予定の一覧', '備品と割り当て'],
@@ -36,9 +39,9 @@ const NAV: Record<StoredUser, string[]> = {
 
 /** R8（申請受付中）で開ける画面（lib/navigation.ts の ROUTES の立場から） */
 const OPENS: Record<StoredUser, string[]> = {
-  admin: ['/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/', '/notices/', '/calendar/', '/lending/', '/lending/records/'],
-  head: ['/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/', '/notices/', '/calendar/', '/lending/', '/lending/records/'],
-  staff: ['/furniture/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/allocation/', '/notices/', '/calendar/', '/lending/', '/lending/records/'],
+  admin: ['/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/', '/notices/', '/calendar/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
+  head: ['/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/', '/notices/', '/calendar/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
+  staff: ['/furniture/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/allocation/', '/notices/', '/calendar/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
   viewer: ['/notices/', '/calendar/', '/lending/'],
   rep: ['/request/', '/my/', '/notices/', '/calendar/'],
 };

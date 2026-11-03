@@ -161,7 +161,7 @@ describe('差の表示', () => {
   });
 
   it('T17 お知らせ：表の絞り込みの最後に notices・notice_groups（足すだけ）。表の名前、対象（題名・宛先の団体の名前）、宛先と書いた人の値', () => {
-    // 締切と予定（T18）の前（その後ろに T21 のテント等の5表）
+    // 締切と予定（T18）の前（その後ろに T20 のシフト・作業の5表と T21 のテント等の5表）
     expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('notices'), AUDIT_TABLES.indexOf('notices') + 3)).toEqual(['notices', 'notice_groups', 'events']);
     expect(AUDIT_TABLES.slice(0, 2)).toEqual(['requests', 'request_submissions']);
     expect(tableLabel('notices')).toBe('お知らせ');
@@ -178,7 +178,7 @@ describe('差の表示', () => {
   });
 
   it('T18 締切と予定：表の絞り込みの最後に events（足すだけ）。表の名前は「締切と予定」、対象は題名、種類・対象は表示名（お知らせの宛先と取り違えない）', () => {
-    // お知らせの後に足した（その後ろに T21 のテント等の5表）
+    // お知らせの後に足した（その後ろに T20 のシフト・作業の5表と T21 のテント等の5表）
     expect(AUDIT_TABLES.indexOf('events')).toBe(AUDIT_TABLES.indexOf('notice_groups') + 1);
     expect(new Set(AUDIT_TABLES).size).toBe(AUDIT_TABLES.length);
     expect(tableLabel('events')).toBe('締切と予定');
@@ -210,6 +210,8 @@ describe('差の表示', () => {
 
   it('T21 テント等の貸し出し：5表を最後に足す。表の名前・対象（備品は名前、申請・割り当て・記録は団体と備品、確定の印は年度名）', () => {
     expect(AUDIT_TABLES.slice(-5)).toEqual(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years']);
+    // T19〜T21 のマージの後の並び：T20 のシフト・作業の5表の後
+    expect(AUDIT_TABLES.slice(-10, -5)).toEqual(['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']);
     expect(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years'].map(tableLabel)).toEqual([
       'テント等の備品',
       'テント等の申請',
@@ -429,5 +431,59 @@ describe('fetchDeletedGroupNames', () => {
     const fake = createFakeSupabase(() => ({ data: [] }));
     expect((await fetchDeletedGroupNames(Y, [], fake.client)).size).toBe(0);
     expect(fake.issued).toHaveLength(0);
+  });
+});
+
+describe('T20 シフト・作業の履歴（04「シフト表」の履歴、notes/T20.md「画面の約束」12）', () => {
+  const D = '66666666-6666-4666-8666-666666666666';
+  const S = '77777777-7777-4777-8777-777777777777';
+  const row = (table_name: string, data: Record<string, unknown>, before: Record<string, unknown> | null = null) => ({
+    table_name,
+    row_pk: {},
+    group_id: null,
+    before,
+    after: data,
+  });
+  const lookups = { users: new Map([[U, '部門員A']]), duties: new Map([[D, '受付']]), slots: new Map([[S, '10/15 09:00〜10:00']]) };
+
+  it('表の絞り込みの最後に5表（足すだけ）。表の名前', () => {
+    expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('shift_duties'), AUDIT_TABLES.indexOf('shift_duties') + 5)).toEqual([
+      'shift_duties',
+      'shift_slots',
+      'shift_needs',
+      'shift_assignments',
+      'tasks',
+    ]);
+    expect(['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks'].map(tableLabel)).toEqual([
+      '持ち場',
+      'シフトの時間枠',
+      '必要人数',
+      'シフトの割り当て',
+      '作業',
+    ]);
+    expect(new Set(AUDIT_TABLES).size).toBe(AUDIT_TABLES.length);
+  });
+
+  it('対象：持ち場は名前、時間枠は「11/5 09:00〜10:00」、ますは持ち場の名前（なければ消えた持ち場）、割り当ては人と持ち場、作業は題名', () => {
+    expect(auditTarget(row('shift_duties', { id: D, name: '受付（旧）' }), lookups)).toBe('受付');
+    expect(auditTarget(row('shift_duties', { id: 'gone', name: '運搬' }), lookups)).toBe('運搬');
+    expect(auditTarget(row('shift_slots', { id: S, starts_at: '2027-11-05T00:00:00+00:00', ends_at: '2027-11-05T01:00:00+00:00' }), lookups)).toBe(
+      '11/5 09:00〜10:00',
+    );
+    expect(auditTarget(row('shift_needs', { slot_id: S, duty_id: D, required_count: 2 }), lookups)).toBe('受付');
+    expect(auditTarget(row('shift_needs', { slot_id: S, duty_id: 'gone', required_count: 2 }), lookups)).toBe('消えた持ち場');
+    expect(auditTarget(row('shift_assignments', { slot_id: S, duty_id: D, user_id: U }), lookups)).toBe('部門員A・受付');
+    expect(auditTarget(row('tasks', { id: 't', title: '名札を作る' }), lookups)).toBe('名札を作る');
+  });
+
+  it('値：作業の状態は表示名、担当者は表示名、持ち場・時間枠は今の名前と日時（引けなければ id）', () => {
+    expect(formatAuditValue('tasks', 'status', 'doing')).toBe('作業中');
+    expect(formatAuditValue('tasks', 'assignee_id', U, lookups)).toBe('部門員A');
+    expect(formatAuditValue('tasks', 'assignee_id', 'x', lookups)).toBe(NAME_UNKNOWN);
+    expect(formatAuditValue('shift_assignments', 'duty_id', D, lookups)).toBe('受付');
+    expect(formatAuditValue('shift_needs', 'slot_id', S, lookups)).toBe('10/15 09:00〜10:00');
+    expect(formatAuditValue('shift_needs', 'slot_id', 'x', lookups)).toBe('x');
+    // 年度の状態の status は今までどおり
+    expect(formatAuditValue('years', 'status', 'closed')).toBe('終了');
   });
 });

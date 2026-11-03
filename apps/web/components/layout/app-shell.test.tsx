@@ -286,6 +286,10 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       'キャスター机交換',
       'お知らせ一覧',
       '締切と予定の一覧',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
       // T21：テント等の貸し出し
       '備品と割り当て',
       '受け渡し・返却',
@@ -309,6 +313,10 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       '振り分け',
       'お知らせ一覧',
       '締切と予定の一覧',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
       // T21：テント等の貸し出し
       '備品と割り当て',
       '受け渡し・返却',
@@ -330,6 +338,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       '机椅子',
       'お知らせ',
       '締切と予定',
+      'シフト・作業',
       'テント等の貸し出し',
       '共通',
     ]);
@@ -351,6 +360,13 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
     // T18：締切と予定の見出し（見せる）に「締切と予定の一覧」（見出しと同じ言葉を縦に並べない。お知らせと同じ形）
     const calendar = within(aside()).getByRole('group', { name: '締切と予定' });
     expect(within(calendar).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([['締切と予定の一覧', '/calendar']]);
+    // T20：シフト・作業の見出しに自分のシフト・シフト表・作業一覧（印刷はナビに出さない）
+    const shifts = within(aside()).getByRole('group', { name: 'シフト・作業' });
+    expect(within(shifts).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['自分のシフト', '/shift'],
+      ['シフト表', '/shifts'],
+      ['作業一覧', '/tasks'],
+    ]);
     // T21：テント等の貸し出しの見出しに「備品と割り当て」「受け渡し・返却」
     const lending = within(aside()).getByRole('group', { name: 'テント等の貸し出し' });
     expect(within(lending).getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
@@ -364,6 +380,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       ['机椅子', false],
       ['お知らせ', false],
       ['締切と予定', false],
+      ['シフト・作業', false],
       ['テント等の貸し出し', false],
       ['共通', false],
     ]);
@@ -387,6 +404,10 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       'キャスター机交換',
       'お知らせ一覧',
       '締切と予定の一覧',
+      // T20：シフト・作業
+      '自分のシフト',
+      'シフト表',
+      '作業一覧',
       // T21：テント等の貸し出し
       '備品と割り当て',
       '受け渡し・返却',

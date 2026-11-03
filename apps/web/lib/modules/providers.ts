@@ -6,11 +6,15 @@ import { furniturePortalProvider } from './furniture/portal';
 import { lendingPortalProvider } from './lending/portal';
 import { noticesPortalProvider } from './notices/portal';
 import type { PortalProvider } from './portal';
+// シフト・作業（T20。D-56）
+import { shiftsPortalProvider } from './shifts/portal';
 
 export const PORTAL_PROVIDERS: readonly PortalProvider[] = [
   furniturePortalProvider,
   noticesPortalProvider,
   calendarPortalProvider,
+  // シフト・作業（T20。D-56）
+  shiftsPortalProvider,
   // テント等の貸し出し（T21。D-57）
   lendingPortalProvider,
 ];

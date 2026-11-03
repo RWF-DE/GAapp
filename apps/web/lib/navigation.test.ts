@@ -25,10 +25,12 @@ const FURNITURE_LEAD = ['机椅子の状況', '在庫入力', '在庫一覧', '�
 const NOTICES = 'お知らせ一覧';
 /** 締切と予定の見出しの項目（T18。招待されている全員。見出しと同じ言葉を縦に並べないよう「の一覧」を付ける） */
 const CALENDAR = '締切と予定の一覧';
+/** シフト・作業の見出しの項目（T20。総務だけ。印刷はナビに出さない） */
+const SHIFTS = ['自分のシフト', 'シフト表', '作業一覧'];
 /** テント等の貸し出しの見出しの項目（T21。備品と割り当ては総務と閲覧のみ、受け渡し・返却は総務） */
 const LENDING_SOUMU = ['備品と割り当て', '受け渡し・返却'];
 const LENDING_VIEWER = ['備品と割り当て'];
-const SOUMU_SCREENS = ['ホーム', ...FURNITURE_LEAD, NOTICES, CALENDAR, ...LENDING_SOUMU, 'マスタ設定', '履歴'];
+const SOUMU_SCREENS = ['ホーム', ...FURNITURE_LEAD, NOTICES, CALENDAR, ...SHIFTS, ...LENDING_SOUMU, 'マスタ設定', '履歴'];
 
 describe('navItemsFor', () => {
   it('管理者は総務の画面をすべて見る（団体の画面は見ない）', () => {
@@ -40,8 +42,8 @@ describe('navItemsFor', () => {
     expect(labels(['head'], 'confirmed')).toEqual(SOUMU_SCREENS);
   });
   it('総務部門員は机椅子の状況・在庫・申請一覧と振り分け（いつでも読み取り。Q1）', () => {
-    expect(labels(['staff'])).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', NOTICES, CALENDAR, ...LENDING_SOUMU]);
-    expect(labels(['staff'], 'requesting')).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', NOTICES, CALENDAR, ...LENDING_SOUMU]);
+    expect(labels(['staff'])).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', NOTICES, CALENDAR, ...SHIFTS, ...LENDING_SOUMU]);
+    expect(labels(['staff'], 'requesting')).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', NOTICES, CALENDAR, ...SHIFTS, ...LENDING_SOUMU]);
   });
   it('閲覧のみは、確定・終了の年度でだけ振り分けを見る（Q1）', () => {
     // T21：備品と割り当ては、割り当ての確定によらず開ける（確定前は画面の中で「割り当ては確定後に表示されます」）
@@ -55,7 +57,7 @@ describe('navItemsFor', () => {
     expect(labels(['rep'])).toEqual(['ホーム', '申請', '自団体の振り分け', NOTICES, CALENDAR]);
   });
   it('兼ねた人（管理者・閲覧のみで店長・副店長も務める人。D-49）は両方（団体の画面は机椅子の見出しの最後）', () => {
-    expect(labels(['admin', 'rep'])).toEqual(['ホーム', ...FURNITURE_LEAD, '申請', '自団体の振り分け', NOTICES, CALENDAR, ...LENDING_SOUMU, 'マスタ設定', '履歴']);
+    expect(labels(['admin', 'rep'])).toEqual(['ホーム', ...FURNITURE_LEAD, '申請', '自団体の振り分け', NOTICES, CALENDAR, ...SHIFTS, ...LENDING_SOUMU, 'マスタ設定', '履歴']);
     expect(labels(['viewer', 'rep'], 'confirmed')).toEqual(['ホーム', '振り分け', '申請', '自団体の振り分け', NOTICES, CALENDAR, ...LENDING_VIEWER]);
   });
   it('立場がなければ何もない', () => {
@@ -83,6 +85,7 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
       { id: 'furniture', heading: '机椅子' },
       { id: 'notices', heading: 'お知らせ' },
       { id: 'calendar', heading: '締切と予定' },
+      { id: 'shifts', heading: 'シフト・作業' },
       { id: 'lending', heading: 'テント等の貸し出し' },
       { id: 'common', heading: '共通' },
     ]);
@@ -102,6 +105,7 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
     }
     expect(sectionOf('/notices')).toBe('notices');
     expect(sectionOf('/calendar')).toBe('calendar');
+    for (const href of ['/shift', '/shifts', '/shifts/print', '/tasks']) expect(sectionOf(href)).toBe('shifts');
     expect(sectionOf('/lending')).toBe('lending');
     expect(sectionOf('/lending/records')).toBe('lending');
     expect(sectionOf('/settings')).toBe('common');
@@ -130,12 +134,13 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
 
   it('管理者・総務部門長・総務副部門長：ホーム／机椅子の状況〜キャスター机交換／お知らせ一覧／締切と予定の一覧／マスタ設定・履歴', () => {
     for (const role of ['admin', 'head', 'deputy_head'] as const) {
-      expect(headings([role])).toEqual(['ホーム', '机椅子', 'お知らせ', '締切と予定', 'テント等の貸し出し', '共通']);
+      expect(headings([role])).toEqual(['ホーム', '机椅子', 'お知らせ', '締切と予定', 'シフト・作業', 'テント等の貸し出し', '共通']);
       expect(itemsOf([role])).toEqual({
         ホーム: ['ホーム'],
         机椅子: FURNITURE_LEAD,
         お知らせ: [NOTICES],
         締切と予定: [CALENDAR],
+        'シフト・作業': SHIFTS,
         テント等の貸し出し: LENDING_SOUMU,
         共通: ['マスタ設定', '履歴'],
       });
@@ -143,12 +148,13 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
   });
 
   it('総務部門員：共通の見出しがない（マスタ設定・履歴は部門長以上）。お知らせ一覧と締切と予定の一覧はある', () => {
-    expect(headings(['staff'])).toEqual(['ホーム', '机椅子', 'お知らせ', '締切と予定', 'テント等の貸し出し']);
+    expect(headings(['staff'])).toEqual(['ホーム', '机椅子', 'お知らせ', '締切と予定', 'シフト・作業', 'テント等の貸し出し']);
     expect(itemsOf(['staff'])).toEqual({
       ホーム: ['ホーム'],
       机椅子: ['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け'],
       お知らせ: [NOTICES],
       締切と予定: [CALENDAR],
+      'シフト・作業': SHIFTS,
       テント等の貸し出し: LENDING_SOUMU,
     });
   });
@@ -177,6 +183,7 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
       机椅子: [...FURNITURE_LEAD, '申請', '自団体の振り分け'],
       お知らせ: [NOTICES],
       締切と予定: [CALENDAR],
+      'シフト・作業': SHIFTS,
       テント等の貸し出し: LENDING_SOUMU,
       共通: ['マスタ設定', '履歴'],
     });
@@ -221,6 +228,25 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
       }
     }
     expect(canOpen('/calendar', [])).toBe(false);
+  });
+
+  it('T20 シフト・作業：自分のシフト（/shift）・シフト表（/shifts）・作業一覧（/tasks）は見出し shifts、総務だけ、ナビに出す。印刷（/shifts/print）はナビに出さない', () => {
+    expect(routeFor('/shift/')).toMatchObject({ href: '/shift', label: '自分のシフト', section: 'shifts', nav: true, ticket: 'T20' });
+    expect(routeFor('/shifts')).toMatchObject({ href: '/shifts', label: 'シフト表', section: 'shifts', nav: true, ticket: 'T20' });
+    expect(routeFor('/shifts/print/')).toMatchObject({ href: '/shifts/print', label: 'シフト表の印刷', section: 'shifts', nav: false, ticket: 'T20' });
+    expect(routeFor('/tasks')).toMatchObject({ href: '/tasks', label: '作業一覧', section: 'shifts', nav: true, ticket: 'T20' });
+    for (const href of ['/shift', '/shifts', '/shifts/print', '/tasks']) expect(audiencesFor(href)).toEqual(['admin', 'head', 'deputy_head', 'staff']);
+    expect(NAV_ITEMS.filter((i) => i.section === 'shifts').map((i) => i.href)).toEqual(['/shift', '/shifts', '/tasks']);
+  });
+
+  it('T20 canOpen：総務は年度の状態によらず開ける（?day=・?filter=・?task=・?view= つきも）。閲覧のみ・店長・副店長・立場なしは開けない（見出しごと出ない）', () => {
+    const hrefs = ['/shift?day=2027-10-15', '/shifts?day=2027-10-15&filter=short', '/shifts/print?day=2027-10-15&view=people', '/tasks?filter=overdue', '/tasks?task=00000000-0000-4000-8000-000000000001'];
+    for (const st of ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'] as const) {
+      for (const role of ['admin', 'head', 'deputy_head', 'staff'] as const) for (const h of hrefs) expect(canOpen(h, [role], st), `${role}・${st}・${h}`).toBe(true);
+      for (const a of [['viewer'], ['rep'], ['viewer', 'rep'], []] as const) for (const h of hrefs) expect(canOpen(h, a, st), `${a.join('+')}・${st}・${h}`).toBe(false);
+      expect(navSectionsFor(['viewer'], st).map((x) => x.heading)).not.toContain('シフト・作業');
+      expect(navSectionsFor(['rep'], st).map((x) => x.heading)).not.toContain('シフト・作業');
+    }
   });
 
   it('T21 /lending：「備品と割り当て」、見出しは lending、総務と閲覧のみ（割り当ての確定・年度の状態によらない）、ナビに出す、T21', () => {
