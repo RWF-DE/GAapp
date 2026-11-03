@@ -12,38 +12,44 @@ import { pinYear } from './support/year';
 // 「h1 が出て、権限なしでない」、開けない立場では「権限がありません」だけを見る。雛形が各チケットの画面に
 // 置き換わってもこのファイルは直さなくてよい（中身は各チケットの e2e/t10-stock.spec.ts などで確かめる）。
 
-/** 全ルート（lib/navigation.ts の ROUTES のホーム以外。末尾の / は静的書き出しの形。/furniture は T16、/notices は T17、/calendar は T18、/lending は T21） */
+/**
+ * 全ルート（lib/navigation.ts の ROUTES のホーム以外。末尾の / は静的書き出しの形。/furniture は T16、/notices は T17、/calendar は T18、
+ * /documents・/document は T19、/shift・/shifts・/shifts/print・/tasks は T20、/lending・/lending/records は T21）
+ */
 const ALL_PAGES = [
   '/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/',
   '/request/', '/my/', '/notices/', '/calendar/',
+  // 提出物（T19）：提出状況は総務、自団体の提出物は店長・副店長
+  '/documents/', '/document/',
   // シフト・作業（T20）：総務だけ
   '/shift/', '/shifts/', '/shifts/print/', '/tasks/',
   // テント等の貸し出し（T21）：備品と割り当ては総務と閲覧のみ、受け渡し・返却は総務
   '/lending/', '/lending/records/',
 ];
 
-// ナビは見出し（ホーム／机椅子／お知らせ／締切と予定／共通。T16・T17・T18。D-51・D-52・D-54）の順。navLabels は見出しを除いた
-// 項目の平らな一覧。お知らせ一覧（T17）と締切と予定の一覧（T18）は招待されている全員
+// ナビは見出し（ホーム／机椅子／お知らせ／締切と予定／提出物／シフト・作業／テント等の貸し出し／共通。T16〜T21。D-51・D-52・D-54〜D-57）
+// の順。navLabels は見出しを除いた項目の平らな一覧。お知らせ一覧（T17）と締切と予定の一覧（T18）は招待されている全員
+// 提出物（T19。D-55）は締切と予定の後・シフト・作業（T20）の前：提出状況は総務、自団体の提出物は店長・副店長（閲覧のみには出ない）
 // テント等の貸し出し（T21。D-57）はシフト・作業（T20）の後・共通の前：備品と割り当ては総務と閲覧のみ、受け渡し・返却は総務（店長・副店長は出ない）
 const NAV: Record<StoredUser, string[]> = {
-  admin: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', '締切と予定の一覧', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却', 'マスタ設定', '履歴'],
+  admin: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', '締切と予定の一覧', '提出状況', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却', 'マスタ設定', '履歴'],
   // 総務部門長（部門長以上）のナビは管理者と同じ（マスタ設定の中のタブは段で分ける。D-50。e2e/t15b-roles.spec.ts）
-  head: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', '締切と予定の一覧', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却', 'マスタ設定', '履歴'],
+  head: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換', 'お知らせ一覧', '締切と予定の一覧', '提出状況', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却', 'マスタ設定', '履歴'],
   // Q1（D-39）：総務部門員は振り分けをいつでも読み取り専用で開ける。机椅子の状況は総務（T16）
-  staff: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定の一覧', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却'],
+  staff: ['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', 'お知らせ一覧', '締切と予定の一覧', '提出状況', '自分のシフト', 'シフト表', '作業一覧', '備品と割り当て', '受け渡し・返却'],
   // 閲覧のみは振り分けが確定・終了の年度だけ。R8 は申請受付中なのでホームとお知らせ一覧と締切と予定の一覧と、備品と割り当て（T21。
-  // 割り当ての確定によらず開ける）だけ
+  // 割り当ての確定によらず開ける）だけ（提出物〔T19〕は閲覧のみには出ない。Q5）
   viewer: ['ホーム', 'お知らせ一覧', '締切と予定の一覧', '備品と割り当て'],
-  rep: ['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定の一覧'],
+  rep: ['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定の一覧', '自団体の提出物'],
 };
 
 /** R8（申請受付中）で開ける画面（lib/navigation.ts の ROUTES の立場から） */
 const OPENS: Record<StoredUser, string[]> = {
-  admin: ['/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/', '/notices/', '/calendar/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
-  head: ['/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/', '/notices/', '/calendar/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
-  staff: ['/furniture/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/allocation/', '/notices/', '/calendar/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
+  admin: ['/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/', '/notices/', '/calendar/', '/documents/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
+  head: ['/furniture/', '/settings/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/rules/', '/allocation/', '/swaps/', '/history/', '/notices/', '/calendar/', '/documents/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
+  staff: ['/furniture/', '/stock/', '/stocks/', '/stocks/qr/', '/requests/', '/allocation/', '/notices/', '/calendar/', '/documents/', '/shift/', '/shifts/', '/shifts/print/', '/tasks/', '/lending/', '/lending/records/'],
   viewer: ['/notices/', '/calendar/', '/lending/'],
-  rep: ['/request/', '/my/', '/notices/', '/calendar/'],
+  rep: ['/request/', '/my/', '/notices/', '/calendar/', '/document/'],
 };
 
 const forbidden = (page: Page) => page.getByText('権限がありません', { exact: true });

@@ -14,6 +14,7 @@ import {
   yearLabelSchema,
 } from '@/lib/schemas/common';
 import { charCount, NOTICE_BODY_MAX, NOTICE_GROUPS_MAX, noticeTitleSchema } from '@/lib/schemas/notice-fields';
+import { reviewNoteSchema } from '@/lib/schemas/document-fields';
 
 const E = Constants.public.Enums;
 const uuid = uuidSchema;
@@ -187,6 +188,32 @@ export const RPC_ARGS = {
     p_base_updated_at: updatedAt.optional(),
   }),
   delete_notice: z.object({ p_notice_id: uuid, p_base_updated_at: updatedAt }),
+  // 提出物（T19・D-55）。版（p_base_updated_at）は読んだときの v_document_status の updated_at の文字列のまま。提出・承認は
+  // 行がなければ null を名前つきで送る（既定値はない）。取り消し・差し戻しは null にしない（DB は invalid_input〔base_updated_at〕）。
+  // 承認のメモは省けば null（紙での承認は必須だが、要るかは状態で決まるので DB が見る）、差し戻しの理由は必須（前後の空白を除いて
+  // 1〜1000 字。lib/schemas/document-fields.ts）。送る前の確かめに落ちたときの field は p_ を除いた引数の名前（note など）
+  reserve_document_file: z.object({
+    p_document_id: uuid,
+    p_group_id: uuid,
+    p_file_id: uuid,
+    p_content_type: z.enum(['application/pdf', 'image/jpeg', 'image/png']),
+    p_size: z.number().int().min(1).max(10485760),
+  }),
+  discard_document_file: z.object({ p_file_id: uuid }),
+  submit_document: z.object({ p_document_id: uuid, p_group_id: uuid, p_base_updated_at: updatedAt.nullable() }),
+  withdraw_document: z.object({ p_document_id: uuid, p_group_id: uuid, p_base_updated_at: updatedAt }),
+  approve_document: z.object({
+    p_document_id: uuid,
+    p_group_id: uuid,
+    p_note: reviewNoteSchema.nullable(),
+    p_base_updated_at: updatedAt.nullable(),
+  }),
+  return_document: z.object({ p_document_id: uuid, p_group_id: uuid, p_note: reviewNoteSchema, p_base_updated_at: updatedAt }),
+  previous_year_documents: z.object({ p_year_id: uuid }),
+  copy_previous_documents: z.object({ p_year_id: uuid, p_document_ids: z.array(uuid).min(1).max(1000) }),
+  delete_year_document_files: z.object({ p_year_id: uuid, p_reason: optionalReasonSchema.optional() }),
+  document_orphan_paths: z.object({ p_year_id: uuid }),
+  document_storage_usage: z.object({ p_year_id: uuid }),
   // シフト・作業（T20・D-56）。作業の状態は担当者と部門長以上（楽観ロックは読んだときの updated_at の文字列のまま）。1日分は時間枠 1〜96 と、
   // そのすべてに同じ持ち場のます（0〜100 個。必要人数 0〜100）。日時はオフセットつきの ISO 8601（画面は `+09:00` で送る）
   set_task_status: z.object({ p_task_id: uuid, p_status: z.enum(E.task_status), p_base_updated_at: updatedAt }),

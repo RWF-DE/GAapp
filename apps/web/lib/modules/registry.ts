@@ -11,6 +11,8 @@ export const MODULES = [
   { id: 'notices', label: 'お知らせ', homeHref: '/notices' },
   // 締切と予定（T18。D-54）。入口は「締切と予定の一覧」（/calendar。招待されている全員。見出しと同じ言葉を縦に並べないよう「の一覧」）
   { id: 'calendar', label: '締切と予定', homeHref: '/calendar' },
+  // 提出物（T19。D-55）。入口は「提出状況」（/documents。総務）。店長・副店長の「自団体の提出物」（/document）は同じ見出しの2つ目の項目
+  { id: 'documents', label: '提出物', homeHref: '/documents' },
   // シフト・作業（T20。D-56）。入口は「シフト表」（/shifts。総務だけ）
   { id: 'shifts', label: 'シフト・作業', homeHref: '/shifts' },
   // テント等の貸し出し（T21。D-57）。入口は「備品と割り当て」（/lending。総務と閲覧のみ）

@@ -23,6 +23,9 @@
 // / は T16 で先読み・記録・先送りの表に入れた（D-45・D-51）ので、again では / も覚えたリクエストを <head> の script が先に送る。
 // PERF_VISIT=first・again で片方だけ、PERF_ONLY=stock・request・my・home（カンマ区切り）で画面を絞れる（原因を調べるとき）。
 // データはシナリオの年度（合成データ r8like。受付中。部員と団体代表〔模擬店10〕のロール）。
+// T19 で、団体代表の自団体の提出物（/document。スマホ。PERF_ONLY の document）を足した。その年度に提出物6つ（模擬店・部門・企業が対象。
+// 飲食だけのものを含む）と、模擬店・部門の提出の状況（承認・承認待ち・差し戻し）を入れ、模擬店10 には PDF を2つ上げて計る（どの団体代表の
+// / も提出物の読み取りが中身のある形になる）。Storage の物は計った後に Storage API で消す（cleanupDocumentsScenario）。
 // T21 で、テント等の貸し出しのスマホの画面（部員の /lending/records と、団体代表の /request?tab=lending）を足した（PERF_ONLY の
 // records・request-lending）。その年度に、模擬店・部門の申請・割り当て（確定）と、模擬店の半分の受け渡しの記録を入れて計る
 // （どの団体代表の画面もテント等の読み取りが中身のある形になる）。
@@ -35,6 +38,16 @@ import { gzipSync } from 'node:zlib';
 import { expect, test, type Browser, type Page } from '@playwright/test';
 import { storageStateFor, type StoredUser } from './support/auth';
 import { createScenario, type Scenario } from './support/db';
+import {
+  apiToken,
+  cleanupDocumentsScenario,
+  insertDocuments,
+  insertSubmissions,
+  makePdf,
+  tokyoDeadline,
+  uploadFileAs,
+  type SubmissionInput,
+} from './support/documents';
 import { confirmLending, insertLendingAssignments, insertLendingItems, insertLendingRecords, insertLendingRequests } from './support/lending';
 import { insertShiftVolume } from './support/shifts';
 import { MOBILE } from './support/shots';
@@ -56,6 +69,8 @@ interface Target {
   /** PERF_ONLY で選ぶ名前 */
   id:
     | 'stock' | 'request' | 'my' | 'home'
+    // 提出物（T19）：団体代表の /document
+    | 'document'
     // シフト・作業（T20）：総務部門員の /・/shift・/tasks
     | 'soumu-home' | 'shift' | 'tasks'
     // テント等の貸し出し（T21）：部員の /lending/records・団体代表の /request?tab=lending
@@ -98,6 +113,12 @@ const SHOWN = {
   home: `(a) => {
     const card = [...document.querySelectorAll('[data-testid="rep-card"]')].find((c) => c.getAttribute('data-group') === a.group);
     return !!card && card.offsetParent !== null;
+  }`,
+  // T19：自団体の提出物の団体名と、提出物のカード（最初の1枚）が出た
+  document: `(a) => {
+    const name = document.querySelector('[data-testid="document-group-name"]');
+    const card = document.querySelector('[data-testid="document-card"]');
+    return !!name && name.textContent.trim() === a.group && !!card && card.offsetParent !== null;
   }`,
   // シフト・作業（T20）：総務部門員の / は机椅子とシフト・作業のカードが出て、欄の読み込み中がない。/shift は自分の枠が出て、同じますの人の
   // 名前が読めている（表示名を並行に読むので、名前が届くまでを入れる）。/tasks は進み具合と作業が出て、担当者の名前が読めている
@@ -177,6 +198,19 @@ const ALL_TARGETS: Target[] = [
     },
     shown: SHOWN.home,
   },
+  // 提出物（T19。D-55）：団体代表の自団体の提出物（スマホ。先読み・記録・先送りの表にある。D-45）。表示の印は団体名とカード
+  {
+    id: 'document',
+    name: '/document（団体代表）',
+    user: 'rep',
+    records: true,
+    url: () => '/document/',
+    ready: async (page) => {
+      await expect(page.getByTestId('document-group-name')).toHaveText(REP_GROUP, { timeout: 30_000 });
+      await expect(page.getByTestId('document-card').first()).toBeVisible({ timeout: 30_000 });
+    },
+    shown: SHOWN.document,
+  },
   // シフト・作業（T20。D-56）：総務部門員の /（机椅子とシフト・作業のカード）・/shift・/tasks。どれも先読み・先送りの表にある（D-45）。
   // データは insertShiftVolume（1年の量の見込み。部門員 100 人・時間枠 50・ます 250・割り当て 800・作業 200）
   {
@@ -241,6 +275,43 @@ const ALL_TARGETS: Target[] = [
     shown: SHOWN.requestLending,
   },
 ];
+
+/**
+ * 提出物（T19）の行：提出物6つ（締切は今日の前後。模擬店・部門・企業が対象、飲食だけのもの・ファイルの要らないものを含む）と、模擬店・
+ * 部門の提出の状況（並びの順に承認・承認待ち・差し戻し・未提出）。模擬店10（団体代表）には「出店計画書」に PDF を2つ上げる（API。画面と
+ * 同じ予約 → Storage）
+ */
+async function seedDocuments(s: Scenario): Promise<void> {
+  const H = SEED_USER_IDS.head;
+  const docs = await insertDocuments(s.yearId, [
+    { title: '電気使用届', deadline: tokyoDeadline(-2), categories: ['stall', 'department', 'company'], createdBy: H },
+    { title: '食品の取り扱い届', deadline: tokyoDeadline(3), categories: ['stall'], foodOnly: true, createdBy: H },
+    { title: '出店計画書', deadline: tokyoDeadline(6), categories: ['stall', 'department'], createdBy: H },
+    { title: '火気の使用届', deadline: tokyoDeadline(9), categories: ['stall'], createdBy: H },
+    { title: '企業ブースの配置図', deadline: tokyoDeadline(12, '12:00'), categories: ['company', 'rest_area'], requiresFile: false, createdBy: H },
+    { title: '片付けの報告', deadline: tokyoDeadline(20), categories: ['stall', 'department', 'company', 'rest_area'], requiresFile: false, createdBy: H },
+  ]);
+  const plan = docs[2];
+  const names = Object.keys(s.ids.groups).sort().filter((n) => n !== REP_GROUP && (n.startsWith('模擬店') || n.startsWith('部門')));
+  const ago = (h: number) => new Date(Date.now() - h * 60 * 60 * 1000).toISOString();
+  const rows = names.flatMap((n, k): SubmissionInput[] => {
+    const groupId = s.ids.groups[n]!;
+    switch (k % 4) {
+      case 0:
+        return [{ documentId: plan, groupId, status: 'approved', submittedAt: ago(30), reviewedAt: ago(20), reviewedBy: H }];
+      case 1:
+        return [{ documentId: plan, groupId, status: 'submitted', submittedAt: ago(5) }];
+      case 2:
+        return [{ documentId: plan, groupId, status: 'returned', submittedAt: ago(40), reviewedAt: ago(10), reviewedBy: H, reviewNote: '配置図に出入口がありません' }];
+      default:
+        return [];
+    }
+  });
+  await insertSubmissions(s.yearId, rows);
+  const repToken = await apiToken('rep');
+  const groupId = s.ids.groups[REP_GROUP]!;
+  for (const label of ['E2E T19 perf one', 'E2E T19 perf two']) await uploadFileAs(repToken, { documentId: plan, groupId, body: makePdf(label) });
+}
 
 /**
  * テント等の貸し出し（T21）の行：備品3つ（テント・重し・三方幕〔模擬店だけ〕）、模擬店と部門の申請と同じ数の割り当て（確定）、
@@ -538,6 +609,7 @@ test('T14 4G での表示の速さ：/stock?room=・/request・/my・団体代�
   // シフト・作業（T20）：総務部門員の /・/shift・/tasks を計るときだけ、1年の量の見込みのシフト・作業を入れる
   const shifts = TARGETS.some((t) => ['soumu-home', 'shift', 'tasks'].includes(t.id)) ? await insertShiftVolume(s.yearId, SEED_USER_IDS.staff) : null;
   try {
+    await seedDocuments(s);
     await seedLending(s);
     const servers: { name: string; origin: string | null }[] = [{ name: 'http1', origin: null }, ...(h2 ? [{ name: 'h2', origin: h2.origin }] : [])];
     for (const server of servers) {
@@ -561,7 +633,7 @@ test('T14 4G での表示の速さ：/stock?room=・/request・/my・団体代�
       }
     }
   } finally {
-    await s.cleanup();
+    await cleanupDocumentsScenario(s);
     await shifts?.cleanup();
     await h2?.close();
   }

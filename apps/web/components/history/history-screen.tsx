@@ -71,6 +71,8 @@ function HistoryBody({ yearId, yearLabel, adminOfOpenYear }: { yearId: string; y
       items: o?.items ?? new Map(),
       users,
       years: new Map([[yearId, yearLabel]]),
+      // 提出物（T19）：提出物の題名（提出とファイルの対象・document_id の表示）
+      documents: o?.documents ?? new Map(),
       // シフト・作業（T20）：持ち場の名前と時間枠の日時
       duties: o?.duties ?? new Map(),
       slots: o?.slots ?? new Map(),

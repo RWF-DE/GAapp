@@ -221,7 +221,7 @@ test.describe('T15b 総務部門長（seed）', () => {
       await expect(pageU.getByTestId('home-roles')).toHaveText(`${SMALL.groups.stall} の副店長`);
       await expect(pageU.getByRole('banner')).toContainText(`${SMALL.groups.stall} の副店長`);
       // 店長と副店長はできることが同じ（ナビも同じ。お知らせ一覧は T17、締切と予定の一覧は T18）
-      expect(await navLabels(pageU)).toEqual(['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定の一覧']);
+      expect(await navLabels(pageU)).toEqual(['ホーム', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定の一覧', '自団体の提出物']);
 
       // 店長に戻す（「店長にする」は「副店長にする」に部分一致するので exact で探す）
       await position.getByRole('button', { name: '店長にする', exact: true }).click();

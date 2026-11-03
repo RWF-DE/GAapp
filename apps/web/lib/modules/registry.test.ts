@@ -19,12 +19,20 @@ describe('T16 機能の登録（MODULES）', () => {
     expect(MODULES.map((m) => m.id).slice(0, 3)).toEqual(['furniture', 'notices', 'calendar']);
   });
 
+  it('T19 提出物：名前は「提出物」、入口は /documents（提出状況。締切と予定の後に足した）', () => {
+    const k = MODULES.findIndex((m) => m.id === 'documents');
+    expect(MODULES[k]).toEqual({ id: 'documents', label: '提出物', homeHref: '/documents' });
+    expect(k).toBeGreaterThan(MODULES.findIndex((m) => m.id === 'calendar'));
+    // T19〜T21 のマージの後の並び（機能のチケットの番号の順。締切と予定の後・シフト・作業の前）
+    expect(MODULES.map((m) => m.id)).toEqual(['furniture', 'notices', 'calendar', 'documents', 'shifts', 'lending']);
+  });
+
   it('T21 テント等の貸し出し：名前は「テント等の貸し出し」、入口は /lending（備品と割り当て。締切と予定・シフト・作業の後に足した）', () => {
     const k = MODULES.findIndex((m) => m.id === 'lending');
     expect(MODULES[k]).toEqual({ id: 'lending', label: 'テント等の貸し出し', homeHref: '/lending' });
     expect(k).toBeGreaterThan(MODULES.findIndex((m) => m.id === 'calendar'));
     // T19〜T21 のマージの後の並び（機能のチケットの番号の順。T20 のシフト・作業の後）
-    expect(MODULES.map((m) => m.id)).toEqual(['furniture', 'notices', 'calendar', 'shifts', 'lending']);
+    expect(MODULES.map((m) => m.id)).toEqual(['furniture', 'notices', 'calendar', 'documents', 'shifts', 'lending']);
   });
 
   it('id は英字の小文字で重ならない。名前も重ならない', () => {
@@ -102,11 +110,62 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
     expect(PORTAL_PROVIDERS.map((p) => p.moduleId).slice(0, 3)).toEqual(['furniture', 'notices', 'calendar']);
   });
 
+  it('T19 提出物のプロバイダは登録と同じ並び（締切と予定の後）。総務と店長・副店長に出し、閲覧のみには出さない（Q5）', () => {
+    const ids = PORTAL_PROVIDERS.map((p) => p.moduleId);
+    expect(ids).toContain('documents');
+    expect(ids.indexOf('documents')).toBeGreaterThan(ids.indexOf('calendar'));
+    // T19〜T21 のマージの後の並び（締切と予定の後・シフト・作業の前。登録と同じ）
+    expect(ids).toEqual(['furniture', 'notices', 'calendar', 'documents', 'shifts', 'lending']);
+    const p = PORTAL_PROVIDERS.find((x) => x.moduleId === 'documents')!;
+    expect(p.kinds).toEqual(['soumu', 'rep']);
+    expect(p.fromYear).toBeUndefined();
+    expect(p.query?.widgets).toEqual(['todos', 'dated', 'cards']);
+  });
+
+  it('T19 提出物のプロバイダは、/documents・/document の画面・表の組み立て・CSV・画像の作り直し・lib/data・入力の zod を読まない', () => {
+    const g = staticImportGraph('lib/modules/documents/portal.ts');
+    for (const f of [
+      'lib/modules/documents/board.ts',
+      'lib/modules/documents/rep.ts',
+      'lib/modules/documents/csv.ts',
+      'lib/modules/documents/image.ts',
+      'lib/data/documents.ts',
+      'lib/schemas/documents.ts',
+    ]) {
+      expect(g.files).not.toContain(f);
+    }
+    expect(g.files.filter((f) => f.startsWith('lib/data/') || f.startsWith('components/') || f.startsWith('app/'))).toEqual([]);
+    expect(g.packages.filter((p) => /^(@gaapp\/(allocator|exporter|importer)|highs|react|react-dom|next|zod)(\/|$)/.test(p))).toEqual([]);
+    expect(g.files).toContain('lib/modules/documents/reads.ts');
+  });
+
+  it('T19 / と /document の先読みが使う提出物の読み取り（documents/reads.ts）は、組み立て・ダッシュボードの型と関数・ナビゲーション・日付の表示・zod・Storage を読まない', () => {
+    const g = staticImportGraph('lib/modules/documents/reads.ts');
+    for (const f of [
+      'lib/modules/documents/portal.ts',
+      'lib/modules/documents/board.ts',
+      'lib/modules/documents/rep.ts',
+      'lib/modules/documents/files.ts',
+      'lib/modules/portal.ts',
+      'lib/navigation.ts',
+      'lib/datetime.ts',
+      'lib/datetime-weekday.ts',
+      'lib/rpc/payloads.ts',
+      'lib/data/documents.ts',
+      'lib/schemas/documents.ts',
+    ]) {
+      expect(g.files).not.toContain(f);
+    }
+    expect(g.files.filter((f) => f.startsWith('lib/data/') || f.startsWith('components/') || f.startsWith('app/'))).toEqual([]);
+    expect(g.files).toContain('lib/modules/query-key.ts');
+    expect(g.packages.filter((p) => p.startsWith('@gaapp/') || p === 'zod')).toEqual([]);
+  });
+
   it('T21 テント等の貸し出しのプロバイダは登録と同じ並び（締切と予定・シフト・作業の後）', () => {
     const ids = PORTAL_PROVIDERS.map((p) => p.moduleId);
     expect(ids).toContain('lending');
     expect(ids.indexOf('lending')).toBeGreaterThan(ids.indexOf('calendar'));
-    expect(ids).toEqual(['furniture', 'notices', 'calendar', 'shifts', 'lending']);
+    expect(ids).toEqual(['furniture', 'notices', 'calendar', 'documents', 'shifts', 'lending']);
     expect(ids).toEqual(MODULES.map((m) => m.id));
   });
 
@@ -166,12 +225,13 @@ describe('T16 lib/modules の import（ナビと / の JS を軽くする。D-51
 });
 
 describe('T20 シフト・作業（機能の登録・プロバイダ）', () => {
-  it('名前は「シフト・作業」、入口は /shifts（締切と予定の後に1行足した）。プロバイダも同じ並び', () => {
+  it('名前は「シフト・作業」、入口は /shifts（締切と予定の後に1行足した。T19〜T21 のマージの後は提出物の次）。プロバイダも同じ並び', () => {
     const k = MODULES.findIndex((m) => m.id === 'shifts');
     expect(MODULES[k]).toEqual({ id: 'shifts', label: 'シフト・作業', homeHref: '/shifts' });
-    expect(MODULES[k - 1]?.id).toBe('calendar');
+    expect(k).toBeGreaterThan(MODULES.findIndex((m) => m.id === 'calendar'));
+    expect(MODULES[k - 1]?.id).toBe('documents');
     const ids = PORTAL_PROVIDERS.map((p) => p.moduleId);
-    expect(ids.indexOf('shifts')).toBe(ids.indexOf('calendar') + 1);
+    expect(ids.indexOf('shifts')).toBe(ids.indexOf('documents') + 1);
   });
 
   it('プロバイダ（providers.ts）からシフト表の組み立て・作業一覧の組み立て・書き込み・画面の部品を読まない', () => {

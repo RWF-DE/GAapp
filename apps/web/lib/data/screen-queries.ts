@@ -25,6 +25,7 @@ import {
 } from '@/lib/db/types';
 import { appError, toAppError } from '@/lib/errors';
 import { calendarDatedOptions } from '@/lib/modules/calendar/dated';
+import { documentsSoumuPortalOptions, pickDocumentGroup, repDocumentsOptions } from '@/lib/modules/documents/reads';
 import { furnitureRepOptions } from '@/lib/modules/furniture/rep';
 import { furnitureSoumuOptions } from '@/lib/modules/furniture/soumu';
 import { lendingRecordsOptions, lendingRequestItemsOptions, lendingRequestTabOptions } from '@/lib/modules/lending/queries';
@@ -372,8 +373,15 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
     list.push({ options: furnitureSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
     list.push({ options: noticesLatestOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
     list.push({ options: calendarDatedOptions(ctx.yearId, 'soumu'), usable: (m) => isSoumu(m.role) });
-    // シフト・作業（T20・D-56）：部門長以上と総務部門員で別のキー（段が同じときだけ使う）
+    // 提出物（T19・D-55）：総務の読み取り（部門長以上と総務部門員で別のキー。段が同じときだけ使う）。店長・副店長の分は先読みに入れない
+    // （パート C の `pnpm e2e:perf` で、足した形の団体代表の / が 2 秒を下回らなかった。2回目からは記録・先送りが JS より先に送る。
+    // 04「共通レイアウト」の提出物の読み込み、D-45 の T19 の直し）
     const lead = isLead(ctx.role);
+    list.push({
+      options: documentsSoumuPortalOptions(ctx.yearId, lead ? 'lead' : 'staff'),
+      usable: (m) => isSoumu(m.role) && isLead(m.role) === lead,
+    });
+    // シフト・作業（T20・D-56）：部門長以上と総務部門員で別のキー（段が同じときだけ使う）
     list.push({ options: shiftsPortalOptions(ctx.yearId, lead ? 'lead' : 'staff'), usable: (m) => isSoumu(m.role) && isLead(m.role) === lead });
     // テント等の貸し出しの総務の読み取り（T21。要対応とカードが同じキーを読む。店長・副店長の分は足さない。上の説明）
     list.push({ options: lendingSoumuOptions(ctx.yearId), usable: (m) => isSoumu(m.role) });
@@ -396,6 +404,21 @@ export function planHomePrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
     }
   }
   return list;
+}
+
+// ---------------------------------------------------------------- 自団体の提出物 /document（T19）
+
+/**
+ * /document の先読み（D-45。04「共通レイアウト」の提出物の読み込み）：`?group=` が覚えた団体にあればその団体、なければ最初の団体
+ * （DocumentScreen の pickDocumentGroup と同じ選び方）の提出の状況とファイル（repDocumentsOptions。2本を並行に）。版を使わないので、
+ * 記録・先送りの対象にもなる（EARLY_FETCH_PATHS）。覚えた団体がなければ読まない。
+ */
+export function planDocumentPrefetch(ctx: RoutePrefetchContext): PrefetchEntry[] {
+  const group = pickDocumentGroup(
+    ctx.groupIds.map((id) => ({ id })),
+    ctx.params.get('group'),
+  );
+  return group ? [{ groupId: group.id, options: repDocumentsOptions(ctx.yearId, group.id) }] : [];
 }
 
 // ---------------------------------------------------------------- 自分のシフト /shift・作業一覧 /tasks（T20）
@@ -436,6 +459,8 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
   '/stock': planStockPrefetch,
   '/request': planRequestPrefetch,
   '/my': planMyPrefetch,
+  // 自団体の提出物（T19。版を使わない画面。提出状況〔/documents〕は入れない）
+  '/document': planDocumentPrefetch,
   // シフト・作業（T20・D-56）：版を使わない画面（シフト表 /shifts と印刷は入れない）
   '/shift': planShiftPrefetch,
   '/tasks': planTasksPrefetch,

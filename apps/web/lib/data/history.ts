@@ -22,6 +22,7 @@ import {
   labelOf,
 } from '@/lib/labels';
 import { EVENT_AUDIENCE_LABELS, EVENT_KIND_LABELS } from '@/lib/modules/calendar/labels';
+import { CONTENT_TYPE_LABELS, DOCUMENT_STATUS_LABELS } from '@/lib/modules/documents/labels';
 import { TASK_STATUS_LABELS } from '@/lib/modules/shifts/labels';
 import { slotTimeLabel } from '@/lib/modules/shifts/time';
 import { queryKeys } from '@/lib/query';
@@ -51,6 +52,10 @@ export const AUDIT_TABLES = [
   'notice_groups',
   // 締切と予定（T18。足すだけ）
   'events',
+  // 提出物（T19。足すだけ）
+  'documents',
+  'document_submissions',
+  'document_files',
   // シフト・作業（T20。足すだけ）
   'shift_duties',
   'shift_slots',
@@ -125,6 +130,8 @@ export const DIFF_IGNORED_KEYS: readonly string[] = ['created_at', 'updated_at']
 export const OUTSIDE_USER = 'outside';
 
 export const NAME_UNKNOWN = '名前を表示できません';
+/** 今の年度にない提出物（提出とファイルの対象。T19） */
+export const DELETED_DOCUMENT = '（消えた提出物）';
 /** 今の年度にない持ち場（ますと割り当ての対象。T20） */
 export const DELETED_DUTY = '消えた持ち場';
 /** 今の年度にないテント等の備品（申請・割り当て・記録の対象。T21） */
@@ -387,6 +394,8 @@ export interface HistoryLookups {
   users: Map<string, string>;
   /** 年度の名前（開いている年度。year_id・prev_year_id の表示） */
   years: Map<string, string>;
+  /** 提出物の題名（T19。今の年度の提出物。提出とファイルの対象・document_id の表示） */
+  documents?: Map<string, string>;
   /** 持ち場の名前（シフト・作業。T20。今の持ち場。ますと割り当ての対象） */
   duties?: Map<string, string>;
   /** シフトの時間枠の日時（「11/5 09:00〜10:00」。T20。今の時間枠） */
@@ -402,6 +411,8 @@ export interface HistoryOptions {
   members: HistoryMember[];
   rooms: Map<string, string>;
   items: Map<string, string>;
+  /** 提出物の題名（T19。読めなければ空） */
+  documents?: Map<string, string>;
   /** 持ち場の名前（T20。読めなければ空） */
   duties?: Map<string, string>;
   /** シフトの時間枠の日時（T20。読めなければ空） */
@@ -411,6 +422,19 @@ export interface HistoryOptions {
 }
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * 提出物の題名（T19。提出とファイルの対象「{団体}・{提出物の題名}」に使う。部門長以上は読める）。読めなければ（失敗）空の表にする
+ * （対象の文が「（消えた提出物）」になるだけで、履歴は出す）
+ */
+export async function fetchDocumentTitles(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<Map<string, string>> {
+  try {
+    const docs = await fetchAll((from, to) => client.from('documents').select('id, title').eq('year_id', yearId).order('id').range(from, to));
+    return new Map(docs.map((d) => [d.id, d.title]));
+  } catch {
+    return new Map();
+  }
+}
 
 /** シフトの時間枠の対象の文（「11/5 09:00〜10:00」。Asia/Tokyo。読めなければ null。T20） */
 export function shiftSlotLabel(startsAt: unknown, endsAt: unknown): string | null {
@@ -456,6 +480,8 @@ export async function fetchLendingItemNames(yearId: string, client: AppSupabaseC
 
 /** 絞り込みの選択肢と、対象の名前に使う団体・場所・品目・メンバーを読む */
 export async function fetchHistoryOptions(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<HistoryOptions> {
+  // 提出物の題名（T19）。ほかの読み取りと並行に読む（失敗しても空の表を返す）
+  const documentTitles = fetchDocumentTitles(yearId, client);
   // シフト・作業の持ち場の名前と時間枠の日時（T20）。ほかの読み取りと並行に読む（失敗しても空の表を返す）
   const shiftNames = fetchShiftNames(yearId, client);
   // テント等の備品の名前（T21）。ほかの読み取りと並行に読む（失敗しても空の表を返す）
@@ -490,6 +516,8 @@ export async function fetchHistoryOptions(yearId: string, client: AppSupabaseCli
     members,
     rooms: new Map(rooms.map((r) => [r.id, r.name])),
     items: new Map(items.map((i) => [i.id, i.name])),
+    // 提出物（T19）
+    documents: await documentTitles,
     // シフト・作業（T20）
     ...(await shiftNames),
     // テント等の備品（T21）
@@ -619,6 +647,11 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     if (ref) return lookups?.[ref]?.get(v) ?? v;
     if (key === 'year_id' || key === 'prev_year_id') return lookups?.years?.get(v) ?? v;
     if (key === 'user_id' || key === 'counted_by' || key === 'updated_by' || key === 'created_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
+    // 提出物（T19）：提出した人・確かめた人は表示名、提出物は題名（なければ id のまま）、提出の状態とファイルの形は表示名
+    if (key === 'submitted_by' || key === 'reviewed_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
+    if (key === 'document_id' && (table === 'document_submissions' || table === 'document_files')) return lookups?.documents?.get(v) ?? v;
+    if (key === 'status' && table === 'document_submissions') return labelOf(DOCUMENT_STATUS_LABELS, v, v);
+    if (key === 'content_type' && table === 'document_files') return labelOf(CONTENT_TYPE_LABELS, v, v);
     // シフト・作業（T20）：作業の担当者は表示名、持ち場・時間枠は今の名前と日時（なければ id のまま）、作業の状態は表示名
     if (key === 'assignee_id') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
     if (key === 'duty_id') return lookups?.duties?.get(v) ?? v;
@@ -646,6 +679,10 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     if (labels) return labelOf(labels, v, v);
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v)) return formatDateTime(v) || v;
     return v;
+  }
+  // 提出物の対象の区分（documents.target_categories。T19）は区分の表示名を「・」で
+  if (key === 'target_categories' && Array.isArray(v) && v.every((x) => typeof x === 'string')) {
+    return v.length === 0 ? '（空）' : v.map((c: string) => labelOf(CATEGORY_LABELS, c, c)).join('・');
   }
   // テント等の備品の申請できる区分（T21）：区分の表示名
   if (key === 'requestable_categories' && Array.isArray(v)) {
@@ -727,6 +764,12 @@ export function auditTarget(row: Pick<AuditLogRow, 'table_name' | 'row_pk' | 'be
       // 締切と予定（T18）：題名
       case 'events':
         return [str('title')];
+      // 提出物（T19）：提出物は題名、提出とファイルは「{団体}・{提出物の題名}」（今の年度にない提出物は「（消えた提出物）」）
+      case 'documents':
+        return [str('title')];
+      case 'document_submissions':
+      case 'document_files':
+        return [groupName(str('group_id')), str('document_id') ? (lookups.documents?.get(str('document_id')!) ?? DELETED_DOCUMENT) : null];
       // シフト・作業（T20）：持ち場は名前、時間枠は「11/5 09:00〜10:00」、ますは持ち場の名前、割り当ては人と持ち場、作業は題名
       case 'shift_duties':
         return [lookups.duties?.get(str('id') ?? '') ?? str('name')];
@@ -797,6 +840,11 @@ export function useHistoryNames(yearId: string, rows: readonly AuditLogRow[], op
       // お知らせの書いた人（notices.created_by。T17）
       asRecord(r.after)?.created_by,
       asRecord(r.before)?.created_by,
+      // 提出した人・確かめた人（document_submissions。T19）
+      asRecord(r.after)?.submitted_by,
+      asRecord(r.before)?.submitted_by,
+      asRecord(r.after)?.reviewed_by,
+      asRecord(r.before)?.reviewed_by,
       // 作業の担当者（tasks.assignee_id。T20）
       asRecord(r.after)?.assignee_id,
       asRecord(r.before)?.assignee_id,

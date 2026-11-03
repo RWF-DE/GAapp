@@ -52,7 +52,7 @@ supabase start -x realtime,imgproxy,mailpit,studio,edge-runtime,logflare,vector,
 
 pgTAP（`supabase test db`）だけなら、DB だけを起動すればよい（`supabase db start`。storage-api がなくても、storage のスキーマは DB の中にあり、提出物の Storage のポリシーも SQL で確かめる）。
 
-Storage について（提出物。T19。D-55）：Storage の物（storage.objects の行）は SQL では消せない（`storage.allow_delete_query` を立てない delete は 42501。消すのは Storage API〔画面の remove〕）。DB の行を消すと、その物は「どの提出にも属さないファイル」として残り、画面が消す。年度・団体・提出物を SQL Editor で消さない（残った物を誰も消せなくなることがある）。bucket documents の物を置く・書き換えるのは、ロールによらずトリガー documents_objects_guard が DB の予約と提出の状態で確かめる（SQL Editor の postgres や service_role でも、予約のない path・承認や終了の後・上書きは 42501。テストの準備で予約の外の物を置くときは、pgTAP の tests.put_object のように `set local session_replication_role = replica` の間に置く。これを設定できるのは postgres だけ）。ローカルの Storage のファイルの中身は `supabase stop --no-backup` で消える。
+Storage について（提出物。T19。D-55）：Storage の物（storage.objects の行）は SQL では消せない（`storage.allow_delete_query` を立てない delete は 42501。消すのは Storage API〔画面の remove〕）。DB の行を消すと、その物は「どの提出にも属さないファイル」として残り、画面が消す。年度・団体・提出物を SQL Editor で消さない（残った物を誰も消せなくなることがある）。bucket documents の物を置く・書き換えるのは、ロールによらずトリガー documents_objects_guard が DB の予約と提出の状態で確かめる（SQL Editor の postgres や service_role でも、予約のない path・承認や終了の後・上書きは 42501。テストの準備で予約の外の物を置くときは、pgTAP の tests.put_object のように `set local session_replication_role = replica` の間に置く。これを設定できるのは postgres だけ）。ローカルの Storage のファイルの中身は `supabase stop --no-backup` で消える。E2E の片付けも SQL では消さず、Storage API で消す（e2e/support/documents.ts の removeDocumentObjects：その年度のファイルの行を消してから、その年度の管理者のロールを付けた使い捨てのユーザーで remove し、残れば止まる。年度を消す前に呼ぶ。db-setup の前の実行の掃除も同じ）。
 
 ### ログインとテストユーザー（ローカル）
 
@@ -216,7 +216,7 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
 
 #### 本番を使い始める前に流すもの（0009〜0018）
 
-main には T15〜T18（PR #19〜#23）と T20（PR #26）・T21 が入り、GitHub Pages の画面（deploy.yml が main へのマージのたびに出す）は 0018 までのマイグレーションがあることを前提にしている。本番 DB に流していないファイルが残っていると、それを使う画面（招待とロールの段・お知らせ・締切と予定・シフト・作業・テント等の貸し出しなど）が失敗を出す。本番を使い始める前に（誰かがアプリで書き込む前に）、下の手順で Migrate production DB を流し、次の10個を流し終えておく（本番 DB が 0008 までなら、1回の実行でこの順に流れる）。0016（提出物の DB と Storage。T19 のパート A）は画面（パート B）より先に main に入るので、流しても今の画面は変わらない。
+main には T15〜T18（PR #19〜#23）と T19〜T21（PR #25〜#27 と、T19 の画面の PR）が入り、GitHub Pages の画面（deploy.yml が main へのマージのたびに出す）は 0018 までのマイグレーションがあることを前提にしている。本番 DB に流していないファイルが残っていると、それを使う画面（招待とロールの段・お知らせ・締切と予定・提出物・シフト・作業・テント等の貸し出しなど）が失敗を出す。本番を使い始める前に（誰かがアプリで書き込む前に）、下の手順で Migrate production DB を流し、次の10個を流し終えておく（本番 DB が 0008 までなら、1回の実行でこの順に流れる）。0016（提出物の DB と Storage。T19 のパート A）は画面（パート B・C）より先に main に入った。画面が入った後は、0016 を流すまで提出物の画面と、ダッシュボード・締切と予定の一覧の提出物の分が読み込みの失敗を出す（0016 の行）。
 
 | ファイル | 中身 | 流すときの注意 |
 | --- | --- | --- |
@@ -227,7 +227,7 @@ main には T15〜T18（PR #19〜#23）と T20（PR #26）・T21 が入り、Git
 | 0013_role_overlap_lead_tier.sql | 兼任の禁止・3つの段・新しい招待と受け入れ（T15。D-48・D-49。動きを変えるものはすべてここ） | 同上。流す前に兼任の問い合わせ |
 | 0014_notices.sql | お知らせ（T17。D-53）の型・表・RLS・RPC。足すだけ | 0013 で止まると、0014・0015 も流れない |
 | 0015_events.sql | 締切と予定の項目（T18。D-54）の型・表・RLS。足すだけ | 0014 の関数を使うので、0014 の後 |
-| 0016_documents.sql | 提出物（T19。D-55）の型・表・RLS・RPC と、Storage の bucket documents・storage.objects のポリシー3つとトリガー1つ。足すだけ | 下の「0016 の注意」。0014 の関数を使うので、0014 の後 |
+| 0016_documents.sql | 提出物（T19。D-55）の型・表・RLS・RPC と、Storage の bucket documents・storage.objects のポリシー3つとトリガー1つ。足すだけ | 下の「0016 の注意」。0014 の関数を使うので、0014 の後。画面（提出状況・自団体の提出物と、ダッシュボード・締切と予定の一覧の提出物の分）は、流すまで読み込みの失敗を出す（ほかの機能の分はそのまま使える） |
 | 0017_shifts.sql | シフト・作業（T20。D-56）の型・表・RLS・RPC。足すだけ（今の表・関数・ポリシーは変えない） | 0015 までの関数（0013 の can_lead など）だけを使う。0016・0018 とは独立（どの順でも通る）。画面（自分のシフト・シフト表・印刷・作業一覧と、ダッシュボード・締切と予定の一覧のシフト・作業の分）は、流すまで読み込みの失敗を出す（ほかの機能の分はそのまま使える） |
 | 0018_lending.sql | テント等の貸し出し（T21。D-57）の表・RLS・RPC。足すだけ（列挙型は足さない） | 0015 までの関数を使う。0016・0017 とは独立（どの順でも通る）。画面（/lending・/lending/records・/request のテント等のタブ・ダッシュボードのテント等）は、流すまで読み込みの失敗を出す（/request の机・椅子はそのまま使える） |
 
@@ -275,7 +275,7 @@ main には T15〜T18（PR #19〜#23）と T20（PR #26）・T21 が入り、Git
 
 #### 0016（提出物。T19。D-55）の注意
 
-- 0016 は型・表・関数・ポリシーを足すだけで、今の表と関数は変えない。最後の Storage の部分で、storage.buckets に bucket `documents` の行（非公開・1ファイル 10 MiB・PDF・JPEG・PNG）を入れ、storage.objects に bucket documents の物だけに効くポリシー3つ（documents_objects_select・documents_objects_insert・documents_objects_delete）と、書き込みを DB の予約と提出の状態で確かめるトリガー documents_objects_guard を作る（RLS を通らない Storage API の書き込み〔署名つきアップロードなど〕も止める。notes/T19.md の「レビューで直したこと」）。storage の表の持ち主は supabase_storage_admin で、Migrate production DB は postgres で流す。ローカル（supabase/postgres 17.11・CLI 2.122.0）では postgres でどれも作れたが、本番で権限のエラー（42501。permission denied・must be owner of table objects など）で止まることがある。止まると 0016 の変更は何も残らない（0015 までは残る。その後の 0017・0018 も流れないので、0016 を直して流し直す〔0017・0018 も続けて流れる〕までは、シフト・作業とテント等の貸し出しの画面（申請のテント等のタブを含む）と、ダッシュボードなどのシフト・作業・テント等の分〔0017・0018 の行〕が読み込みの失敗を出す。提出物の画面はまだないので、ほかはそのまま使える）。
+- 0016 は型・表・関数・ポリシーを足すだけで、今の表と関数は変えない。最後の Storage の部分で、storage.buckets に bucket `documents` の行（非公開・1ファイル 10 MiB・PDF・JPEG・PNG）を入れ、storage.objects に bucket documents の物だけに効くポリシー3つ（documents_objects_select・documents_objects_insert・documents_objects_delete）と、書き込みを DB の予約と提出の状態で確かめるトリガー documents_objects_guard を作る（RLS を通らない Storage API の書き込み〔署名つきアップロードなど〕も止める。notes/T19.md の「レビューで直したこと」）。storage の表の持ち主は supabase_storage_admin で、Migrate production DB は postgres で流す。ローカル（supabase/postgres 17.11・CLI 2.122.0）では postgres でどれも作れたが、本番で権限のエラー（42501。permission denied・must be owner of table objects など）で止まることがある。止まると 0016 の変更は何も残らない（0015 までは残る。その後の 0017・0018 も流れないので、0016 を直して流し直す〔0017・0018 も続けて流れる〕までは、提出物・シフト・作業・テント等の貸し出しの画面（申請のテント等のタブを含む）と、ダッシュボードなどの提出物・シフト・作業・テント等の分〔0016〜0018 の行〕が読み込みの失敗を出す。ほかの画面はそのまま使える）。
 - 流し終えたら、管理画面の SQL Editor で次を流し、Storage の部分が入ったことを確かめる（最後の4行は取り消すトランザクションで、service_role の書き込み〔署名つきアップロードと同じロール〕もトリガーが止めることを見る。何も残らない）：
 
   ```sql

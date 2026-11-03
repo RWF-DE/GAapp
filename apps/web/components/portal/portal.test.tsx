@@ -1039,3 +1039,60 @@ describe('T16 / の部品の import（スナップショット・検証・机椅
     expect(g.files).toContain('lib/data/validation.ts');
   });
 });
+
+// ---------------------------------------------------------------- 要対応の2行目（T19）
+
+describe('T19 ダッシュボード：要対応の2行目（detail。04「ダッシュボード」の要対応の一覧、D-52 の T19 の直し）', () => {
+  const REASON = '理由：印鑑がありません\n2枚目の写真が暗いです\n3行目\n4行目は欄では切れます';
+  const HTML_LIKE = '<b>太字にしない</b> & <img src=x onerror=alert(1)>';
+  /** 年度の行だけから要対応を作るテストのプロバイダ（総務と団体代表で同じ id の要対応を出す） */
+  function detailProvider(): PortalProvider {
+    return {
+      moduleId: 'calendar',
+      kinds: ['soumu', 'rep'],
+      fromYear: () => ({
+        card: null,
+        todos: [
+          { id: 'test:returned', moduleId: 'calendar', title: '模擬店01：提出物「出店計画」が差し戻されました', detail: REASON, severity: 'urgent', href: '/calendar' },
+          { id: 'test:html', moduleId: 'calendar', title: 'HTML として読まない', detail: HTML_LIKE, severity: 'normal', href: '/calendar' },
+          { id: 'test:empty', moduleId: 'calendar', title: '2行目が空', detail: '', severity: 'info', href: '/calendar' },
+        ],
+        dated: [],
+      }),
+    };
+  }
+  const todoById = (id: string) => screen.getAllByTestId('portal-todo').find((x) => x.getAttribute('data-id') === id)!;
+
+  it('2行目は文の下に小さな字で、書いたとおり（改行を残す・HTML にしない）に 3 行まで。行き先へのリンクの中に入る。2行目のない要対応は今までどおり', async () => {
+    h.providers.push(detailProvider());
+    renderPortal(member('admin', [], 'requesting'));
+    await screen.findByTestId('module-card');
+    const returned = within(todoById('test:returned')).getByTestId('portal-todo-detail');
+    expect(returned.textContent).toBe(REASON);
+    expect(returned.className).toContain('whitespace-pre-wrap');
+    expect(returned.className).toContain('line-clamp-3');
+    expect(returned.className).toContain('text-xs');
+    expect(returned.closest('a')?.getAttribute('href')).toBe('/calendar');
+    // 文の後ろ（下）に出る
+    const title = within(todoById('test:returned')).getByText('模擬店01：提出物「出店計画」が差し戻されました');
+    expect(title.compareDocumentPosition(returned) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // HTML として読まない（文字のまま）
+    const html = within(todoById('test:html')).getByTestId('portal-todo-detail');
+    expect(html.textContent).toBe(HTML_LIKE);
+    expect(html.querySelector('b, img')).toBeNull();
+    // 空の2行目と、2行目のない要対応（机椅子）には出さない
+    expect(within(todoById('test:empty')).queryByTestId('portal-todo-detail')).toBeNull();
+    for (const id of ['furniture:lead:close-requests', 'furniture:soumu:unsubmitted', 'furniture:soumu:uncounted']) {
+      expect(within(todoById(id)).queryByTestId('portal-todo-detail')).toBeNull();
+    }
+    expect(screen.getAllByTestId('portal-todo-detail')).toHaveLength(2);
+  });
+
+  it('兼ねた人（管理者で店長も務める人）のまとめでも、同じ id の要対応は1回だけで、2行目は消えない', async () => {
+    h.providers.push(detailProvider());
+    renderPortal(member('admin', [G1], 'requesting'));
+    await screen.findByTestId('module-card');
+    expect(todoIds().filter((id) => id === 'test:returned')).toHaveLength(1);
+    expect(within(todoById('test:returned')).getByTestId('portal-todo-detail').textContent).toBe(REASON);
+  });
+});

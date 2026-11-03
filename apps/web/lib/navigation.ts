@@ -93,6 +93,10 @@ export const ROUTES: readonly RouteDef[] = [
   // （締切と予定）と同じ言葉を縦に並べないよう「締切と予定の一覧」（お知らせの「お知らせ一覧」と同じ形。マージの後の直し。
   // notes/T18.md の「後半で決められなかったこと」の 1 の (a)）
   { href: '/calendar', label: '締切と予定の一覧', section: 'calendar', audiences: ALL, nav: true, ticket: 'T18' },
+  // 提出物（documents。T19・D-55）：提出状況は総務（部門員は状況だけ。ファイルは部門長以上）、自団体の提出物は店長・副店長。
+  // 閲覧のみには見出しごと出ない（Q5）。項目は見出し（提出物）と同じ言葉を縦に並べない
+  { href: '/documents', label: '提出状況', section: 'documents', audiences: SOUMU, nav: true, ticket: 'T19' },
+  { href: '/document', label: '自団体の提出物', section: 'documents', audiences: REP, nav: true, ticket: 'T19' },
   // シフト・作業（shifts。T20・D-56）：総務だけ（閲覧のみ・店長・副店長には見出しごと出ない）。印刷はシフト表から開く
   { href: '/shift', label: '自分のシフト', section: 'shifts', audiences: SOUMU, nav: true, ticket: 'T20' },
   { href: '/shifts', label: 'シフト表', section: 'shifts', audiences: SOUMU, nav: true, ticket: 'T20' },

@@ -69,6 +69,10 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   notice_groups: '宛先の団体',
   // 締切と予定（T18。表 events。種類・対象の表示名は lib/modules/calendar/labels.ts）
   events: '締切と予定',
+  // 提出物（T19。状態・形の表示名は lib/modules/documents/labels.ts）
+  documents: '提出物',
+  document_submissions: '提出物の提出',
+  document_files: '提出物のファイル',
   // シフト・作業（T20。作業の状態の表示名は lib/modules/shifts/labels.ts）
   shift_duties: '持ち場',
   shift_slots: 'シフトの時間枠',
@@ -131,6 +135,12 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
   group_ids: '宛先の団体',
   base_updated_at: 'お知らせの版',
   notice: 'お知らせ',
+  // 提出物（T19）。理由・メモ（note）・形（content_type）・大きさ（size）などの専用の文言は lib/errors.ts の DOCUMENT_INPUT_MESSAGES
+  document_id: '提出物',
+  file_id: 'ファイル',
+  content_type: 'ファイルの形',
+  size: 'ファイルの大きさ',
+  document_ids: '写す提出物',
   // シフト・作業（add_shift_slots・set_task_status。T20）。overlap・not_soumu・needs の not_in_year は lib/errors.ts が専用の文言にする
   slots: '時間枠',
   needs: '必要人数',
