@@ -83,7 +83,8 @@ test.describe('T16 管理者', () => {
 
       // 欄の読み込み中：机椅子の読み込み（提出の記録）を止める。年度の行だけで決まる項目は先に出ている。読み込み中は要対応とカード
       // だけで、締切と予定（年度の行だけで決まる）には出さない（決定 7）。2回目の / なので覚えた id で机椅子の読み取りを先に始める
-      // （先読み。D-45）が、その提出の記録も同じ route で止まる
+      // （先読み。D-45）が、その提出の記録も同じ route で止まる。カードの欄は機能ごとに読み込み中を出し、総務には T19〜T21 で4つの
+      // 機能のカードがあるので（ほかの機能がまだ読み込み中だと2つ以上に当たる）、止めた机椅子の分に絞る（FU3）
       const held = new Promise<void>((r) => (release = r));
       await page.route(route, async (r: Route) => {
         await held;
@@ -92,7 +93,7 @@ test.describe('T16 管理者', () => {
       await page.goto('/');
       await expect(page.locator('[data-testid="portal-todo"][data-id="furniture:lead:close-requests"]')).toBeVisible();
       await expect(page.getByTestId('portal-todos').locator('[data-testid="portal-loading"][data-module="furniture"]')).toBeVisible();
-      await expect(page.getByTestId('portal-cards').getByTestId('portal-loading')).toBeVisible();
+      await expect(page.getByTestId('portal-cards').locator('[data-testid="portal-loading"][data-module="furniture"]')).toBeVisible();
       await expect(page.getByTestId('portal-dated').getByTestId('portal-loading')).toHaveCount(0);
       await expect(page.getByTestId('portal-dated-item')).toHaveCount(5);
       await shoot(page, 'T16', 'portal-loading-pc', { fullPage: true });
