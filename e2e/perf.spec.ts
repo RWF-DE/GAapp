@@ -52,6 +52,18 @@
 // - 1回が止まったり失敗したり（30 秒待っても印が出ないなど）しても、その回を perf.json の errors に残して次へ進む（同じ書き出しがそのマスで
 //   2回続けて失敗したら、そのマスの残りを飛ばす）。perf.json はマスを計り終えるたびに書き直す（止まっても、それまでの値が残る。done が偽なら
 //   途中まで）。最後に、失敗した回があればテストを失敗にする（値は残したまま）。
+//
+// FU3 の PR B のレビューで足したこと：
+// - 店長・副店長の /（home）も、枠の印（frame）と全部の欄がそろう（settled。代表する団体のカードが見えて、どの欄にも読み込み中がない）の
+//   時刻を出す（D-58 の記録。2 秒は今までどおり代表する団体のカードで見る）。
+// - ログインのセッション：1回ごとに、開き始めたときのセッションの期限までの残り（秒）を残す（runs の tokenLeftS。マスの tokenMinS）。組の前と
+//   again の準備の前に、その人のセッションの残りが PERF_TOKEN_MIN 秒（既定 300）を切っていたら、パスワードでログインし直して storageState
+//   のセッションを差し替える（perf.json の session.relogins）。<head> の script が先に送るのは期限まで一定の秒数（main 30 秒・PR B の後
+//   90 秒）より長いときだけで、アプリは期限まで 90 秒を切ると先にトークンを更新するので、1 時間ほど流すと A と B の開き方が気づかれないまま
+//   変わるため（レビューの F6）。それでも残りが TOKEN_MARK_S（120 秒）を切った回のあるマスは tokenLow の印を付ける（比べに使わない）。
+// - PERF_SERVE=http1・h2（カンマ区切り）で配り方を絞れる（原因を調べるとき）。
+// - 止まった・失敗した回は、そのときまだ応答の終わっていなかったリクエスト（静的ファイルと Supabase。何 ms から待っていたか）を errors の
+//   pending に、PERF_TRACE のときはそれまでのリクエストの並びを waterfall に残す（どれが止まったかを見るため。レビューの F4）。
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import http2 from 'node:http2';
@@ -59,7 +71,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import { expect, test, type Browser, type Page, type Request } from '@playwright/test';
+import { SUPABASE_PUBLISHABLE_KEY, SUPABASE_URL, TEST_PASSWORD, USERS } from './helpers';
 import { storageStateFor, type StoredUser } from './support/auth';
 import { createScenario, type Scenario } from './support/db';
 import {
@@ -73,7 +86,22 @@ import {
   type SubmissionInput,
 } from './support/documents';
 import { confirmLending, insertLendingAssignments, insertLendingItems, insertLendingRecords, insertLendingRequests } from './support/lending';
-import { orderEffects, pairedDiffs, pairOrder, poolDiffs, quantile, signed, summarize, type Build, type CellDiff, type Summary } from './support/perf';
+import {
+  orderEffects,
+  pairedDiffs,
+  pairOrder,
+  poolDiffs,
+  quantile,
+  replaceSession,
+  sessionLeftS,
+  signed,
+  summarize,
+  type Build,
+  type CellDiff,
+  type FreshSession,
+  type StoredState,
+  type Summary,
+} from './support/perf';
 import { insertShiftVolume } from './support/shifts';
 import { MOBILE } from './support/shots';
 import { SEED_USER_IDS } from './support/users';
@@ -106,6 +134,15 @@ const LOAD_WAIT = Number(process.env.PERF_LOAD_WAIT ?? 1.0);
 const LOAD_WAIT_MAX_S = Number(process.env.PERF_LOAD_WAIT_MAX ?? 600);
 /** 計っている間の 1 分の load average の最大がこれを超えたマスに印を付ける */
 const LOAD_MARK = Number(process.env.PERF_LOAD_MARK ?? 2.5);
+/** 組の前（と again の準備の前）に、ログインのセッションの残りがこれ（秒）を切っていたらログインし直す（レビューの F6） */
+const TOKEN_MIN_S = Number(process.env.PERF_TOKEN_MIN ?? 300);
+/**
+ * 開き始めたときのセッションの残りがこれ（秒）を切った回のあるマスに印を付ける（tokenLow。比べに使わない）。<head> の script のトークンの
+ * 余裕（main 30 秒・PR B の後 90 秒）と、アプリが開いたときに先にトークンを更新する 90 秒より少し上
+ */
+const TOKEN_MARK_S = 120;
+/** 計る配り方（PERF_SERVE=http1・h2。空ならどちらも） */
+const SERVES = (process.env.PERF_SERVE ?? '').split(',').map((x) => x.trim()).filter(Boolean);
 
 /** ダッシュボード（/）の欄（PortalWidget の section の testid。代表する団体の欄は testid がないので rep） */
 type Widget = 'portal-todos' | 'portal-dated' | 'portal-soumu-notices' | 'portal-notices' | 'rep' | 'portal-cards';
@@ -113,10 +150,12 @@ type Widget = 'portal-todos' | 'portal-dated' | 'portal-soumu-notices' | 'portal
 const SOUMU_WIDGETS: readonly Widget[] = ['portal-todos', 'portal-dated', 'portal-soumu-notices', 'portal-cards'];
 /** 総務で店長・副店長も務める人に出す欄（お知らせと代表する団体が加わる） */
 const SOUMU_REP_WIDGETS: readonly Widget[] = ['portal-todos', 'portal-dated', 'portal-soumu-notices', 'portal-notices', 'rep', 'portal-cards'];
+/** 店長・副店長（ロールなし）に出す欄（要対応・締切と予定・お知らせ・代表する団体。PR B のレビューで足した） */
+const REP_WIDGETS: readonly Widget[] = ['portal-todos', 'portal-dated', 'portal-notices', 'rep'];
 
 /** 主な印（shown）のほかに時刻を取る印 */
 interface Mark {
-  id: 'frame' | 'card';
+  id: 'frame' | 'card' | 'settled';
   /** 出すときの名前 */
   label: string;
   /** ページの中で調べる関数（shown と同じ形） */
@@ -226,6 +265,13 @@ const SHOWN = {
     return !!f && !!s && !!card && f.offsetParent !== null && s.offsetParent !== null && card.offsetParent !== null &&
       !document.querySelector('[data-testid="portal-loading"]') && !document.querySelector('[data-testid="rep-home-loading"]');
   }`,
+  // FU3 の PR B のレビュー（D-58 の記録）：店長・副店長の / のそろう。代表する団体のカード（a.group）が見えて、どの欄にも読み込み中がない
+  // （管理者で団体代表の / のそろうから、総務のカードを除いたもの）
+  repSettled: `(a) => {
+    const card = [...document.querySelectorAll('[data-testid="rep-card"]')].find((c) => c.getAttribute('data-group') === a.group);
+    return !!card && card.offsetParent !== null &&
+      !document.querySelector('[data-testid="portal-loading"]') && !document.querySelector('[data-testid="rep-home-loading"]');
+  }`,
   // FU3（D-58）の枠の印：ヘッダー（アプリの名前）・立場の一覧（今の年度と、立場が1つ以上）・見出し（h1）と、a.widgets の欄すべての枠
   // （欄の section が見えて、見出しの h2 と、その後に中身か読み込み中の骨組みがある）。代表する団体の欄は testid がないので、中の
   // rep-home・rep-home-loading から section をたどる。欄の中身がそろったかは見ない（それは shown）
@@ -254,6 +300,10 @@ const WIDGETS_IN_PAGE = `(() => [
 const FRAME: Mark = { id: 'frame', label: '枠', shown: SHOWN.frame, limit: LIMIT_MS };
 /** 代表する団体のカード（管理者で団体代表の /。記録だけ。D-58 では「そろう」の中で見る） */
 const CARD: Mark = { id: 'card', label: 'カード', shown: SHOWN.home, limit: null };
+/** 店長・副店長の / の全部の欄がそろう（記録と 3 秒の目安。2 秒は今の印〔代表する団体のカード〕のまま。D-58。PR B のレビュー） */
+const SETTLED: Mark = { id: 'settled', label: 'そろう', shown: SHOWN.repSettled, limit: SETTLED_LIMIT_MS };
+/** 印の名前（perf.json の印の id から。[B − A・全部のマス] の行に使う） */
+const MARK_LABELS: Record<Mark['id'], string> = { frame: FRAME.label, card: CARD.label, settled: SETTLED.label };
 
 /** 総務部門員・総務部門長の / の Playwright の印（机椅子とシフト・作業のカード） */
 async function soumuHomeReady(page: Page): Promise<void> {
@@ -299,7 +349,7 @@ const ALL_TARGETS: Target[] = [
     shown: SHOWN.my,
   },
   // ダッシュボード（T16。D-51）：団体代表の /。表示の印は代表する団体のカード（模擬店10）が見えたこと（D-58 でもこのまま）。
-  // 先読み・先送りの表にある（D-45）
+  // 先読み・先送りの表にある（D-45）。D-58 の記録として、枠の印（frame）と全部の欄がそろう（settled）の時刻も出す（PR B のレビュー）
   {
     id: 'home',
     name: '/（団体代表）',
@@ -311,6 +361,8 @@ const ALL_TARGETS: Target[] = [
     },
     shown: SHOWN.home,
     label: 'カード',
+    widgets: REP_WIDGETS,
+    marks: [FRAME, SETTLED],
   },
   // 提出物（T19。D-55）：団体代表の自団体の提出物（スマホ。先読み・記録・先送りの表にある。D-45）。表示の印は団体名とカード
   {
@@ -524,8 +576,25 @@ interface Run {
   supabase: number;
   /** 開き始めたときの 1 分の load average */
   load: number;
+  /** 開き始めたときの、ログインのセッションの期限までの残り（秒。読めなければ null。PR B のレビューの F6） */
+  tokenLeftS: number | null;
   /** リクエストの始まりと終わり（goto からの ms。1回目だけ perf.json に残す。何が直列に待っているかを見るため） */
   waterfall: string[];
+}
+
+/**
+ * 止まった・失敗した回の誤り。そのときまだ応答の終わっていなかったリクエスト（pending）と、PERF_TRACE のときはそれまでのリクエストの並び
+ * （waterfall）を持つ（perf.json の errors に残す。PR B のレビューの F4）
+ */
+class RunError extends Error {
+  constructor(
+    message: string,
+    readonly pending: string[],
+    readonly waterfall: string[],
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
 }
 
 // ---------------------------------------------------------------- 負荷（1 分の load average）
@@ -619,16 +688,50 @@ async function startH2(tls: { key: Buffer; cert: Buffer }, root: string, port: n
   return { origin: `https://localhost:${port}`, close: () => new Promise((r) => server.close(() => r())) };
 }
 
+// ---------------------------------------------------------------- ログインのセッション（PR B のレビューの F6）
+
+/** 人ごとの storageState（setup が保存したもの。ログインし直したら差し替える） */
+const states = new Map<StoredUser, StoredState>();
+/** ログインし直した回数（perf.json の session.relogins） */
+let relogins = 0;
+
+function stateOf(user: StoredUser): StoredState {
+  let s = states.get(user);
+  if (!s) {
+    s = JSON.parse(readFileSync(storageStateFor(user), 'utf8')) as StoredState;
+    states.set(user, s);
+  }
+  return s;
+}
+
+/** その人のセッションの期限までの残り（秒。読めなければ null） */
+const tokenLeftS = (user: StoredUser) => sessionLeftS(stateOf(user), Date.now());
+
+/**
+ * 組の前（と again の準備の前）に呼ぶ：その人のセッションの残りが TOKEN_MIN_S を切っていたら、パスワードでログインし直して storageState の
+ * セッションを差し替える（次に作るコンテキストから新しいセッションで開く。組の2回は同じセッションで開く）
+ */
+async function ensureSession(user: StoredUser): Promise<void> {
+  const left = tokenLeftS(user);
+  if (left === null || left >= TOKEN_MIN_S) return;
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_PUBLISHABLE_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: USERS[user], password: TEST_PASSWORD }),
+  });
+  if (!res.ok) throw new Error(`${user} のログインをし直せません（${res.status}）`);
+  states.set(user, replaceSession(stateOf(user), (await res.json()) as FreshSession, Date.now()));
+  relogins++;
+  console.log(`[セッション] ${user} の残りが ${left} 秒だったので、ログインし直した（残り ${tokenLeftS(user)} 秒。${relogins} 回目）`);
+}
+
 /**
  * storageState（ログインのセッション）。先読みのために覚えた id は外す（ログインの準備で画面を開いたときに覚えたもの。
  * 計る開き方は first・again で決める）。localStorage は計る書き出しの origin に移す（Supabase のセッションは origin ごとの
  * localStorage にある。cookie は使わない）。
  */
 function storageStateAt(user: StoredUser, origin: string) {
-  const state = JSON.parse(readFileSync(storageStateFor(user), 'utf8')) as {
-    cookies: unknown[];
-    origins: { origin: string; localStorage: { name: string; value: string }[] }[];
-  };
+  const state = stateOf(user);
   return {
     cookies: [],
     origins: state.origins.map((o) => ({
@@ -715,10 +818,20 @@ async function measure(browser: Browser, s: Scenario, t: Target, origin: string,
     const waterfall: { at: number; line: string }[] = [];
     const isSupabase = (url: string) => /\/(rest|auth)\/v1\//.test(url);
     const traceAll = process.env.PERF_TRACE === 'all';
+    // まだ応答の終わっていないリクエスト（止まった回に、どれを待っていたかを残す。PR B のレビューの F4）
+    const inflight = new Map<Request, { at: number; line: string }>();
+    const describeRequest = (r: Request) => {
+      const u = new URL(r.url());
+      return isSupabase(r.url())
+        ? `Supabase ${r.method()} ${u.pathname.replace(/^\/(rest|auth)\/v1\//, '')}`
+        : `${r.resourceType()} ${r.method()} ${u.pathname}`;
+    };
     page.on('request', (r) => {
       if (isSupabase(r.url())) supabase++;
+      inflight.set(r, { at: Date.now() - start, line: describeRequest(r) });
     });
     page.on('requestfinished', (r) => {
+      inflight.delete(r);
       const t = r.timing();
       const begin = Math.round(t.startTime - start);
       const end = Math.round(t.startTime + t.responseEnd - start);
@@ -728,6 +841,7 @@ async function measure(browser: Browser, s: Scenario, t: Target, origin: string,
       waterfall.push({ at: begin, line: `${begin}〜${end} ${r.method()} ${u.pathname.replace(/^\/(rest|auth)\/v1\//, '')}${traceAll ? u.search.slice(0, 60) : ''}` });
     });
     page.on('requestfailed', (r) => {
+      inflight.delete(r);
       if (!isSupabase(r.url())) return;
       const at = Date.now() - start;
       waterfall.push({ at, line: `${at}〜 失敗（${r.failure()?.errorText ?? '?'}） ${r.method()} ${new URL(r.url()).pathname.replace(/^\/(rest|auth)\/v1\//, '')}` });
@@ -762,10 +876,22 @@ async function measure(browser: Browser, s: Scenario, t: Target, origin: string,
       },
       [fns, { room: ROOM, group: t.group ?? REP_GROUP, widgets: t.widgets ?? [] }] as const,
     );
+    /** 止まった・失敗した回の誤り（まだ応答の終わっていないリクエストと、PERF_TRACE のときはそれまでの並びを添える） */
+    const stalled = (e: unknown, message = e instanceof Error ? e.message : String(e)) => {
+      const now = Date.now() - start;
+      const pending = [...inflight.values()].sort((a, b) => a.at - b.at).map((p) => `${p.line}（${p.at} ms から ${now - p.at} ms 待った）`);
+      const trace = process.env.PERF_TRACE ? [...waterfall].sort((a, b) => a.at - b.at).map((w) => w.line) : [];
+      return new RunError(message, pending, trace, { cause: e });
+    };
     const load = noteLoad();
+    const tokenLeft = tokenLeftS(t.user);
     start = Date.now();
-    await page.goto(t.url(s), { waitUntil: 'commit' });
-    await t.ready(page);
+    try {
+      await page.goto(t.url(s), { waitUntil: 'commit' });
+      await t.ready(page);
+    } catch (e) {
+      throw stalled(e);
+    }
     const expectMs = Date.now() - start;
     try {
       await page.waitForFunction(
@@ -780,7 +906,7 @@ async function measure(browser: Browser, s: Scenario, t: Target, origin: string,
       const got = await page.evaluate(() => (globalThis as unknown as { __perfMarks?: Record<string, number> }).__perfMarks ?? {});
       // 枠の印が真にならないのは、出る欄が変わったときが多い（その人に出す欄を直す）ので、出ている欄も添える
       const widgets = t.widgets ? `。出ている欄：${((await page.evaluate(WIDGETS_IN_PAGE)) as string[]).join('・')}` : '';
-      throw new Error(`印が真にならない（${ids.filter((k) => typeof got[k] !== 'number').join('・')}${widgets}）：${String(e).split('\n')[0]}`, { cause: e });
+      throw stalled(e, `印が真にならない（${ids.filter((k) => typeof got[k] !== 'number').join('・')}${widgets}）：${String(e).split('\n')[0]}`);
     }
     const at = await page.evaluate(() => (globalThis as unknown as { __perfMarks: Record<string, number> }).__perfMarks);
     const marks = Object.fromEntries(ids.map((k) => [k, Math.round(at[k]!)]));
@@ -809,6 +935,7 @@ async function measure(browser: Browser, s: Scenario, t: Target, origin: string,
       lastScriptMs,
       supabase,
       load,
+      tokenLeftS: tokenLeft,
       waterfall: waterfall.sort((a, b) => a.at - b.at).map((w) => w.line),
     };
   } finally {
@@ -843,6 +970,10 @@ interface CellError {
   /** 何回目（組）か。-1 は again の準備（覚えたリクエストを取る） */
   run: number;
   message: string;
+  /** 止まった・失敗したときに、まだ応答の終わっていなかったリクエスト（PR B のレビューの F4） */
+  pending?: string[];
+  /** PERF_TRACE のとき、それまでのリクエストの並び */
+  waterfall?: string[];
 }
 
 interface Server {
@@ -885,6 +1016,9 @@ test('T14 4G での表示の速さ：スマホの画面とダッシュボード�
         runs: RUNS,
         ab: AB_OUT ? { a: AB_OUT, b: OUT_DIR, ports: { http1: { a: AB_PORT, b: PORT }, h2: { a: AB_H2_PORT, b: H2_PORT } }, diff: 'b - a' } : null,
         load: { ...quiet, max: loadMax.all, mark: LOAD_MARK, over: loadMax.all > LOAD_MARK },
+        // ログインのセッション：組の前に残りが minS 秒を切っていたらログインし直す（relogins は回数）。markS を切った回のあるマスは tokenLow
+        session: { minS: TOKEN_MIN_S, markS: TOKEN_MARK_S, relogins },
+        serves: SERVES.length > 0 ? SERVES : null,
         // PERF_AB：画面ごと・印ごとに、計り終えたマスの対の差を合わせたもの（採る基準を画面で見るとき。マスごとは results の diff）
         pooled: AB_OUT ? poolDiffs(results as unknown as CellDiff[]) : null,
         results,
@@ -915,9 +1049,9 @@ test('T14 4G での表示の速さ：スマホの画面とダッシュボード�
     testInfo.annotations.push({ type: '4G の速さ', description: startLine });
     write();
     const servers: Server[] = [
-      { name: 'http1', origins: { b: `http://localhost:${PORT}`, ...(AB_OUT ? { a: `http://localhost:${AB_PORT}` } : {}) } },
+      { name: 'http1' as const, origins: { b: `http://localhost:${PORT}`, ...(AB_OUT ? { a: `http://localhost:${AB_PORT}` } : {}) } },
       ...(h2.b ? [{ name: 'h2' as const, origins: { b: h2.b.origin, ...(h2.a ? { a: h2.a.origin } : {}) } }] : []),
-    ];
+    ].filter((sv) => SERVES.length === 0 || SERVES.includes(sv.name));
     for (const server of servers) {
       for (const visit of VISITS) {
         for (const t of TARGETS) {
@@ -927,15 +1061,22 @@ test('T14 4G での表示の速さ：スマホの画面とダッシュボード�
             const message = String(e instanceof Error ? e.message : e)
               .replace(/\s*\n\s*/g, ' / ')
               .slice(0, 400);
-            errors.push({ server: server.name, visit, page: t.name, build, run, message });
-            console.log(`[${label}] ${t.name}（${build.toUpperCase()}${run < 0 ? '・again の準備' : `・${run + 1} 回目`}）が止まった・失敗した：${message}`);
+            const detail: Pick<CellError, 'pending' | 'waterfall'> =
+              e instanceof RunError ? { pending: e.pending, ...(e.waterfall.length > 0 ? { waterfall: e.waterfall } : {}) } : {};
+            errors.push({ server: server.name, visit, page: t.name, build, run, message, ...detail });
+            const pendingLine = detail.pending
+              ? `\n  まだ終わっていないリクエスト：${detail.pending.length === 0 ? 'なし' : `\n  ${detail.pending.join('\n  ')}`}`
+              : '';
+            console.log(`[${label}] ${t.name}（${build.toUpperCase()}${run < 0 ? '・again の準備' : `・${run + 1} 回目`}）が止まった・失敗した：${message}${pendingLine}`);
           };
           const runs: Record<Build, (Run | null)[]> = { a: [], b: [] };
           const hints: Partial<Record<Build, [string, string][]>> = {};
+          const reloginsBefore = relogins;
           let skipped = 0;
           for (const b of BUILDS) {
             if (skipped > 0) break;
             try {
+              await ensureSession(t.user);
               hints[b] = visit === 'again' ? await learnHints(browser, s, t, server.origins[b]!) : [];
             } catch (e) {
               fail(b, -1, e);
@@ -945,6 +1086,8 @@ test('T14 4G での表示の速さ：スマホの画面とダッシュボード�
           // 同じ書き出しがこのマスで2回続けて失敗したら、残りを飛ばす（止まりが続くと 1 回 60 秒ほどかかるため）
           const streak: Record<Build, number> = { a: 0, b: 0 };
           for (let i = 0; i < RUNS && skipped === 0; i++) {
+            // 組の2回を同じセッションで開く（残りが少なければ、組の前にログインし直す。PR B のレビューの F6）
+            await ensureSession(t.user);
             for (const b of AB_OUT ? pairOrder(i) : (['b'] as const)) {
               try {
                 runs[b][i] = await measure(browser, s, t, server.origins[b]!, hints[b]);
@@ -959,7 +1102,16 @@ test('T14 4G での表示の速さ：スマホの画面とダッシュボード�
           }
           noteLoad();
           const B = buildResult(t, runs.b);
-          const loadPart = { loadMax: loadMax.cell, loadOver: loadMax.cell > LOAD_MARK };
+          // セッションの残り：マスの中でいちばん少なかった回（A・B とも）。TOKEN_MARK_S を切った回があれば tokenLow（比べに使わない）
+          const lefts = [...runs.a, ...runs.b].flatMap((r) => (r && r.tokenLeftS !== null ? [r.tokenLeftS] : []));
+          const tokenMinS = lefts.length > 0 ? Math.min(...lefts) : null;
+          const loadPart = {
+            loadMax: loadMax.cell,
+            loadOver: loadMax.cell > LOAD_MARK,
+            tokenMinS,
+            tokenLow: tokenMinS !== null && tokenMinS < TOKEN_MARK_S,
+            relogins: relogins - reloginsBefore,
+          };
           const flag = (v: number | null, limit: number | null) => (v !== null && limit !== null && v > limit ? ` ※${limit / 1000} 秒を超えた` : '');
           const primary = { label: t.label ?? '表示', limit: t.limit ?? LIMIT_MS };
           const extra = t.marks ?? [];
@@ -980,7 +1132,8 @@ test('T14 4G での表示の速さ：スマホの画面とダッシュボード�
               `。前の測り方〔expect〕の中央値 ${show(median(ok.map((r) => r.expectMs)))} ms、` +
               `DOMContentLoaded ${ok.map((r) => r.dcl).join('・')} ms、最後の script ${ok.map((r) => r.lastScriptMs).join('・')} ms、` +
               `script ${r0?.scripts ?? '—'} 本 ${r0?.scriptKB ?? '—'} KB、Supabase ${ok.map((r) => r.supabase).join('・')} 回、負荷 ${ok.map((r) => r.load).join('・')}` +
-              `${flag(B.medianMs, primary.limit)}${loadPart.loadOver ? ` ※負荷の最大 ${loadPart.loadMax}` : ''}`;
+              `${flag(B.medianMs, primary.limit)}${loadPart.loadOver ? ` ※負荷の最大 ${loadPart.loadMax}` : ''}` +
+              `、セッションの残りの最小 ${show(tokenMinS)} 秒${loadPart.tokenLow ? ' ※比べに使わない' : ''}`;
           } else {
             const A = buildResult(t, runs.a);
             const pick = (rs: (Run | null)[], id: string) => rs.map((r) => r?.marks[id]);
@@ -998,7 +1151,8 @@ test('T14 4G での表示の速さ：スマホの画面とダッシュボード�
               `[${label}] ${t.name}：B − A ${d('shown', primary.label)}${extra.map((m) => `、${d(m.id, m.label)}`).join('')}、${diff.shown!.n} 組。` +
               `${primary.label}の中央値 A ${show(A.medianMs)}・B ${show(B.medianMs)} ms${flag(B.medianMs, primary.limit)}` +
               extra.map((m) => `、${m.label} A ${show(A.marks[m.id]!.median)}・B ${show(B.marks[m.id]!.median)} ms${flag(B.marks[m.id]!.median, m.limit)}`).join('') +
-              `、後 − 先 ${signed(summarize(order).median)} ms、負荷の最大 ${loadPart.loadMax}${loadPart.loadOver ? ' ※' : ''}`;
+              `、後 − 先 ${signed(summarize(order).median)} ms、負荷の最大 ${loadPart.loadMax}${loadPart.loadOver ? ' ※' : ''}` +
+              `、セッションの残りの最小 ${show(tokenMinS)} 秒${loadPart.tokenLow ? ' ※比べに使わない' : ''}`;
           }
           if (skipped > 0) line += `（止まり・失敗が続いたので残り ${skipped} 回を飛ばした）`;
           testInfo.annotations.push({ type: '4G の速さ', description: line });
@@ -1009,7 +1163,7 @@ test('T14 4G での表示の速さ：スマホの画面とダッシュボード�
     }
     if (AB_OUT) {
       for (const p of poolDiffs(results as unknown as CellDiff[])) {
-        const label = p.mark === 'shown' ? (TARGETS.find((t) => t.name === p.page)?.label ?? '表示') : (FRAME.id === p.mark ? FRAME.label : CARD.label);
+        const label = p.mark === 'shown' ? (TARGETS.find((t) => t.name === p.page)?.label ?? '表示') : (MARK_LABELS[p.mark as Mark['id']] ?? p.mark);
         const pooledLine =
           `[B − A・全部のマス] ${p.page} ${label}：中央値 ${signed(p.median)} ms（四分位 ${signed(p.q1)}〜${signed(p.q3)}）、${p.n} 組、` +
           `${p.cells} マスのうち中央値が負 ${p.cellsNegative}`;

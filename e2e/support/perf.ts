@@ -116,3 +116,57 @@ export function signed(v: number | null): string {
   if (v === 0) return '0';
   return v > 0 ? `+${v}` : `−${-v}`;
 }
+
+// ---------------------------------------------------------------- ログインのセッション（PR B のレビューの F6）
+// 計る回は、setup が保存したログイン（storageState。e2e/.auth/<user>.json）のセッションを毎回の新しいコンテキストに入れて開く。セッションの
+// 期限（1 時間）が近いと、<head> の script は期限まで一定の秒数（main 30 秒・PR B の後 90 秒）を切ったら先に送らず、アプリ（supabase-js）は
+// 開いたときに先にトークンを更新するので、長い回の終わりでは A と B の開き方が気づかれないまま変わる。perf.spec.ts は1回ごとに残りを残し、
+// 組の前に残りが少なければログインし直して、ここで storageState のセッションを差し替える。
+
+/** storageState の形（Playwright。使う所だけ） */
+export interface StoredState {
+  cookies: unknown[];
+  origins: { origin: string; localStorage: { name: string; value: string }[] }[];
+}
+
+/** supabase-js がセッションを置く localStorage のキー（sb-<ref>-auth-token） */
+const isSessionKey = (name: string) => /^sb-.+-auth-token$/.test(name);
+
+/** storageState のセッションの期限までの残り（秒。四捨五入。nowMs は Date.now()）。セッションか期限（expires_at）がなければ null */
+export function sessionLeftS(state: StoredState, nowMs: number): number | null {
+  for (const o of state.origins) {
+    for (const e of o.localStorage) {
+      if (!isSessionKey(e.name)) continue;
+      const exp = (JSON.parse(e.value) as { expires_at?: unknown }).expires_at;
+      return typeof exp === 'number' ? Math.round(exp - nowMs / 1000) : null;
+    }
+  }
+  return null;
+}
+
+/** パスワードでログインし直したときの応答（Auth の /token?grant_type=password。supabase-js が保存するセッションと同じ形） */
+export interface FreshSession {
+  access_token: string;
+  expires_in: number;
+  expires_at?: number;
+  [key: string]: unknown;
+}
+
+/**
+ * storageState のセッション（どの origin の分も）を、ログインし直したセッションに差し替えた新しい storageState を返す（元は変えない。ほかの
+ * キーはそのまま）。応答に expires_at がなければ、auth-js と同じく今 + expires_in（秒）を足す。セッションのキーがなければ止める
+ */
+export function replaceSession(state: StoredState, session: FreshSession, nowMs: number): StoredState {
+  const value = JSON.stringify({ ...session, expires_at: session.expires_at ?? Math.round(nowMs / 1000) + session.expires_in });
+  let replaced = 0;
+  const origins = state.origins.map((o) => ({
+    ...o,
+    localStorage: o.localStorage.map((e) => {
+      if (!isSessionKey(e.name)) return e;
+      replaced++;
+      return { ...e, value };
+    }),
+  }));
+  if (replaced === 0) throw new Error('storageState にログインのセッション（sb-…-auth-token）がない');
+  return { ...state, origins };
+}

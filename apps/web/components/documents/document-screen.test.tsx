@@ -56,7 +56,7 @@ import {
   submittedMessage,
   WITHDRAW_CONFIRM_TEXTS,
 } from './document-screen';
-import { documentWritesImport, resetDocumentWritesForTest } from './document-writes';
+import { documentWritesImport, loadDocumentWrites, resetDocumentWritesForTest } from './document-writes';
 import { fileWindow, POPUP_BLOCKED_MESSAGE } from './file-open';
 import { REREAD_AGAIN_FAILED_MESSAGE, REREAD_FAILED_NOTICE, SUBMISSION_DONE_BEFORE, SUBMISSION_UNKNOWN } from './submission-write';
 import { DISCARD_UNKNOWN_MESSAGE, FILE_STATE_TEXTS, UPLOADING_LEAVE_MESSAGE, UPLOADING_LEAVE_MESSAGES } from './use-document-uploader';
@@ -487,7 +487,7 @@ function choose(documentId: string, files: File[]) {
   fireEvent.change(input, { target: { files } });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(NOW));
   seed();
@@ -497,9 +497,17 @@ beforeEach(() => {
   storageCalls = [];
   h.client = makeClient();
   h.reencode.mockClear();
+  // 書き込みの JS（document-writes.ts の動的 import。FU3 の PR B の案 5）を、テストの前に読み終えておく。初めての import は vitest の
+  // 変換で時間がかかり、その間は予約がまだ送られていない。テストがそれを待たずに進んで落ちると、遅れて送られた予約・アップロードが次の
+  // テストの偽の DB と Storage に届いていた（PR B のレビューの F1）。初めて使うときに読む動きは、下の「書き込みの JS は初めて使うときに
+  // 読む」で、読み終えたものを忘れさせてから確かめる。
+  await loadDocumentWrites();
 });
 afterEach(() => {
   cleanup();
+  // 止めたままのアップロード（storageOverride の約束）や RPC の差し替えを、次のテストに残さない
+  storageOverride = null;
+  override = null;
   vi.useRealTimers();
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -691,6 +699,11 @@ describe('T19 自団体の提出物：ファイルを足す', () => {
     expect(within(c()).getByTestId('document-uploading').textContent).toContain(UPLOADING_LEAVE_MESSAGE);
     expect((within(c()).getByTestId('document-file-add') as HTMLButtonElement).disabled).toBe(true);
     expect(within(c()).getByTestId('document-submit-hint').textContent).toBe(SUBMIT_BLOCKERS.uploading);
+    // 「アップロード中…（1/1）」は送る前に出す。予約と上げるが送られるのを待ってから中身を見る（書き込みの JS の読み込みの速さに頼らない）
+    await waitFor(() => {
+      expect(rpcCalls('reserve_document_file')).toHaveLength(1);
+      expect(storageOf('upload')).toHaveLength(1);
+    });
     const [reserve] = rpcCalls('reserve_document_file');
     const args = rpcArgs(reserve!);
     expect(args).toMatchObject({ p_document_id: D_PLAN, p_group_id: G1.id, p_content_type: 'application/pdf', p_size: 4000 });
@@ -920,6 +933,8 @@ describe('T19 自団体の提出物：ファイルを足す', () => {
     expect(year.textContent).not.toContain('下書き');
     await user.click(within(year).getByRole('button', { name: 'やめる（アップロードを続ける）' }));
     expect(h.setYear).not.toHaveBeenCalled();
+    // 上げるが送られてから解く（まだなら release は空の関数のまま）
+    await waitFor(() => expect(storageOf('upload')).toHaveLength(1));
     await act(async () => release());
     await waitFor(() => expect(within(cardOf(D_PLAN)).queryByTestId('document-uploading')).toBeNull());
     fireEvent.click(screen.getByTestId('probe-nav'));

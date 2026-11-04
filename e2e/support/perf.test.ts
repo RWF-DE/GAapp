@@ -1,6 +1,18 @@
 // 4G の速さの計測の集計と交互の順（e2e/support/perf.ts。FU3）。ブラウザにも DB にもつながない。
 import { describe, expect, it } from 'vitest';
-import { orderEffects, pairedDiffs, pairOrder, poolDiffs, quantile, signed, summarize, type CellDiff } from './perf';
+import {
+  orderEffects,
+  pairedDiffs,
+  pairOrder,
+  poolDiffs,
+  quantile,
+  replaceSession,
+  sessionLeftS,
+  signed,
+  summarize,
+  type CellDiff,
+  type StoredState,
+} from './perf';
 
 describe('quantile（R の type 7）', () => {
   it('偶数の数の中央値は真ん中の2つの平均、四分位は線形に補う', () => {
@@ -110,5 +122,46 @@ describe('poolDiffs（画面ごと・印ごとに全部のマスを合わせる�
 describe('signed', () => {
   it('符号をつけて表す（負は全角の −）', () => {
     expect([12, -8, 0, -12.5, null].map(signed)).toEqual(['+12', '−8', '0', '−12.5', '—']);
+  });
+});
+
+// PR B のレビューの F6：ログインのセッションの期限までの残りを1回ごとに残し、残りが少なければログインし直す（storageState の差し替え）
+describe('sessionLeftS・replaceSession（ログインのセッションの残りと差し替え）', () => {
+  const NOW = Date.UTC(2026, 10, 3, 22, 0, 0);
+  const nowS = NOW / 1000;
+  const hint = { name: 'gaapp:prefetch:u1', value: '{"yearId":"y"}' };
+  const stateWith = (session: Record<string, unknown> | null, origin = 'http://localhost:3400'): StoredState => ({
+    cookies: [],
+    origins: [{ origin, localStorage: [hint, ...(session ? [{ name: 'sb-127-auth-token', value: JSON.stringify(session) }] : [])] }],
+  });
+
+  it('期限（expires_at。秒）までの残りを秒で返す（切り捨てない・四捨五入）。セッションがない・期限がないなら null', () => {
+    expect(sessionLeftS(stateWith({ access_token: 'a', expires_at: nowS + 299.6 }), NOW)).toBe(300);
+    expect(sessionLeftS(stateWith({ access_token: 'a', expires_at: nowS - 10 }), NOW)).toBe(-10);
+    expect(sessionLeftS(stateWith(null), NOW)).toBeNull();
+    expect(sessionLeftS(stateWith({ access_token: 'a' }), NOW)).toBeNull();
+  });
+
+  it('差し替え：どの origin のセッションも新しいセッションにする（ほかのキーと元の storageState は変えない）', () => {
+    const old = { access_token: 'old', expires_at: nowS + 60 };
+    const before: StoredState = { cookies: [], origins: [stateWith(old).origins[0]!, stateWith(old, 'https://localhost:3402').origins[0]!] };
+    const copy = JSON.parse(JSON.stringify(before)) as StoredState;
+    const after = replaceSession(before, { access_token: 'new', expires_in: 3600, expires_at: nowS + 3600, refresh_token: 'r' }, NOW);
+    expect(before).toEqual(copy);
+    expect(after.origins.map((o) => o.origin)).toEqual(['http://localhost:3400', 'https://localhost:3402']);
+    for (const o of after.origins) {
+      expect(o.localStorage[0]).toEqual(hint);
+      expect(JSON.parse(o.localStorage[1]!.value)).toEqual({ access_token: 'new', expires_in: 3600, expires_at: nowS + 3600, refresh_token: 'r' });
+    }
+    expect(sessionLeftS(after, NOW)).toBe(3600);
+  });
+
+  it('応答に expires_at がなければ、auth-js と同じく今 + expires_in（秒）を足す', () => {
+    const after = replaceSession(stateWith({ access_token: 'old', expires_at: nowS + 60 }), { access_token: 'new', expires_in: 3600 }, NOW);
+    expect(sessionLeftS(after, NOW)).toBe(3600);
+  });
+
+  it('セッションのない storageState は差し替えられない（止める）', () => {
+    expect(() => replaceSession(stateWith(null), { access_token: 'new', expires_in: 3600 }, NOW)).toThrow('セッション');
   });
 });
