@@ -3,7 +3,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(117);
+select plan(122);
 
 -- エラーの message と detail（invalid_input の field を確かめる）。成功したら 'ok'
 create function tests.error_of(p_sql text) returns text language plpgsql as $$
@@ -236,6 +236,12 @@ select tests.set_scenario('requesting');
 insert into public.rules (year_id, code, kind, params) values
   (tests.id('Y1'), 'S99', 'keep', jsonb_build_object('group', gen_random_uuid())),
   (tests.id('Y1'), 'S98', 'keep', jsonb_build_object('groups', jsonb_build_array(tests.id('G1'), tests.id('G2'))));
+-- 団体を参照しないルール（有効・無効）と、団体の配列が空のルール、すでに無効でメモのある団体のルール（D-59）
+insert into public.rules (year_id, code, kind, params, enabled, memo) values
+  (tests.id('Y1'), 'S96', 'substitute', jsonb_build_object('from', 'desk', 'to', 'caster_desk'), true, '代替のメモ'),
+  (tests.id('Y1'), 'S95', 'substitute', jsonb_build_object('from', 'chair', 'to', 'caster_chair'), false, null),
+  (tests.id('Y1'), 'S94', 'keep', jsonb_build_object('groups', '[]'::jsonb), true, null),
+  (tests.id('Y1'), 'S93', 'keep', jsonb_build_object('group', tests.id('G1')), false, '元のメモ');
 select tests.login_anon();
 select throws_ok($$ select public.create_year_from(tests.id('Y1'), 'T-Y3', date '2028-10-01') $$, '42501', null, 'anon は年度を作れない');
 select tests.logout();
@@ -282,15 +288,24 @@ select is((select status from public.years where id = tests.id('Y3')), 'preparin
 select is((select prev_year_id from public.years where id = tests.id('Y3')), tests.id('Y1'), 'prev_year_id は複製元');
 select is((select array_agg(user_id::text || ':' || role) from public.year_roles where year_id = tests.id('Y3')),
   array[tests.id('admin')::text || ':admin'], '作った人だけが新しい年度の admin（D-01。ほかのロールは複製しない）');
-select is((select string_agg(name, ' ' order by name) from public.groups where year_id = tests.id('Y3')), 'T-G1 T-G2 T-G4', '団体を複製');
+select is((select count(*)::int from public.groups where year_id = tests.id('Y1')), 3,
+  '複製元の Y1 には団体が3件ある（fixture。次の「複製しない」が空振りでない）');
+select is((select count(*)::int from public.groups where year_id = tests.id('Y3')), 0, '団体は複製しない（D-59）');
 select is((select count(*)::int from public.group_members gm join public.groups g on g.id = gm.group_id where g.year_id = tests.id('Y3')), 0,
-  '団体代表は複製しない');
-select is((select params ->> 'group' from public.rules where year_id = tests.id('Y3') and code = 'S05'),
-  (select id::text from public.groups where year_id = tests.id('Y3') and name = 'T-G2'), 'ルールの団体 id を名前で付け替える');
-select is((select params -> 'groups' from public.rules where year_id = tests.id('Y3') and code = 'S98'),
-  (select jsonb_agg(id order by name) from public.groups where year_id = tests.id('Y3') and name in ('T-G1', 'T-G2')), '団体の配列も付け替える');
-select ok((select not enabled and memo like '%見つからなかった%' from public.rules where year_id = tests.id('Y3') and code = 'S99'),
-  '付け替えられないルールは無効にして memo に理由を書く');
+  '団体代表も複製しない');
+select is((select count(*)::int from public.rules where year_id = tests.id('Y3')),
+  (select count(*)::int from public.rules where year_id = tests.id('Y1')), 'ルールは全件複製する');
+select is((select string_agg(code || ':' || enabled::text, ' ' order by code) from public.rules where year_id = tests.id('Y3')),
+  'S05:false S93:false S94:true S95:false S96:true S98:false S99:false',
+  '団体を参照するルール（group が文字列・groups が空でない配列）は無効、参照しないルール（空の groups を含む）は enabled のまま');
+select is((select params from public.rules where year_id = tests.id('Y3') and code = 'S05'),
+  (select params from public.rules where year_id = tests.id('Y1') and code = 'S05'), '団体 id は付け替えず、前年度のままにする');
+select ok((select not enabled and memo = 'T-Y1改 から複製したとき、団体は複製しないので無効にした' from public.rules where year_id = tests.id('Y3') and code = 'S05'),
+  '無効にしたルールの memo に理由を書く');
+select is((select memo from public.rules where year_id = tests.id('Y3') and code = 'S93'),
+  '元のメモ / T-Y1改 から複製したとき、団体は複製しないので無効にした', '元のメモがあれば「 / 」でつなぐ（すでに無効でも理由を足す）');
+select is((select memo from public.rules where year_id = tests.id('Y3') and code = 'S96'), '代替のメモ', '団体を参照しないルールのメモは変えない');
+select is((select memo from public.rules where year_id = tests.id('Y3') and code = 'S95'), null, '団体を参照しない無効のルールのメモも変えない');
 select is((select count(*)::int from public.room_years where year_id = tests.id('Y3') and not usable), 1, '使用不可を複製');
 select is((select count(*)::int from public.stocks where year_id = tests.id('Y3')), 0, '在庫は複製しない');
 select is((select count(*)::int from public.events where year_id = tests.id('Y1')), 3,
