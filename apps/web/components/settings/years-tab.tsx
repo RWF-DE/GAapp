@@ -246,7 +246,7 @@ function YearCreateCard({ year, onCreated }: { year: YearRow; onCreated: (r: Cre
           codes === null
             ? DISABLED_RULES_UNKNOWN_MESSAGE
             : codes.length > 0
-              ? `対象の団体が見つからず無効になったルールが ${codes.length} 件あります（${codes.join('、')}）。ルール画面で確かめてください`
+              ? `団体は複製しないので無効になったルールが ${codes.length} 件あります（${codes.join('、')}）。団体を入れてから、ルール画面で団体を選び直して有効にしてください`
               : '無効になったルールはありません',
         duration: 15000,
       });
@@ -285,15 +285,15 @@ function YearCreateCard({ year, onCreated }: { year: YearRow; onCreated: (r: Cre
         <div className="grid gap-2 text-sm md:grid-cols-2">
           <div className="rounded-md border p-3">
             <p className="font-medium">複製されるもの</p>
-            <p className="text-muted-foreground">団体・ルール・場所の使用不可の設定</p>
+            <p className="text-muted-foreground">ルール・場所の使用不可の設定</p>
           </div>
           <div className="rounded-md border p-3">
             <p className="font-medium">複製されないもの</p>
-            <p className="text-muted-foreground">在庫・申請・振り分け・了承・ほかの人のロール・招待</p>
+            <p className="text-muted-foreground">団体・在庫・申請・振り分け・了承・ほかの人のロール・招待</p>
           </div>
         </div>
         <p className="text-sm text-muted-foreground">
-          団体を付け替えられなかったルールは無効になり、メモに理由が入ります。作った後にその件数を出します。
+          団体は毎年入れ直します（作った後に、マスタ設定の団体で取り込みます）。団体を参照するルールは無効になり、メモに理由が入ります。作った後にその件数を出します。
         </p>
         <form onSubmit={onSubmit} className="grid gap-4 md:grid-cols-2" noValidate data-testid="year-create-form">
           <Field label="新しい年度名" error={err('label')}>

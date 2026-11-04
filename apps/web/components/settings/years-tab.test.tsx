@@ -93,7 +93,7 @@ describe('新しい年度を作った後の知らせ', () => {
     await create(user);
     await waitFor(() => expect(setYear).toHaveBeenCalledWith('y10'));
     expect(toasts.success).toHaveBeenCalledWith('R10 を作りました', expect.objectContaining({
-      description: '対象の団体が見つからず無効になったルールが 1 件あります（S05）。ルール画面で確かめてください',
+      description: '団体は複製しないので無効になったルールが 1 件あります（S05）。団体を入れてから、ルール画面で団体を選び直して有効にしてください',
     }));
     expect(toasts.error).not.toHaveBeenCalled();
   });
@@ -114,6 +114,18 @@ describe('新しい年度を作った後の知らせ', () => {
     const notice = await screen.findByTestId('year-created');
     expect(notice.textContent).toContain('R10 を作りました。無効になったルールの数を確かめられませんでした。ルール画面で確かめてください。');
     expect(notice.textContent).not.toContain('無効になったルール 0 件');
+  });
+});
+
+describe('新しい年度を作る欄の説明（D-59）', () => {
+  it('団体は複製されないものに書き、複製されるものにはルールと使用不可の設定だけを書く', async () => {
+    renderTab('admin');
+    const form = await screen.findByTestId('year-create-form');
+    const card = form.closest('[class*="rounded"]') as HTMLElement;
+    const text = card.textContent ?? '';
+    expect(text).toContain('複製されるものルール・場所の使用不可の設定');
+    expect(text).toContain('複製されないもの団体・在庫・申請・振り分け・了承・ほかの人のロール・招待');
+    expect(text).toContain('団体を参照するルールは無効になり');
   });
 });
 
