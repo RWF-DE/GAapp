@@ -1,0 +1,4007 @@
+{
+  "at": "2026-11-03T23:20:44.456Z",
+  "startedAt": "2026-11-03T23:13:03.270Z",
+  "done": true,
+  "network": {
+    "offline": false,
+    "latency": 170,
+    "downloadThroughput": 1125000,
+    "uploadThroughput": 187500
+  },
+  "cpuRate": 4,
+  "runs": 3,
+  "ab": null,
+  "load": {
+    "threshold": 1,
+    "waitedS": 0,
+    "start": 0.88,
+    "timedOut": false,
+    "max": 2.66,
+    "mark": 2.5,
+    "over": true
+  },
+  "pooled": null,
+  "results": [
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/stock?room=（部員）",
+      "id": "stock",
+      "runs": [
+        {
+          "ms": 1999,
+          "marks": {
+            "shown": 1999
+          },
+          "expectMs": 2423,
+          "dcl": 472,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1563,
+          "supabase": 10,
+          "load": 0.88,
+          "waterfall": [
+            "1119〜1301 GET profiles",
+            "1132〜1327 GET year_roles",
+            "1135〜1328 GET group_members",
+            "1137〜1330 GET years",
+            "1137〜1332 POST rpc/accept_my_invitations",
+            "1459〜1664 GET rooms",
+            "1463〜1643 GET items",
+            "1468〜1652 GET room_years",
+            "1471〜1658 GET stocks",
+            "1864〜2130 GET stocks"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2019,
+          "marks": {
+            "shown": 2019
+          },
+          "expectMs": 2501,
+          "dcl": 529,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1557,
+          "supabase": 10,
+          "load": 1.05,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2139,
+          "marks": {
+            "shown": 2139
+          },
+          "expectMs": 2204,
+          "dcl": 599,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1589,
+          "supabase": 10,
+          "load": 1.05,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2019,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2019,
+          "q1": 2009,
+          "q3": 2079,
+          "min": 1999,
+          "max": 2139
+        }
+      },
+      "loadMax": 1.05,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/request（団体代表）",
+      "id": "request",
+      "runs": [
+        {
+          "ms": 2175,
+          "marks": {
+            "shown": 2175
+          },
+          "expectMs": 2636,
+          "dcl": 565,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1614,
+          "supabase": 10,
+          "load": 1.05,
+          "waterfall": [
+            "1340〜1524 GET profiles",
+            "1341〜1522 GET year_roles",
+            "1347〜1529 GET group_members",
+            "1349〜1533 GET years",
+            "1356〜1547 POST rpc/accept_my_invitations",
+            "1685〜1862 GET groups",
+            "1687〜1870 GET items",
+            "1694〜1877 GET requests",
+            "1695〜1876 GET request_submissions",
+            "1695〜1880 GET lending_items"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1998,
+          "marks": {
+            "shown": 1998
+          },
+          "expectMs": 2462,
+          "dcl": 575,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1653,
+          "supabase": 10,
+          "load": 1.05,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2101,
+          "marks": {
+            "shown": 2101
+          },
+          "expectMs": 2587,
+          "dcl": 512,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1623,
+          "supabase": 10,
+          "load": 1.12,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2101,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2101,
+          "q1": 2049.5,
+          "q3": 2138,
+          "min": 1998,
+          "max": 2175
+        }
+      },
+      "loadMax": 1.12,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/my（団体代表）",
+      "id": "my",
+      "runs": [
+        {
+          "ms": 2225,
+          "marks": {
+            "shown": 2225
+          },
+          "expectMs": 2741,
+          "dcl": 605,
+          "scripts": 18,
+          "scriptKB": 333.8,
+          "lastScriptMs": 1597,
+          "supabase": 12,
+          "load": 1.12,
+          "waterfall": [
+            "1427〜1606 GET profiles",
+            "1430〜1610 GET year_roles",
+            "1433〜1613 GET group_members",
+            "1438〜1617 GET years",
+            "1439〜1623 POST rpc/accept_my_invitations",
+            "1748〜1928 GET years",
+            "1752〜1932 GET groups",
+            "1755〜1934 GET items",
+            "1758〜1954 GET rooms",
+            "1762〜1942 GET requests",
+            "1767〜1952 GET request_submissions",
+            "1771〜2112 GET substitution_consents"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2132,
+          "marks": {
+            "shown": 2132
+          },
+          "expectMs": 2618,
+          "dcl": 989,
+          "scripts": 18,
+          "scriptKB": 333.8,
+          "lastScriptMs": 1595,
+          "supabase": 12,
+          "load": 1.11,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2064,
+          "marks": {
+            "shown": 2064
+          },
+          "expectMs": 2546,
+          "dcl": 561,
+          "scripts": 18,
+          "scriptKB": 333.8,
+          "lastScriptMs": 1568,
+          "supabase": 12,
+          "load": 1.11,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2132,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2132,
+          "q1": 2098,
+          "q3": 2178.5,
+          "min": 2064,
+          "max": 2225
+        }
+      },
+      "loadMax": 1.12,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/（団体代表）",
+      "id": "home",
+      "runs": [
+        {
+          "ms": 2278,
+          "marks": {
+            "shown": 2278
+          },
+          "expectMs": 2733,
+          "dcl": 511,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1585,
+          "supabase": 11,
+          "load": 1.1,
+          "waterfall": [
+            "1240〜1425 GET profiles",
+            "1244〜1427 GET years",
+            "1248〜1435 GET year_roles",
+            "1248〜1434 GET group_members",
+            "1255〜1447 POST rpc/accept_my_invitations",
+            "1660〜1847 GET substitution_consents",
+            "1662〜1847 GET request_submissions",
+            "1664〜1856 GET notices",
+            "1666〜1854 GET events",
+            "2134〜2317 GET v_document_status",
+            "2135〜2320 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2165,
+          "marks": {
+            "shown": 2165
+          },
+          "expectMs": 2628,
+          "dcl": 566,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1598,
+          "supabase": 11,
+          "load": 1.42,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1977,
+          "marks": {
+            "shown": 1977
+          },
+          "expectMs": 2427,
+          "dcl": 497,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1563,
+          "supabase": 11,
+          "load": 1.42,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2165,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2165,
+          "q1": 2071,
+          "q3": 2221.5,
+          "min": 1977,
+          "max": 2278
+        }
+      },
+      "loadMax": 1.42,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/document（団体代表）",
+      "id": "document",
+      "runs": [
+        {
+          "ms": 1936,
+          "marks": {
+            "shown": 1936
+          },
+          "expectMs": 1931,
+          "dcl": 527,
+          "scripts": 17,
+          "scriptKB": 304.7,
+          "lastScriptMs": 1530,
+          "supabase": 7,
+          "load": 1.38,
+          "waterfall": [
+            "1202〜1389 GET profiles",
+            "1207〜1389 GET year_roles",
+            "1209〜1402 POST rpc/accept_my_invitations",
+            "1213〜1403 GET group_members",
+            "1214〜1402 GET years",
+            "1478〜1661 GET v_document_status",
+            "1480〜1662 GET v_document_files"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1815,
+          "marks": {
+            "shown": 1815
+          },
+          "expectMs": 2234,
+          "dcl": 523,
+          "scripts": 17,
+          "scriptKB": 304.7,
+          "lastScriptMs": 1513,
+          "supabase": 7,
+          "load": 1.38,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1793,
+          "marks": {
+            "shown": 1793
+          },
+          "expectMs": 1918,
+          "dcl": 545,
+          "scripts": 17,
+          "scriptKB": 304.7,
+          "lastScriptMs": 1543,
+          "supabase": 7,
+          "load": 1.35,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1815,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1815,
+          "q1": 1804,
+          "q3": 1875.5,
+          "min": 1793,
+          "max": 1936
+        }
+      },
+      "loadMax": 1.38,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/（総務部門員）",
+      "id": "soumu-home",
+      "runs": [
+        {
+          "ms": 2693,
+          "marks": {
+            "shown": 2693,
+            "frame": 1954
+          },
+          "expectMs": 2877,
+          "dcl": 546,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1572,
+          "supabase": 13,
+          "load": 1.35,
+          "waterfall": [
+            "1233〜1411 GET year_roles",
+            "1233〜1419 GET profiles",
+            "1239〜1427 GET years",
+            "1240〜1429 GET group_members",
+            "1242〜1430 POST rpc/accept_my_invitations",
+            "1624〜1802 GET documents",
+            "1630〜1830 GET groups",
+            "1632〜1828 GET rooms",
+            "1641〜1829 GET events",
+            "1643〜1845 GET notices",
+            "1644〜1856 GET v_document_status",
+            "1649〜2001 GET years",
+            "1656〜2016 GET year_roles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2332,
+          "marks": {
+            "shown": 2332,
+            "frame": 1827
+          },
+          "expectMs": 2658,
+          "dcl": 539,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1571,
+          "supabase": 13,
+          "load": 1.32,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2528,
+          "marks": {
+            "shown": 2528,
+            "frame": 1966
+          },
+          "expectMs": 2837,
+          "dcl": 537,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1551,
+          "supabase": 13,
+          "load": 1.32,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2528,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2528,
+          "q1": 2430,
+          "q3": 2610.5,
+          "min": 2332,
+          "max": 2693
+        },
+        "frame": {
+          "n": 3,
+          "median": 1954,
+          "q1": 1890.5,
+          "q3": 1960,
+          "min": 1827,
+          "max": 1966
+        }
+      },
+      "loadMax": 1.94,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/shift（総務部門員）",
+      "id": "shift",
+      "runs": [
+        {
+          "ms": 1989,
+          "marks": {
+            "shown": 1989
+          },
+          "expectMs": 2119,
+          "dcl": 594,
+          "scripts": 16,
+          "scriptKB": 294.3,
+          "lastScriptMs": 1532,
+          "supabase": 7,
+          "load": 1.94,
+          "waterfall": [
+            "1315〜1494 GET profiles",
+            "1317〜1496 GET year_roles",
+            "1321〜1500 GET group_members",
+            "1321〜1500 GET years",
+            "1323〜1510 POST rpc/accept_my_invitations",
+            "1705〜1891 GET shift_assignments",
+            "1705〜1898 GET profiles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2003,
+          "marks": {
+            "shown": 2003
+          },
+          "expectMs": 2419,
+          "dcl": 519,
+          "scripts": 16,
+          "scriptKB": 294.3,
+          "lastScriptMs": 1500,
+          "supabase": 7,
+          "load": 1.94,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2178,
+          "marks": {
+            "shown": 2178
+          },
+          "expectMs": 2626,
+          "dcl": 556,
+          "scripts": 16,
+          "scriptKB": 294.3,
+          "lastScriptMs": 1505,
+          "supabase": 7,
+          "load": 2.66,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2003,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2003,
+          "q1": 1996,
+          "q3": 2090.5,
+          "min": 1989,
+          "max": 2178
+        }
+      },
+      "loadMax": 2.66,
+      "loadOver": true,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/tasks（総務部門員）",
+      "id": "tasks",
+      "runs": [
+        {
+          "ms": 2685,
+          "marks": {
+            "shown": 2685
+          },
+          "expectMs": 3116,
+          "dcl": 611,
+          "scripts": 19,
+          "scriptKB": 344,
+          "lastScriptMs": 1670,
+          "supabase": 7,
+          "load": 2.66,
+          "waterfall": [
+            "1593〜1779 GET profiles",
+            "1596〜1780 GET year_roles",
+            "1598〜1779 GET group_members",
+            "1598〜1782 GET years",
+            "1603〜1795 POST rpc/accept_my_invitations",
+            "2053〜2302 GET tasks",
+            "2059〜2257 GET profiles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2118,
+          "marks": {
+            "shown": 2118
+          },
+          "expectMs": 2525,
+          "dcl": 516,
+          "scripts": 19,
+          "scriptKB": 344,
+          "lastScriptMs": 1642,
+          "supabase": 7,
+          "load": 2.53,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2092,
+          "marks": {
+            "shown": 2092
+          },
+          "expectMs": 2500,
+          "dcl": 544,
+          "scripts": 19,
+          "scriptKB": 344,
+          "lastScriptMs": 1581,
+          "supabase": 7,
+          "load": 2.49,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2118,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2118,
+          "q1": 2105,
+          "q3": 2401.5,
+          "min": 2092,
+          "max": 2685
+        }
+      },
+      "loadMax": 2.66,
+      "loadOver": true,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/lending/records（部員）",
+      "id": "records",
+      "runs": [
+        {
+          "ms": 2542,
+          "marks": {
+            "shown": 2542
+          },
+          "expectMs": 2949,
+          "dcl": 533,
+          "scripts": 18,
+          "scriptKB": 348.4,
+          "lastScriptMs": 1560,
+          "supabase": 10,
+          "load": 2.49,
+          "waterfall": [
+            "1408〜1587 GET profiles",
+            "1410〜1592 GET year_roles",
+            "1418〜1605 GET group_members",
+            "1419〜1605 GET years",
+            "1422〜1612 POST rpc/accept_my_invitations",
+            "1838〜2050 GET groups",
+            "1842〜2054 GET lending_assignments",
+            "1847〜2043 GET lending_records",
+            "1849〜2032 GET lending_items",
+            "1850〜2035 GET lending_years"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2426,
+          "marks": {
+            "shown": 2426
+          },
+          "expectMs": 2845,
+          "dcl": 551,
+          "scripts": 18,
+          "scriptKB": 348.4,
+          "lastScriptMs": 1585,
+          "supabase": 10,
+          "load": 2.45,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2170,
+          "marks": {
+            "shown": 2170
+          },
+          "expectMs": 2596,
+          "dcl": 561,
+          "scripts": 18,
+          "scriptKB": 348.4,
+          "lastScriptMs": 1603,
+          "supabase": 10,
+          "load": 2.33,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2426,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2426,
+          "q1": 2298,
+          "q3": 2484,
+          "min": 2170,
+          "max": 2542
+        }
+      },
+      "loadMax": 2.49,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/request?tab=lending（団体代表）",
+      "id": "request-lending",
+      "runs": [
+        {
+          "ms": 2511,
+          "marks": {
+            "shown": 2511
+          },
+          "expectMs": 2894,
+          "dcl": 569,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1673,
+          "supabase": 11,
+          "load": 2.33,
+          "waterfall": [
+            "1402〜1585 GET profiles",
+            "1405〜1587 GET year_roles",
+            "1408〜1587 GET group_members",
+            "1409〜1590 GET years",
+            "1416〜1599 POST rpc/accept_my_invitations",
+            "1846〜2025 GET groups",
+            "1849〜2027 GET items",
+            "1862〜2042 GET request_submissions",
+            "1864〜2048 GET requests",
+            "1869〜2057 GET groups",
+            "1871〜2058 GET lending_items"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2555,
+          "marks": {
+            "shown": 2555
+          },
+          "expectMs": 2998,
+          "dcl": 616,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1630,
+          "supabase": 11,
+          "load": 2.23,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2260,
+          "marks": {
+            "shown": 2260
+          },
+          "expectMs": 2715,
+          "dcl": 551,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1636,
+          "supabase": 11,
+          "load": 2.23,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2511,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2511,
+          "q1": 2385.5,
+          "q3": 2533,
+          "min": 2260,
+          "max": 2555
+        }
+      },
+      "loadMax": 2.33,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/（総務部門長）",
+      "id": "head-home",
+      "runs": [
+        {
+          "ms": 2528,
+          "marks": {
+            "shown": 2528,
+            "frame": 1999
+          },
+          "expectMs": 2790,
+          "dcl": 494,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1579,
+          "supabase": 16,
+          "load": 2.21,
+          "waterfall": [
+            "1391〜1572 GET profiles",
+            "1392〜1574 GET year_roles",
+            "1395〜1577 GET group_members",
+            "1398〜1579 GET years",
+            "1400〜1582 POST rpc/accept_my_invitations",
+            "1739〜1920 GET documents",
+            "1745〜1939 GET groups",
+            "1753〜1940 GET notices",
+            "1755〜1950 GET events",
+            "1758〜1975 GET rooms",
+            "1759〜1981 GET v_document_status",
+            "1759〜2101 GET rpc/document_storage_usage",
+            "1762〜2159 GET years",
+            "1765〜2265 GET shift_slots",
+            "1765〜2129 GET year_roles",
+            "1767〜2225 GET tasks"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2441,
+          "marks": {
+            "shown": 2441,
+            "frame": 1702
+          },
+          "expectMs": 2658,
+          "dcl": 536,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1559,
+          "supabase": 16,
+          "load": 2.11,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2823,
+          "marks": {
+            "shown": 2823,
+            "frame": 2050
+          },
+          "expectMs": 2970,
+          "dcl": 525,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1576,
+          "supabase": 16,
+          "load": 2.11,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2528,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2528,
+          "q1": 2484.5,
+          "q3": 2675.5,
+          "min": 2441,
+          "max": 2823
+        },
+        "frame": {
+          "n": 3,
+          "median": 1999,
+          "q1": 1850.5,
+          "q3": 2024.5,
+          "min": 1702,
+          "max": 2050
+        }
+      },
+      "loadMax": 2.21,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "first",
+      "page": "/（管理者で団体代表）",
+      "id": "admin-home",
+      "runs": [
+        {
+          "ms": 2855,
+          "marks": {
+            "shown": 2855,
+            "frame": 1933,
+            "card": 2776
+          },
+          "expectMs": 2974,
+          "dcl": 572,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1576,
+          "supabase": 21,
+          "load": 2.1,
+          "waterfall": [
+            "1188〜1369 GET profiles",
+            "1194〜1382 GET group_members",
+            "1196〜1383 GET year_roles",
+            "1201〜1394 POST rpc/accept_my_invitations",
+            "1202〜1391 GET years",
+            "1623〜1802 GET documents",
+            "1627〜1832 GET groups",
+            "1632〜1810 GET notices",
+            "1632〜1839 GET rooms",
+            "1638〜1853 GET v_document_status",
+            "1642〜1838 GET events",
+            "1643〜1979 GET rpc/document_storage_usage",
+            "1645〜2006 GET years",
+            "1647〜2011 GET substitution_consents",
+            "1833〜2210 GET request_submissions",
+            "1836〜2209 GET notices",
+            "1841〜2214 GET year_roles",
+            "1843〜2462 GET shift_slots",
+            "1845〜2432 GET tasks",
+            "2250〜2430 GET v_document_status",
+            "2253〜2435 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2817,
+          "marks": {
+            "shown": 2817,
+            "frame": 1781,
+            "card": 2598
+          },
+          "expectMs": 2874,
+          "dcl": 507,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1562,
+          "supabase": 21,
+          "load": 2.1,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2749,
+          "marks": {
+            "shown": 2749,
+            "frame": 1804,
+            "card": 2339
+          },
+          "expectMs": 2841,
+          "dcl": 576,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1606,
+          "supabase": 21,
+          "load": 2.25,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2817,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2817,
+          "q1": 2783,
+          "q3": 2836,
+          "min": 2749,
+          "max": 2855
+        },
+        "frame": {
+          "n": 3,
+          "median": 1804,
+          "q1": 1792.5,
+          "q3": 1868.5,
+          "min": 1781,
+          "max": 1933
+        },
+        "card": {
+          "n": 3,
+          "median": 2598,
+          "q1": 2468.5,
+          "q3": 2687,
+          "min": 2339,
+          "max": 2776
+        }
+      },
+      "loadMax": 2.39,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/stock?room=（部員）",
+      "id": "stock",
+      "runs": [
+        {
+          "ms": 1868,
+          "marks": {
+            "shown": 1868
+          },
+          "expectMs": 2142,
+          "dcl": 533,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1647,
+          "supabase": 10,
+          "load": 2.39,
+          "waterfall": [
+            "336〜516 GET profiles",
+            "341〜530 GET group_members",
+            "347〜544 GET year_roles",
+            "348〜541 GET years",
+            "350〜574 GET rooms",
+            "352〜550 GET items",
+            "353〜704 POST rpc/accept_my_invitations",
+            "353〜710 GET room_years",
+            "358〜725 GET stocks",
+            "358〜919 GET stocks"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1944,
+          "marks": {
+            "shown": 1944
+          },
+          "expectMs": 2174,
+          "dcl": 535,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1658,
+          "supabase": 10,
+          "load": 2.28,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1923,
+          "marks": {
+            "shown": 1923
+          },
+          "expectMs": 2150,
+          "dcl": 567,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1687,
+          "supabase": 10,
+          "load": 2.28,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1923,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1923,
+          "q1": 1895.5,
+          "q3": 1933.5,
+          "min": 1868,
+          "max": 1944
+        }
+      },
+      "loadMax": 2.39,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/request（団体代表）",
+      "id": "request",
+      "runs": [
+        {
+          "ms": 1878,
+          "marks": {
+            "shown": 1878
+          },
+          "expectMs": 2095,
+          "dcl": 610,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1611,
+          "supabase": 10,
+          "load": 2.34,
+          "waterfall": [
+            "374〜552 GET profiles",
+            "380〜566 GET year_roles",
+            "385〜571 GET group_members",
+            "386〜574 GET years",
+            "391〜592 POST rpc/accept_my_invitations",
+            "393〜588 GET groups",
+            "397〜738 GET items",
+            "398〜747 GET requests",
+            "400〜750 GET request_submissions",
+            "402〜751 GET lending_items"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1916,
+          "marks": {
+            "shown": 1916
+          },
+          "expectMs": 2122,
+          "dcl": 602,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1668,
+          "supabase": 10,
+          "load": 2.23,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1889,
+          "marks": {
+            "shown": 1889
+          },
+          "expectMs": 2163,
+          "dcl": 590,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1668,
+          "supabase": 10,
+          "load": 2.23,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1889,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1889,
+          "q1": 1883.5,
+          "q3": 1902.5,
+          "min": 1878,
+          "max": 1916
+        }
+      },
+      "loadMax": 2.34,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/my（団体代表）",
+      "id": "my",
+      "runs": [
+        {
+          "ms": 2053,
+          "marks": {
+            "shown": 2053
+          },
+          "expectMs": 2289,
+          "dcl": 615,
+          "scripts": 18,
+          "scriptKB": 333.8,
+          "lastScriptMs": 1613,
+          "supabase": 12,
+          "load": 2.13,
+          "waterfall": [
+            "334〜515 GET profiles",
+            "336〜518 GET year_roles",
+            "340〜522 GET years",
+            "341〜529 GET group_members",
+            "345〜536 POST rpc/accept_my_invitations",
+            "346〜534 GET years",
+            "347〜690 GET groups",
+            "515〜879 GET items",
+            "518〜885 GET rooms",
+            "521〜865 GET requests",
+            "524〜866 GET substitution_consents",
+            "524〜871 GET request_submissions"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1744,
+          "marks": {
+            "shown": 1744
+          },
+          "expectMs": 1991,
+          "dcl": 582,
+          "scripts": 18,
+          "scriptKB": 333.8,
+          "lastScriptMs": 1636,
+          "supabase": 12,
+          "load": 2.04,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2206,
+          "marks": {
+            "shown": 2206
+          },
+          "expectMs": 2430,
+          "dcl": 612,
+          "scripts": 18,
+          "scriptKB": 333.8,
+          "lastScriptMs": 1616,
+          "supabase": 12,
+          "load": 2.04,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2053,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2053,
+          "q1": 1898.5,
+          "q3": 2129.5,
+          "min": 1744,
+          "max": 2206
+        }
+      },
+      "loadMax": 2.13,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/（団体代表）",
+      "id": "home",
+      "runs": [
+        {
+          "ms": 1733,
+          "marks": {
+            "shown": 1733
+          },
+          "expectMs": 1949,
+          "dcl": 556,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1615,
+          "supabase": 11,
+          "load": 1.96,
+          "waterfall": [
+            "359〜540 GET profiles",
+            "365〜556 GET year_roles",
+            "368〜560 GET group_members",
+            "369〜561 GET years",
+            "369〜560 GET substitution_consents",
+            "370〜566 POST rpc/accept_my_invitations",
+            "372〜721 GET request_submissions",
+            "373〜732 GET notices",
+            "374〜735 GET events",
+            "375〜740 GET v_document_status",
+            "376〜737 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2412,
+          "marks": {
+            "shown": 2412
+          },
+          "expectMs": 2603,
+          "dcl": 1008,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1591,
+          "supabase": 11,
+          "load": 1.96,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1757,
+          "marks": {
+            "shown": 1757
+          },
+          "expectMs": 1991,
+          "dcl": 496,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1571,
+          "supabase": 11,
+          "load": 1.96,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1757,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1757,
+          "q1": 1745,
+          "q3": 2084.5,
+          "min": 1733,
+          "max": 2412
+        }
+      },
+      "loadMax": 1.96,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/document（団体代表）",
+      "id": "document",
+      "runs": [
+        {
+          "ms": 1489,
+          "marks": {
+            "shown": 1489
+          },
+          "expectMs": 1799,
+          "dcl": 540,
+          "scripts": 17,
+          "scriptKB": 304.7,
+          "lastScriptMs": 1535,
+          "supabase": 7,
+          "load": 1.88,
+          "waterfall": [
+            "333〜513 GET profiles",
+            "341〜530 GET year_roles",
+            "344〜532 GET group_members",
+            "346〜536 GET years",
+            "348〜550 POST rpc/accept_my_invitations",
+            "353〜546 GET v_document_status",
+            "354〜701 GET v_document_files"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1595,
+          "marks": {
+            "shown": 1595
+          },
+          "expectMs": 1819,
+          "dcl": 541,
+          "scripts": 17,
+          "scriptKB": 304.7,
+          "lastScriptMs": 1544,
+          "supabase": 7,
+          "load": 1.81,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2146,
+          "marks": {
+            "shown": 2146
+          },
+          "expectMs": 2452,
+          "dcl": 1146,
+          "scripts": 17,
+          "scriptKB": 304.7,
+          "lastScriptMs": 1557,
+          "supabase": 7,
+          "load": 1.81,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1595,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1595,
+          "q1": 1542,
+          "q3": 1870.5,
+          "min": 1489,
+          "max": 2146
+        }
+      },
+      "loadMax": 1.88,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/（総務部門員）",
+      "id": "soumu-home",
+      "runs": [
+        {
+          "ms": 2148,
+          "marks": {
+            "shown": 2148,
+            "frame": 2148
+          },
+          "expectMs": 2554,
+          "dcl": 948,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1707,
+          "supabase": 13,
+          "load": 1.75,
+          "waterfall": [
+            "410〜592 GET profiles",
+            "414〜598 GET year_roles",
+            "415〜597 GET group_members",
+            "419〜604 GET years",
+            "421〜622 POST rpc/accept_my_invitations",
+            "424〜618 GET documents",
+            "425〜788 GET groups",
+            "587〜1003 GET rooms",
+            "605〜968 GET notices",
+            "606〜974 GET events",
+            "607〜1065 GET v_document_status",
+            "613〜1070 GET years",
+            "614〜1139 GET year_roles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2016,
+          "marks": {
+            "shown": 2016,
+            "frame": 2016
+          },
+          "expectMs": 2404,
+          "dcl": 975,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1695,
+          "supabase": 13,
+          "load": 1.69,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1974,
+          "marks": {
+            "shown": 1974,
+            "frame": 1974
+          },
+          "expectMs": 2378,
+          "dcl": 562,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1610,
+          "supabase": 13,
+          "load": 1.69,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2016,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2016,
+          "q1": 1995,
+          "q3": 2082,
+          "min": 1974,
+          "max": 2148
+        },
+        "frame": {
+          "n": 3,
+          "median": 2016,
+          "q1": 1995,
+          "q3": 2082,
+          "min": 1974,
+          "max": 2148
+        }
+      },
+      "loadMax": 1.75,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/shift（総務部門員）",
+      "id": "shift",
+      "runs": [
+        {
+          "ms": 1751,
+          "marks": {
+            "shown": 1751
+          },
+          "expectMs": 1966,
+          "dcl": 497,
+          "scripts": 16,
+          "scriptKB": 294.3,
+          "lastScriptMs": 1502,
+          "supabase": 7,
+          "load": 1.63,
+          "waterfall": [
+            "319〜501 GET profiles",
+            "324〜507 GET year_roles",
+            "329〜517 GET group_members",
+            "331〜521 GET years",
+            "332〜542 GET profiles",
+            "332〜526 POST rpc/accept_my_invitations",
+            "334〜685 GET shift_assignments"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1634,
+          "marks": {
+            "shown": 1634
+          },
+          "expectMs": 1873,
+          "dcl": 533,
+          "scripts": 16,
+          "scriptKB": 294.3,
+          "lastScriptMs": 1520,
+          "supabase": 7,
+          "load": 1.58,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1581,
+          "marks": {
+            "shown": 1581
+          },
+          "expectMs": 1775,
+          "dcl": 538,
+          "scripts": 16,
+          "scriptKB": 294.3,
+          "lastScriptMs": 1537,
+          "supabase": 7,
+          "load": 1.58,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1634,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1634,
+          "q1": 1607.5,
+          "q3": 1692.5,
+          "min": 1581,
+          "max": 1751
+        }
+      },
+      "loadMax": 1.63,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/tasks（総務部門員）",
+      "id": "tasks",
+      "runs": [
+        {
+          "ms": 1973,
+          "marks": {
+            "shown": 1973
+          },
+          "expectMs": 2216,
+          "dcl": 515,
+          "scripts": 19,
+          "scriptKB": 344,
+          "lastScriptMs": 1695,
+          "supabase": 7,
+          "load": 1.45,
+          "waterfall": [
+            "260〜447 GET profiles",
+            "269〜473 POST rpc/accept_my_invitations",
+            "273〜471 GET group_members",
+            "274〜471 GET years",
+            "274〜633 GET tasks",
+            "275〜480 GET year_roles",
+            "279〜658 GET profiles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2128,
+          "marks": {
+            "shown": 2128
+          },
+          "expectMs": 2407,
+          "dcl": 975,
+          "scripts": 19,
+          "scriptKB": 344,
+          "lastScriptMs": 1653,
+          "supabase": 7,
+          "load": 1.42,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2212,
+          "marks": {
+            "shown": 2212
+          },
+          "expectMs": 2469,
+          "dcl": 563,
+          "scripts": 19,
+          "scriptKB": 344,
+          "lastScriptMs": 1686,
+          "supabase": 7,
+          "load": 1.42,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2128,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2128,
+          "q1": 2050.5,
+          "q3": 2170,
+          "min": 1973,
+          "max": 2212
+        }
+      },
+      "loadMax": 1.58,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/lending/records（部員）",
+      "id": "records",
+      "runs": [
+        {
+          "ms": 2126,
+          "marks": {
+            "shown": 2126
+          },
+          "expectMs": 2378,
+          "dcl": 1001,
+          "scripts": 18,
+          "scriptKB": 348.4,
+          "lastScriptMs": 1577,
+          "supabase": 10,
+          "load": 1.38,
+          "waterfall": [
+            "272〜463 GET profiles",
+            "282〜483 GET year_roles",
+            "283〜485 GET group_members",
+            "285〜488 GET years",
+            "290〜496 POST rpc/accept_my_invitations",
+            "292〜493 GET lending_items",
+            "293〜656 GET lending_records",
+            "294〜710 GET lending_assignments",
+            "295〜713 GET groups",
+            "297〜669 GET lending_years"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1776,
+          "marks": {
+            "shown": 1776
+          },
+          "expectMs": 2757,
+          "dcl": 533,
+          "scripts": 18,
+          "scriptKB": 348.4,
+          "lastScriptMs": 1586,
+          "supabase": 10,
+          "load": 1.43,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2114,
+          "marks": {
+            "shown": 2114
+          },
+          "expectMs": 2409,
+          "dcl": 526,
+          "scripts": 18,
+          "scriptKB": 348.4,
+          "lastScriptMs": 1642,
+          "supabase": 10,
+          "load": 1.43,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2114,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2114,
+          "q1": 1945,
+          "q3": 2120,
+          "min": 1776,
+          "max": 2126
+        }
+      },
+      "loadMax": 1.43,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/request?tab=lending（団体代表）",
+      "id": "request-lending",
+      "runs": [
+        {
+          "ms": 2874,
+          "marks": {
+            "shown": 2874
+          },
+          "expectMs": 3119,
+          "dcl": 657,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1667,
+          "supabase": 11,
+          "load": 1.4,
+          "waterfall": [
+            "404〜586 GET group_members",
+            "404〜589 GET profiles",
+            "405〜589 GET year_roles",
+            "411〜600 GET years",
+            "419〜608 POST rpc/accept_my_invitations",
+            "422〜609 GET groups",
+            "427〜765 GET items",
+            "584〜926 GET requests",
+            "590〜931 GET request_submissions",
+            "592〜933 GET lending_items",
+            "595〜941 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2281,
+          "marks": {
+            "shown": 2281
+          },
+          "expectMs": 2488,
+          "dcl": 632,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1701,
+          "supabase": 11,
+          "load": 1.53,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1963,
+          "marks": {
+            "shown": 1963
+          },
+          "expectMs": 2239,
+          "dcl": 902,
+          "scripts": 19,
+          "scriptKB": 351.2,
+          "lastScriptMs": 1685,
+          "supabase": 11,
+          "load": 1.53,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2281,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2281,
+          "q1": 2122,
+          "q3": 2577.5,
+          "min": 1963,
+          "max": 2874
+        }
+      },
+      "loadMax": 1.53,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/（総務部門長）",
+      "id": "head-home",
+      "runs": [
+        {
+          "ms": 2128,
+          "marks": {
+            "shown": 2128,
+            "frame": 2128
+          },
+          "expectMs": 2535,
+          "dcl": 515,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1641,
+          "supabase": 16,
+          "load": 1.69,
+          "waterfall": [
+            "282〜465 GET profiles",
+            "288〜476 GET year_roles",
+            "295〜505 GET years",
+            "296〜511 GET group_members",
+            "298〜511 POST rpc/accept_my_invitations",
+            "300〜535 GET groups",
+            "302〜655 GET documents",
+            "305〜675 GET rooms",
+            "308〜692 GET notices",
+            "310〜692 GET events",
+            "312〜712 GET v_document_status",
+            "318〜723 GET rpc/document_storage_usage",
+            "320〜899 GET years",
+            "462〜1004 GET year_roles",
+            "470〜1226 GET shift_slots",
+            "475〜1120 GET tasks"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2339,
+          "marks": {
+            "shown": 2339,
+            "frame": 2339
+          },
+          "expectMs": 2651,
+          "dcl": 531,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1676,
+          "supabase": 16,
+          "load": 1.69,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1978,
+          "marks": {
+            "shown": 1978,
+            "frame": 1978
+          },
+          "expectMs": 2362,
+          "dcl": 584,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1722,
+          "supabase": 16,
+          "load": 1.63,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2128,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2128,
+          "q1": 2053,
+          "q3": 2233.5,
+          "min": 1978,
+          "max": 2339
+        },
+        "frame": {
+          "n": 3,
+          "median": 2128,
+          "q1": 2053,
+          "q3": 2233.5,
+          "min": 1978,
+          "max": 2339
+        }
+      },
+      "loadMax": 1.69,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "http1",
+      "visit": "again",
+      "page": "/（管理者で団体代表）",
+      "id": "admin-home",
+      "runs": [
+        {
+          "ms": 2917,
+          "marks": {
+            "shown": 2917,
+            "frame": 2305,
+            "card": 2305
+          },
+          "expectMs": 2917,
+          "dcl": 532,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1623,
+          "supabase": 21,
+          "load": 1.5,
+          "waterfall": [
+            "336〜518 GET profiles",
+            "339〜526 GET year_roles",
+            "344〜547 POST rpc/accept_my_invitations",
+            "348〜543 GET group_members",
+            "349〜553 GET years",
+            "350〜551 GET documents",
+            "351〜729 GET groups",
+            "354〜740 GET rooms",
+            "355〜727 GET notices",
+            "356〜735 GET events",
+            "358〜771 GET v_document_status",
+            "359〜751 GET rpc/document_storage_usage",
+            "362〜935 GET years",
+            "523〜1067 GET substitution_consents",
+            "535〜1079 GET request_submissions",
+            "543〜1091 GET notices",
+            "544〜1097 GET year_roles",
+            "550〜1292 GET shift_slots",
+            "553〜1318 GET tasks",
+            "557〜1273 GET v_document_status",
+            "561〜1284 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2362,
+          "marks": {
+            "shown": 2362,
+            "frame": 1909,
+            "card": 1909
+          },
+          "expectMs": 2396,
+          "dcl": 930,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1666,
+          "supabase": 21,
+          "load": 1.5,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2839,
+          "marks": {
+            "shown": 2839,
+            "frame": 2349,
+            "card": 2349
+          },
+          "expectMs": 2789,
+          "dcl": 680,
+          "scripts": 18,
+          "scriptKB": 346.6,
+          "lastScriptMs": 1734,
+          "supabase": 21,
+          "load": 1.46,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2839,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2839,
+          "q1": 2600.5,
+          "q3": 2878,
+          "min": 2362,
+          "max": 2917
+        },
+        "frame": {
+          "n": 3,
+          "median": 2305,
+          "q1": 2107,
+          "q3": 2327,
+          "min": 1909,
+          "max": 2349
+        },
+        "card": {
+          "n": 3,
+          "median": 2305,
+          "q1": 2107,
+          "q3": 2327,
+          "min": 1909,
+          "max": 2349
+        }
+      },
+      "loadMax": 1.63,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/stock?room=（部員）",
+      "id": "stock",
+      "runs": [
+        {
+          "ms": 2395,
+          "marks": {
+            "shown": 2395
+          },
+          "expectMs": 2882,
+          "dcl": 616,
+          "scripts": 18,
+          "scriptKB": 344.5,
+          "lastScriptMs": 858,
+          "supabase": 10,
+          "load": 1.46,
+          "waterfall": [
+            "1519〜1701 GET profiles",
+            "1521〜1714 GET year_roles",
+            "1525〜1708 GET years",
+            "1525〜1714 GET group_members",
+            "1529〜1721 POST rpc/accept_my_invitations",
+            "1831〜2035 GET rooms",
+            "1832〜2016 GET items",
+            "1839〜2026 GET room_years",
+            "1840〜2031 GET stocks",
+            "2271〜2539 GET stocks"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2677,
+          "marks": {
+            "shown": 2677
+          },
+          "expectMs": 3090,
+          "dcl": 576,
+          "scripts": 18,
+          "scriptKB": 344.5,
+          "lastScriptMs": 845,
+          "supabase": 10,
+          "load": 1.5,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2472,
+          "marks": {
+            "shown": 2472
+          },
+          "expectMs": 2900,
+          "dcl": 610,
+          "scripts": 18,
+          "scriptKB": 344.5,
+          "lastScriptMs": 820,
+          "supabase": 10,
+          "load": 1.46,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2472,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2472,
+          "q1": 2433.5,
+          "q3": 2574.5,
+          "min": 2395,
+          "max": 2677
+        }
+      },
+      "loadMax": 1.5,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/request（団体代表）",
+      "id": "request",
+      "runs": [
+        {
+          "ms": 2390,
+          "marks": {
+            "shown": 2390
+          },
+          "expectMs": 2952,
+          "dcl": 581,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 873,
+          "supabase": 10,
+          "load": 1.46,
+          "waterfall": [
+            "1450〜1630 GET profiles",
+            "1451〜1635 GET year_roles",
+            "1455〜1635 GET group_members",
+            "1458〜1641 GET years",
+            "1460〜1649 POST rpc/accept_my_invitations",
+            "1761〜1942 GET groups",
+            "1769〜1960 GET items",
+            "1770〜1954 GET request_submissions",
+            "1770〜1956 GET requests",
+            "1771〜1958 GET lending_items"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2542,
+          "marks": {
+            "shown": 2542
+          },
+          "expectMs": 2980,
+          "dcl": 527,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 806,
+          "supabase": 10,
+          "load": 1.51,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2313,
+          "marks": {
+            "shown": 2313
+          },
+          "expectMs": 2434,
+          "dcl": 533,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 776,
+          "supabase": 10,
+          "load": 1.63,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2390,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2390,
+          "q1": 2351.5,
+          "q3": 2466,
+          "min": 2313,
+          "max": 2542
+        }
+      },
+      "loadMax": 1.63,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/my（団体代表）",
+      "id": "my",
+      "runs": [
+        {
+          "ms": 2225,
+          "marks": {
+            "shown": 2225
+          },
+          "expectMs": 2341,
+          "dcl": 528,
+          "scripts": 18,
+          "scriptKB": 332.1,
+          "lastScriptMs": 785,
+          "supabase": 12,
+          "load": 1.63,
+          "waterfall": [
+            "1378〜1564 GET profiles",
+            "1386〜1585 GET group_members",
+            "1391〜1593 GET years",
+            "1393〜1595 GET year_roles",
+            "1396〜1597 POST rpc/accept_my_invitations",
+            "1700〜1879 GET years",
+            "1712〜1901 GET items",
+            "1717〜1904 GET groups",
+            "1723〜1925 GET rooms",
+            "1724〜1911 GET requests",
+            "1725〜1915 GET request_submissions",
+            "1728〜2063 GET substitution_consents"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2546,
+          "marks": {
+            "shown": 2546
+          },
+          "expectMs": 2948,
+          "dcl": 600,
+          "scripts": 18,
+          "scriptKB": 332.1,
+          "lastScriptMs": 877,
+          "supabase": 12,
+          "load": 1.66,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1967,
+          "marks": {
+            "shown": 1967
+          },
+          "expectMs": 2430,
+          "dcl": 552,
+          "scripts": 18,
+          "scriptKB": 332.1,
+          "lastScriptMs": 785,
+          "supabase": 12,
+          "load": 1.66,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2225,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2225,
+          "q1": 2096,
+          "q3": 2385.5,
+          "min": 1967,
+          "max": 2546
+        }
+      },
+      "loadMax": 1.66,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/（団体代表）",
+      "id": "home",
+      "runs": [
+        {
+          "ms": 2511,
+          "marks": {
+            "shown": 2511
+          },
+          "expectMs": 2957,
+          "dcl": 607,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 798,
+          "supabase": 11,
+          "load": 1.6,
+          "waterfall": [
+            "1362〜1542 GET profiles",
+            "1363〜1548 GET year_roles",
+            "1367〜1553 GET group_members",
+            "1371〜1557 GET years",
+            "1375〜1573 POST rpc/accept_my_invitations",
+            "1743〜1922 GET substitution_consents",
+            "1748〜1930 GET request_submissions",
+            "1752〜1936 GET notices",
+            "1756〜1938 GET events",
+            "2319〜2503 GET v_document_status",
+            "2322〜2506 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2715,
+          "marks": {
+            "shown": 2715
+          },
+          "expectMs": 3139,
+          "dcl": 572,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 826,
+          "supabase": 11,
+          "load": 1.56,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2419,
+          "marks": {
+            "shown": 2419
+          },
+          "expectMs": 2856,
+          "dcl": 512,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 843,
+          "supabase": 11,
+          "load": 1.56,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2511,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2511,
+          "q1": 2465,
+          "q3": 2613,
+          "min": 2419,
+          "max": 2715
+        }
+      },
+      "loadMax": 1.6,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/document（団体代表）",
+      "id": "document",
+      "runs": [
+        {
+          "ms": 2069,
+          "marks": {
+            "shown": 2069
+          },
+          "expectMs": 2242,
+          "dcl": 711,
+          "scripts": 17,
+          "scriptKB": 303.2,
+          "lastScriptMs": 769,
+          "supabase": 7,
+          "load": 1.51,
+          "waterfall": [
+            "1387〜1570 GET profiles",
+            "1388〜1570 GET year_roles",
+            "1390〜1575 GET years",
+            "1393〜1579 GET group_members",
+            "1394〜1578 POST rpc/accept_my_invitations",
+            "1764〜2054 GET v_document_files",
+            "1776〜2071 GET v_document_status"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2109,
+          "marks": {
+            "shown": 2109
+          },
+          "expectMs": 2262,
+          "dcl": 530,
+          "scripts": 17,
+          "scriptKB": 303.2,
+          "lastScriptMs": 752,
+          "supabase": 7,
+          "load": 1.51,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2165,
+          "marks": {
+            "shown": 2165
+          },
+          "expectMs": 2164,
+          "dcl": 591,
+          "scripts": 17,
+          "scriptKB": 303.2,
+          "lastScriptMs": 766,
+          "supabase": 7,
+          "load": 1.55,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2109,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2109,
+          "q1": 2089,
+          "q3": 2137,
+          "min": 2069,
+          "max": 2165
+        }
+      },
+      "loadMax": 1.55,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/（総務部門員）",
+      "id": "soumu-home",
+      "runs": [
+        {
+          "ms": 2663,
+          "marks": {
+            "shown": 2663,
+            "frame": 2188
+          },
+          "expectMs": 3053,
+          "dcl": 585,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 855,
+          "supabase": 13,
+          "load": 1.55,
+          "waterfall": [
+            "1456〜1640 GET profiles",
+            "1458〜1639 GET year_roles",
+            "1460〜1643 GET group_members",
+            "1465〜1651 GET years",
+            "1467〜1659 POST rpc/accept_my_invitations",
+            "1832〜2013 GET documents",
+            "1834〜2032 GET groups",
+            "1838〜2039 GET rooms",
+            "1842〜2022 GET notices",
+            "1848〜2030 GET events",
+            "1853〜2060 GET v_document_status",
+            "1856〜2214 GET years",
+            "1859〜2207 GET year_roles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2912,
+          "marks": {
+            "shown": 2912,
+            "frame": 2100
+          },
+          "expectMs": 2977,
+          "dcl": 536,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 829,
+          "supabase": 13,
+          "load": 1.51,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2735,
+          "marks": {
+            "shown": 2735,
+            "frame": 2223
+          },
+          "expectMs": 3080,
+          "dcl": 551,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 765,
+          "supabase": 13,
+          "load": 1.46,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2735,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2735,
+          "q1": 2699,
+          "q3": 2823.5,
+          "min": 2663,
+          "max": 2912
+        },
+        "frame": {
+          "n": 3,
+          "median": 2188,
+          "q1": 2144,
+          "q3": 2205.5,
+          "min": 2100,
+          "max": 2223
+        }
+      },
+      "loadMax": 1.55,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/shift（総務部門員）",
+      "id": "shift",
+      "runs": [
+        {
+          "ms": 2418,
+          "marks": {
+            "shown": 2418
+          },
+          "expectMs": 3100,
+          "dcl": 515,
+          "scripts": 16,
+          "scriptKB": 293.1,
+          "lastScriptMs": 764,
+          "supabase": 7,
+          "load": 1.46,
+          "waterfall": [
+            "1602〜1785 GET profiles",
+            "1606〜1787 GET year_roles",
+            "1611〜1794 GET group_members",
+            "1618〜1804 GET years",
+            "1620〜1812 POST rpc/accept_my_invitations",
+            "1982〜2174 GET profiles",
+            "1987〜2174 GET shift_assignments"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2154,
+          "marks": {
+            "shown": 2154
+          },
+          "expectMs": 2306,
+          "dcl": 691,
+          "scripts": 16,
+          "scriptKB": 293.1,
+          "lastScriptMs": 745,
+          "supabase": 7,
+          "load": 1.83,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2029,
+          "marks": {
+            "shown": 2029
+          },
+          "expectMs": 2500,
+          "dcl": 601,
+          "scripts": 16,
+          "scriptKB": 293.1,
+          "lastScriptMs": 796,
+          "supabase": 7,
+          "load": 1.76,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2154,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2154,
+          "q1": 2091.5,
+          "q3": 2286,
+          "min": 2029,
+          "max": 2418
+        }
+      },
+      "loadMax": 1.83,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/tasks（総務部門員）",
+      "id": "tasks",
+      "runs": [
+        {
+          "ms": 2269,
+          "marks": {
+            "shown": 2269
+          },
+          "expectMs": 2734,
+          "dcl": 604,
+          "scripts": 19,
+          "scriptKB": 341.9,
+          "lastScriptMs": 798,
+          "supabase": 7,
+          "load": 1.76,
+          "waterfall": [
+            "1366〜1548 GET profiles",
+            "1366〜1546 GET year_roles",
+            "1371〜1557 GET group_members",
+            "1378〜1576 POST rpc/accept_my_invitations",
+            "1380〜1572 GET years",
+            "1705〜1951 GET tasks",
+            "1709〜1905 GET profiles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2255,
+          "marks": {
+            "shown": 2255
+          },
+          "expectMs": 2697,
+          "dcl": 512,
+          "scripts": 19,
+          "scriptKB": 341.9,
+          "lastScriptMs": 778,
+          "supabase": 7,
+          "load": 1.78,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2594,
+          "marks": {
+            "shown": 2594
+          },
+          "expectMs": 3032,
+          "dcl": 554,
+          "scripts": 19,
+          "scriptKB": 341.9,
+          "lastScriptMs": 806,
+          "supabase": 7,
+          "load": 1.78,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2269,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2269,
+          "q1": 2262,
+          "q3": 2431.5,
+          "min": 2255,
+          "max": 2594
+        }
+      },
+      "loadMax": 1.78,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/lending/records（部員）",
+      "id": "records",
+      "runs": [
+        {
+          "ms": 2263,
+          "marks": {
+            "shown": 2263
+          },
+          "expectMs": 2606,
+          "dcl": 540,
+          "scripts": 18,
+          "scriptKB": 346.3,
+          "lastScriptMs": 760,
+          "supabase": 10,
+          "load": 1.72,
+          "waterfall": [
+            "1308〜1493 GET group_members",
+            "1311〜1503 GET profiles",
+            "1311〜1499 GET year_roles",
+            "1316〜1505 GET years",
+            "1318〜1508 POST rpc/accept_my_invitations",
+            "1627〜1844 GET groups",
+            "1630〜1847 GET lending_assignments",
+            "1637〜1843 GET lending_records",
+            "1641〜1833 GET lending_items",
+            "1643〜1835 GET lending_years"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2673,
+          "marks": {
+            "shown": 2673
+          },
+          "expectMs": 3072,
+          "dcl": 587,
+          "scripts": 18,
+          "scriptKB": 346.3,
+          "lastScriptMs": 840,
+          "supabase": 10,
+          "load": 1.74,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2328,
+          "marks": {
+            "shown": 2328
+          },
+          "expectMs": 2750,
+          "dcl": 520,
+          "scripts": 18,
+          "scriptKB": 346.3,
+          "lastScriptMs": 777,
+          "supabase": 10,
+          "load": 1.74,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2328,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2328,
+          "q1": 2295.5,
+          "q3": 2500.5,
+          "min": 2263,
+          "max": 2673
+        }
+      },
+      "loadMax": 1.74,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/request?tab=lending（団体代表）",
+      "id": "request-lending",
+      "runs": [
+        {
+          "ms": 2362,
+          "marks": {
+            "shown": 2362
+          },
+          "expectMs": 2781,
+          "dcl": 659,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 811,
+          "supabase": 11,
+          "load": 1.68,
+          "waterfall": [
+            "1436〜1620 GET profiles",
+            "1442〜1631 GET year_roles",
+            "1445〜1634 POST rpc/accept_my_invitations",
+            "1446〜1637 GET years",
+            "1449〜1641 GET group_members",
+            "1775〜1957 GET groups",
+            "1778〜1961 GET requests",
+            "1781〜1968 GET items",
+            "1782〜1965 GET request_submissions",
+            "1787〜1976 GET lending_items",
+            "1791〜1982 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2175,
+          "marks": {
+            "shown": 2175
+          },
+          "expectMs": 2519,
+          "dcl": 547,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 805,
+          "supabase": 11,
+          "load": 1.68,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2464,
+          "marks": {
+            "shown": 2464
+          },
+          "expectMs": 2867,
+          "dcl": 535,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 790,
+          "supabase": 11,
+          "load": 1.71,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2362,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2362,
+          "q1": 2268.5,
+          "q3": 2413,
+          "min": 2175,
+          "max": 2464
+        }
+      },
+      "loadMax": 1.71,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/（総務部門長）",
+      "id": "head-home",
+      "runs": [
+        {
+          "ms": 2846,
+          "marks": {
+            "shown": 2846,
+            "frame": 2242
+          },
+          "expectMs": 3123,
+          "dcl": 674,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 827,
+          "supabase": 16,
+          "load": 1.65,
+          "waterfall": [
+            "1438〜1619 GET profiles",
+            "1439〜1621 GET year_roles",
+            "1442〜1623 GET group_members",
+            "1445〜1625 GET years",
+            "1446〜1631 POST rpc/accept_my_invitations",
+            "1886〜2066 GET documents",
+            "1891〜2090 GET groups",
+            "1897〜2095 GET rooms",
+            "1898〜2079 GET notices",
+            "1907〜2093 GET events",
+            "1909〜2121 GET v_document_status",
+            "1913〜2250 GET rpc/document_storage_usage",
+            "1917〜2302 GET years",
+            "2063〜2412 GET year_roles",
+            "2075〜2561 GET shift_slots",
+            "2086〜2517 GET tasks"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2589,
+          "marks": {
+            "shown": 2589,
+            "frame": 2004
+          },
+          "expectMs": 2960,
+          "dcl": 536,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 787,
+          "supabase": 16,
+          "load": 1.65,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2683,
+          "marks": {
+            "shown": 2683,
+            "frame": 2004
+          },
+          "expectMs": 3141,
+          "dcl": 576,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 846,
+          "supabase": 16,
+          "load": 1.68,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2683,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2683,
+          "q1": 2636,
+          "q3": 2764.5,
+          "min": 2589,
+          "max": 2846
+        },
+        "frame": {
+          "n": 3,
+          "median": 2004,
+          "q1": 2004,
+          "q3": 2123,
+          "min": 2004,
+          "max": 2242
+        }
+      },
+      "loadMax": 1.7,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "first",
+      "page": "/（管理者で団体代表）",
+      "id": "admin-home",
+      "runs": [
+        {
+          "ms": 3144,
+          "marks": {
+            "shown": 3144,
+            "frame": 2085,
+            "card": 3000
+          },
+          "expectMs": 3247,
+          "dcl": 552,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 776,
+          "supabase": 21,
+          "load": 1.7,
+          "waterfall": [
+            "1231〜1411 GET profiles",
+            "1234〜1413 GET year_roles",
+            "1238〜1419 GET group_members",
+            "1239〜1419 GET years",
+            "1241〜1431 POST rpc/accept_my_invitations",
+            "1689〜1868 GET documents",
+            "1697〜1894 GET groups",
+            "1700〜1897 GET rooms",
+            "1716〜1945 GET v_document_status",
+            "1719〜1935 GET events",
+            "1720〜1937 GET notices",
+            "1723〜2062 GET rpc/document_storage_usage",
+            "1724〜2090 GET substitution_consents",
+            "1727〜2112 GET years",
+            "1731〜2119 GET notices",
+            "1733〜2121 GET request_submissions",
+            "1734〜2132 GET year_roles",
+            "1736〜2293 GET tasks",
+            "1738〜2379 GET shift_slots",
+            "2353〜2536 GET v_document_status",
+            "2355〜2539 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2862,
+          "marks": {
+            "shown": 2862,
+            "frame": 1944,
+            "card": 2727
+          },
+          "expectMs": 2880,
+          "dcl": 576,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 810,
+          "supabase": 21,
+          "load": 1.7,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 3066,
+          "marks": {
+            "shown": 3066,
+            "frame": 2131,
+            "card": 2790
+          },
+          "expectMs": 3146,
+          "dcl": 546,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 794,
+          "supabase": 21,
+          "load": 1.65,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 3066,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 3066,
+          "q1": 2964,
+          "q3": 3105,
+          "min": 2862,
+          "max": 3144
+        },
+        "frame": {
+          "n": 3,
+          "median": 2085,
+          "q1": 2014.5,
+          "q3": 2108,
+          "min": 1944,
+          "max": 2131
+        },
+        "card": {
+          "n": 3,
+          "median": 2790,
+          "q1": 2758.5,
+          "q3": 2895,
+          "min": 2727,
+          "max": 3000
+        }
+      },
+      "loadMax": 1.7,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/stock?room=（部員）",
+      "id": "stock",
+      "runs": [
+        {
+          "ms": 2149,
+          "marks": {
+            "shown": 2149
+          },
+          "expectMs": 2374,
+          "dcl": 565,
+          "scripts": 18,
+          "scriptKB": 344.5,
+          "lastScriptMs": 877,
+          "supabase": 10,
+          "load": 1.6,
+          "waterfall": [
+            "359〜557 GET profiles",
+            "364〜580 GET years",
+            "369〜594 POST rpc/accept_my_invitations",
+            "371〜594 GET group_members",
+            "372〜597 GET year_roles",
+            "375〜712 GET rooms",
+            "378〜753 GET items",
+            "379〜772 GET room_years",
+            "381〜789 GET stocks",
+            "382〜924 GET stocks"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2272,
+          "marks": {
+            "shown": 2272
+          },
+          "expectMs": 2540,
+          "dcl": 570,
+          "scripts": 18,
+          "scriptKB": 344.5,
+          "lastScriptMs": 883,
+          "supabase": 10,
+          "load": 1.55,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2065,
+          "marks": {
+            "shown": 2065
+          },
+          "expectMs": 2328,
+          "dcl": 592,
+          "scripts": 18,
+          "scriptKB": 344.5,
+          "lastScriptMs": 887,
+          "supabase": 10,
+          "load": 1.55,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2149,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2149,
+          "q1": 2107,
+          "q3": 2210.5,
+          "min": 2065,
+          "max": 2272
+        }
+      },
+      "loadMax": 1.6,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/request（団体代表）",
+      "id": "request",
+      "runs": [
+        {
+          "ms": 1912,
+          "marks": {
+            "shown": 1912
+          },
+          "expectMs": 2122,
+          "dcl": 710,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 863,
+          "supabase": 10,
+          "load": 1.42,
+          "waterfall": [
+            "412〜611 GET profiles",
+            "414〜621 GET year_roles",
+            "417〜624 GET group_members",
+            "424〜642 GET years",
+            "426〜645 GET groups",
+            "427〜651 POST rpc/accept_my_invitations",
+            "430〜798 GET items",
+            "431〜806 GET requests",
+            "432〜809 GET request_submissions",
+            "434〜820 GET lending_items"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2215,
+          "marks": {
+            "shown": 2215
+          },
+          "expectMs": 2408,
+          "dcl": 515,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 813,
+          "supabase": 10,
+          "load": 1.39,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2169,
+          "marks": {
+            "shown": 2169
+          },
+          "expectMs": 2402,
+          "dcl": 642,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 860,
+          "supabase": 10,
+          "load": 1.39,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2169,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2169,
+          "q1": 2040.5,
+          "q3": 2192,
+          "min": 1912,
+          "max": 2215
+        }
+      },
+      "loadMax": 1.42,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/my（団体代表）",
+      "id": "my",
+      "runs": [
+        {
+          "ms": 2068,
+          "marks": {
+            "shown": 2068
+          },
+          "expectMs": 2306,
+          "dcl": 529,
+          "scripts": 18,
+          "scriptKB": 332.1,
+          "lastScriptMs": 888,
+          "supabase": 12,
+          "load": 1.36,
+          "waterfall": [
+            "381〜578 GET profiles",
+            "388〜594 GET year_roles",
+            "391〜611 GET years",
+            "392〜612 GET group_members",
+            "393〜623 POST rpc/accept_my_invitations",
+            "395〜618 GET years",
+            "400〜770 GET items",
+            "400〜777 GET groups",
+            "401〜835 GET rooms",
+            "404〜795 GET requests",
+            "405〜805 GET request_submissions",
+            "409〜814 GET substitution_consents"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1731,
+          "marks": {
+            "shown": 1731
+          },
+          "expectMs": 1932,
+          "dcl": 548,
+          "scripts": 18,
+          "scriptKB": 332.1,
+          "lastScriptMs": 836,
+          "supabase": 12,
+          "load": 1.41,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1929,
+          "marks": {
+            "shown": 1929
+          },
+          "expectMs": 2138,
+          "dcl": 612,
+          "scripts": 18,
+          "scriptKB": 332.1,
+          "lastScriptMs": 808,
+          "supabase": 12,
+          "load": 1.41,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1929,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1929,
+          "q1": 1830,
+          "q3": 1998.5,
+          "min": 1731,
+          "max": 2068
+        }
+      },
+      "loadMax": 1.41,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/（団体代表）",
+      "id": "home",
+      "runs": [
+        {
+          "ms": 1922,
+          "marks": {
+            "shown": 1922
+          },
+          "expectMs": 2134,
+          "dcl": 483,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 792,
+          "supabase": 11,
+          "load": 1.38,
+          "waterfall": [
+            "323〜520 GET profiles",
+            "327〜529 GET year_roles",
+            "328〜542 GET group_members",
+            "329〜539 GET years",
+            "330〜543 POST rpc/accept_my_invitations",
+            "333〜543 GET request_submissions",
+            "334〜702 GET substitution_consents",
+            "335〜707 GET notices",
+            "336〜717 GET events",
+            "337〜726 GET v_document_status",
+            "337〜724 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2107,
+          "marks": {
+            "shown": 2107
+          },
+          "expectMs": 2290,
+          "dcl": 568,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 823,
+          "supabase": 11,
+          "load": 1.51,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1798,
+          "marks": {
+            "shown": 1798
+          },
+          "expectMs": 2019,
+          "dcl": 538,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 808,
+          "supabase": 11,
+          "load": 1.51,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1922,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1922,
+          "q1": 1860,
+          "q3": 2014.5,
+          "min": 1798,
+          "max": 2107
+        }
+      },
+      "loadMax": 1.55,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/document（団体代表）",
+      "id": "document",
+      "runs": [
+        {
+          "ms": 1561,
+          "marks": {
+            "shown": 1561
+          },
+          "expectMs": 1828,
+          "dcl": 545,
+          "scripts": 17,
+          "scriptKB": 303.2,
+          "lastScriptMs": 772,
+          "supabase": 7,
+          "load": 1.55,
+          "waterfall": [
+            "348〜545 GET profiles",
+            "351〜550 GET year_roles",
+            "353〜553 GET group_members",
+            "359〜563 GET years",
+            "361〜572 POST rpc/accept_my_invitations",
+            "362〜585 GET v_document_status",
+            "364〜723 GET v_document_files"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1621,
+          "marks": {
+            "shown": 1621
+          },
+          "expectMs": 1868,
+          "dcl": 520,
+          "scripts": 17,
+          "scriptKB": 303.2,
+          "lastScriptMs": 774,
+          "supabase": 7,
+          "load": 1.5,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1714,
+          "marks": {
+            "shown": 1714
+          },
+          "expectMs": 2036,
+          "dcl": 602,
+          "scripts": 17,
+          "scriptKB": 303.2,
+          "lastScriptMs": 791,
+          "supabase": 7,
+          "load": 1.5,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1621,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1621,
+          "q1": 1591,
+          "q3": 1667.5,
+          "min": 1561,
+          "max": 1714
+        }
+      },
+      "loadMax": 1.55,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/（総務部門員）",
+      "id": "soumu-home",
+      "runs": [
+        {
+          "ms": 2040,
+          "marks": {
+            "shown": 2040,
+            "frame": 2040
+          },
+          "expectMs": 2372,
+          "dcl": 512,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 871,
+          "supabase": 13,
+          "load": 1.46,
+          "waterfall": [
+            "350〜552 GET profiles",
+            "351〜555 GET year_roles",
+            "353〜558 GET group_members",
+            "355〜565 GET years",
+            "356〜564 GET documents",
+            "361〜578 POST rpc/accept_my_invitations",
+            "547〜1000 GET groups",
+            "550〜999 GET rooms",
+            "552〜938 GET notices",
+            "554〜939 GET events",
+            "555〜1034 GET v_document_status",
+            "558〜1042 GET years",
+            "559〜1115 GET year_roles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1926,
+          "marks": {
+            "shown": 1926,
+            "frame": 1926
+          },
+          "expectMs": 2271,
+          "dcl": 497,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 876,
+          "supabase": 13,
+          "load": 1.43,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2088,
+          "marks": {
+            "shown": 2088,
+            "frame": 2088
+          },
+          "expectMs": 2424,
+          "dcl": 470,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 847,
+          "supabase": 13,
+          "load": 1.43,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2040,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2040,
+          "q1": 1983,
+          "q3": 2064,
+          "min": 1926,
+          "max": 2088
+        },
+        "frame": {
+          "n": 3,
+          "median": 2040,
+          "q1": 1983,
+          "q3": 2064,
+          "min": 1926,
+          "max": 2088
+        }
+      },
+      "loadMax": 1.46,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/shift（総務部門員）",
+      "id": "shift",
+      "runs": [
+        {
+          "ms": 1653,
+          "marks": {
+            "shown": 1653
+          },
+          "expectMs": 2389,
+          "dcl": 512,
+          "scripts": 16,
+          "scriptKB": 293.1,
+          "lastScriptMs": 768,
+          "supabase": 7,
+          "load": 1.39,
+          "waterfall": [
+            "352〜549 GET year_roles",
+            "354〜554 GET profiles",
+            "356〜561 GET group_members",
+            "363〜576 POST rpc/accept_my_invitations",
+            "364〜577 GET years",
+            "366〜615 GET shift_assignments",
+            "367〜752 GET profiles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1783,
+          "marks": {
+            "shown": 1783
+          },
+          "expectMs": 1979,
+          "dcl": 534,
+          "scripts": 16,
+          "scriptKB": 293.1,
+          "lastScriptMs": 746,
+          "supabase": 7,
+          "load": 1.36,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1590,
+          "marks": {
+            "shown": 1590
+          },
+          "expectMs": 1861,
+          "dcl": 623,
+          "scripts": 16,
+          "scriptKB": 293.1,
+          "lastScriptMs": 748,
+          "supabase": 7,
+          "load": 1.36,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1653,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1653,
+          "q1": 1621.5,
+          "q3": 1718,
+          "min": 1590,
+          "max": 1783
+        }
+      },
+      "loadMax": 1.39,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/tasks（総務部門員）",
+      "id": "tasks",
+      "runs": [
+        {
+          "ms": 2060,
+          "marks": {
+            "shown": 2060
+          },
+          "expectMs": 2327,
+          "dcl": 495,
+          "scripts": 19,
+          "scriptKB": 341.9,
+          "lastScriptMs": 896,
+          "supabase": 7,
+          "load": 1.49,
+          "waterfall": [
+            "330〜530 GET profiles",
+            "340〜552 GET year_roles",
+            "341〜549 GET group_members",
+            "342〜557 POST rpc/accept_my_invitations",
+            "342〜844 GET tasks",
+            "344〜562 GET years",
+            "347〜762 GET profiles"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2318,
+          "marks": {
+            "shown": 2318
+          },
+          "expectMs": 2586,
+          "dcl": 514,
+          "scripts": 19,
+          "scriptKB": 341.9,
+          "lastScriptMs": 839,
+          "supabase": 7,
+          "load": 1.53,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1992,
+          "marks": {
+            "shown": 1992
+          },
+          "expectMs": 2215,
+          "dcl": 575,
+          "scripts": 19,
+          "scriptKB": 341.9,
+          "lastScriptMs": 911,
+          "supabase": 7,
+          "load": 1.53,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2060,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2060,
+          "q1": 2026,
+          "q3": 2189,
+          "min": 1992,
+          "max": 2318
+        }
+      },
+      "loadMax": 1.53,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/lending/records（部員）",
+      "id": "records",
+      "runs": [
+        {
+          "ms": 2057,
+          "marks": {
+            "shown": 2057
+          },
+          "expectMs": 2327,
+          "dcl": 678,
+          "scripts": 18,
+          "scriptKB": 346.3,
+          "lastScriptMs": 831,
+          "supabase": 10,
+          "load": 1.49,
+          "waterfall": [
+            "323〜529 GET profiles",
+            "326〜540 GET year_roles",
+            "327〜543 GET group_members",
+            "329〜544 GET years",
+            "331〜550 POST rpc/accept_my_invitations",
+            "332〜683 GET groups",
+            "332〜734 GET lending_records",
+            "334〜784 GET lending_assignments",
+            "335〜727 GET lending_items",
+            "337〜729 GET lending_years"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1934,
+          "marks": {
+            "shown": 1934
+          },
+          "expectMs": 2258,
+          "dcl": 533,
+          "scripts": 18,
+          "scriptKB": 346.3,
+          "lastScriptMs": 868,
+          "supabase": 10,
+          "load": 1.53,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1917,
+          "marks": {
+            "shown": 1917
+          },
+          "expectMs": 2204,
+          "dcl": 515,
+          "scripts": 18,
+          "scriptKB": 346.3,
+          "lastScriptMs": 833,
+          "supabase": 10,
+          "load": 1.53,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1934,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1934,
+          "q1": 1925.5,
+          "q3": 1995.5,
+          "min": 1917,
+          "max": 2057
+        }
+      },
+      "loadMax": 1.53,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/request?tab=lending（団体代表）",
+      "id": "request-lending",
+      "runs": [
+        {
+          "ms": 1888,
+          "marks": {
+            "shown": 1888
+          },
+          "expectMs": 2649,
+          "dcl": 495,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 785,
+          "supabase": 11,
+          "load": 1.49,
+          "waterfall": [
+            "318〜521 GET profiles",
+            "318〜521 GET year_roles",
+            "322〜537 GET group_members",
+            "324〜548 POST rpc/accept_my_invitations",
+            "327〜549 GET years",
+            "327〜547 GET groups",
+            "329〜709 GET items",
+            "331〜706 GET requests",
+            "334〜717 GET request_submissions",
+            "336〜737 GET lending_items",
+            "337〜736 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1807,
+          "marks": {
+            "shown": 1807
+          },
+          "expectMs": 2006,
+          "dcl": 542,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 816,
+          "supabase": 11,
+          "load": 1.45,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1719,
+          "marks": {
+            "shown": 1719
+          },
+          "expectMs": 1915,
+          "dcl": 489,
+          "scripts": 19,
+          "scriptKB": 348.9,
+          "lastScriptMs": 800,
+          "supabase": 11,
+          "load": 1.45,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1807,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1807,
+          "q1": 1763,
+          "q3": 1847.5,
+          "min": 1719,
+          "max": 1888
+        }
+      },
+      "loadMax": 1.49,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/（総務部門長）",
+      "id": "head-home",
+      "runs": [
+        {
+          "ms": 1909,
+          "marks": {
+            "shown": 1909,
+            "frame": 1909
+          },
+          "expectMs": 2217,
+          "dcl": 607,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 816,
+          "supabase": 16,
+          "load": 1.41,
+          "waterfall": [
+            "267〜465 GET profiles",
+            "271〜475 GET year_roles",
+            "273〜478 GET group_members",
+            "275〜486 GET years",
+            "280〜497 POST rpc/accept_my_invitations",
+            "283〜500 GET documents",
+            "284〜729 GET groups",
+            "287〜724 GET rooms",
+            "288〜672 GET notices",
+            "464〜855 GET events",
+            "466〜945 GET v_document_status",
+            "468〜865 GET rpc/document_storage_usage",
+            "472〜1052 GET years",
+            "481〜1040 GET year_roles",
+            "485〜1186 GET shift_slots",
+            "489〜1161 GET tasks"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 1963,
+          "marks": {
+            "shown": 1963,
+            "frame": 1963
+          },
+          "expectMs": 2278,
+          "dcl": 570,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 850,
+          "supabase": 16,
+          "load": 1.46,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 1843,
+          "marks": {
+            "shown": 1843,
+            "frame": 1843
+          },
+          "expectMs": 2167,
+          "dcl": 705,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 808,
+          "supabase": 16,
+          "load": 1.46,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 1909,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 1909,
+          "q1": 1876,
+          "q3": 1936,
+          "min": 1843,
+          "max": 1963
+        },
+        "frame": {
+          "n": 3,
+          "median": 1909,
+          "q1": 1876,
+          "q3": 1936,
+          "min": 1843,
+          "max": 1963
+        }
+      },
+      "loadMax": 1.46,
+      "loadOver": false,
+      "skipped": 0
+    },
+    {
+      "server": "h2",
+      "visit": "again",
+      "page": "/（管理者で団体代表）",
+      "id": "admin-home",
+      "runs": [
+        {
+          "ms": 2615,
+          "marks": {
+            "shown": 2615,
+            "frame": 2065,
+            "card": 2065
+          },
+          "expectMs": 2621,
+          "dcl": 513,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 832,
+          "supabase": 21,
+          "load": 1.42,
+          "waterfall": [
+            "335〜534 GET profiles",
+            "337〜539 GET year_roles",
+            "341〜545 GET group_members",
+            "343〜551 GET years",
+            "349〜574 GET documents",
+            "351〜581 POST rpc/accept_my_invitations",
+            "354〜774 GET groups",
+            "357〜789 GET rooms",
+            "360〜745 GET events",
+            "364〜761 GET notices",
+            "366〜766 GET rpc/document_storage_usage",
+            "367〜823 GET v_document_status",
+            "531〜1108 GET years",
+            "536〜1097 GET substitution_consents",
+            "541〜1105 GET request_submissions",
+            "541〜1122 GET notices",
+            "547〜1189 GET tasks",
+            "548〜1271 GET shift_slots",
+            "548〜1282 GET year_roles",
+            "552〜1292 GET v_document_status",
+            "560〜1298 GET groups"
+          ],
+          "run": 0
+        },
+        {
+          "ms": 2745,
+          "marks": {
+            "shown": 2745,
+            "frame": 2278,
+            "card": 2278
+          },
+          "expectMs": 2676,
+          "dcl": 737,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 852,
+          "supabase": 21,
+          "load": 1.47,
+          "waterfall": [],
+          "run": 1
+        },
+        {
+          "ms": 2615,
+          "marks": {
+            "shown": 2615,
+            "frame": 2120,
+            "card": 2120
+          },
+          "expectMs": 2613,
+          "dcl": 507,
+          "scripts": 18,
+          "scriptKB": 344.4,
+          "lastScriptMs": 809,
+          "supabase": 21,
+          "load": 1.47,
+          "waterfall": [],
+          "run": 2
+        }
+      ],
+      "medianMs": 2615,
+      "marks": {
+        "shown": {
+          "n": 3,
+          "median": 2615,
+          "q1": 2615,
+          "q3": 2680,
+          "min": 2615,
+          "max": 2745
+        },
+        "frame": {
+          "n": 3,
+          "median": 2120,
+          "q1": 2092.5,
+          "q3": 2199,
+          "min": 2065,
+          "max": 2278
+        },
+        "card": {
+          "n": 3,
+          "median": 2120,
+          "q1": 2092.5,
+          "q3": 2199,
+          "min": 2065,
+          "max": 2278
+        }
+      },
+      "loadMax": 1.47,
+      "loadOver": false,
+      "skipped": 0
+    }
+  ],
+  "errors": []
+}
