@@ -56,6 +56,7 @@ import {
   submittedMessage,
   WITHDRAW_CONFIRM_TEXTS,
 } from './document-screen';
+import { documentWritesImport, loadDocumentWrites, resetDocumentWritesForTest } from './document-writes';
 import { fileWindow, POPUP_BLOCKED_MESSAGE } from './file-open';
 import { REREAD_AGAIN_FAILED_MESSAGE, REREAD_FAILED_NOTICE, SUBMISSION_DONE_BEFORE, SUBMISSION_UNKNOWN } from './submission-write';
 import { DISCARD_UNKNOWN_MESSAGE, FILE_STATE_TEXTS, UPLOADING_LEAVE_MESSAGE, UPLOADING_LEAVE_MESSAGES } from './use-document-uploader';
@@ -486,7 +487,7 @@ function choose(documentId: string, files: File[]) {
   fireEvent.change(input, { target: { files } });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(NOW));
   seed();
@@ -496,9 +497,17 @@ beforeEach(() => {
   storageCalls = [];
   h.client = makeClient();
   h.reencode.mockClear();
+  // 書き込みの JS（document-writes.ts の動的 import。FU3 の PR B の案 5）を、テストの前に読み終えておく。初めての import は vitest の
+  // 変換で時間がかかり、その間は予約がまだ送られていない。テストがそれを待たずに進んで落ちると、遅れて送られた予約・アップロードが次の
+  // テストの偽の DB と Storage に届いていた（PR B のレビューの F1）。初めて使うときに読む動きは、下の「書き込みの JS は初めて使うときに
+  // 読む」で、読み終えたものを忘れさせてから確かめる。
+  await loadDocumentWrites();
 });
 afterEach(() => {
   cleanup();
+  // 止めたままのアップロード（storageOverride の約束）や RPC の差し替えを、次のテストに残さない
+  storageOverride = null;
+  override = null;
   vi.useRealTimers();
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -690,6 +699,11 @@ describe('T19 自団体の提出物：ファイルを足す', () => {
     expect(within(c()).getByTestId('document-uploading').textContent).toContain(UPLOADING_LEAVE_MESSAGE);
     expect((within(c()).getByTestId('document-file-add') as HTMLButtonElement).disabled).toBe(true);
     expect(within(c()).getByTestId('document-submit-hint').textContent).toBe(SUBMIT_BLOCKERS.uploading);
+    // 「アップロード中…（1/1）」は送る前に出す。予約と上げるが送られるのを待ってから中身を見る（書き込みの JS の読み込みの速さに頼らない）
+    await waitFor(() => {
+      expect(rpcCalls('reserve_document_file')).toHaveLength(1);
+      expect(storageOf('upload')).toHaveLength(1);
+    });
     const [reserve] = rpcCalls('reserve_document_file');
     const args = rpcArgs(reserve!);
     expect(args).toMatchObject({ p_document_id: D_PLAN, p_group_id: G1.id, p_content_type: 'application/pdf', p_size: 4000 });
@@ -919,6 +933,8 @@ describe('T19 自団体の提出物：ファイルを足す', () => {
     expect(year.textContent).not.toContain('下書き');
     await user.click(within(year).getByRole('button', { name: 'やめる（アップロードを続ける）' }));
     expect(h.setYear).not.toHaveBeenCalled();
+    // 上げるが送られてから解く（まだなら release は空の関数のまま）
+    await waitFor(() => expect(storageOf('upload')).toHaveLength(1));
     await act(async () => release());
     await waitFor(() => expect(within(cardOf(D_PLAN)).queryByTestId('document-uploading')).toBeNull());
     fireEvent.click(screen.getByTestId('probe-nav'));
@@ -1299,6 +1315,90 @@ describe('T19 自団体の提出物：最新でない年度', () => {
   });
 });
 
+describe('FU3 の案 5：書き込みの JS は初めて使うときに読む', () => {
+  // 通信の失敗の文言（lib/errors の messageFor の network）
+  const NETWORK = '通信できませんでした';
+  const loadFails = () => vi.spyOn(documentWritesImport, 'load').mockRejectedValue(new TypeError('Failed to fetch'));
+  beforeEach(() => resetDocumentWritesForTest());
+  afterEach(() => resetDocumentWritesForTest());
+
+  it('開いただけでは読まない。「提出した」で確かめを開いたときに読み始め、提出する', async () => {
+    const load = vi.spyOn(documentWritesImport, 'load');
+    const user = setUser();
+    renderScreen();
+    await loaded();
+    expect(load).not.toHaveBeenCalled();
+    const dialog = await submitCard(user, D_FOOD);
+    expect(load).toHaveBeenCalledTimes(1);
+    await user.click(within(dialog).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(cardOf(D_FOOD).getAttribute('data-status')).toBe('submitted'));
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it('「提出した」：読めなければ送らずに通信の失敗の文言をカードに出す。もう一度押すと読み直して送る', async () => {
+    const load = loadFails();
+    const user = setUser();
+    renderScreen();
+    await loaded();
+    const status = cardOf(D_FOOD).getAttribute('data-status');
+    let dialog = await submitCard(user, D_FOOD);
+    await user.click(within(dialog).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(within(cardOf(D_FOOD)).getByTestId('document-error').textContent).toContain(NETWORK));
+    expect(rpcCalls('submit_document')).toHaveLength(0);
+    expect(cardOf(D_FOOD).getAttribute('data-status')).toBe(status);
+    load.mockRestore();
+    dialog = await submitCard(user, D_FOOD);
+    await user.click(within(dialog).getByRole('button', { name: '提出する' }));
+    await waitFor(() => expect(cardOf(D_FOOD).getAttribute('data-status')).toBe('submitted'));
+    expect(rpcCalls('submit_document')).toHaveLength(1);
+  });
+
+  it('ファイルを足す：読めなければ予約も上げることもせず、予約が通信で届かなかったときと同じ「アップロードできませんでした」にする。「もう一度」で読み直して送る', async () => {
+    const load = loadFails();
+    const user = setUser();
+    renderScreen();
+    await loaded();
+    choose(D_PLAN, [pdf(4000)]);
+    await waitFor(() => expect(filesOf(D_PLAN)[0]?.getAttribute('data-state')).toBe('failed'));
+    expect(within(cardOf(D_PLAN)).getByTestId('document-file-error').textContent).toContain(NETWORK);
+    expect(rpcCalls('reserve_document_file')).toHaveLength(0);
+    expect(storageOf('upload')).toHaveLength(0);
+    load.mockRestore();
+    await waitFor(() => expect((within(cardOf(D_PLAN)).getByTestId('document-file-retry') as HTMLButtonElement).disabled).toBe(false));
+    await user.click(within(cardOf(D_PLAN)).getByTestId('document-file-retry'));
+    await waitFor(() => expect(filesOf(D_PLAN)[0]?.getAttribute('data-state')).toBe('uploaded'));
+    expect(rpcCalls('reserve_document_file')).toHaveLength(1);
+  });
+
+  it('開く：読めなければ先に開いたタブを閉じ、署名つき URL を作らずに通信の失敗の文言を出す', async () => {
+    const tab = { opener: {} as unknown, location: { href: '' }, close: vi.fn() };
+    vi.spyOn(fileWindow, 'openBlank').mockReturnValue(tab as unknown as Window);
+    loadFails();
+    const user = setUser();
+    renderScreen();
+    await loaded();
+    await user.click(within(filesOf(D_FOOD)[0]!).getByTestId('document-file-open'));
+    await waitFor(() => expect(within(cardOf(D_FOOD)).getByTestId('document-file-error').textContent).toContain(NETWORK));
+    expect(tab.close).toHaveBeenCalled();
+    expect(storageOf('createSignedUrl')).toHaveLength(0);
+    expect(tab.location.href).toBe('');
+  });
+
+  it('外す：読めなければ discard を送らずに通信の失敗の文言を出し、ファイルは残す', async () => {
+    loadFails();
+    const user = setUser();
+    renderScreen();
+    await loaded();
+    await user.click(within(filesOf(D_FOOD)[0]!).getByTestId('document-file-remove'));
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: '外す' }));
+    await waitFor(() => expect(within(cardOf(D_FOOD)).getByTestId('document-file-error').textContent).toContain(NETWORK));
+    expect(rpcCalls('discard_document_file')).toHaveLength(0);
+    expect(storageOf('remove')).toHaveLength(0);
+    expect(filesOf(D_FOOD)).toHaveLength(1);
+  });
+});
+
 describe('T19 自団体の提出物：最初に読む JS', () => {
   it('/document の部品は、写真の作り直し・CSV・提出状況の部品を静的に import しない（写真の作り直しは選んだときに動的 import）', () => {
     const g = staticImportGraph('app/(app)/document/page.tsx');
@@ -1309,5 +1409,16 @@ describe('T19 自団体の提出物：最初に読む JS', () => {
     expect(g.files).not.toContain('lib/modules/portal.ts');
     expect(g.files.filter((f) => f.startsWith('components/documents/documents-') || f.startsWith('components/documents/doc-'))).toEqual([]);
     expect(g.packages).not.toContain('exceljs');
+  });
+
+  it('FU3 の案 5：書き込みだけに使うもの（提出物の書き込みとアップロード・RPC の引数の形・入力の確かめの zod・@gaapp/shared の入口）は静的に import しない（初めて書くときに document-writes.ts から読む）', () => {
+    const g = staticImportGraph('app/(app)/document/page.tsx');
+    expect(g.files).toContain('components/documents/document-writes.ts');
+    expect(g.files).toContain('lib/modules/documents/reads.ts');
+    expect(g.files).not.toContain('lib/data/documents.ts');
+    expect(g.files.filter((f) => f.startsWith('lib/rpc/') || f.startsWith('lib/schemas/'))).toEqual([]);
+    expect(g.files.filter((f) => f === 'lib/db/update-with-lock.ts' || f === 'lib/db/delete-checked.ts')).toEqual([]);
+    expect(g.packages).not.toContain('zod');
+    expect(g.packages).not.toContain('@gaapp/shared');
   });
 });

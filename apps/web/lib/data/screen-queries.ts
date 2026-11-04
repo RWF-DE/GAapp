@@ -347,7 +347,7 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
 
 /**
  * / の先読み（D-45・D-51。04「ダッシュボード」の読むもの）：立場の種類ごとに、ダッシュボードの欄が読むクエリと同じもの。
- * - 総務（ロールが総務）：机椅子の軽い読み取り（6つの表。furnitureSoumuOptions。要対応とカードが同じキーを読む）と、
+ * - 総務（ロールが総務）：机椅子の軽い読み取り（6つの表を埋め込みの2本で。furnitureSoumuOptions。要対応とカードが同じキーを読む）と、
  *   総務内のお知らせの新着（noticesLatestOptions の soumu。総務内のお知らせの欄と同じキー。T17）と、予定と締切の項目
  *   （calendarDatedOptions の soumu。締切と予定の欄と同じキー。T18）
  * - 閲覧のみ（ロールが閲覧のみ）：団体あてのお知らせの新着（noticesLatestOptions の viewer。お知らせの欄と同じキー。T17）と、
@@ -470,7 +470,8 @@ export const SCREEN_PREFETCH: Readonly<Record<string, RoutePrefetcher>> = {
 
 /**
  * 開いたときのリクエストを覚え、次に開いたときに <head> の script が JS より先に送ってよい画面のパス（lib/boot/early-fetch.ts。
- * 許可リスト）。版を使わない画面（先読みの表と同じ。/・/stock・/request・/my）だけで、振り分けに関わる画面（/furniture・
+ * 許可リスト）。版を使わない画面（先読みの表と同じ。/・/stock・/request・/my と、T19〜T21 で足した /document・/shift・/tasks・
+ * /lending/records）だけで、振り分けに関わる画面（/furniture・
  * /allocation・/swaps）は入れない（スナップショット〔lib/data/snapshot.ts〕は年度の行〔版〕を読み終えてから残りを読む。D-33）。
  * ダッシュボード（/）は版・振り分けの行を読まないので、T16 で入れた（団体代表の / を 4G で 2 秒以内に開くため。D-45・D-51）
  */

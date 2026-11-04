@@ -18,14 +18,20 @@
 //   「提出した」を送らない）。届いたものがあれば「ファイル {n} つをアップロードしました」と知らせる（toast。読み上げにも届く。レビューの UX-2）。
 // - 上げている・上げ終えて読み直しを待つファイルは、届く前から一覧の行として出す（localOnly と sent。番号・形・大きさ。レビューの UX-2）。
 // - 部品が外れたら（団体・年度を切り替えた、画面を離れた）残りのファイルは送らない（送っている1つは止められない）。
+// - 予約・上げる・外すの関数（lib/data/documents.ts）は、初めて足す・上げ直す・外すときに読む（document-writes.ts。/document の最初に読む
+//   JS に入れない。FU3 の PR B の案 5）。足すときは選んだファイルを確かめている間に読み始め、1つずつ送る前に待つ。読めなければ、予約が通信で
+//   届かなかったときと同じ（そのファイルは「アップロードできませんでした」と「もう一度」「外す」。もう一度で読み直す）。外すは送らずに、その
+//   提出の知らせに通信の失敗の文言を出す。file_id は書き込みの JS を待たずに作る（lib/modules/documents/uuid.ts）。
 // 署名つきアップロードの URL は作らない（upload だけ）。元のファイル名はどこにも持たない。
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { discardDocumentFile, newDocumentUuid, reserveDocumentFile, uploadDocumentFile, type DocumentFileRow } from '@/lib/data/documents';
+import type { DocumentFileRow } from '@/lib/data/documents';
 import { classifyError, effectOf, messageFor } from '@/lib/errors';
 import { checkPicked, checkPrepared, IMAGE_DECODE_MESSAGE, SNIFF_BYTES, sniffContentType, type PickedFile } from '@/lib/modules/documents/files';
 import type { DocumentContentType } from '@/lib/modules/documents/labels';
+import { newDocumentUuid } from '@/lib/modules/documents/uuid';
 import { useUnsavedChanges, type LeaveKind, type LeaveMessage } from '@/lib/unsaved-changes';
+import { loadDocumentWrites, type DocumentWrites } from './document-writes';
 import { sendWithAuth, type AuthErrorHandler } from './submission-write';
 
 /** アップロード中の文（{k}/{n} は今送っているファイルの番号と、送る数） */
@@ -262,9 +268,16 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
   /** 1つ送る：予約（同じ file_id なら同じ行）→ 上げる（409 はもう届いていた） */
   const sendOne = useCallback(async (item: FailedUpload): Promise<SendOutcome> => {
     const o = optsRef.current;
+    // 予約・上げるの JS（初めてなら読む）。読めなければ、予約が通信で届かなかったときと同じ（失敗の印と「もう一度」）
+    let w: DocumentWrites;
+    try {
+      w = await loadDocumentWrites();
+    } catch (e) {
+      return { type: 'failed', message: messageFor(classifyError(e), RESERVE_CONTEXT), error: e };
+    }
     const reserved = await sendWithAuth(
       () =>
-        reserveDocumentFile({
+        w.reserveDocumentFile({
           yearId: o.yearId,
           documentId: item.documentId,
           groupId: item.groupId,
@@ -284,7 +297,7 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
       return { type: 'failed', message, error: reserved.error };
     }
     const path = reserved.value.object_path;
-    const up = await sendWithAuth(() => uploadDocumentFile(path, item.blob, item.contentType), o.onAuthError);
+    const up = await sendWithAuth(() => w.uploadDocumentFile(path, item.blob, item.contentType), o.onAuthError);
     if (!up.ok) return { type: 'failed', message: messageFor(classifyError(up.error)), error: up.error };
     return { type: 'done' };
   }, []);
@@ -334,6 +347,8 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
       busyRef.current.add(slot);
       setError(slot, null);
       setProgress(slot, { current: 0, total: files.length });
+      // 予約・上げるの JS を、選んだファイルを確かめている間に読み始める（sendOne が送る前に待つ。読めなくてもここでは何もしない）
+      loadDocumentWrites().catch(() => undefined);
       let sent = false;
       let uploaded = 0;
       try {
@@ -462,7 +477,15 @@ export function useDocumentUploader(options: DocumentUploaderOptions): DocumentU
       setError(slot, null);
       try {
         const o = optsRef.current;
-        const sent = await sendWithAuth(() => discardDocumentFile(row), o.onAuthError);
+        // 外すの JS（初めてなら読む。読めなければ送らずに、通信の失敗の文言）
+        let w: DocumentWrites;
+        try {
+          w = await loadDocumentWrites();
+        } catch (e) {
+          setError(slot, messageFor(classifyError(e), { rpc: 'discard_document_file' }));
+          return { type: 'failed', error: e };
+        }
+        const sent = await sendWithAuth(() => w.discardDocumentFile(row), o.onAuthError);
         if (sent.ok) {
           if (sent.value.type === 'unknown') return { type: 'unknown' };
           putFailed(null, fileId);

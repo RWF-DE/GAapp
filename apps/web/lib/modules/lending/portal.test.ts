@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { Audience, GroupSummary, YearStatus } from '@/lib/auth/membership';
 import type { AppRole } from '@/lib/auth/roles';
 import type { YearRow } from '@/lib/db/types';
+import { AppError } from '@/lib/errors';
 import { canOpen } from '@/lib/navigation';
 import { createFakeSupabase, opArgs, type FakeCall } from '@/lib/testing/fake-supabase';
 import { mergePortalSections, portalWidgetQuery, type PortalContext, type PortalKind } from '../portal';
@@ -278,23 +279,88 @@ describe('T21 プロバイダと読み取り', () => {
     expect(() => lendingPortal(soumu(), ctx('rep', year('requesting'), { groups: [G1] }))).toThrow();
   });
 
-  it('総務の読み取り：5本を年度で絞って並行に、要る列だけ（申請は 1 以上だけ）。確定の印の行がなければ確定前', async () => {
+  it('総務の読み取り：開いている年度に確定の印と備品を、備品に申請（1 以上だけ）・割り当て・記録を埋め込んだ1本（FU3 の案 3。前は5本）。年度の列は読まない', async () => {
+    expect(LENDING_SOUMU_SELECT).toBe(
+      'lending_years(confirmed_at), lending_items(id, name, unit, stock, sort_order, lending_requests(group_id, count), lending_assignments(group_id, count), lending_records(group_id, lent_count, returned_count))',
+    );
     const calls: FakeCall[] = [];
     const { client } = createFakeSupabase((call) => {
       calls.push(call);
-      if (call.table === 'lending_years') return { data: null };
-      if (call.table === 'lending_items') return { data: [{ ...TENT, year_id: Y }] };
-      if (call.table === 'lending_requests') return { data: [{ group_id: 'g1', lending_item_id: TENT.id, count: 2 }] };
       return { data: [] };
     });
-    const raw = await loadLendingSoumu(Y, client);
-    expect(raw).toEqual({ confirmedAt: null, items: [TENT], requests: [{ group_id: 'g1', lending_item_id: TENT.id, count: 2 }], assignments: [], records: [] });
-    expect(calls.map((c) => c.table).sort()).toEqual(['lending_assignments', 'lending_items', 'lending_records', 'lending_requests', 'lending_years']);
-    for (const c of calls) {
-      expect(opArgs(c, 'select')[0]![0]).toBe(LENDING_SOUMU_SELECT[c.table as keyof typeof LENDING_SOUMU_SELECT]);
-      expect(opArgs(c, 'eq')).toContainEqual(['year_id', Y]);
+    await loadLendingSoumu(Y, client);
+    expect(calls).toHaveLength(1);
+    const c = calls[0]!;
+    expect(c.table).toBe('years');
+    expect(opArgs(c, 'select')).toEqual([[LENDING_SOUMU_SELECT]]);
+    // 年度は id で絞る（年度の列は select に入れない＝版を読まない）。申請は埋め込みの中で 1 以上だけ、備品は並びの順
+    expect(opArgs(c, 'eq')).toEqual([['id', Y]]);
+    expect(opArgs(c, 'gt')).toEqual([['lending_items.lending_requests.count', 0]]);
+    expect(opArgs(c, 'order')).toEqual([
+      ['sort_order', { referencedTable: 'lending_items' }],
+      ['id', { referencedTable: 'lending_items' }],
+    ]);
+    expect(LENDING_SOUMU_SELECT).not.toMatch(/allocation_version|!inner/);
+    expect(opArgs(c, 'range')).toEqual([]);
+    expect(opArgs(c, 'limit')).toEqual([]);
+  });
+
+  it('総務の読み取り：埋め込みを表ごとに読んだときと同じ形・並び（申請・割り当て・記録は団体 → 備品の id の順）に戻す。確定の印と埋め込みはオブジェクトでも配列でも読む', async () => {
+    const read = (data: unknown) => loadLendingSoumu(Y, createFakeSupabase(() => ({ data })).client);
+    // 備品は並びの順（テント → 重し）。団体の id は g2 → g1 の順で返っても、団体 → 備品の id の順に戻す
+    const items = [
+      {
+        ...TENT,
+        lending_requests: [
+          { group_id: 'g2', count: 2 },
+          { group_id: 'g1', count: 2 },
+        ],
+        lending_assignments: [{ group_id: 'g1', count: 2 }],
+        lending_records: [{ group_id: 'g1', lent_count: 2, returned_count: 1 }],
+      },
+      {
+        ...WEIGHT,
+        lending_requests: { group_id: 'g1', count: 8 },
+        lending_assignments: [{ group_id: 'g1', count: 8 }],
+        lending_records: [],
+      },
+    ];
+    const expected: LendingSoumuRaw = {
+      confirmedAt: '2026-10-12T08:00:00Z',
+      items: [TENT, WEIGHT],
+      requests: [
+        { group_id: 'g1', lending_item_id: TENT.id, count: 2 },
+        { group_id: 'g1', lending_item_id: WEIGHT.id, count: 8 },
+        { group_id: 'g2', lending_item_id: TENT.id, count: 2 },
+      ],
+      assignments: [
+        { group_id: 'g1', lending_item_id: TENT.id, count: 2 },
+        { group_id: 'g1', lending_item_id: WEIGHT.id, count: 8 },
+      ],
+      records: [{ group_id: 'g1', lending_item_id: TENT.id, lent_count: 2, returned_count: 1 }],
+    };
+    expect(await read([{ lending_years: { confirmed_at: '2026-10-12T08:00:00Z' }, lending_items: items }])).toEqual(expected);
+    expect(await read([{ lending_years: [{ confirmed_at: '2026-10-12T08:00:00Z' }], lending_items: items }])).toEqual(expected);
+    // 確定の印の行がない・解除した後は確定前
+    for (const ly of [null, { confirmed_at: null }, []]) {
+      expect((await read([{ lending_years: ly, lending_items: items }])).confirmedAt, JSON.stringify(ly)).toBeNull();
     }
-    expect(opArgs(calls.find((c) => c.table === 'lending_requests')!, 'gt')).toEqual([['count', 0]]);
+  });
+
+  it('総務の読み取り：備品がなくても確定の印を読む（年度に埋め込むので）。年度が読めなければ（行がない）確定前・備品なし', async () => {
+    const read = (data: unknown) => loadLendingSoumu(Y, createFakeSupabase(() => ({ data })).client);
+    const empty = { items: [], requests: [], assignments: [], records: [] };
+    expect(await read([{ lending_years: { confirmed_at: '2026-10-12T08:00:00Z' }, lending_items: [] }])).toEqual({ confirmedAt: '2026-10-12T08:00:00Z', ...empty });
+    expect(await read([{ lending_years: null, lending_items: [] }])).toEqual({ confirmedAt: null, ...empty });
+    expect(await read([{ lending_years: null, lending_items: null }])).toEqual({ confirmedAt: null, ...empty });
+    expect(await read([])).toEqual({ confirmedAt: null, ...empty });
+    // 備品があって、申請・割り当て・記録の埋め込みが null・抜けている形も読む
+    expect(await read([{ lending_items: [{ ...TENT, lending_requests: null }] }])).toEqual({ confirmedAt: null, ...empty, items: [TENT] });
+  });
+
+  it('総務の読み取りの失敗は AppError（欄がテント等の貸し出しの分だけ失敗を出す）', async () => {
+    const { client } = createFakeSupabase(() => ({ error: { code: '42501', message: 'denied' }, status: 403 }));
+    await expect(loadLendingSoumu(Y, client)).rejects.toBeInstanceOf(AppError);
   });
 
   it('店長・副店長の読み取り：代表する団体に割り当てと記録（備品の名前・単位・並びつき）と年度の確定の印を埋め込んで1本（レビューの T21-R2・タブの直しのレビューの T21-R6）。団体がなければ読まない', async () => {

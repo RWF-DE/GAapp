@@ -3,11 +3,14 @@
 // スマホの 4G・遅い CPU では、ページの JS（約 330 KB）を読んで動かし始めるまでに 1 秒ほどかかり、Supabase への最初の
 // リクエストはその後になる。そこで、
 //   1. 記録：ページを開いたときにアプリが Supabase に送った読み取り（GET の /rest/v1/ と、引数のない accept_my_invitations）を、
-//      版を使わない画面（/・/stock・/request・/my。lib/data/screen-queries.ts の EARLY_FETCH_PATHS。許可リスト）のパスごとに localStorage の `gaapp:prefetch:<user_id>:requests` に覚える（URL・応答を変えるヘッダーだけ。
-//      トークンは覚えない）。URL の中のページのクエリ（room・group など）の値は {{room}} のように置き換えて覚える
+//      版を使わない画面（/・/stock・/request・/my と、T19〜T21 で足した /document・/shift・/tasks・/lending/records。lib/data/screen-queries.ts の
+//      EARLY_FETCH_PATHS。許可リスト）のパスごとに localStorage の `gaapp:prefetch:<user_id>:requests` に覚える（URL・応答を変えるヘッダーだけ。
+//      トークンは覚えない。1つのパスで MAX_RECORDED 本まで）。URL の中のページのクエリ（room・group など）の値は {{room}} のように置き換えて覚える
 //      （別の部屋の QR から開いても使えるように）。
-//   2. 先送り：次にそのパスを開いたとき、<head> の script（earlyFetchScript）が、localStorage のセッションのトークン（期限内の
-//      ときだけ）で同じリクエストを送り、応答の Promise を window.__gaappEarly に置く。
+//   2. 先送り：次にそのパスを開いたとき、<head> の script（earlyFetchScript）が、localStorage のセッションのトークン（期限まで
+//      EARLY_TOKEN_MARGIN_MS より長いときだけ）で同じリクエストを送り、応答の Promise を window.__gaappEarly に置く。script は async（data: の URL）で、ふつうは HTML を
+//      読んでいる間に動くが、ブラウザがまれにページの JS の後に動かす（FU3 の送り直しの調べ）。そのときアプリがもう自分で Supabase の
+//      /rest/v1/ へ送っていれば（window.__gaappSent。APP_SENT_GLOBAL）、script は何も送らない（同じ読み取りを二重に送らない）。
 //   3. 受け取り：supabase-js の fetch（earlyAwareFetch）が、同じリクエスト（メソッド・URL・応答を変えるヘッダー・本文、
 //      同じトークン）を送ろうとしたら、送らずに先送りの応答を返す（1つの応答は1回だけ使う）。
 // 先送りの応答は、ページを開いてから EARLY_TTL_MS の間と、書き込み（先送りできるもの以外のリクエスト）を送るまでと、
@@ -21,10 +24,26 @@
 import { SUPABASE_URL } from '@/lib/env';
 
 export const EARLY_GLOBAL = '__gaappEarly';
+/**
+ * アプリ（supabase-js の fetch）が自分で Supabase の /rest/v1/ へ送った印（ページを開いてから1回でも送ったら true）。<head> の script は
+ * これが立っていれば何も送らない（script がアプリより後に動いたとき、アプリが送った読み取りを二重に送らない。FU3 の送り直しの調べ）。
+ * 先送りの応答を受け取っただけ・Auth（/auth/v1/。トークンの更新など）だけなら立てない
+ */
+export const APP_SENT_GLOBAL = '__gaappSent';
 /** 先送りの応答を使う時間（ページを開いてから） */
 export const EARLY_TTL_MS = 15_000;
-/** 1つのパスで覚える数 */
-export const MAX_RECORDED = 24;
+/**
+ * <head> の script が送るのは、トークンの期限までこれより長いときだけ。supabase-js（auth-js の EXPIRY_MARGIN_MS。30 秒の見張り 3 回分）は、
+ * 開いたとき（getSession）に期限までこれより短ければ先にトークンを更新し、更新したトークンで送るので、古いトークンで先に送った読み取りは
+ * 照らし合わず、アプリがすべて送り直していた（FU3 の送り直しの調べ。前は 30 秒）。supabase-js を上げたら、テストが同じ値かを確かめる
+ */
+export const EARLY_TOKEN_MARGIN_MS = 90_000;
+/**
+ * 1つのパスで覚える数（<head> の script が送る数も同じ。超えた分は覚えず、次に開いたときもアプリがふつうに送る）。
+ * いちばん多い管理者で店長・副店長も務める人の / が 21 本（FU3 の案 3 で総務の机椅子とテント等の読み取りをまとめる前は 29 本で、上限が
+ * 24 本だった間は後の5本を覚えなかった）
+ */
+export const MAX_RECORDED = 48;
 /** 覚えるパスの数（新しいものから） */
 export const MAX_PATHS = 8;
 /** 応答を変えるヘッダー（これだけを覚え、照らし合わせる） */
@@ -230,9 +249,16 @@ export function takeEarlyResponse(url: string, init: RequestInit | undefined, no
   return hit;
 }
 
+/** アプリが自分で Supabase の /rest/v1/ へ送る前に、送った印（APP_SENT_GLOBAL）を立てる */
+function markAppSent(url: string): void {
+  if (typeof window !== 'undefined' && SUPABASE_URL && url.startsWith(`${SUPABASE_URL}/rest/v1/`)) {
+    (window as unknown as Record<string, unknown>)[APP_SENT_GLOBAL] = true;
+  }
+}
+
 /**
  * supabase-js に渡す fetch。ページを開いたときのリクエストを記録し、先送りの応答があればそれを返す（なければ・失敗して
- * いれば、ふつうに送る）。
+ * いれば、ふつうに送る。自分で /rest/v1/ へ送るときは、送った印を立てる）。
  */
 export function earlyAwareFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -241,8 +267,15 @@ export function earlyAwareFetch(input: RequestInfo | URL, init?: RequestInit): P
     record(url, method, significantHeaders(init?.headers), typeof init?.body === 'string' ? init.body : undefined, window.location.pathname);
   }
   const early = takeEarlyResponse(url, { ...init, method });
-  if (!early) return fetch(input, init);
-  return early.then((res) => res ?? fetch(input, init));
+  if (!early) {
+    markAppSent(url);
+    return fetch(input, init);
+  }
+  return early.then((res) => {
+    if (res) return res;
+    markAppSent(url);
+    return fetch(input, init);
+  });
 }
 
 // ---------------------------------------------------------------- <head> の script
@@ -274,12 +307,16 @@ export function earlyFetchScript(c: EarlyScriptConfig): string {
   return `(${body})(${JSON.stringify(c).replace(/</g, '\\u003c')})`;
 }
 
-/** script の本体（テストで直接動かす。requestKey と同じキーを作る） */
+/**
+ * script の本体（テストで直接動かす。requestKey と同じキーを作る。送る数の上限は MAX_RECORDED を、トークンの余裕は EARLY_TOKEN_MARGIN_MS を、
+ * アプリが送った印の名前は APP_SENT_GLOBAL を埋め込む）
+ */
 export const EARLY_FETCH_SOURCE = `function (c) {
   try {
+    if (window.${APP_SENT_GLOBAL}) return;
     var s = JSON.parse(localStorage.getItem(c.k) || 'null');
     if (!s || typeof s.access_token !== 'string' || !s.user || typeof s.user.id !== 'string') return;
-    if (!(typeof s.expires_at === 'number' && s.expires_at * 1000 > Date.now() + 30000)) return;
+    if (!(typeof s.expires_at === 'number' && s.expires_at * 1000 > Date.now() + ${EARLY_TOKEN_MARGIN_MS})) return;
     var rec = JSON.parse(localStorage.getItem(c.p + s.user.id + ':requests') || 'null');
     var path = location.pathname;
     if (c.b && (path === c.b || path.indexOf(c.b + '/') === 0)) path = path.slice(c.b.length);
@@ -289,7 +326,7 @@ export const EARLY_FETCH_SOURCE = `function (c) {
     if (!Array.isArray(list)) return;
     var q = new URLSearchParams(location.search);
     var out = {};
-    for (var i = 0; i < list.length && i < 24; i++) {
+    for (var i = 0; i < list.length && i < ${MAX_RECORDED}; i++) {
       var e = list[i];
       if (!e || typeof e.u !== 'string' || e.u.indexOf('/rest/v1/') !== 0 || e.u.indexOf('..') >= 0) continue;
       if (!(e.m === 'GET' || (e.m === 'POST' && c.post.indexOf(e.u) >= 0))) continue;
@@ -325,4 +362,5 @@ export const EARLY_FETCH_SOURCE = `function (c) {
 export function resetEarlyFetchForTest(): void {
   recorder = null;
   dropEarlyResponses();
+  if (typeof window !== 'undefined') delete (window as unknown as Record<string, unknown>)[APP_SENT_GLOBAL];
 }

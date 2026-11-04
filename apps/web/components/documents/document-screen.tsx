@@ -15,6 +15,8 @@
 //   ボタンが消えるので、確かめが閉じた後にフォーカスをそのカードの題名へ移す（focus-after-dialog.ts。レビューの F4）。
 // - 最新でない年度：上に「最新の年度に切り替える」を出し、書き込みの前に確かめる（D-31。ファイルを足す・外すは「変更」、「提出した」は
 //   「提出」、取り消すは「取り消し」）。
+// - 書き込み（提出・取り消し・ファイル）と開く・保存の JS は、初めて使うときに読む（document-writes.ts。読めなければ送らずに、その操作の
+//   エラーを出す所に通信の失敗の文言。FU3 の PR B の案 5）。読み取りは軽いモジュール（lib/modules/documents/reads.ts）から読む。
 // 変数名は doc・docs（ブラウザの document を隠さない）。/documents の部品（表・シート・設定・ダイアログ）は import しない。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
@@ -27,16 +29,17 @@ import { EmptyState, QueryState, ReadOnlyNotice } from '@/components/states';
 import { useAuth } from '@/lib/auth/auth-provider';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
 import type { GroupSummary, YearStatus } from '@/lib/auth/membership';
-import { repDocumentsOptions, submitDocument, withdrawDocument, type RepDocumentsData } from '@/lib/data/documents';
 import { useYearRow } from '@/lib/data/year';
 import { classifyError, effectOf, messageFor } from '@/lib/errors';
 import { downloadNameFor, submitBlocker } from '@/lib/modules/documents/files';
 import { repDocumentActions } from '@/lib/modules/documents/permissions';
+import { repDocumentsOptions, type RepDocumentsData } from '@/lib/modules/documents/reads';
 import { buildRepDocumentCards, highlightedCard, pickDocumentGroup, type RepDocumentCard } from '@/lib/modules/documents/rep';
 import { useGuardedRouter } from '@/lib/navigation/guarded-router';
 import { queryKeys } from '@/lib/query';
 import { cardTitleId, DocumentCard, type CardNote } from './document-card';
 import { fileEntriesOf, REMOVE_CONFIRM_TEXT, type FileEntry } from './document-file-list';
+import { loadDocumentWrites, preloadDocumentWrites, type DocumentWrites } from './document-writes';
 import { openDocumentFile, POPUP_BLOCKED_MESSAGE, saveDocumentFile, type FileOpenResult } from './file-open';
 import { focusAfterDialogs } from './focus-after-dialog';
 import {
@@ -207,6 +210,14 @@ function DocumentBoard({
     setNote(documentId, null);
     setPendingDoc(documentId);
     try {
+      // 書き込みの JS（初めてなら読む）。読めなければ送らずに、通信の失敗の文言を出す（もう一度押すと読み直す）
+      let w: DocumentWrites;
+      try {
+        w = await loadDocumentWrites();
+      } catch (e) {
+        setNote(documentId, { note: { kind: 'error', message: messageFor(classifyError(e)) } });
+        return;
+      }
       const r = await runSubmissionWrite(
         {
           action,
@@ -214,8 +225,8 @@ function DocumentBoard({
           afterUnknown,
           send: () =>
             action === 'submit'
-              ? submitDocument(documentId, group.id, card.baseVersion)
-              : withdrawDocument(documentId, group.id, card.baseVersion ?? ''),
+              ? w.submitDocument(documentId, group.id, card.baseVersion)
+              : w.withdrawDocument(documentId, group.id, card.baseVersion ?? ''),
           reread: async () => {
             const fresh = await rereadList();
             if (!fresh) throw new Error('reread');
@@ -309,6 +320,7 @@ function DocumentBoard({
     }
     if (!(await notLatestChange.confirmBeforeWrite())) return;
     if (entry.state === 'uploaded') {
+      preloadDocumentWrites();
       setRemoveError(null);
       setRemoveTarget({ card, entry });
       return;
@@ -406,12 +418,16 @@ function DocumentBoard({
                     onRetry={(e) => void uploader.retry(e.id)}
                     onSubmit={() =>
                       void notLatestSubmit.confirmBeforeWrite().then((ok) => {
-                        if (ok) setSubmitTarget(card);
+                        if (!ok) return;
+                        preloadDocumentWrites();
+                        setSubmitTarget(card);
                       })
                     }
                     onWithdraw={() =>
                       void notLatestWithdraw.confirmBeforeWrite().then((ok) => {
-                        if (ok) setWithdrawTarget(card);
+                        if (!ok) return;
+                        preloadDocumentWrites();
+                        setWithdrawTarget(card);
                       })
                     }
                     onReread={() => void rereadUnread(documentId)}

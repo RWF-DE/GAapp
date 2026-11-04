@@ -1,7 +1,9 @@
 // 自団体の提出物（/document。スマホ）のカードの組み立て（04「自団体の提出物」、notes/T19.md「パート B・C の約束」5。T19・D-55）。
 // 純粋な関数（時計は now だけ）。カードは締切の早い順（同じなら題名 → id）、ファイルは提出物ごとに created_at → id の順に番号を付ける。
 // 差し戻しの理由・前回の差し戻しの理由・承認のメモは、状態で出し分ける（書いたとおりの文字は画面が出す）。
-import { compareStrings } from '@gaapp/shared';
+// 並べ方は @gaapp/shared の部分の入口（order）から読む（入口〔@gaapp/shared〕は zod とルールの形まで読むので、/document の最初に読む JS に
+// 入れない。FU3 の PR B の案 5）。
+import { compareStrings } from '@gaapp/shared/order';
 import { tokyoDate, tokyoToday } from '@/lib/datetime';
 import { daysBetween, formatShortDateTimeWeekday } from '@/lib/datetime-weekday';
 import { numberFiles, type NumberedFile } from './files';

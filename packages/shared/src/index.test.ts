@@ -32,6 +32,15 @@ describe('@gaapp/shared', () => {
     }
     expect(found).toBeGreaterThanOrEqual(2);
   });
+
+  it('部分の入口 @gaapp/shared/order は並べ方だけで、何も import しない（zod とルールの形を読まない。FU3 の案 5：/document の最初に読む JS）', async () => {
+    const pkg = JSON.parse(readFileSync(path.join(repoRoot(), 'packages/shared/package.json'), 'utf8')) as { exports: Record<string, string> };
+    expect(pkg.exports['./order']).toBe('./src/order.ts');
+    const src = readFileSync(path.join(repoRoot(), 'packages/shared/src/order.ts'), 'utf8');
+    expect(src).not.toMatch(/^\s*(import|export\s.*\sfrom)\s/m);
+    const order = await import('./order');
+    expect(order.compareStrings('a', 'b')).toBe(-1);
+  });
 });
 
 describe('生成された型（database.types.ts）', () => {

@@ -7,7 +7,7 @@
 //   （「提出できたか分かりません。もう一度「提出した」を押すと、確かめてから送ります」。入力の理由・メモは残す）
 // - ほかは 'changed'（ほかの人が先に変えた。conflict と同じ扱い）
 // 読み直せなかったときは画面が決める（止められた後なら「読み直せませんでした」と「読み直す」）。
-import { normalizeReviewNote } from '@/lib/schemas/document-fields';
+import { normalizeReviewNote } from './review-note';
 import { statusOf, type DocumentStatus } from './labels';
 
 /** 提出の操作（paper は未提出・差し戻しからの紙などでの承認） */

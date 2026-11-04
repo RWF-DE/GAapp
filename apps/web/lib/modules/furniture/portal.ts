@@ -1,5 +1,5 @@
 // 机椅子がダッシュボード（/）に出すもの（D-52。04「机椅子の状況」の「ダッシュボードに出すもの」、notes/T16.md「固めた約束」4）。
-// - 総務（soumu）：軽い読み取りだけ（soumu.ts の loadFurnitureSoumu。6つの表を並行に）。版（years）・振り分けの行・ルール・申請の行・
+// - 総務（soumu）：軽い読み取りだけ（soumu.ts の loadFurnitureSoumu。6つの表を埋め込みの2本で並行に）。版（years）・振り分けの行・ルール・申請の行・
 //   検証・スナップショットは読まない（机椅子の重い読み込みは机椅子の状況〔/furniture〕だけ）。数え方は counts.ts（summarizeDashboard と同じ）。
 // - 団体代表（rep）：自団体の提出と了承（rep.ts の furnitureRepOptions。代表する団体の欄と同じキャッシュ）。
 // - 閲覧のみ（viewer）：読まない（年度の行だけ）。

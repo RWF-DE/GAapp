@@ -140,6 +140,12 @@ function watchRest(page: Page): RestRequest[] {
 const MEMBERSHIP_READS = ['rpc/accept_my_invitations', 'profiles', 'year_roles', 'group_members', 'years'];
 
 /**
+ * 立場の読み込みのリクエストか。年度（years）は、立場と一緒に読む年度の行（列だけ）のほかに、テント等の貸し出しの総務の読み取り
+ * （年度に確定の印と備品を埋め込んだ1本。FU3 の案 3）も読むので、埋め込みのある years は立場の読み込みに入れない
+ */
+const isMembershipRead = (r: RestRequest) => MEMBERSHIP_READS.includes(r.table) && !(r.table === 'years' && (r.select ?? '').includes('('));
+
+/**
  * ダッシュボードのお知らせの欄の新着（T17。04「お知らせ一覧」の「ダッシュボードに出すもの」：id・宛先・題名・ピン留め・出した日時だけ。
  * 総務は総務内、閲覧のみ・店長・副店長は団体あて。宛先と年度で絞り、5件）
  */
@@ -163,15 +169,23 @@ const DOCUMENTS_LEAD_READS = {
 
 /**
  * ダッシュボードのテント等の貸し出しの総務の読み取り（T21。04「テント等の貸し出し」の「ダッシュボードに出すもの」：確定の印・備品・
- * 申請〔数が1以上〕・割り当て・記録の要る列だけを年度で絞って5本。並びは sort の順）。閲覧のみは読まない
+ * 申請〔数が1以上〕・割り当て・記録の要る列だけ。FU3 の案 3 で、年度で絞った5本を、開いている年度に確定の印と備品を、備品に申請・
+ * 割り当て・記録を埋め込んだ1本にした。年度の列〔版〕は読まない）。閲覧のみは読まない
  */
-const LENDING_SOUMU_READS = [
-  'GET lending_assignments?select=group_id,lending_item_id,count',
-  'GET lending_items?select=id,name,unit,stock,sort_order',
-  'GET lending_records?select=group_id,lending_item_id,lent_count,returned_count',
-  'GET lending_requests?select=group_id,lending_item_id,count',
-  'GET lending_years?select=year_id,confirmed_at',
-];
+const LENDING_SOUMU_READ =
+  'GET years?select=lending_years(confirmed_at),lending_items(id,name,unit,stock,sort_order,lending_requests(group_id,count),lending_assignments(group_id,count),lending_records(group_id,lent_count,returned_count))';
+
+/**
+ * ダッシュボードの机椅子の総務の読み取り（T16。04「机椅子の状況」の「ダッシュボードに出すもの」。FU3 の案 3 で6本を埋め込みの2本にした：
+ * 団体〔年度〕に提出の記録と了承を、場所〔全部〕に今年の使用と在庫の行〔場所ごとに1行まで。room_id だけ〕を埋め込む）
+ */
+const FURNITURE_SOUMU_READS = {
+  groups: 'GET groups?select=id,name,category,sort_order,request_submissions(submitted_at),substitution_consents(status)',
+  rooms: 'GET rooms?select=id,name,is_storage,sort_order,room_years(usable),stocks(room_id)',
+};
+
+/** 机椅子の総務の読み取りのうち、団体に提出の記録と了承を埋め込んだ1本（欄の失敗・読み込み中を作る route に使う） */
+const isFurnitureSoumuGroupsRead = (u: URL) => u.pathname.endsWith('/rest/v1/groups') && (u.searchParams.get('select') ?? '').includes('request_submissions(');
 
 /** 机椅子の申請の締切の、締切と予定の欄の日付（曜日つき。「12/1（火）17:05」。T18）と相対の言い方（「あと 30 日」） */
 async function closeDated(yearId: string): Promise<{ when: string; relative: string }> {
@@ -185,7 +199,7 @@ const isVersionRead = (r: RestRequest) => r.table === 'years' && r.select === 'a
 
 /** 立場の読み込みのほかのリクエスト（`{メソッド} {表}?select={select}`） */
 function readsBeyondMembership(reads: readonly RestRequest[]): string[] {
-  return reads.filter((r) => !MEMBERSHIP_READS.includes(r.table)).map((r) => `${r.method} ${r.table}?select=${r.select ?? ''}`);
+  return reads.filter((r) => !isMembershipRead(r)).map((r) => `${r.method} ${r.table}?select=${r.select ?? ''}`);
 }
 
 // ---------------------------------------------------------------- 総務
@@ -275,30 +289,28 @@ test.describe('T16 ダッシュボード（管理者）', () => {
     }
   });
 
-  test('T16 総務の / は版・振り分けの行・ルールを読まない（机椅子の6つの表と、T17 のお知らせの新着と、T18 の予定と締切の項目を1回ずつ。在庫は room_id だけ）。先読みと、2回目の先送りでも1回ずつ', async ({
+  test('T16 総務の / は版・振り分けの行・ルールを読まない（机椅子の6つの表〔埋め込みの2本〕と、T17 のお知らせの新着と、T18 の予定と締切の項目を1回ずつ。在庫は room_id だけ）。先読みと、2回目の先送りでも1回ずつ', async ({
     page,
   }) => {
     const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { admin: true } });
-    // 机椅子の6つの表と、総務内のお知らせの新着（T17。本文・宛先の団体・書いた人は読まない）と、予定と締切の項目（T18。対象・メモ・
-    // 書いた人は読まない）と、テント等の貸し出しの総務の5本（T21。確定の印・備品・申請〔1以上〕・割り当て・記録の要る列だけ。メモ・
-    // 書いた人は読まない）。提出物の部門長以上の3本（T19。DOCUMENTS_LEAD_READS）とシフト・作業の2本（T20。下の注）も。並びは sort の順
+    // 机椅子の6つの表（FU3 の案 3 で埋め込みの2本）と、総務内のお知らせの新着（T17。本文・宛先の団体・書いた人は読まない）と、予定と
+    // 締切の項目（T18。対象・メモ・書いた人は読まない）と、テント等の貸し出しの総務の1本（T21。確定の印・備品・申請〔1以上〕・割り当て・
+    // 記録の要る列だけ。メモ・書いた人は読まない。FU3 の案 3 で5本を1本）。提出物の部門長以上の3本（T19。DOCUMENTS_LEAD_READS）と
+    // シフト・作業の2本（T20。下の注）も。並びは sort の順
     const FURNITURE_READS = [
       DOCUMENTS_LEAD_READS.docs,
       `GET ${EVENTS_DATED_READ}`,
-      'GET groups?select=id,name,category,sort_order',
-      ...LENDING_SOUMU_READS,
+      FURNITURE_SOUMU_READS.groups,
       `GET ${NOTICES_LATEST_READ}`,
-      'GET request_submissions?select=group_id,submitted_at,groups!inner(year_id)',
-      'GET room_years?select=room_id,usable',
-      'GET rooms?select=id,name,is_storage,sort_order',
+      FURNITURE_SOUMU_READS.rooms,
       DOCUMENTS_LEAD_READS.usage,
       // シフト・作業（T20）：部門長以上は時間枠のますと作業の全部も読む（自分の割り当てと作業は year_roles に埋め込む＝立場と同じ表）
       'GET shift_slots?select=id,starts_at,ends_at,shift_needs(duty_id,required_count,shift_assignments(user_id,year_roles(role)))',
-      'GET stocks?select=room_id',
-      'GET substitution_consents?select=group_id,status,groups!inner(year_id)',
       'GET tasks?select=id,title,status,due_at,assignee_id,year_roles(role)',
       DOCUMENTS_LEAD_READS.statuses,
+      LENDING_SOUMU_READ,
     ];
+    expect([...FURNITURE_READS].sort(), '一覧は sort の順').toEqual(FURNITURE_READS);
     try {
       // 前にこの年度を管理者として開いた（覚えたロールで、立場の読み込みと同時に机椅子の読み取りを始める。D-45）
       await rememberYear(page, SEED_USER_IDS.admin, s.yearId, { role: 'admin' });
@@ -316,30 +328,47 @@ test.describe('T16 ダッシュボード（管理者）', () => {
       // / は先送りしてよい画面（T16。D-45・D-51）：開いたときの読み取りを覚える。覚えたものに版・振り分けの行・ルールはない
       const recorded = await recordedRequests(page, SEED_USER_IDS.admin, '/');
       const recordedTables = recorded.map((r) => /^\/rest\/v1\/([^?]+)/.exec(r.u)?.[1] ?? r.u);
-      for (const t of ['events', 'groups', 'notices', 'request_submissions', 'room_years', 'rooms', 'stocks', 'substitution_consents']) expect(recordedTables).toContain(t);
+      for (const t of ['events', 'groups', 'notices', 'rooms']) expect(recordedTables).toContain(t);
+      // 机椅子の総務の読み取りは埋め込みの2本（FU3 の案 3）
+      const recordedSelects = recorded.map((r) => new URL(r.u, 'http://x').searchParams.get('select') ?? '');
+      expect(recordedSelects).toContain(FURNITURE_SOUMU_READS.groups.replace(/^GET groups\?select=/, ''));
+      expect(recordedSelects).toContain(FURNITURE_SOUMU_READS.rooms.replace(/^GET rooms\?select=/, ''));
       // 提出物（T19）の部門長以上の読み取りも覚える（使った量は GET の RPC）
       for (const t of ['documents', 'v_document_status', 'rpc/document_storage_usage']) expect(recordedTables).toContain(t);
-      // テント等の貸し出し（T21）の総務の読み取りも覚える
-      for (const t of ['lending_years', 'lending_items', 'lending_requests', 'lending_assignments', 'lending_records']) expect(recordedTables).toContain(t);
+      // テント等の貸し出し（T21）の総務の読み取り（年度に埋め込んだ1本。FU3 の案 3）も覚える
+      expect(recordedSelects).toContain(LENDING_SOUMU_READ.replace(/^GET years\?select=/, ''));
       expect(recordedTables.filter((t) => ['allocations', 'rules', 'requests', 'items', 'distance_overrides'].includes(t))).toEqual([]);
       expect(recorded.filter((r) => r.u.includes('select=allocation_version'))).toEqual([]);
 
-      // 2回目：<head> の script が覚えた読み取りを JS より先に送り、アプリは同じリクエストならその応答を使う（送らない）。JS が
-      // ブラウザのキャッシュからすぐに動くと、script より先にアプリが送ることがある（どちらの順でも中身は正しい。速さは e2e:perf で
-      // 計る）ので、アプリの読み取りは表ごとに1回まで、script は覚えた読み取りだけ、合わせて8つの表がそろい、版を読まないことを見る
-      // （提出物〔T19〕の部門長以上の3本・シフト・作業〔T20〕の2本・テント等の貸し出し〔T21〕の総務の5つの表も同じ形でそろう）
+      // 2回目：<head> の script が覚えた読み取りを JS より先に送り、アプリは同じリクエストならその応答を使う（送らない）。この開き方では
+      // JS が HTTP のキャッシュからすぐに動き、script より先にアプリが送ることが多い（そのときは script は何も送らない。FU3 の送り直しの
+      // 直し。04「共通レイアウト」の読み込みの項）。どちらの順でも、アプリと script を合わせて表ごとに1回だけ送り（二重に送らない）、
+      // 8つの表がそろい、版を読まないことを見る（提出物〔T19〕の部門長以上の3本・シフト・作業〔T20〕の2本・テント等の貸し出し〔T21〕の
+      // 総務の5つの表も同じ形でそろう）
+      const opened = async (label: string) => {
+        await openPortal(page, 'ダッシュボード');
+        await expect(furnitureCard(page)).toBeVisible();
+        await page.waitForLoadState('networkidle');
+        const byApp = readsBeyondMembership(reads.filter((r) => r.app));
+        const early = readsBeyondMembership(reads.filter((r) => !r.app));
+        expect([...byApp, ...early].sort(), `${label}：アプリと <head> の script を合わせて、表ごとに1回`).toEqual(FURNITURE_READS);
+        expect(reads.filter(isVersionRead), `${label}：版だけの読み取り`).toEqual([]);
+        return early;
+      };
       reads.length = 0;
-      await openPortal(page, 'ダッシュボード');
-      await expect(furnitureCard(page)).toBeVisible();
-      await page.waitForLoadState('networkidle');
-      const byApp = readsBeyondMembership(reads.filter((r) => r.app));
-      const early = readsBeyondMembership(reads.filter((r) => !r.app));
-      expect(early.length, '<head> の script が覚えた読み取りを送った').toBeGreaterThan(0);
-      expect(new Set(byApp).size, 'アプリの読み取りは表ごとに1回まで').toBe(byApp.length);
-      expect(new Set(early).size, '<head> の script の読み取りは表ごとに1回まで').toBe(early.length);
-      for (const r of early) expect(FURNITURE_READS).toContain(r);
-      expect([...new Set([...byApp, ...early])].sort()).toEqual(FURNITURE_READS);
-      expect(reads.filter(isVersionRead), '版だけの読み取り').toEqual([]);
+      const second = await opened('2回目');
+      test.info().annotations.push({ type: '2回目の順', description: second.length > 0 ? 'script が先に送った' : 'アプリが先に送った（script は送らない）' });
+
+      // 3回目：script が先に動く順。script が先送りを置く（window.__gaappEarly）まで JS のチャンクを返さず（3 秒で諦めて返す。route を
+      // 使う間は HTTP のキャッシュも使わない）、script が覚えた読み取りを送って、アプリがその応答を使う（送り直さない）ことを見る
+      const chunks = '**/_next/static/chunks/**';
+      await page.route(chunks, async (route) => {
+        await page.waitForFunction(() => '__gaappEarly' in globalThis, undefined, { timeout: 3_000, polling: 20 }).catch(() => undefined);
+        await route.continue();
+      });
+      reads.length = 0;
+      expect((await opened('3回目')).length, '3回目：<head> の script が覚えた読み取りを送った').toBeGreaterThan(0);
+      await page.unroute(chunks);
     } finally {
       await s.cleanup();
     }
@@ -350,10 +379,10 @@ test.describe('T16 ダッシュボード（管理者）', () => {
   }) => {
     test.setTimeout(120_000);
     const s = await createScenario({ status: 'requesting', requestWindow: 'closed', dataset: 'small', roles: { admin: true } });
-    const route = '**/rest/v1/request_submissions*';
+    const route = isFurnitureSoumuGroupsRead;
     try {
       await sql('delete from public.request_submissions where group_id = $1', [s.ids.groups[SMALL.groups.stall]]);
-      // 机椅子の総務の読み取り（6つの表）のうち、提出の記録を通信の失敗にする
+      // 机椅子の総務の読み取り（埋め込みの2本。FU3 の案 3）のうち、団体に提出の記録と了承を埋め込んだ1本を通信の失敗にする
       await page.route(route, (r) => r.abort());
       await pinYear(page, SEED_USER_IDS.admin, s.yearId);
       await page.goto('/');

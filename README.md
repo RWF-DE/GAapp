@@ -83,9 +83,23 @@ CI では流さない E2E（環境変数のときだけ playwright.config.ts に
 
 ```bash
 pnpm e2e:shots --grep "T14 "   # スクリーンショット（notes/<チケット>/。--grep はチケット ID と空白で絞る）
-pnpm e2e:perf                   # 4G での表示の速さ（/stock・/request・/my・団体代表の /・/document・総務部門員の /・/shift・/tasks・/lending/records・/request?tab=lending。PERF_ONLY=home などで絞る。結果は test-results/perf/）
+pnpm e2e:perf                   # 4G での表示の速さ（/stock・/request・/my・団体代表の /・/document・総務部門員の /・/shift・/tasks・/lending/records・/request?tab=lending・総務部門長の /・管理者で団体代表の /。PERF_ONLY=home などで絞る。結果は test-results/perf/）
 pnpm e2e:manual                 # 手での確かめ（画面の受け入れ）の年度とユーザーを作り、ログインの情報を出す。片付けは MANUAL_CLEANUP=1
 ```
+
+4G の速さ（`pnpm e2e:perf`。e2e/perf.spec.ts の頭に詳しく書いた）：Fast 4G・CPU 4 倍・キャッシュなしで、画面ごとに初めて開いたとき（first）と2回目（again）を、serve（HTTP/1.1）と HTTP/2 で計る。総務部門員・総務部門長・管理者で団体代表の / は、枠の印（ヘッダー・立場・その人に出す欄すべての枠が出るまで。2 秒）とそろう（全部の欄がそろうまで。3 秒の目安）の2つの時刻を出す（D-58）。団体代表の / は代表する団体のカード（2 秒）のほかに、枠とそろうの時刻も記録として出す。始める前に 1 分の load average が 1.0 を下回るまで待ち（`PERF_LOAD_WAIT`・`PERF_LOAD_WAIT_MAX`）、計っている間の最大が 2.5 を超えたマスに印を付ける。perf.json はマスを計り終えるたびに書き直す（止まった回は errors に残り、そのときまだ終わっていなかったリクエストも残る。テストは最後に失敗する）。1回ごとにログインのセッションの期限までの残りを残し、組の前に残りが 5 分（`PERF_TOKEN_MIN` 秒）を切っていたらログインし直す（1 時間ほど流すと、<head> の script の先送りが期限の近さで変わるため。2 分を切った回のあるマスは tokenLow の印が付き、比べに使わない）。`PERF_SERVE=h2` などで配り方を絞れる。
+
+機械の速さは日によって 0.5 秒ほど変わるので、直しの効き目は、比べる書き出し（ふつうは main）と同じ回の中で交互に開いて、対の差で見る（`PERF_AB`。D-45 の FU3 の直し）：
+
+```bash
+git worktree add --detach ../gaapp-main main            # 比べる書き出し（A）の checkout（node_modules ごと cp -r で写さない）
+(cd ../gaapp-main && pnpm install --frozen-lockfile && pnpm build:e2e)
+pnpm build:e2e                                          # この checkout（B）
+PERF_AB=../gaapp-main/apps/web/out PERF_RUNS=12 PERF_ONLY=soumu-home,stock,my pnpm e2e:perf
+git worktree remove ../gaapp-main
+```
+
+`PERF_AB` のときは、A を serve で `E2E_PERF_AB_PORT`（既定 3103）と HTTP/2 で `E2E_PERF_AB_H2_PORT`（既定 3104）に配り（B は今までどおり `E2E_PORT`・`E2E_PERF_H2_PORT`）、マスごとに A と B を1回ずつ開いて1組にし、組の順を1組ごとに入れ替える（A → B、B → A、…）。`PERF_RUNS` は組の数（既定 12）。perf.json の各マスに、B − A の対の差（印ごとの中央値・四分位・組の数）と、後に開いた方 − 先に開いた方（順の効き目）を出し、最後に画面ごとに全部のマスの組を合わせた差を出す（perf.json の pooled と `[B − A・全部のマス]` の行）。直しを入れるかは、狙った画面の差の中央値と、ほかの画面（変えていない /stock?room=・/my を対照に入れる）の差で決める（notes/FU3.md の「採る基準と計り方」）。同じ書き出しどうしの A/A でも、12 組の1マスの中央値は 54〜89 ms ほど揺れる（標準誤差。notes/FU3.md の「計測の土台と A/A の揺れ」）ので、1マスの値だけで決めない。
 
 `pnpm build:e2e` の引数（`pnpm build:e2e -- --base-path /GAapp` のように渡す）：`--base-path /GAapp` は basePath つきで書き出して apps/web/out-basepath/GAapp/ に置く（下の「basePath」）。`--supabase-url http://<PC の LAN の IP>:54321` はアプリが呼ぶ Supabase の URL を変える（総務の PC から同じ Wi-Fi のスマホに配って試すとき。手順は notes/T14.md の「LAN で配る手順」）。ただし、今はテスト用ログインのフォームが Supabase の URL が 127.0.0.1・localhost のときだけ出るので、LAN の IP で書き出すとスマホにフォームが出ない（扱いは未決。notes/T14.md）。
 
