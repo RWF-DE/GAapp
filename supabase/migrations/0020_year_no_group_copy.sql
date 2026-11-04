@@ -58,8 +58,10 @@ begin
     insert into public.rules (year_id, code, kind, params, enabled, memo)
     values (v_new.id, r.code, r.kind, r.params,
             r.enabled and not v_refs_group,
+            -- memo は 2000 字まで（CHECK）。理由を足して超えるときは、元の memo の後ろを切ってから足す（理由は必ず残す）
             case when v_refs_group
-                 then concat_ws(' / ', r.memo, format('%s から複製したとき、団体は複製しないので無効にした', v_prev.label))
+                 then (select concat_ws(' / ', left(r.memo, greatest(0, 2000 - length(v_note) - 3)), v_note)
+                       from (select format('%s から複製したとき、団体は複製しないので無効にした', v_prev.label) as v_note) n)
                  else r.memo end);
   end loop;
   return v_new;
