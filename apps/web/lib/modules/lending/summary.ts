@@ -11,6 +11,7 @@
 // - 閲覧のみ：読まない（年度の行だけで作るカード）。
 import type { Tables } from '@gaapp/shared';
 import { queryOptions } from '@tanstack/react-query';
+import { fetchAll, type PageResult } from '@/lib/db/fetch-all';
 import { toAppError } from '@/lib/errors';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import { portalQueryKey } from '../query-key';
@@ -66,8 +67,85 @@ type SoumuYearRow = {
 };
 
 /**
+ * 1回の読み取りの件数の上限（supabase/config.toml の max_rows）。埋め込みの配列（親の行ごと）もこの件数で切られる（エラーにならない）
+ * ので、備品の一覧と、1つの備品の申請・割り当て・記録のどれかが届いたら、まとめる前の形で表ごとに読み直す
+ */
+const MAX_ROWS = 1000;
+
+/** まとめる前の形（表ごとに読む）の select。上限に届いたときの読み直しに使う */
+const LENDING_SOUMU_BY_TABLE_SELECT = {
+  lending_years: 'year_id, confirmed_at',
+  lending_items: 'id, name, unit, stock, sort_order',
+  lending_requests: 'group_id, lending_item_id, count',
+  lending_assignments: 'group_id, lending_item_id, count',
+  lending_records: 'group_id, lending_item_id, lent_count, returned_count',
+} as const;
+
+/** 埋め込みの1本のどこかが上限に届いたか（届いていれば、切られた行があるかもしれない） */
+function reachedMaxRows(items: SoumuItemRow[]): boolean {
+  return (
+    items.length >= MAX_ROWS ||
+    items.some(
+      (i) =>
+        manyOf(i.lending_requests).length >= MAX_ROWS ||
+        manyOf(i.lending_assignments).length >= MAX_ROWS ||
+        manyOf(i.lending_records).length >= MAX_ROWS,
+    )
+  );
+}
+
+/** 申請・割り当て・記録を、年度で絞って団体 → 備品の id の順に 1000 行ずつ分けて読む（申請は数が1以上だけ） */
+function readPairs<T>(
+  client: AppSupabaseClient,
+  table: 'lending_requests' | 'lending_assignments' | 'lending_records',
+  select: string,
+  yearId: string,
+  positive = false,
+) {
+  return fetchAll<T>((from, to) => {
+    let q = client.from(table).select(select).eq('year_id', yearId);
+    if (positive) q = q.gt('count', 0);
+    return q.order('group_id').order('lending_item_id').range(from, to) as unknown as PromiseLike<PageResult<T>>;
+  });
+}
+
+/**
+ * まとめる前の形で、5つの表を表ごとに読む（申請・割り当て・記録・備品は 1000 行ずつ分けて。埋め込みの1本が上限に届いたときだけ。
+ * FU3 の PR B のセキュリティのレビューの F1）。並びは埋め込みから戻したときと同じ
+ */
+async function loadLendingSoumuByTable(yearId: string, client: AppSupabaseClient): Promise<LendingSoumuRaw> {
+  const S = LENDING_SOUMU_BY_TABLE_SELECT;
+  const [ly, items, requests, assignments, records] = await Promise.all([
+    client.from('lending_years').select(S.lending_years).eq('year_id', yearId).maybeSingle(),
+    fetchAll(
+      (from, to) =>
+        client
+          .from('lending_items')
+          .select(S.lending_items)
+          .eq('year_id', yearId)
+          .order('sort_order')
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<PageResult<LendingSoumuRaw['items'][number]>>,
+    ),
+    readPairs<LendingSoumuRaw['requests'][number]>(client, 'lending_requests', S.lending_requests, yearId, true),
+    readPairs<LendingSoumuRaw['assignments'][number]>(client, 'lending_assignments', S.lending_assignments, yearId),
+    readPairs<LendingSoumuRaw['records'][number]>(client, 'lending_records', S.lending_records, yearId),
+  ]);
+  if (ly.error) throw toAppError(ly.error, ly.status);
+  const year = ly.data as { confirmed_at: string | null } | null;
+  return {
+    confirmedAt: year?.confirmed_at ?? null,
+    items: items.map(({ id, name, unit, stock, sort_order }) => ({ id, name, unit, stock, sort_order })),
+    requests: requests.map(({ group_id, lending_item_id, count }) => ({ group_id, lending_item_id, count })),
+    assignments: assignments.map(({ group_id, lending_item_id, count }) => ({ group_id, lending_item_id, count })),
+    records: records.map(({ group_id, lending_item_id, lent_count, returned_count }) => ({ group_id, lending_item_id, lent_count, returned_count })),
+  };
+}
+
+/**
  * 総務のダッシュボードの行を読む（年度に埋め込んだ1本。年度の行〔版〕を待たない）。読めなければ AppError を投げる。年度が読めなければ
- * 確定前・備品なし（表ごとに読んだときも、その年度の行は RLS で読めない）。埋め込みの配列は件数（max_rows）で切られない
+ * 確定前・備品なし（表ごとに読んだときも、その年度の行は RLS で読めない）。埋め込みの配列（備品ごと）も件数の上限（MAX_ROWS）で切られる
+ * ので、どれかが上限に届いたときだけ、まとめる前の形で表ごとに読み直す（ふだんの年度の大きさ〔団体 60 ほど〕では届かない）
  */
 export async function loadLendingSoumu(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<LendingSoumuRaw> {
   const res = await client
@@ -79,6 +157,7 @@ export async function loadLendingSoumu(yearId: string, client: AppSupabaseClient
     .order('id', { referencedTable: 'lending_items' });
   const year = rowsOf<SoumuYearRow>(res)[0] ?? null;
   const items = manyOf(year?.lending_items);
+  if (reachedMaxRows(items)) return loadLendingSoumuByTable(yearId, client);
   // 備品ごとに埋め込んだ行を、表ごとに読んだときの形（団体と備品の id の組）と並び（団体 → 備品の id）に戻す
   const pairs = <T extends { group_id: string }>(pick: (i: SoumuItemRow) => One<T>) =>
     items.flatMap((i) => manyOf(pick(i)).map((x) => ({ ...x, lending_item_id: i.id }))).sort(byGroupAndItem);

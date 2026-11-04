@@ -4,6 +4,7 @@
 // クエリだけを使うので、数え方（counts.ts）・要対応の組み立て（portal.ts）・ナビゲーションの表をルートのレイアウトの JS に入れない
 // （団体代表の rep.ts と同じ形）。lib/data を import しない。
 import { queryOptions } from '@tanstack/react-query';
+import { fetchAll, type PageResult } from '@/lib/db/fetch-all';
 import type { ConsentDbRow, GroupRow, RoomRow, RoomYearRow, SubmissionRow } from '@/lib/db/types';
 import { toAppError } from '@/lib/errors';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
@@ -61,8 +62,96 @@ interface RoomEmbedRow extends Pick<RoomRow, 'id' | 'name' | 'is_storage' | 'sor
 }
 
 /**
+ * 1回の読み取りの件数の上限（supabase/config.toml の max_rows）。最上位の行も、埋め込みの配列（親の行ごと）も、この件数で切られる
+ * （エラーにならない）。在庫の行は場所ごとに1行まで（limit）、提出の記録と今年の使用は親の行ごとに1行なので、届きうるのは団体・場所と、
+ * 1つの団体の了承だけ
+ */
+const MAX_ROWS = 1000;
+
+/** まとめる前の形（表ごとに読む）の select。上限に届いたときの読み直しに使う */
+const FURNITURE_SOUMU_BY_TABLE_SELECT = {
+  groups: 'id, name, category, sort_order',
+  request_submissions: 'group_id, submitted_at, groups!inner(year_id)',
+  rooms: 'id, name, is_storage, sort_order',
+  room_years: 'room_id, usable',
+  stocks: 'room_id',
+  substitution_consents: 'group_id, status, groups!inner(year_id)',
+} as const;
+
+/** 埋め込みの2本のどこかが上限に届いたか（届いていれば、切られた行があるかもしれない） */
+function reachedMaxRows(groups: GroupEmbedRow[], rooms: RoomEmbedRow[]): boolean {
+  return groups.length >= MAX_ROWS || rooms.length >= MAX_ROWS || groups.some((x) => manyOf(x.substitution_consents).length >= MAX_ROWS);
+}
+
+type Page<T> = PromiseLike<PageResult<T>>;
+
+/**
+ * まとめる前の形で、6つの表を表ごとに 1000 行ずつ分けて読む（埋め込みの2本が上限に届いたときだけ。FU3 の PR B のセキュリティの
+ * レビューの F1）。並びは埋め込みから戻したときと同じ（団体・場所は並びの順、提出・了承は団体の id の順、今年の使用・在庫は場所の id の順）
+ */
+async function loadFurnitureSoumuByTable(yearId: string, client: AppSupabaseClient): Promise<FurnitureSoumuRaw> {
+  const S = FURNITURE_SOUMU_BY_TABLE_SELECT;
+  const [groups, submissions, rooms, roomYears, stocks, consents] = await Promise.all([
+    fetchAll(
+      (from, to) =>
+        client.from('groups').select(S.groups).eq('year_id', yearId).order('sort_order').order('id').range(from, to) as unknown as Page<
+          FurnitureSoumuRaw['groups'][number]
+        >,
+    ),
+    fetchAll(
+      (from, to) =>
+        client
+          .from('request_submissions')
+          .select(S.request_submissions)
+          .eq('groups.year_id', yearId)
+          .order('group_id')
+          .range(from, to) as unknown as Page<FurnitureSoumuRaw['submissions'][number]>,
+    ),
+    fetchAll(
+      (from, to) =>
+        client.from('rooms').select(S.rooms).order('sort_order').order('id').range(from, to) as unknown as Page<
+          FurnitureSoumuRaw['rooms'][number]
+        >,
+    ),
+    fetchAll(
+      (from, to) =>
+        client.from('room_years').select(S.room_years).eq('year_id', yearId).order('room_id').range(from, to) as unknown as Page<
+          FurnitureSoumuRaw['roomYears'][number]
+        >,
+    ),
+    fetchAll(
+      (from, to) =>
+        client.from('stocks').select(S.stocks).eq('year_id', yearId).order('room_id').order('item_id').range(from, to) as unknown as Page<{
+          room_id: string;
+        }>,
+    ),
+    fetchAll(
+      (from, to) =>
+        client
+          .from('substitution_consents')
+          .select(S.substitution_consents)
+          .eq('groups.year_id', yearId)
+          .order('group_id')
+          .order('from_item_id')
+          .order('to_item_id')
+          .range(from, to) as unknown as Page<FurnitureSoumuRaw['consents'][number]>,
+    ),
+  ]);
+  return {
+    groups: groups.map(({ id, name, category, sort_order }) => ({ id, name, category, sort_order })),
+    submissions: submissions.map(({ group_id, submitted_at }) => ({ group_id, submitted_at })),
+    rooms: rooms.map(({ id, name, is_storage, sort_order }) => ({ id, name, is_storage, sort_order })),
+    roomYears: roomYears.map(({ room_id, usable }) => ({ room_id, usable })),
+    stockRoomIds: [...new Set(stocks.map((s) => s.room_id))],
+    consents: consents.map(({ group_id, status }) => ({ group_id, status })),
+  };
+}
+
+/**
  * 総務の机椅子のダッシュボードの行を読む（どれも今の RLS で総務が読めるもの）。2本を並行に読み、年度の行（版）を待たない。
- * 埋め込みの配列は件数（max_rows）で切られない。在庫の行は場所ごとに1行まで（limit）なので、場所×品目が多くても大きくならない。
+ * 最上位の行と埋め込みの配列（親の行ごと）は、どれも件数の上限（MAX_ROWS）で切られる。どこかが上限に届いたときだけ、まとめる前の形で
+ * 表ごとに読み直す（ふだんの年度の大きさ〔団体 60 ほど・場所 70 ほど〕では届かない）。在庫の行は場所ごとに1行まで（limit）なので、
+ * 場所×品目が多くても大きくならない。
  */
 export async function loadFurnitureSoumu(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<FurnitureSoumuRaw> {
   const S = FURNITURE_SOUMU_SELECT;
@@ -86,6 +175,7 @@ export async function loadFurnitureSoumu(yearId: string, client: AppSupabaseClie
   ]);
   const groups = rowsOf<GroupEmbedRow>(g);
   const rooms = rowsOf<RoomEmbedRow>(r);
+  if (reachedMaxRows(groups, rooms)) return loadFurnitureSoumuByTable(yearId, client);
   // 表ごとに読んだときの並び（提出・了承は団体の id の順、今年の使用・在庫は場所の id の順）に戻す。sort は安定なので、了承は同じ団体の
   // 中で埋め込みの並び（品目の組の順）のまま
   return {
