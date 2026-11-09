@@ -405,7 +405,7 @@ export const SERIAL_NAMES = {
 
 /**
  * 前の実行の残り物を消す（ローカルの DB だけ）：年度名が E2E- で始まる年度とそれにつながる年度、serial のテスト用の名前の
- * 場所・品目・距離の上書き、createUser のユーザー（e2e- で始まる @example.test）。手での確かめの MANUAL-・manual- は残す。
+ * 場所・品目・距離の上書き、E2E- で始まる備品（数えるだけ）の名前（T22）、createUser のユーザー（e2e- で始まる @example.test）。手での確かめの MANUAL-・manual- は残す。
  */
 export async function cleanupLeftovers(): Promise<{ years: number; rooms: number; items: number; users: number }> {
   const years = (await sql<{ id: string }>(`select id from public.years where label like $1 escape '\\'`, [likePrefix('E2E-')])).map((r) => r.id);
@@ -428,6 +428,14 @@ export async function cleanupLeftovers(): Promise<{ years: number; rooms: number
       await c.query('delete from public.requests where item_id = any($1::uuid[])', [itemIds]);
       await c.query('delete from public.stocks where item_id = any($1::uuid[])', [itemIds]);
       await c.query('delete from public.items where id = any($1::uuid[])', [itemIds]);
+    }
+    // 備品（数えるだけ。T22）：テストが足した E2E- の名前（数の行は年度とともに消えている。ほかの年度の行が残っていれば消す）
+    const countItemIds = (await c.query<{ id: string }>(`select id from public.count_items where name like $1 escape '\\'`, [likePrefix('E2E-')])).rows.map(
+      (r) => r.id,
+    );
+    if (countItemIds.length > 0) {
+      await c.query('delete from public.count_stocks where count_item_id = any($1::uuid[])', [countItemIds]);
+      await c.query('delete from public.count_items where id = any($1::uuid[])', [countItemIds]);
     }
     const buildingLike = likePrefix(SERIAL_NAMES.buildingPrefix);
     await c.query(
