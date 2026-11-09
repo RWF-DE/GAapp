@@ -332,6 +332,14 @@ export const LENDING_ITEM_IN_USE_MESSAGE = '申請・割り当て・記録のあ
 /** 備品の登録の 23505（同じ名前） */
 export const LENDING_ITEM_DUPLICATE_MESSAGE = '同じ名前の備品がすでにあります';
 
+// 備品（数えるだけ。T22・D-60。04「マスタ設定」の品目のタブの欄・「在庫入力」の「新しい名前で足す」）
+/** 名前の 23505（全角・半角と大文字小文字を無視して同じ名前がある） */
+export const COUNT_ITEM_DUPLICATE_MESSAGE = '同じ名前の物があります';
+/** 削除の 23503（数が入力された物） */
+export const COUNT_ITEM_IN_USE_MESSAGE = '数が入力された物は削除できません';
+/** add_count_item の invalid_input（field: name）と、名前の 23514 */
+export const COUNT_ITEM_NAME_MESSAGE = '名前は、前後の空白を除いて 1〜50 字にしてください';
+
 /** details の備品の id（lending_item_ids）を名前にして「・」でつなぐ（名前のない id は出さない） */
 function lendingItemNames(ids: unknown, ctx: MessageContext): string {
   if (!Array.isArray(ids)) return '';
@@ -541,6 +549,7 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   // details（year_id・user_id・reason）によらず同じ文言（04 のエラーの一覧）
   if (e.reason === 'role_overlap') return ROLE_OVERLAP_MESSAGE;
   if (e.code === '23505' && ctx.table === 'lending_items') return LENDING_ITEM_DUPLICATE_MESSAGE;
+  if (e.code === '23505' && ctx.table === 'count_items') return COUNT_ITEM_DUPLICATE_MESSAGE;
   if (e.code === '23505') return '同じものがすでにあります（ほかの人が先に足した可能性があります）';
   // 提出物（T19）：提出・取り消し・承認・差し戻しの conflict（details は {document_id, group_id}）
   if (isDocumentRpc(ctx)) return DOCUMENT_CONFLICT_MESSAGE;
@@ -604,6 +613,10 @@ const NOTICE_GROUP_MESSAGES: Readonly<Record<string, string>> = {
 
 function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '入力の形が違います';
+  // 備品（数えるだけ。T22）：名前の誤り（add_count_item の field: name・送る前の確かめ・表の CHECK）
+  if (ctx.rpc === 'add_count_item' || ctx.table === 'count_items') {
+    if (e.code === '23514' || (isRecord(e.details) && e.details.field === 'name')) return COUNT_ITEM_NAME_MESSAGE;
+  }
   if (e.code === '23514') return '入力が範囲を超えています';
   // 22xxx などの SQLSTATE は details を持たない。code が null は画面の層が送る前に止めたもの（lib/rpc の zod）
   if (e.code !== null && e.code !== 'P0001') return generic;
@@ -718,6 +731,7 @@ export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string
     case 'blocked':
       // テント等（T21）：備品の削除は使われている、申請・記録の書き込みは団体か備品が年度にない（消えた）
       if (ctx.table === 'lending_items') return LENDING_ITEM_IN_USE_MESSAGE;
+      if (ctx.table === 'count_items') return COUNT_ITEM_IN_USE_MESSAGE;
       if (ctx.table === 'lending_requests' || ctx.table === 'lending_records') return LENDING_NOT_IN_YEAR_MESSAGE;
       return 'ほかのデータから使われているので削除できません';
     case 'deadlock':

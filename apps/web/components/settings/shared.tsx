@@ -437,6 +437,8 @@ export function FormSheet({
 export const settingsKeys = {
   rooms: () => [...queryKeys.rooms(), 'settings'] as const,
   items: () => [...queryKeys.items(), 'settings'] as const,
+  /** 備品（数えるだけ）の名前の一覧（年度をまたぐ。T22） */
+  countItems: () => ['count_items', 'settings'] as const,
   distance: () => [...queryKeys.distance(), 'settings'] as const,
   roomYears: (yearId: string) => queryKeys.yearPart(yearId, 'settings', 'room_years'),
   groups: (yearId: string) => queryKeys.yearPart(yearId, 'settings', 'groups'),

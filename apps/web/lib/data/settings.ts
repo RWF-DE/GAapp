@@ -7,6 +7,7 @@ import { fetchAll } from '@/lib/db/fetch-all';
 import { deleteChecked } from '@/lib/db/delete-checked';
 import {
   COLUMNS,
+  type CountItemRow,
   type DistanceOverrideRow,
   type GroupRow,
   type ItemRow,
@@ -317,6 +318,13 @@ export async function fetchItems(client: AppSupabaseClient = getSupabase()): Pro
   );
 }
 
+/** 備品（数えるだけ）の名前の一覧（並び → 名前 → id） */
+export async function fetchCountItems(client: AppSupabaseClient = getSupabase()): Promise<CountItemRow[]> {
+  const res = await client.from('count_items').select(COLUMNS.count_items).order('sort_order').order('id');
+  if (res.error) throw toAppError(res.error, res.status);
+  return ((res.data ?? []) as unknown as CountItemRow[]).sort(bySortOrder);
+}
+
 export async function fetchGroups(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<GroupRow[]> {
   const res = await client.from('groups').select(COLUMNS.groups).eq('year_id', yearId).order('sort_order').order('id');
   if (res.error) throw toAppError(res.error, res.status);
@@ -471,7 +479,7 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
 
 async function insertOne<T>(
   client: AppSupabaseClient,
-  table: 'rooms' | 'items' | 'groups' | 'distance_overrides',
+  table: 'rooms' | 'items' | 'groups' | 'distance_overrides' | 'count_items',
   values: unknown,
   columns: string,
 ): Promise<T> {
@@ -501,6 +509,18 @@ export const insertItem = (v: ItemValues, client: AppSupabaseClient = getSupabas
 export const updateItem = (row: Pick<ItemRow, 'id' | 'updated_at'>, patch: TablesUpdate<'items'>, client: AppSupabaseClient = getSupabase()) =>
   updateWithLock(client, 'items', { id: row.id }, row.updated_at, patch);
 
+// 備品（数えるだけ。T22・D-60。品目のタブの欄。管理者が直接書く。並び・名前・最初から出す。消すのは数の行がない物だけ〔23503〕）
+export type CountItemValues = Pick<TablesInsert<'count_items'>, 'name' | 'always_shown' | 'sort_order'>;
+export const insertCountItem = (v: CountItemValues, client: AppSupabaseClient = getSupabase()) =>
+  insertOne<CountItemRow>(client, 'count_items', v, COLUMNS.count_items);
+export const updateCountItem = (
+  row: Pick<CountItemRow, 'id' | 'updated_at'>,
+  patch: Pick<TablesUpdate<'count_items'>, 'name' | 'always_shown' | 'sort_order'>,
+  client: AppSupabaseClient = getSupabase(),
+) => updateWithLock(client, 'count_items', { id: row.id }, row.updated_at, patch);
+export const deleteCountItem = (row: Pick<CountItemRow, 'id' | 'updated_at'>, client: AppSupabaseClient = getSupabase()) =>
+  deleteChecked(client, 'count_items', { id: row.id }, row.updated_at);
+
 export const insertGroup = (yearId: string, v: GroupValues, client: AppSupabaseClient = getSupabase()) =>
   insertOne<GroupRow>(client, 'groups', { ...v, year_id: yearId }, COLUMNS.groups);
 export const updateGroup = (row: Pick<GroupRow, 'id' | 'updated_at'>, patch: TablesUpdate<'groups'>, client: AppSupabaseClient = getSupabase()) =>
@@ -523,7 +543,7 @@ export const deleteDistance = (row: DistanceOverrideRow, client: AppSupabaseClie
 /** 1行を読む（なければ null。失敗は AppError で投げる） */
 async function readOne<T>(
   client: AppSupabaseClient,
-  table: 'rooms' | 'items' | 'groups' | 'distance_overrides',
+  table: 'rooms' | 'items' | 'groups' | 'distance_overrides' | 'count_items',
   columns: string,
   match: Record<string, string>,
 ): Promise<T | null> {
@@ -549,6 +569,12 @@ export const readItem = (id: string, client: AppSupabaseClient = getSupabase()) 
 /** 品目を一意のキー（code）で読む */
 export const readItemByCode = (code: string, client: AppSupabaseClient = getSupabase()) =>
   readOne<ItemRow>(client, 'items', COLUMNS.items, { code });
+/** 備品（数えるだけ）を id で読む */
+export const readCountItem = (id: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<CountItemRow>(client, 'count_items', COLUMNS.count_items, { id });
+/** 備品（数えるだけ）を名前で読む（insert の読み直し。一意の索引は NFKC・小文字だが、送った名前そのままで引く） */
+export const readCountItemByName = (name: string, client: AppSupabaseClient = getSupabase()) =>
+  readOne<CountItemRow>(client, 'count_items', COLUMNS.count_items, { name });
 /** 団体を id で読む */
 export const readGroup = (id: string, client: AppSupabaseClient = getSupabase()) =>
   readOne<GroupRow>(client, 'groups', COLUMNS.groups, { id });

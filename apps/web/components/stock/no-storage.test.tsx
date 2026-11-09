@@ -58,9 +58,11 @@ const YEAR = {
 vi.mock('@/lib/data/year', async (orig) => ({ ...(await orig<typeof import('@/lib/data/year')>()), useYearRow: () => done(YEAR) }));
 vi.mock('@/lib/data/stocks', async (orig) => ({
   ...(await orig<typeof import('@/lib/data/stocks')>()),
-  useStockMaster: () => done({ rooms: [], items: [], roomYears: [] }),
+  useStockMaster: () => done({ rooms: [], items: [], roomYears: [], countItems: [] }),
   useYearStocks: () => done([]),
   usePreviousYearStocks: () => done(undefined),
+  useYearCountStocks: () => done([]),
+  usePreviousYearCountStocks: () => done(undefined),
   useProfileNames: () => done(new Map()),
 }));
 

@@ -68,11 +68,14 @@ export const AUDIT_TABLES = [
   'lending_assignments',
   'lending_records',
   'lending_years',
+  // 備品（数えるだけ。T22。足すだけ）
+  'count_items',
+  'count_stocks',
 ] as const;
 export type AuditTable = (typeof AUDIT_TABLES)[number];
 
 /** 年度をまたぐ表（year_id が null の行がある。02「audit_logs」） */
-export const CROSS_YEAR_TABLES: readonly AuditTable[] = ['rooms', 'items', 'distance_overrides'];
+export const CROSS_YEAR_TABLES: readonly AuditTable[] = ['rooms', 'items', 'distance_overrides', 'count_items'];
 
 /**
  * 表の選びの注（04「履歴」）。年度のない記録（場所・品目・距離）は、開いている年度の管理者にだけ RLS が返す（部門長・副部門長が
@@ -80,8 +83,8 @@ export const CROSS_YEAR_TABLES: readonly AuditTable[] = ['rooms', 'items', 'dist
  */
 export function crossYearNote(adminOfOpenYear: boolean): string {
   return adminOfOpenYear
-    ? '場所・品目・距離は年度をまたぐ表です（年度のない記録も出します）。'
-    : '場所・品目・距離の記録（年度のない記録）は、開いている年度の管理者だけが見られます。';
+    ? '場所・品目・距離・備品（数えるだけ）は年度をまたぐ表です（年度のない記録も出します）。'
+    : '場所・品目・距離・備品（数えるだけ）の記録（年度のない記録）は、開いている年度の管理者だけが見られます。';
 }
 
 /** 1回に読む件数 */
@@ -108,6 +111,19 @@ const LENDING_COLUMN_LABELS: Readonly<Record<string, string>> = {
   updated_by: '書いた人',
 };
 
+/** 備品（数えるだけ）の2表の変更の列の名前（T22。テント等と同じく履歴だけが使うのでここに置く） */
+const COUNT_COLUMN_LABELS: Readonly<Record<string, string>> = {
+  name: '名前',
+  always_shown: '最初から出す',
+  sort_order: '並び',
+  count: '数',
+  counted_at: '数えた日時',
+  counted_by: '数えた人',
+  count_item_id: '備品（数えるだけ）',
+  room_id: '場所',
+  created_by: '足した人',
+};
+
 /** 履歴の変更の列の名前（表ごと。表にない表・列は列名のまま。今はテント等の5表だけ日本語にする。T21） */
 export const AUDIT_COLUMN_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   lending_items: LENDING_COLUMN_LABELS,
@@ -115,6 +131,9 @@ export const AUDIT_COLUMN_LABELS: Readonly<Record<string, Readonly<Record<string
   lending_assignments: LENDING_COLUMN_LABELS,
   lending_records: LENDING_COLUMN_LABELS,
   lending_years: LENDING_COLUMN_LABELS,
+  // 備品（数えるだけ。T22）
+  count_items: COUNT_COLUMN_LABELS,
+  count_stocks: COUNT_COLUMN_LABELS,
 };
 
 /** 履歴の変更の列の名前（AUDIT_COLUMN_LABELS にあれば日本語、なければ列名のまま） */
@@ -134,6 +153,8 @@ export const NAME_UNKNOWN = '名前を表示できません';
 export const DELETED_DOCUMENT = '（消えた提出物）';
 /** 今の年度にない持ち場（ますと割り当ての対象。T20） */
 export const DELETED_DUTY = '消えた持ち場';
+/** 今はない備品（数えるだけ）（数の対象。T22） */
+export const DELETED_COUNT_ITEM = '（消えた備品）';
 /** 今の年度にないテント等の備品（申請・割り当て・記録の対象。T21） */
 export const DELETED_LENDING_ITEM = '（消えた備品）';
 export const OUTSIDE_LABEL = 'SQL・seed（アプリの外）';
@@ -402,6 +423,8 @@ export interface HistoryLookups {
   slots?: Map<string, string>;
   /** テント等の備品の名前（T21。今の年度の備品。申請・割り当て・記録の対象と lending_item_id） */
   lendingItems?: Map<string, string>;
+  /** 備品（数えるだけ）の名前（T22。今の一覧。数の対象と count_item_id） */
+  countItems?: Map<string, string>;
 }
 
 export interface HistoryOptions {
@@ -419,6 +442,8 @@ export interface HistoryOptions {
   slots?: Map<string, string>;
   /** テント等の備品の名前（T21。読めなければ空） */
   lendingItems?: Map<string, string>;
+  /** 備品（数えるだけ）の名前（T22。読めなければ空） */
+  countItems?: Map<string, string>;
 }
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -478,6 +503,16 @@ export async function fetchLendingItemNames(yearId: string, client: AppSupabaseC
   }
 }
 
+/** 備品（数えるだけ）の名前（T22。年度をまたぐ一覧。読めなければ空の表にして、対象を「（消えた備品）」にするだけで履歴は出す） */
+export async function fetchCountItemNames(client: AppSupabaseClient = getSupabase()): Promise<Map<string, string>> {
+  try {
+    const rows = await fetchAll((from, to) => client.from('count_items').select('id, name').order('id').range(from, to));
+    return new Map(rows.map((r) => [r.id, r.name]));
+  } catch {
+    return new Map();
+  }
+}
+
 /** 絞り込みの選択肢と、対象の名前に使う団体・場所・品目・メンバーを読む */
 export async function fetchHistoryOptions(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<HistoryOptions> {
   // 提出物の題名（T19）。ほかの読み取りと並行に読む（失敗しても空の表を返す）
@@ -486,6 +521,8 @@ export async function fetchHistoryOptions(yearId: string, client: AppSupabaseCli
   const shiftNames = fetchShiftNames(yearId, client);
   // テント等の備品の名前（T21）。ほかの読み取りと並行に読む（失敗しても空の表を返す）
   const lendingItems = fetchLendingItemNames(yearId, client);
+  // 備品（数えるだけ）の名前（T22）。ほかの読み取りと並行に読む（失敗しても空の表を返す）
+  const countItems = fetchCountItemNames(client);
   const [groups, roles, reps, rooms, items] = await Promise.all([
     fetchAll((from, to) =>
       client.from('groups').select('id, name, category, sort_order').eq('year_id', yearId).order('id').range(from, to),
@@ -522,6 +559,8 @@ export async function fetchHistoryOptions(yearId: string, client: AppSupabaseCli
     ...(await shiftNames),
     // テント等の備品（T21）
     lendingItems: await lendingItems,
+    // 備品（数えるだけ。T22）
+    countItems: await countItems,
   };
 }
 
@@ -659,6 +698,8 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     if (key === 'status' && table === 'tasks') return labelOf(TASK_STATUS_LABELS, v, v);
     // テント等（T21）：備品は今の備品の名前（なければ「（消えた備品）」）、確定した人は表示名
     if (key === 'lending_item_id') return lookups?.lendingItems?.get(v) ?? DELETED_LENDING_ITEM;
+    // 備品（数えるだけ。T22）：物は今の名前（なければ「（消えた備品）」）
+    if (key === 'count_item_id') return lookups?.countItems?.get(v) ?? DELETED_COUNT_ITEM;
     if (key === 'confirmed_by') return lookups?.users?.get(v) ?? NAME_UNKNOWN;
     if (key === 'status') {
       if (table === 'years') return labelOf(YEAR_STATUS_LABELS, v, v);
@@ -790,6 +831,11 @@ export function auditTarget(row: Pick<AuditLogRow, 'table_name' | 'row_pk' | 'be
         return [groupName(str('group_id')), lendingItem(str('lending_item_id'))];
       case 'lending_years':
         return [str('year_id') ? (lookups.years?.get(str('year_id')!) ?? null) : null];
+      // 備品（数えるだけ。T22）：名前の一覧は名前、数は場所と物
+      case 'count_items':
+        return [lookups.countItems?.get(str('id') ?? '') ?? str('name')];
+      case 'count_stocks':
+        return [room(str('room_id')), str('count_item_id') ? (lookups.countItems?.get(str('count_item_id')!) ?? DELETED_COUNT_ITEM) : null];
       default:
         return [];
     }

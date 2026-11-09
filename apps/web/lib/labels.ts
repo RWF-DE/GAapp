@@ -85,6 +85,9 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   lending_assignments: 'テント等の割り当て',
   lending_records: 'テント等の受け渡し・返却',
   lending_years: 'テント等の割り当ての確定',
+  // 備品（数えるだけ。T22。D-60）
+  count_items: '備品（数えるだけ）',
+  count_stocks: '備品（数えるだけ）の数',
 };
 
 /** 監査ログの操作（audit_logs.action） */

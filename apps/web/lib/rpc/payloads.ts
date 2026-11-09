@@ -15,6 +15,7 @@ import {
 } from '@/lib/schemas/common';
 import { charCount, NOTICE_BODY_MAX, NOTICE_GROUPS_MAX, noticeTitleSchema } from '@/lib/schemas/notice-fields';
 import { reviewNoteSchema } from '@/lib/schemas/document-fields';
+import { countItemNameSchema } from '@/lib/schemas/count-items';
 
 const E = Constants.public.Enums;
 const uuid = uuidSchema;
@@ -226,6 +227,10 @@ export const RPC_ARGS = {
   save_lending_assignments: z.object({ p_year_id: uuid, p_changes: lendingAssignmentChangesPayload }),
   set_lending_confirmed: z.object({ p_year_id: uuid, p_confirmed: z.boolean(), p_reason: optionalReasonSchema.optional() }),
   previous_year_lending_items: z.object({ p_year_id: uuid }),
+  // 備品（数えるだけ。T22・D-60）。名前は前後の空白を除いて 1〜50 字（DB は除かずに invalid_input〔field: name〕で拒むので、
+  // 送る前に除く。送る前の確かめに落ちたときの field も name）
+  add_count_item: z.object({ p_year_id: uuid, p_name: countItemNameSchema }),
+  previous_year_count_stocks: z.object({ p_year_id: uuid }),
 } as const;
 
 // ---- jsonb の返り値 ----

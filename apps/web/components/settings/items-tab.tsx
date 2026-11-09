@@ -2,11 +2,14 @@
 
 // 品目のタブ（画面の設計 3.2「品目」。T09）。items は年度をまたぐ表。コードは作った後に変えない（ルールがコードで参照するため）。
 // 削除は出さない（使われていれば消せず、フェーズ1で消す用途がない）。
+// 品目の表の下に「備品（数えるだけ）」の欄（管理者。T22・D-60）：count_items の名前・最初から出す・並びの編集と追加、数の行がない物の
+// 削除（23503 は「数が入力された物は削除できません」）。保存は1行ずつの楽観ロック（useLockedSave）。
 import { zodResolver } from '@hookform/resolvers/zod';
 import { GROUP_CATEGORIES } from '@gaapp/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ColumnDef } from '@tanstack/react-table';
 import { useMemo, useState } from 'react';
+import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { useForm, useWatch } from 'react-hook-form';
 import { toast } from 'sonner';
 import { DataTable } from '@/components/common/data-table';
@@ -16,13 +19,46 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { fetchItems, insertItem, matchesWritten, readItem, readItemByCode, updateItem } from '@/lib/data/settings';
-import type { ItemRow } from '@/lib/db/types';
+import {
+  deleteCountItem,
+  fetchCountItems,
+  fetchItems,
+  insertCountItem,
+  insertItem,
+  matchesWritten,
+  readCountItem,
+  readCountItemByName,
+  readItem,
+  readItemByCode,
+  updateCountItem,
+  updateItem,
+} from '@/lib/data/settings';
+import type { CountItemRow, ItemRow } from '@/lib/db/types';
 import { CATEGORY_LABELS } from '@/lib/labels';
 import { queryKeys } from '@/lib/query';
 import { NAME_MAX } from '@/lib/schemas/common';
-import { itemFormSchema, ITEM_CODE_MAX, joinAliases, type ItemFormInput, type ItemFormOutput } from '@/lib/schemas/settings';
-import { Field, FormSheet, GlobalReadOnlyNote, settingsKeys, TabHeading, useLockedSave, useSettings, type LockedSaveRun } from './shared';
+import { COUNT_ITEM_NAME_MAX } from '@/lib/schemas/count-items';
+import {
+  countItemFormSchema,
+  itemFormSchema,
+  ITEM_CODE_MAX,
+  joinAliases,
+  type CountItemFormInput,
+  type CountItemFormOutput,
+  type ItemFormInput,
+  type ItemFormOutput,
+} from '@/lib/schemas/settings';
+import {
+  Field,
+  FormSheet,
+  GlobalReadOnlyNote,
+  settingsKeys,
+  TabHeading,
+  useLockedSave,
+  useSettings,
+  useWriteErrorHandler,
+  type LockedSaveRun,
+} from './shared';
 
 export function ItemsTab() {
   const { globalWritable } = useSettings();
@@ -97,7 +133,199 @@ export function ItemsTab() {
           />
         ) : null}
       </FormSheet>
+      <CountItemsSection />
     </div>
+  );
+}
+
+/** 備品（数えるだけ）の書き込みのエラーの文言の文脈（23505・23503・名前の誤り） */
+const COUNT_ITEMS_CONTEXT = { table: 'count_items' } as const;
+
+/** 品目のタブの「備品（数えるだけ）」の欄（04「マスタ設定」。T22・D-60） */
+function CountItemsSection() {
+  const { globalWritable } = useSettings();
+  const countItemsQ = useQuery({ queryKey: settingsKeys.countItems(), queryFn: () => fetchCountItems() });
+  const [editing, setEditing] = useState<CountItemRow | 'new' | null>(null);
+  const [deleting, setDeleting] = useState<CountItemRow | null>(null);
+  const queryClient = useQueryClient();
+  const onError = useWriteErrorHandler();
+  const invalidate = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: settingsKeys.countItems() }),
+      // 在庫入力・在庫一覧の名前の一覧（場所・品目の読み込みに入っている）
+      queryClient.invalidateQueries({ queryKey: ['year'] }),
+    ]);
+
+  const columns = useMemo<ColumnDef<CountItemRow>[]>(
+    () => [
+      { accessorKey: 'name', header: '名前' },
+      { id: 'always', header: '最初から出す', cell: ({ row }) => (row.original.always_shown ? '出す' : '—') },
+      { accessorKey: 'sort_order', header: '並び順', meta: { align: 'right' } },
+      {
+        id: 'actions',
+        header: '',
+        cell: ({ row }) =>
+          globalWritable ? (
+            <div className="flex justify-end gap-2">
+              <Button size="sm" variant="outline" onClick={() => setEditing(row.original)}>
+                編集
+              </Button>
+              <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setDeleting(row.original)}>
+                削除
+              </Button>
+            </div>
+          ) : null,
+      },
+    ],
+    [globalWritable],
+  );
+
+  return (
+    <section className="mt-10" aria-label="備品（数えるだけ）" data-testid="count-items-settings">
+      <TabHeading
+        title="備品（数えるだけ）"
+        description={
+          <>
+            在庫入力で数だけを数える物（ゴミ箱・延長コードなど）です。申請・振り分け・Excel には入りません。変更はすべての年度に効きます。
+            「最初から出す」物は、在庫入力のすべての場所に最初から行が出ます。ほかの物は在庫入力の「その他」から選べます（在庫入力でも新しい名前を足せます）。
+            数が入力された物は削除できません。
+          </>
+        }
+        actions={
+          globalWritable ? (
+            <Button onClick={() => setEditing('new')} data-testid="count-item-settings-add">
+              備品（数えるだけ）を足す
+            </Button>
+          ) : null
+        }
+      />
+      <QueryState query={countItemsQ} isEmpty={(rows) => rows.length === 0} empty={<EmptyState title="備品（数えるだけ）がありません" />}>
+        {(rows) => <DataTable columns={columns} data={rows} getRowId={(r) => r.id} caption="備品（数えるだけ）の一覧" />}
+      </QueryState>
+      <FormSheet
+        open={editing !== null}
+        onOpenChange={(o) => !o && setEditing(null)}
+        title={editing === 'new' ? '備品（数えるだけ）を足す' : '備品（数えるだけ）を編集'}
+        description="変更はすべての年度に効きます。"
+      >
+        {editing !== null ? (
+          <CountItemForm
+            item={editing === 'new' ? null : editing}
+            onDone={async () => {
+              setEditing(null);
+              await invalidate();
+            }}
+          />
+        ) : null}
+      </FormSheet>
+      {deleting ? (
+        <ConfirmDialog
+          open
+          onOpenChange={(o) => !o && setDeleting(null)}
+          title={`「${deleting.name}」を削除しますか`}
+          description="数が入力された物は削除できません。削除はすべての年度に効きます。"
+          destructive
+          confirmLabel="削除する"
+          pendingLabel="削除中…"
+          onConfirm={async () => {
+            try {
+              await deleteCountItem(deleting);
+              toast.success(`「${deleting.name}」を削除しました`);
+              await invalidate();
+            } catch (e) {
+              await onError(e, { context: COUNT_ITEMS_CONTEXT, dataKeys: [settingsKeys.countItems()], unknownMessage: null });
+              throw e;
+            }
+          }}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function CountItemForm({ item, onDone }: { item: CountItemRow | null; onDone: () => Promise<void> }) {
+  // 入力の元（更新で送る updated_at）。conflict の後は読み直した行にする（2.6 の (B1)。入力は残す）
+  const [base, setBase] = useState(item);
+  const form = useForm<CountItemFormInput, unknown, CountItemFormOutput>({
+    resolver: zodResolver(countItemFormSchema),
+    defaultValues: {
+      name: item?.name ?? '',
+      always_shown: item?.always_shown ?? false,
+      sort_order: String(item?.sort_order ?? 0),
+    },
+  });
+  const { register, handleSubmit, formState, setValue, control } = form;
+  useUnsavedChanges(formState.isDirty);
+  const [saving, setSaving] = useState(false);
+  const alwaysShown = useWatch({ control, name: 'always_shown' });
+
+  const callFor = (v: CountItemFormOutput): LockedSaveRun<CountItemRow> => {
+    const values = { name: v.name, always_shown: v.always_shown, sort_order: v.sort_order };
+    const onSaved = async (earlier: boolean) => {
+      toast.success(earlier ? `「${v.name}」は保存されていました` : base ? `「${v.name}」を保存しました` : `「${v.name}」を足しました`);
+      form.reset(form.getValues());
+      await onDone();
+    };
+    return base
+      ? {
+          target: `id:${base.id}`,
+          write: () => updateCountItem(base, values),
+          reread: () => readCountItem(base.id),
+          matches: (row) => matchesWritten(row, values),
+          baseVersion: base.updated_at,
+          onRebase: (row) => row && setBase(row),
+          onSaved,
+        }
+      : {
+          target: `name:${values.name}`,
+          write: () => insertCountItem(values),
+          reread: () => readCountItemByName(values.name),
+          matches: (row) => matchesWritten(row, values),
+          baseVersion: null,
+          insert: true,
+          onSaved,
+        };
+  };
+  const locked = useLockedSave<CountItemRow>({
+    dataKeys: [settingsKeys.countItems()],
+    context: COUNT_ITEMS_CONTEXT,
+    current: () => {
+      const p = countItemFormSchema.safeParse(form.getValues());
+      return p.success ? callFor(p.data) : null;
+    },
+  });
+
+  const onSubmit = handleSubmit(async (v) => {
+    setSaving(true);
+    try {
+      await locked.run(callFor(v));
+    } finally {
+      setSaving(false);
+    }
+  });
+  const err = (k: keyof CountItemFormInput) => formState.errors[k]?.message;
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-4" noValidate data-testid="count-item-form">
+      {locked.notice}
+      <Field label="名前" error={err('name')} hint="1〜50 字。全角・半角と大文字小文字だけが違う名前は、同じ名前として扱います">
+        {(p) => <Input {...p} {...register('name')} maxLength={COUNT_ITEM_NAME_MAX + 20} />}
+      </Field>
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="count-item-always"
+          checked={alwaysShown}
+          onCheckedChange={(on) => setValue('always_shown', on === true, { shouldDirty: true })}
+        />
+        <Label htmlFor="count-item-always">最初から出す（在庫入力のすべての場所に最初から行を出す）</Label>
+      </div>
+      <Field label="並び順" error={err('sort_order')}>
+        {(p) => <Input {...p} {...register('sort_order')} inputMode="numeric" />}
+      </Field>
+      <Button type="submit" disabled={saving}>
+        {saving ? '保存中…' : '保存'}
+      </Button>
+    </form>
   );
 }
 

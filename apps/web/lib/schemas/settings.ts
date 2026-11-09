@@ -25,6 +25,7 @@ import {
   uuidSchema,
   yearLabelSchema,
 } from './common';
+import { countItemNameSchema } from './count-items';
 
 /** items.code の CHECK（`code ~ '^[a-z][a-z0-9_]*$' and length(code) <= 50`。0001） */
 export const ITEM_CODE_MAX = 50;
@@ -157,6 +158,17 @@ export const itemFormSchema = z.object({
 });
 export type ItemFormInput = z.input<typeof itemFormSchema>;
 export type ItemFormOutput = z.output<typeof itemFormSchema>;
+
+// ---- 備品（数えるだけ。T22・D-60。品目のタブの欄） ----
+
+/** 名前・最初から出す・並び（名前は前後の空白を除いて 1〜50 字。count_items の CHECK と同じ） */
+export const countItemFormSchema = z.object({
+  name: countItemNameSchema,
+  always_shown: z.boolean(),
+  sort_order: sortOrderText,
+});
+export type CountItemFormInput = z.input<typeof countItemFormSchema>;
+export type CountItemFormOutput = z.output<typeof countItemFormSchema>;
 
 // ---- 団体 ----
 

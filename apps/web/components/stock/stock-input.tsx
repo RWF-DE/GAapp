@@ -33,6 +33,13 @@
 //   同じ数。分からない間・ほかの人の保存を知らせている間を除く）書く中身がないので消す。「読み直す」は戻していない下書きを消さない。
 //   戻していない下書きを今の入力で置き換えるのは、下書きを戻さずに「保存」を押した後に保存していない入力になったとき（R1）と送るとき。
 // - R4 送る前の読み直し（「確かめています…」）の間に画面を離れたら、読み直しが返っても何もしない（送らない。入力は下書きにある）。
+// 備品（数えるだけ。T22・D-60。04「在庫入力」の備品〔数えるだけ〕）：9 品目の下に「備品（数えるだけ）」の行（最初から出す物と
+// 「その他」）を出す。同じ部屋の在庫と数をまとめて1つの入力として扱い（行のキーは品目の id と `c:<count_item_id>`。数の行は
+// mergeRoomRows で在庫の行の形に写す）、上の R1〜R4・読み直し・ほかの人の保存・下書き・読み取り専用の決まりをそのまま当てる。
+// 「＋ その他を足す」で足した行（added）は、数の行ができる（保存が決まる）までは数 0 でも保存していない入力として扱う。
+// 「保存」は在庫の upsert の後に、出ている数の行を全部（0 を含む）upsert する（saveRoomLines）。在庫が通って数が失敗したときは、
+// 在庫の保存は決まった（入力の元を保存した在庫の行にする）として、数は保存していない入力のまま残し、失敗を知らせる。
+// 振り分けの合計の確かめ・確定中の守りは品目だけに効く。
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -58,40 +65,60 @@ import { Button } from '@/components/ui/button';
 import { ErrorState, LoadingState, ReadOnlyNotice } from '@/components/states';
 import { useAuth } from '@/lib/auth/auth-provider';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
-import type { ItemRow, StockDbRow, YearRow } from '@/lib/db/types';
+import type { CountItemRow, ItemRow, StockDbRow, YearRow } from '@/lib/db/types';
 import {
+  addCountItem,
+  CountSaveError,
   countedByRoom,
   countsFromRows,
   decideStockSave,
   detectOtherSave,
   fetchRoomAllocated,
-  fetchRoomStocks,
+  fetchRoomLines,
   latestCounted,
+  mergeRoomRows,
   nextUncountedRoom,
   placeOf,
-  previousCountMap,
+  previousLineMap,
+  roomCountStocksOptions,
+  roomStocksOptions,
   sameCounts,
-  saveRoomStocks,
+  saveRoomLines,
   shortfallMessage,
+  shownCountItems,
+  splitRoomRows,
+  stockMasterOptions,
   shortfalls,
   stockAccess,
   stockInvalidationKeys,
   stockPath,
+  usePreviousYearCountStocks,
   usePreviousYearStocks,
   useProfileNames,
   useRoomAllocated,
+  useRoomCountStocks,
   useRoomStocks,
   useYearStocks,
   type OtherSave,
   type Shortfall,
+  type StockLine,
   type StorageRoom,
 } from '@/lib/data/stocks';
 import { createDraftWriter, draftKey as draftStorageKey, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
 import { appError, classifyError, effectOf, isUnknownOutcome, messageFor, unknownOutcomeMessage, type NameLookup } from '@/lib/errors';
 import { queryKeys } from '@/lib/query';
-import { stockCountsSchema, stockDraftSchema, type StockBaseStamps, type StockCounts, type StockDraft } from '@/lib/schemas/stock';
+import {
+  countItemIdOf,
+  countKey,
+  stockCountsSchema,
+  stockDraftSchema,
+  type StockBaseStamps,
+  type StockCounts,
+  type StockDraft,
+} from '@/lib/schemas/stock';
 import { useUnsavedChanges } from '@/lib/unsaved-changes';
 import { cn } from '@/lib/utils';
+import { AddCountItemDialog } from './add-count-item-dialog';
 import { countedName, knownName, type OpenYear } from './common';
 
 type Phase = 'idle' | 'checking' | 'saving';
@@ -123,10 +150,15 @@ function sameStamps(a: StockBaseStamps, b: StockBaseStamps): boolean {
  */
 const sendsInFlight = new Map<string, Promise<unknown>>();
 
-/** 入力に下書きの数を重ねる（今の品目にあるものだけ） */
-function withDraft(items: readonly ItemRow[], counts: StockCounts, draftCounts: StockCounts): StockCounts {
+/** 入力に下書きの数を重ねる（今の行にあるものだけ） */
+function withDraft(items: readonly StockLine[], counts: StockCounts, draftCounts: StockCounts): StockCounts {
   return { ...counts, ...Object.fromEntries(items.filter((i) => i.id in draftCounts).map((i) => [i.id, draftCounts[i.id]!])) };
 }
+
+const NO_COUNT_ITEMS: CountItemRow[] = [];
+
+/** 足したばかりで、まだ名前の一覧（場所・品目の読み込み）に入っていない物の並び（最後に出す） */
+const EXTRA_SORT_ORDER = Number.MAX_SAFE_INTEGER;
 
 /** 保存の前の「振り分けの合計より少なくなります」の確かめ（Promise で答える） */
 function useShortfallAsk() {
@@ -154,12 +186,15 @@ export function StockInput({
   target,
   storage,
   items,
+  countItems = NO_COUNT_ITEMS,
 }: {
   open: OpenYear;
   year: YearRow;
   target: StorageRoom;
   storage: StorageRoom[];
   items: ItemRow[];
+  /** 備品（数えるだけ）の名前の一覧（並び → 名前 → id。T22） */
+  countItems?: CountItemRow[];
 }) {
   const yearId = year.id;
   const roomId = target.room.id;
@@ -177,24 +212,53 @@ export function StockInput({
   }, [access.writable]);
 
   const stocksQ = useRoomStocks(yearId, roomId);
+  const countQ = useRoomCountStocks(yearId, roomId);
   const prevQ = usePreviousYearStocks(yearId, year.prev_year_id);
+  const prevCountQ = usePreviousYearCountStocks(yearId, year.prev_year_id);
   const allocQ = useRoomAllocated(yearId, roomId, access.shortfall !== 'none');
   const yearStocksQ = useYearStocks(yearId);
-  const roomKey = queryKeys.yearPart(yearId, 'stocks', 'room', roomId);
+  const roomKey = roomStocksOptions(yearId, roomId).queryKey;
+  const countRoomKey = roomCountStocksOptions(yearId, roomId).queryKey;
 
-  // 入力の元にした行（ほかの人の保存を見分ける元）と入力中の数
+  // 入力の元にした行（ほかの人の保存を見分ける元）と入力中の数。行は在庫と数をまとめた形（mergeRoomRows）
   const [base, setBase] = useState<StockDbRow[] | null>(null);
   const [counts, setCounts] = useState<StockCounts | null>(null);
-  const baseCounts = useMemo(() => (base ? countsFromRows(items, base) : null), [base, items]);
-  // 届いた最新の部屋の行（R1 の印が立っている間は、入力の元より新しいことがある）
-  const data = stocksQ.data;
-  const latestCounts = useMemo(() => (data ? countsFromRows(items, data) : null), [data, items]);
+  // 届いた最新の部屋の行（R1 の印が立っている間は、入力の元より新しいことがある）。在庫と数の両方が届いてから
+  const stocksData = stocksQ.data;
+  const countData = countQ.data;
+  const data = useMemo(() => (stocksData && countData ? mergeRoomRows(stocksData, countData) : undefined), [stocksData, countData]);
+
+  // 備品（数えるだけ）：名前の一覧（足したばかりでまだ一覧にない物を後ろに足す）と、この画面で足した物（数の行ができるまで保存していない入力）
+  const [extraItems, setExtraItems] = useState<CountItemRow[]>([]);
+  const allCountItems = useMemo(
+    () => [...countItems, ...extraItems.filter((x) => !countItems.some((c) => c.id === x.id))],
+    [countItems, extraItems],
+  );
+  const [added, setAdded] = useState<string[]>([]);
+  const [adding, setAdding] = useState(false);
+  /** 出す行（品目と、出す備品〔数えるだけ〕）。extra は今の入力の元・届いた行のほかに見る行（保存の直前に読み直した行など） */
+  const linesFor = (extra: readonly (readonly StockDbRow[] | null | undefined)[] = []) => {
+    const shown = shownCountItems(allCountItems, [base, data, ...extra], added);
+    const countLines = [...shown.always, ...shown.others];
+    return {
+      shown,
+      countIds: countLines.map((c) => c.id),
+      lines: [...items.map((i): StockLine => ({ id: i.id, name: i.name })), ...countLines.map((c): StockLine => ({ id: countKey(c.id), name: c.name }))],
+    };
+  };
+  const { shown, lines } = linesFor();
+  const baseCounts = base ? countsFromRows(lines, base) : null;
+  const latestCounts = data ? countsFromRows(lines, data) : null;
+  /** 足した物のうち、入力の元にまだ数の行がない物がある（数 0 でも保存していない入力） */
+  const addedPending = !!base && added.some((id) => allCountItems.some((c) => c.id === id) && !base.some((r) => r.item_id === countKey(id)));
   /**
    * values に保存していないものがあるか：入力の元とも、届いた最新の行とも同じでなければある。印が立っている間は入力の元を
-   * 新しくしないので、ほかの人の保存が届いた後に入力を古い元の数へ戻しても、最新の行と違えば保存していない入力のまま
+   * 新しくしないので、ほかの人の保存が届いた後に入力を古い元の数へ戻しても、最新の行と違えば保存していない入力のまま。
+   * 足した物の行がまだなければ、それも保存していない入力
    */
   const unsavedIn = (values: StockCounts) =>
-    !!baseCounts && (!sameCounts(items, values, baseCounts) || (!!latestCounts && !sameCounts(items, values, latestCounts)));
+    !!baseCounts &&
+    (addedPending || !sameCounts(lines, values, baseCounts) || (!!latestCounts && !sameCounts(lines, values, latestCounts)));
   const dirty = access.writable && !!counts && unsavedIn(counts);
   // 下書きを戻したときは、入力の元が「下書きを作ったときの行」になる（null なら base が元）。
   // 保存の直前に読み直した行とこれを比べるので、下書きを作った後のほかの人の保存も確かめられる
@@ -249,10 +313,30 @@ export function StockInput({
    * これも変わる）が下書きの base から変わっていて、しかも下書きを重ねても rows と同じ数のとき。キャッシュに残った送る前の行は
    * 記録が base と同じなので、数が同じに見えても証拠にしない
    */
+  /** 下書きの行のうち、今の一覧にある物（品目と備品〔数えるだけ〕。消えた物は捨てる） */
+  const knownKey = (k: string) => {
+    const ci = countItemIdOf(k);
+    return ci === null ? items.some((i) => i.id === k) : allCountItems.some((c) => c.id === ci);
+  };
+  /** 下書きにあって今出ていない備品（数えるだけ）の id（戻すと「その他」に足す） */
+  const draftExtraIds = draft
+    ? Object.keys(draft.counts)
+        .filter((k) => knownKey(k) && !lines.some((l) => l.id === k))
+        .flatMap((k) => {
+          const ci = countItemIdOf(k);
+          return ci === null ? [] : [ci];
+        })
+    : [];
+  const draftLines: StockLine[] = [
+    ...lines,
+    ...draftExtraIds.map((ci) => ({ id: countKey(ci), name: allCountItems.find((c) => c.id === ci)?.name ?? '' })),
+  ];
   const draftWritten = (rows: readonly StockDbRow[]) => {
     if (!draft || sameStamps(draft.base, stampsOf(rows))) return false;
-    const fromRows = countsFromRows(items, rows);
-    return sameCounts(items, withDraft(items, fromRows, draft.counts), fromRows);
+    // 下書きの備品（数えるだけ）の行が届いた行にない（まだ書かれていない）なら、下書きの数が書かれた証拠にしない
+    if (Object.keys(draft.counts).some((k) => countItemIdOf(k) !== null && knownKey(k) && !rows.some((r) => r.item_id === k))) return false;
+    const fromRows = countsFromRows(draftLines, rows);
+    return sameCounts(draftLines, withDraft(draftLines, fromRows, draft.counts), fromRows);
   };
 
   // 部屋の行が届いたら（初めて読めた、ErrorBanner の「読み直す」、キャッシュから開いた後の裏の読み直し、通信の復帰、
@@ -262,7 +346,7 @@ export function StockInput({
   /** rows（届いた部屋の行）で入力と入力の元を作り直す */
   const rebuild = (rows: StockDbRow[]) => {
     setBase(rows);
-    setCounts(countsFromRows(items, rows));
+    setCounts(countsFromRows(linesFor([rows]).lines, rows));
     setRestoredStamps(null);
     setRemote(null);
   };
@@ -273,7 +357,7 @@ export function StockInput({
       setDraft(null);
     }
     if (base === null || !held) rebuild(data);
-    else if (stamps) setRemote(detectOtherSave(items, stamps, data, open.userId));
+    else if (stamps) setRemote(detectOtherSave(linesFor([data]).lines, stamps, data, open.userId));
   }
   // R1：印は書ける間だけ効かせる。書けなくなったら（部員の振り分け中・終了など。保存の失敗や年度の読み直しで切り替わる）
   // 印を下ろし、届いた行で作り直す（読み取り専用の画面に DB にない数を出さない）。入力は数を変えたときに下書きへ書いているので、
@@ -285,6 +369,8 @@ export function StockInput({
     setHeld(false);
     setUnknownOutcome(false);
     setConflict(null);
+    // 足した物も入力なので捨てる（下書きに残る）
+    setAdded([]);
     const rows = data ?? base;
     if (rows) rebuild(rows);
   }
@@ -297,7 +383,8 @@ export function StockInput({
   const saveButtonRef = useRef<HTMLButtonElement>(null);
   const refocusSave = useRef(false);
 
-  const showDraft = access.writable && !!draft && !!counts && !sameCounts(items, { ...counts, ...draft.counts }, counts);
+  const showDraft =
+    access.writable && !!draft && !!counts && (draftExtraIds.length > 0 || !sameCounts(draftLines, { ...counts, ...draft.counts }, counts));
   const writeDraft = (values: StockCounts, baseStamps: StockBaseStamps) => writer.write({ counts: values, base: baseStamps });
   // 保存していない入力（unsaved）は、いつも下書きに写す（画面の設計 1.4。離れるときの確かめは「入力は下書きに残り…戻せます」と言う）。
   // 数を変えた・戻した・送るときは各操作で書くが、数を変えずに未保存になるとき（印が立っている間にほかの人の保存が届いた・
@@ -329,13 +416,14 @@ export function StockInput({
   // 「前回の入力」は今の DB の行（入力を残して元の行を変えないときも、読み直した行で出す）
   const last = data ? latestCounted(data) : base ? latestCounted(base) : null;
   const namesQ = useProfileNames(yearId, [last?.countedBy ?? null, conflict?.other.by?.countedBy ?? null, remote?.by?.countedBy ?? null]);
-  const prev = useMemo(() => (prevQ.data ? previousCountMap(prevQ.data) : null), [prevQ.data]);
+  const prev = useMemo(() => (prevQ.data && prevCountQ.data ? previousLineMap(prevQ.data, prevCountQ.data) : null), [prevQ.data, prevCountQ.data]);
   const hasPrev = !!year.prev_year_id;
-  const itemName = useMemo(() => new Map(items.map((i) => [i.id, i.name])), [items]);
-  const names: NameLookup = useMemo(
-    () => ({ room: (id) => (id === roomId ? target.room.name : storage.find((s) => s.room.id === id)?.room.name), item: (id) => itemName.get(id) }),
-    [roomId, target.room.name, storage, itemName],
-  );
+  const itemName = new Map(lines.map((i) => [i.id, i.name]));
+  // 行は描画ごとに変わりうる（備品〔数えるだけ〕の行が増える）ので、名前の引き方も描画ごとに作る
+  const names: NameLookup = {
+    room: (id) => (id === roomId ? target.room.name : storage.find((s) => s.room.id === id)?.room.name),
+    item: (id) => itemName.get(id),
+  };
 
   const change = (itemId: string, value: number) => {
     if (!counts) return;
@@ -350,6 +438,48 @@ export function StockInput({
     // （入力はほかの人の数と比べて選ぶまで守る）は下書きに残す（R3）
     if (baseCounts && !unknownOutcome && !remote && !unsavedIn(next)) writer.clear();
     else if (stamps) writeDraft(next, stamps);
+  };
+
+  /** 「＋ その他を足す」で物を足す（数 0 の行を出し、保存していない入力にする。もう出ていれば何もしない） */
+  const addLine = (countItemId: string) => {
+    if (!counts || !stamps || lines.some((l) => l.id === countKey(countItemId))) return;
+    const next = { ...counts, [countKey(countItemId)]: 0 };
+    setAdded((a) => (a.includes(countItemId) ? a : [...a, countItemId]));
+    setCounts(next);
+    setHeld(true);
+    setDraft(null);
+    setSavedAt(null);
+    setBlocked(null);
+    writeDraft(next, stamps);
+  };
+
+  /**
+   * 「新しい名前で足す」（RPC add_count_item。同じ名前ならその id が返る）。足せたら行を出して null、足せなければ文言を返す。
+   * 同じ名前なら同じ id が返るので、応答が届かなかったときは確かめずにもう一度押してもらう（2.6。行は二重にならない）
+   */
+  const createCountItem = async (name: string, retried = false): Promise<string | null> => {
+    try {
+      const newId = await addCountItem(yearId, name);
+      if (!allCountItems.some((c) => c.id === newId)) {
+        setExtraItems((xs) => [...xs, { id: newId, name, always_shown: false, sort_order: EXTRA_SORT_ORDER, updated_at: '' }]);
+      }
+      // 名前の一覧（場所・品目の読み込み）を読み直す（ほかの部屋・翌年の選択肢にも出る）
+      void queryClient.invalidateQueries({ queryKey: stockMasterOptions(yearId).queryKey });
+      addLine(newId);
+      return null;
+    } catch (e) {
+      const c = classifyError(e);
+      if (c.kind === 'auth') {
+        if (!retried && (await onAuthError(e)) === 'retry') return createCountItem(name, true);
+        return messageFor(c);
+      }
+      if (effectOf(c).reload === 'year') {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.yearRow(yearId) });
+        reloadMembership();
+      }
+      if (isUnknownOutcome(e)) return '足せたか分かりません。もう一度「新しい名前で足す」を押してください（同じ名前は二重になりません）';
+      return messageFor(c, { rpc: 'add_count_item' });
+    }
   };
 
   /**
@@ -381,7 +511,13 @@ export function StockInput({
     setSeen(rows);
     setRestoredStamps(null);
     setRemote(null);
-    queryClient.setQueryData(roomKey, rows);
+    setRoomCache(rows);
+  };
+  /** 部屋の在庫と数のキャッシュに rows（mergeRoomRows の形）を入れる */
+  const setRoomCache = (rows: readonly StockDbRow[]) => {
+    const split = splitRoomRows(rows);
+    queryClient.setQueryData(roomKey, split.stocks);
+    queryClient.setQueryData(countRoomKey, split.counts);
   };
   const invalidateStocks = () => {
     for (const key of stockInvalidationKeys(yearId)) void queryClient.invalidateQueries({ queryKey: key });
@@ -395,7 +531,9 @@ export function StockInput({
     writer.clear();
     setDraft(null);
     rebase(rows);
-    setCounts(countsFromRows(items, rows));
+    setCounts(countsFromRows(linesFor([rows]).lines, rows));
+    // 足した物は数の行ができたので、ふつうの「その他」の行になる
+    setAdded([]);
     setSavedKind(kind);
     setSavedAt(kind === 'recovered' ? (latestCounted(rows)?.countedAt ?? new Date().toISOString()) : new Date().toISOString());
     toast.success(kind === 'recovered' ? '保存されていました' : '保存しました');
@@ -418,7 +556,8 @@ export function StockInput({
     setDraft(null);
     writeDraft(values, stampsOf(latest));
     writer.flush();
-    const sending = saveRoomStocks(yearId, roomId, items, values);
+    // 在庫の upsert の後に、出ている数の行を全部（0 を含む）upsert する（読み直した行に増えた物も含める）
+    const sending = saveRoomLines(yearId, roomId, items, linesFor([latest]).countIds, values);
     const inFlight = sending.catch(() => undefined);
     sendsInFlight.set(storageKey, inFlight);
     try {
@@ -429,16 +568,33 @@ export function StockInput({
         // 違えば開き直した画面が書き直した下書きなので残す
         const d = loadDraft<unknown>(draftKey);
         const parsedDraft = d ? stockDraftSchema.safeParse(d.value) : null;
-        if (parsedDraft?.success && sameCounts(items, parsedDraft.data.counts, values) && sameStamps(parsedDraft.data.base, stampsOf(latest))) {
+        const sentLines = linesFor([latest]).lines;
+        if (parsedDraft?.success && sameCounts(sentLines, parsedDraft.data.counts, values) && sameStamps(parsedDraft.data.base, stampsOf(latest))) {
           removeDraft(draftKey);
         }
         invalidateStocks();
       }
-    } catch (e) {
-      if (!mounted.current) return;
-      // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks の upsert は同じ値で何度送っても同じ。2.6）
+    } catch (thrown) {
+      if (!mounted.current) {
+        // 在庫は保存できた（数だけ失敗）なら、一覧などを読み直す（下書きは残す：数は保存していない）
+        if (thrown instanceof CountSaveError) invalidateStocks();
+        return;
+      }
+      let e = thrown;
+      let next = latest;
+      if (thrown instanceof CountSaveError) {
+        // 在庫の保存は決まった：入力の元を保存した在庫の行と、送る前に読み直した数の行にする。数は保存していない入力として残し
+        // （印も残す。R1）、下書きもその元で書き直す。失敗は数の保存の失敗として出す
+        next = mergeRoomRows(thrown.stocks, splitRoomRows(latest).counts);
+        rebase(next);
+        writeDraft(values, stampsOf(next));
+        toast.info('在庫の数は保存しました。備品（数えるだけ）の数はまだ保存していません');
+        invalidateStocks();
+        e = thrown.cause;
+      }
+      // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks・count_stocks の upsert は同じ値で何度送っても同じ。2.6）
       if (classifyError(e).kind === 'auth' && !retried) {
-        if ((await onAuthError(e)) === 'retry') return write(values, latest, true);
+        if ((await onAuthError(e)) === 'retry') return write(values, next, true);
         return;
       }
       await handleError(e, false);
@@ -499,9 +655,9 @@ export function StockInput({
         }
       }
       // 毎回、送る前に部屋の行を読み直して決める（設計 2.6 の (A) の 2〜4）
-      const rows = await fresh(() => fetchRoomStocks(yearId, roomId));
+      const rows = await fresh(() => fetchRoomLines(yearId, roomId));
       if (gone()) return;
-      const decision = decideStockSave(items, parsed.data, stamps, rows, open.userId);
+      const decision = decideStockSave(linesFor([rows]).lines, parsed.data, stamps, rows, open.userId);
       if (decision.kind === 'saved') {
         finishSaved(rows, 'recovered');
       } else if (decision.kind === 'conflict') {
@@ -511,7 +667,7 @@ export function StockInput({
         // やめた後も「ほかの人が保存しました」を出し、入力を残す（ほかの人の数にするのは「読み直す」だけ）。
         // 知らせの「ほかの人の数を読み直す」と「前回の入力」が今読み直した行を使うよう、キャッシュにも入れる
         setRemote(decision.other);
-        queryClient.setQueryData(roomKey, rows);
+        setRoomCache(rows);
       } else {
         latest = rows;
       }
@@ -543,7 +699,9 @@ export function StockInput({
     setUnknownOutcome(false);
     setHeld(false);
     rebase(rows);
-    setCounts(countsFromRows(items, rows));
+    setCounts(countsFromRows(linesFor([rows]).lines, rows));
+    // 足した物も捨てる（ほかの人の数にする）
+    setAdded([]);
     // 戻していない前の下書き（draft。知らせが出ている）は、利用者が戻すか捨てるかを選ぶまで残す（R3）。ストレージにあるのは
     // その下書きのまま（数を変える・戻す・送る・保存していない入力になると draft は null になる）なので、消すのは今の入力の分だけ
     if (!draft) writer.clear();
@@ -572,11 +730,18 @@ export function StockInput({
     return nextUncountedRoom(storage, countedIds, roomId);
   }, [savedAt, yearStocksQ.data, storage, roomId]);
 
-  if (stocksQ.isError && !base) {
+  const roomFailed = stocksQ.isError ? stocksQ : countQ.isError ? countQ : null;
+  if (roomFailed && !base) {
     return (
       <>
         <PageHeader title="在庫入力" />
-        <ErrorState message={messageFor(classifyError(stocksQ.error))} onRetry={() => void stocksQ.refetch()} />
+        <ErrorState
+          message={messageFor(classifyError(roomFailed.error))}
+          onRetry={() => {
+            void stocksQ.refetch();
+            void countQ.refetch();
+          }}
+        />
       </>
     );
   }
@@ -584,9 +749,51 @@ export function StockInput({
   const busy = phase !== 'idle';
   const otherName = conflict?.other.by ? knownName(conflict.other.by, namesQ.data) : null;
   const remoteName = remote?.by ? knownName(remote.by, namesQ.data) : null;
-  const prevFailed = hasPrev && prevQ.isError;
+  const prevFailed = hasPrev && (prevQ.isError || prevCountQ.isError);
+  const prevError = prevQ.isError ? prevQ.error : prevCountQ.error;
+  const prevPending = prevQ.isPending || prevCountQ.isPending;
   // E2E が「読み込み終わった」を待つ印（部屋の行・前年・名前・振り分けの合計のどれかを読んでいる間は true）
-  const fetching = stocksQ.isFetching || prevQ.isFetching || namesQ.isFetching || allocQ.isFetching;
+  const fetching =
+    stocksQ.isFetching || countQ.isFetching || prevQ.isFetching || prevCountQ.isFetching || namesQ.isFetching || allocQ.isFetching;
+  const shownIds = new Set([...shown.always, ...shown.others].map((c) => c.id));
+
+  /** 1行（品目か備品〔数えるだけ〕）。allocated は品目だけ（振り分けの合計） */
+  const lineRow = (line: StockLine, kind: 'item' | 'count') => {
+    const allocated = kind === 'item' ? (allocQ.data?.get(line.id) ?? 0) : 0;
+    const value = counts?.[line.id] ?? 0;
+    const prevCount = prev?.get(`${roomId}:${line.id}`);
+    return (
+      <li
+        key={line.id}
+        data-testid={kind === 'item' ? 'stock-item-row' : 'count-item-row'}
+        {...(kind === 'item' ? { 'data-item-id': line.id } : { 'data-count-item-id': countItemIdOf(line.id) ?? '' })}
+        className="flex items-center gap-3 px-3 py-3"
+      >
+        <div className="min-w-0 flex-1">
+          <p className="font-medium break-words">{line.name}</p>
+          <p className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+            {hasPrev && !prevFailed ? (
+              <span data-testid="stock-prev">前年 {prevPending ? '…' : prevCount === undefined ? '—' : prevCount}</span>
+            ) : null}
+            {access.shortfall !== 'none' && allocated > 0 ? (
+              <span data-testid="stock-allocated" className={cn(value < allocated && 'font-semibold text-destructive')}>
+                振り分け {allocated}台
+              </span>
+            ) : null}
+          </p>
+        </div>
+        <CountStepper
+          size="lg"
+          label={`${line.name}の数`}
+          value={value}
+          onChange={(v) => change(line.id, v)}
+          disabled={!access.writable || busy}
+          className="shrink-0"
+        />
+      </li>
+    );
+  };
+  const countLine = (c: CountItemRow): StockLine => ({ id: countKey(c.id), name: c.name });
 
   return (
     <div className={cn('mx-auto max-w-xl', access.writable && 'pb-4')} data-testid="stock-input" data-fetching={fetching ? 'true' : 'false'}>
@@ -636,7 +843,9 @@ export function StockInput({
           <DraftNotice
             savedAt={draft.savedAt}
             onRestore={() => {
-              const restored = withDraft(items, counts!, draft.counts);
+              const restored = withDraft(draftLines, counts!, draft.counts);
+              // 下書きにあって今出ていない備品（数えるだけ）は、足した物として「その他」に出す
+              if (draftExtraIds.length > 0) setAdded((a) => [...a, ...draftExtraIds.filter((x) => !a.includes(x))]);
               setCounts(restored);
               setHeld(true);
               setRestoredStamps(draft.base);
@@ -704,8 +913,16 @@ export function StockInput({
           <div role="alert" data-testid="stock-prev-error" className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
             <AlertTriangle aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
             <div className="min-w-0 flex-1 space-y-2">
-              <p className="font-medium text-destructive">前年の数を読み込めませんでした（{messageFor(classifyError(prevQ.error))}）</p>
-              <Button size="sm" variant="outline" onClick={() => void prevQ.refetch()} disabled={prevQ.isFetching}>
+              <p className="font-medium text-destructive">前年の数を読み込めませんでした（{messageFor(classifyError(prevError))}）</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (prevQ.isError) void prevQ.refetch();
+                  if (prevCountQ.isError) void prevCountQ.refetch();
+                }}
+                disabled={prevQ.isFetching || prevCountQ.isFetching}
+              >
                 前年の数を読み直す
               </Button>
             </div>
@@ -722,38 +939,39 @@ export function StockInput({
       {!counts ? (
         <LoadingState />
       ) : (
-        <ul className="divide-y rounded-lg border" aria-label="品目ごとの数">
-          {items.map((item) => {
-            const allocated = allocQ.data?.get(item.id) ?? 0;
-            const value = counts[item.id] ?? 0;
-            const prevCount = prev?.get(`${roomId}:${item.id}`);
-            return (
-              <li key={item.id} data-testid="stock-item-row" data-item-id={item.id} className="flex items-center gap-3 px-3 py-3">
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">{item.name}</p>
-                  <p className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
-                    {hasPrev && !prevFailed ? (
-                      <span data-testid="stock-prev">前年 {prevQ.isPending ? '…' : prevCount === undefined ? '—' : prevCount}</span>
-                    ) : null}
-                    {access.shortfall !== 'none' && allocated > 0 ? (
-                      <span data-testid="stock-allocated" className={cn(value < allocated && 'font-semibold text-destructive')}>
-                        振り分け {allocated}台
-                      </span>
-                    ) : null}
-                  </p>
-                </div>
-                <CountStepper
-                  size="lg"
-                  label={`${item.name}の数`}
-                  value={value}
-                  onChange={(v) => change(item.id, v)}
-                  disabled={!access.writable || busy}
-                  className="shrink-0"
-                />
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          <ul className="divide-y rounded-lg border" aria-label="品目ごとの数">
+            {items.map((item) => lineRow({ id: item.id, name: item.name }, 'item'))}
+          </ul>
+          {allCountItems.length > 0 ? (
+            <section aria-labelledby="count-items-heading" className="mt-6 space-y-2" data-testid="count-items-section">
+              <h3 id="count-items-heading" className="text-base font-semibold">
+                備品（数えるだけ）
+              </h3>
+              <p className="text-xs text-muted-foreground">数えるだけの物です（申請・振り分けには使いません）。</p>
+              {shown.always.length > 0 ? (
+                <ul className="divide-y rounded-lg border" aria-label="備品（数えるだけ）の数">
+                  {shown.always.map((c) => lineRow(countLine(c), 'count'))}
+                </ul>
+              ) : null}
+              <h4 className="pt-2 text-sm font-semibold">その他</h4>
+              {shown.others.length > 0 ? (
+                <ul className="divide-y rounded-lg border" aria-label="その他の数">
+                  {shown.others.map((c) => lineRow(countLine(c), 'count'))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground" data-testid="count-others-empty">
+                  この場所で数えたその他の物はありません。
+                </p>
+              )}
+              {access.writable ? (
+                <Button type="button" variant="outline" className="h-11 w-full" onClick={() => setAdding(true)} disabled={busy} data-testid="count-item-add">
+                  ＋ その他を足す
+                </Button>
+              ) : null}
+            </section>
+          ) : null}
+        </>
       )}
 
       {savedAt ? (
@@ -794,6 +1012,17 @@ export function StockInput({
       ) : null}
 
       {notLatest.dialog}
+
+      {access.writable ? (
+        <AddCountItemDialog
+          open={adding}
+          onOpenChange={setAdding}
+          countItems={allCountItems}
+          shownIds={shownIds}
+          onPick={addLine}
+          onCreate={(name) => createCountItem(name)}
+        />
+      ) : null}
 
       <ConfirmDialog
         open={shortfallAsk.list !== null}
@@ -848,7 +1077,7 @@ export function StockInput({
                 </tr>
               </thead>
               <tbody>
-                {items.map((i) => {
+                {lines.map((i) => {
                   const theirs = conflict.latest.find((r) => r.item_id === i.id)?.count;
                   const mine = conflict.values[i.id] ?? 0;
                   return (
