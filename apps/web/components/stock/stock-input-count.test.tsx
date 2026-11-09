@@ -210,7 +210,8 @@ describe('StockInput の備品（数えるだけ）：行', () => {
     expect(screen.queryByRole('textbox', { name: '掃除機の数' })).toBeNull();
     const trashRow = screen.getAllByTestId('count-item-row')[0]!;
     await waitFor(() => expect(within(trashRow).getByTestId('stock-prev').textContent).toBe('前年 5'));
-    expect(within(screen.getAllByTestId('count-item-row')[1]!).getByTestId('stock-prev').textContent).toBe('前年 —');
+    // 前年度に数の行がない物は前年も 0（数の行がなければ 0。在庫一覧の表の前年との差と同じ）
+    expect(within(screen.getAllByTestId('count-item-row')[1]!).getByTestId('stock-prev').textContent).toBe('前年 0');
   });
 
   it('保存は在庫の upsert の後に、出ている数の行を全部（0 を含む）1回の upsert で送る', async () => {
@@ -376,6 +377,62 @@ describe('StockInput の備品（数えるだけ）：保存の失敗・ほか�
     await user.click(screen.getByRole('button', { name: '保存' }));
     await screen.findByText(/権限がありません/);
     expect(countUpserts()).toHaveLength(0);
+  });
+
+  it('在庫の保存の応答が届かず（DB には入った）、もう一度「保存」の読み直しで在庫が自分の保存なら、在庫は送り直さず数だけを送って「保存されていました」', async () => {
+    serve({ stocks: [stock(10)], counts: [] });
+    const base = fake.handler!;
+    let landed = false;
+    fake.handler = (call) => {
+      if (call.table === 'stocks' && opArgs(call, 'upsert').length > 0) {
+        // DB には入ったが、応答はブラウザに届かない
+        landed = true;
+        return NETWORK;
+      }
+      if (call.table === 'stocks' && landed) return { data: [{ ...stock(11, 'saved-desk'), counted_at: '2026-10-29T09:30:00+00:00' }] };
+      return base(call);
+    };
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect(countInput('ゴミ箱').value).toBe('0'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: 'ゴミ箱の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-unknown-outcome');
+    // 在庫の結果が分からないので、数は送っていない
+    expect(stockUpserts()).toHaveLength(1);
+    expect(countUpserts()).toHaveLength(0);
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(screen.getByTestId('stock-saved').textContent).toContain('保存されていました'));
+    expect(stockUpserts()).toHaveLength(1);
+    expect(countUpserts()).toHaveLength(1);
+    expect(sentCounts(0).find((r) => r.count_item_id === TRASH.id)?.count).toBe(1);
+    expect(screen.queryByTestId('stock-unknown-outcome')).toBeNull();
+  });
+
+  it('在庫の保存の応答が届かず、数がすべて 0 のままでも、もう一度「保存」で在庫は送り直さず数の行を送る', async () => {
+    serve({ stocks: [stock(10)], counts: [] });
+    const base = fake.handler!;
+    let landed = false;
+    fake.handler = (call) => {
+      if (call.table === 'stocks' && opArgs(call, 'upsert').length > 0) {
+        landed = true;
+        return NETWORK;
+      }
+      if (call.table === 'stocks' && landed) return { data: [{ ...stock(11, 'saved-desk'), counted_at: '2026-10-29T09:30:00+00:00' }] };
+      return base(call);
+    };
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect(countInput('ゴミ箱').value).toBe('0'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-unknown-outcome');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(screen.getByTestId('stock-saved').textContent).toContain('保存されていました'));
+    expect(stockUpserts()).toHaveLength(1);
+    expect(countUpserts()).toHaveLength(1);
+    expect(sentCounts(0).map((r) => r.count)).toEqual([0, 0, 0, 0]);
   });
 
   it('数の保存の応答が届かなければ「保存できたか分かりません」を出し、入力を残す', async () => {

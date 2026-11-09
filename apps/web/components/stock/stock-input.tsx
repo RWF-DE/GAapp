@@ -83,10 +83,12 @@ import {
   roomCountStocksOptions,
   roomStocksOptions,
   sameCounts,
+  saveRoomCountLines,
   saveRoomLines,
   shortfallMessage,
   shownCountItems,
   splitRoomRows,
+  stocksAlreadySaved,
   stockMasterOptions,
   shortfalls,
   stockAccess,
@@ -541,7 +543,7 @@ export function StockInput({
   };
 
   /** values を送る。latest は送る前に読み直した部屋の行（入力の元にする。設計 2.6 の (A) の 4） */
-  const write = async (values: StockCounts, latest: StockDbRow[], retried = false): Promise<void> => {
+  const write = async (values: StockCounts, latest: StockDbRow[], retried = false, stocksSaved = false): Promise<void> => {
     // 送る前に書けるかを見る（読み直しやダイアログの間に書けなくなっていれば送らない。入力は下書きにある）
     if (!writableRef.current) {
       setPhase('idle');
@@ -557,12 +559,16 @@ export function StockInput({
     writeDraft(values, stampsOf(latest));
     writer.flush();
     // 在庫の upsert の後に、出ている数の行を全部（0 を含む）upsert する（読み直した行に増えた物も含める）
-    const sending = saveRoomLines(yearId, roomId, items, linesFor([latest]).countIds, values);
+    // 在庫がもう自分の保存なら（応答が届かなかった在庫の upsert が入っていた）、在庫は送り直さず数だけを送る
+    const countIds = linesFor([latest]).countIds;
+    const sending = stocksSaved
+      ? saveRoomCountLines(yearId, roomId, splitRoomRows(latest).stocks, countIds, values)
+      : saveRoomLines(yearId, roomId, items, countIds, values);
     const inFlight = sending.catch(() => undefined);
     sendsInFlight.set(storageKey, inFlight);
     try {
       const rows = await sending;
-      if (mounted.current) finishSaved(rows, 'saved');
+      if (mounted.current) finishSaved(rows, stocksSaved ? 'recovered' : 'saved');
       else {
         // 離れた後に届いた：下書きがこの送信で書いたまま（送った数と、送る前に読み直した行）なら、保存できたので消す。
         // 違えば開き直した画面が書き直した下書きなので残す
@@ -594,7 +600,7 @@ export function StockInput({
       }
       // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks・count_stocks の upsert は同じ値で何度送っても同じ。2.6）
       if (classifyError(e).kind === 'auth' && !retried) {
-        if ((await onAuthError(e)) === 'retry') return write(values, next, true);
+        if ((await onAuthError(e)) === 'retry') return write(values, next, true, stocksSaved);
         return;
       }
       await handleError(e, false);
@@ -636,6 +642,7 @@ export function StockInput({
     const gone = () => !mounted.current || !writableRef.current;
     // 送ると決まったら、送る前に読み直した部屋の行が入る
     let latest: StockDbRow[] | null = null;
+    let stocksSaved = false;
     try {
       // 前の画面（離れた画面）の送信が残っていれば、終わってから読み直す
       await sendsInFlight.get(storageKey);
@@ -670,6 +677,8 @@ export function StockInput({
         setRoomCache(rows);
       } else {
         latest = rows;
+        // 在庫は自分の保存が入っていて、数だけがまだ（在庫の応答が届かず数を送っていなかった）なら、数だけを送る
+        stocksSaved = stocksAlreadySaved(items, parsed.data, stamps, rows, open.userId);
       }
     } catch (e) {
       // 読み直しが通信できなければ送らずに unknownOutcomeMessage を出す（(A) の 4）。コードつきの失敗は、知らせを出していれば
@@ -678,7 +687,7 @@ export function StockInput({
     } finally {
       if (!latest) setPhase('idle');
     }
-    if (latest) await write(parsed.data, latest);
+    if (latest) await write(parsed.data, latest, false, stocksSaved);
   };
 
   /** ダイアログの「上書きする」：読み直した行を入力の元にして、「保存」を押したときの数で送る */
@@ -761,7 +770,8 @@ export function StockInput({
   const lineRow = (line: StockLine, kind: 'item' | 'count') => {
     const allocated = kind === 'item' ? (allocQ.data?.get(line.id) ?? 0) : 0;
     const value = counts?.[line.id] ?? 0;
-    const prevCount = prev?.get(`${roomId}:${line.id}`);
+    // 備品（数えるだけ）は数の行がなければ前年も 0（04「在庫入力」。在庫一覧の表の前年との差と同じ）。品目は行がなければ「—」
+    const prevCount = prev?.get(`${roomId}:${line.id}`) ?? (kind === 'count' && prev ? 0 : undefined);
     return (
       <li
         key={line.id}

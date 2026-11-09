@@ -1,7 +1,7 @@
 // 在庫入力（/stock）・在庫一覧（/stocks）・QR の印刷（/stocks/qr）のデータの読み書き（画面の設計 2.1・2.3・3.3・3.4・6 章。T10）。
 // 純粋な関数（並べ方・数え方・書けるか・振り分けの合計との比べ方・ほかの人の保存・表の集計・QR の URL）と、
 // 読み書きの関数・React Query のフックを置く。純粋な関数は lib/data/stocks.test.ts で確かめる。
-import { useQuery } from '@tanstack/react-query';
+import { queryOptions, useQuery } from '@tanstack/react-query';
 import { decideAbsoluteSave } from '@/lib/data/absolute-save';
 import { fetchAll } from '@/lib/db/fetch-all';
 import {
@@ -25,16 +25,7 @@ import { nameKey } from '@/lib/schemas/settings';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 import type { AppRole } from '@/lib/auth/membership';
 import { isLead } from '@/lib/auth/roles';
-import {
-  fetchRoomCountStocks,
-  fetchRoomStocks,
-  roomCountStocksOptions,
-  roomStocksOptions,
-  sortByOrder,
-  stockMasterOptions,
-  yearCountStocksOptions,
-  yearStocksOptions,
-} from './screen-queries';
+import { fetchRoomStocks, roomStocksOptions, sortByOrder, stockMasterOptions, yearStocksOptions } from './screen-queries';
 
 // ---- 並べ方・場所 ----
 
@@ -42,20 +33,57 @@ import {
 // （ページを開いたときの先読みで、ルートのレイアウトから読むため。D-45）。ここからも同じ名前で使える。
 export {
   compareByOrder,
-  fetchRoomCountStocks,
   fetchRoomStocks,
   fetchStockMaster,
-  fetchYearCountStocks,
   fetchYearStocks,
   planStockPrefetch,
-  roomCountStocksOptions,
   roomStocksOptions,
   sortByOrder,
   stockMasterOptions,
-  yearCountStocksOptions,
   yearStocksOptions,
   type StockMaster,
 } from './screen-queries';
+
+// ---- 備品（数えるだけ）の数の読み込み（T22・D-60） ----
+// 在庫入力・在庫一覧だけが読むので、ルートのレイアウトから読む screen-queries.ts には置かない（/ の JS を増やさない。D-45・D-51）
+
+/** その部屋の今年の備品（数えるだけ）の数の行（T22・D-60。行のない物は 0 として出す） */
+export async function fetchRoomCountStocks(yearId: string, roomId: string, client: AppSupabaseClient = getSupabase()): Promise<CountStockDbRow[]> {
+  const res = await client.from('count_stocks').select(COLUMNS.count_stocks).eq('year_id', yearId).eq('room_id', roomId).order('count_item_id');
+  if (res.error) throw toAppError(res.error, res.status);
+  return (res.data ?? []) as unknown as CountStockDbRow[];
+}
+
+/** 今年の備品（数えるだけ）の数の行すべて（在庫一覧の「備品（数えるだけ）」の表） */
+export async function fetchYearCountStocks(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<CountStockDbRow[]> {
+  return fetchAll<CountStockDbRow>((from, to) =>
+    client
+      .from('count_stocks')
+      .select(COLUMNS.count_stocks)
+      .eq('year_id', yearId)
+      .order('room_id')
+      .order('count_item_id')
+      .range(from, to) as unknown as PromiseLike<{ data: CountStockDbRow[] | null; error: unknown; status?: number }>,
+  );
+}
+
+/** その部屋の今年の備品（数えるだけ）の数のクエリの設定（キーは在庫の 'stocks' の下。在庫の invalidate で一緒に読み直す） */
+export function roomCountStocksOptions(yearId: string | null | undefined, roomId: string | null | undefined) {
+  return queryOptions({
+    queryKey: queryKeys.yearPart(yearId ?? '', 'stocks', 'count-room', roomId ?? ''),
+    queryFn: () => fetchRoomCountStocks(yearId!, roomId!),
+    enabled: !!yearId && !!roomId,
+  });
+}
+
+/** 今年の備品（数えるだけ）の数すべてのクエリの設定 */
+export function yearCountStocksOptions(yearId: string | null | undefined) {
+  return queryOptions({
+    queryKey: queryKeys.yearPart(yearId ?? '', 'stocks', 'count-all'),
+    queryFn: () => fetchYearCountStocks(yearId!),
+    enabled: !!yearId,
+  });
+}
 
 /** 保管場所と、その年度の使用（room_years の行がなければ使用可） */
 export interface StorageRoom {
@@ -689,6 +717,42 @@ export async function saveRoomLines(
     throw new CountSaveError(stocks, e);
   }
   return mergeRoomRows(stocks, saved);
+}
+
+/**
+ * 在庫はもう保存されている（前に送って応答が届かなかった在庫の upsert が DB に入っていた）ときの保存：在庫は送り直さず、
+ * 出ている数の行だけを upsert する（savedStocks は送る前に読み直した在庫の行）。数が失敗すれば CountSaveError（在庫は savedStocks）。
+ * 在庫の結果が分からない間は数を送っていないので、在庫が自分の保存と分かったら数だけを送る（04「在庫入力」の備品〔数えるだけ〕）
+ */
+export async function saveRoomCountLines(
+  yearId: string,
+  roomId: string,
+  savedStocks: readonly StockDbRow[],
+  countItemIds: readonly string[],
+  counts: StockCounts,
+  client: AppSupabaseClient = getSupabase(),
+): Promise<StockDbRow[]> {
+  let saved: CountStockDbRow[];
+  try {
+    saved = await saveRoomCountStocks(yearId, roomId, countItemIds, counts, client);
+  } catch (e) {
+    throw new CountSaveError([...savedStocks], e);
+  }
+  return mergeRoomRows(savedStocks, saved);
+}
+
+/**
+ * 在庫（品目の行）だけを見て、入力の在庫がもう保存されているか（decideStockSave を品目の行だけで決めて 'saved'）。
+ * 在庫の upsert の応答が届かなかった後の「保存」で、在庫を送り直さず数だけを送るかを決める
+ */
+export function stocksAlreadySaved(
+  items: readonly Pick<ItemRow, 'id'>[],
+  input: StockCounts,
+  base: StockBaseStamps,
+  latest: readonly StockDbRow[],
+  userId: string,
+): boolean {
+  return decideStockSave(items, input, base, splitRoomRows(latest).stocks, userId).kind === 'saved';
 }
 
 /** 保存の前の読み直し：部屋の在庫と数の行（mergeRoomRows の形） */

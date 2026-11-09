@@ -15,7 +15,6 @@ import {
   type AllocationDbRow,
   type ConsentDbRow,
   type CountItemRow,
-  type CountStockDbRow,
   type GroupRow,
   type ItemRow,
   type RequestDbRow,
@@ -112,43 +111,6 @@ export async function fetchYearStocks(yearId: string, client: AppSupabaseClient 
   );
 }
 
-/** その部屋の今年の備品（数えるだけ）の数の行（T22・D-60。行のない物は 0 として出す） */
-export async function fetchRoomCountStocks(yearId: string, roomId: string, client: AppSupabaseClient = getSupabase()): Promise<CountStockDbRow[]> {
-  const res = await client.from('count_stocks').select(COLUMNS.count_stocks).eq('year_id', yearId).eq('room_id', roomId).order('count_item_id');
-  if (res.error) throw toAppError(res.error, res.status);
-  return (res.data ?? []) as unknown as CountStockDbRow[];
-}
-
-/** 今年の備品（数えるだけ）の数の行すべて（在庫一覧の「備品（数えるだけ）」の表） */
-export async function fetchYearCountStocks(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<CountStockDbRow[]> {
-  return fetchAll<CountStockDbRow>((from, to) =>
-    client
-      .from('count_stocks')
-      .select(COLUMNS.count_stocks)
-      .eq('year_id', yearId)
-      .order('room_id')
-      .order('count_item_id')
-      .range(from, to) as unknown as PromiseLike<{ data: CountStockDbRow[] | null; error: unknown; status?: number }>,
-  );
-}
-
-/** その部屋の今年の備品（数えるだけ）の数のクエリの設定（キーは在庫の 'stocks' の下。在庫の invalidate で一緒に読み直す） */
-export function roomCountStocksOptions(yearId: string | null | undefined, roomId: string | null | undefined) {
-  return queryOptions({
-    queryKey: queryKeys.yearPart(yearId ?? '', 'stocks', 'count-room', roomId ?? ''),
-    queryFn: () => fetchRoomCountStocks(yearId!, roomId!),
-    enabled: !!yearId && !!roomId,
-  });
-}
-
-/** 今年の備品（数えるだけ）の数すべてのクエリの設定 */
-export function yearCountStocksOptions(yearId: string | null | undefined) {
-  return queryOptions({
-    queryKey: queryKeys.yearPart(yearId ?? '', 'stocks', 'count-all'),
-    queryFn: () => fetchYearCountStocks(yearId!),
-    enabled: !!yearId,
-  });
-}
 
 /** 場所・品目・その年度の使用のクエリの設定 */
 export function stockMasterOptions(yearId: string | null | undefined) {
