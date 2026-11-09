@@ -131,6 +131,93 @@ export type Database = {
         };
         Relationships: [];
       };
+      count_items: {
+        Row: {
+          always_shown: boolean;
+          created_at: string;
+          created_by: string | null;
+          id: string;
+          name: string;
+          sort_order: number;
+          updated_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          always_shown?: boolean;
+          created_at?: string;
+          created_by?: string | null;
+          id?: string;
+          name: string;
+          sort_order?: number;
+          updated_at?: string;
+        };
+        Update: {
+          always_shown?: boolean;
+          created_at?: string;
+          created_by?: string | null;
+          id?: string;
+          name?: string;
+          sort_order?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      count_stocks: {
+        Row: {
+          count: number;
+          count_item_id: string;
+          counted_at: string | null;
+          counted_by: string | null;
+          created_at: string;
+          room_id: string;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          count: number;
+          count_item_id: string;
+          counted_at?: string | null;
+          counted_by?: string | null;
+          created_at?: string;
+          room_id: string;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          count?: number;
+          count_item_id?: string;
+          counted_at?: string | null;
+          counted_by?: string | null;
+          created_at?: string;
+          room_id?: string;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "count_stocks_count_item_id_fkey";
+            columns: ["count_item_id"];
+            isOneToOne: false;
+            referencedRelation: "count_items";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "count_stocks_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "count_stocks_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       deliveries: {
         Row: {
           checked_at: string | null;
@@ -1793,6 +1880,7 @@ export type Database = {
     };
     Functions: {
       accept_my_invitations: { Args: Record<PropertyKey, never>; Returns: number };
+      add_count_item: { Args: { p_name: string; p_year_id: string }; Returns: string };
       add_shift_slots: {
         Args: { p_needs?: Json; p_slots: Json; p_year_id: string };
         Returns: {
@@ -1942,6 +2030,14 @@ export type Database = {
           p_year_id: string;
         };
         Returns: Json;
+      };
+      previous_year_count_stocks: {
+        Args: { p_year_id: string };
+        Returns: {
+          count: number;
+          count_item_id: string;
+          room_id: string;
+        }[];
       };
       previous_year_documents: {
         Args: { p_year_id: string };

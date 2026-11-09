@@ -56,14 +56,14 @@ from (values (tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F13_REP'), '{"size": 10}
              ('pgtap/' || tests.id('G1') || '/x.pdf', '{"size": 1}'),
              (tests.id('Y1') || '', '{"size": 1}')) v(name, metadata);
 
-select plan(128);
+select plan(130);
 
 -- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
 -- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
 create table tests.old_pred (tbl text primary key, pred text not null);
 insert into tests.old_pred values
   ('audit_logs', $p$ case when year_id is null
-                         then table_name in ('rooms', 'items', 'distance_overrides') and private.is_admin_of_open_year()
+                         then table_name in ('rooms', 'items', 'distance_overrides', 'count_items') and private.is_admin_of_open_year()
                          else private.has_any_role(year_id, '{admin,head,deputy_head}') end $p$),
   ('allocations', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}')
                       or ((private.has_role(year_id, 'viewer') or private.is_group_member(group_id))
@@ -118,6 +118,10 @@ insert into tests.old_pred values
   ('lending_assignments', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}')
                               or (exists (select 1 from public.lending_years ly where ly.year_id = t.year_id and ly.confirmed_at is not null)
                                   and (private.has_role(year_id, 'viewer') or private.is_group_member(group_id))) $p$);
+-- 備品（数えるだけ。T22。02「備品（数えるだけ）の権限」）：数は stocks と同じく、その年度の総務だけが読む（名前の一覧 count_items は
+-- has_any_access の行の少ない表なので比べない。年度のない履歴の行は上の audit_logs の述語に count_items を足した）
+insert into tests.old_pred values
+  ('count_stocks', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$);
 
 -- 行の中身をまとめた指紋（件数と、行の文字列を並べた md5）
 create function tests.visible_old(p_tbl text, p_persona text) returns text language plpgsql as $$
@@ -175,7 +179,13 @@ select is((select string_agg(x.tbl, ' ' order by x.tbl) from (select tbl from te
 -- 比べたものに中身がある（全員 0 行や全員同じでは比べたことにならない）
 select is_empty($q$ select tbl from tests.compared where tbl not in ('documents', 'document_submissions', 'document_files') group by tbl
                     having count(distinct new) < 2 or not bool_or(new !~ '^0:') $q$,
-  '20 表（T20 のシフト・作業の5表と T21 のテント等の5表を含む）とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
+  '21 表（T20 のシフト・作業の5表と T21 のテント等の5表と T22 の count_stocks を含む）とも、ペルソナ・状態によって見える行が違い、見える行のある組がある');
+-- 備品（数えるだけ）の数（T22）
+select is_empty($q$ select scenario, persona, old, new from tests.compared where tbl = 'count_stocks' and old <> new $q$,
+  'count_stocks：D-47 の形のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態。T22）');
+select is((select qual from pg_policies where schemaname = 'public' and policyname = 'count_stocks_select'),
+  (select qual from pg_policies where schemaname = 'public' and policyname = 'stocks_select'),
+  'count_stocks_select は stocks_select と同じ形（my_role_year_ids の集合を1回作る。T22）');
 -- シフト・作業（T20）
 select is_empty(format($q$ select scenario, persona, old, new from tests.compared where tbl = %L and old <> new $q$, t),
   format('%s：D-47 の形のポリシーで見える行は、行ごとの形の述語で選ぶ行と同じ（9 人 × Y1 の6状態 × Y2 の2状態。T20）', t))
@@ -450,6 +460,7 @@ select throws_ok($q$ select private.lending_confirmed_year_ids() $q$, '42501', n
 select tests.logout();
 
 -- ---------------------------------------------------------------- ③ audit_logs：年度をまたぐ表の行と、開いていない年度
+-- （T22：年度をまたぐ表は rooms・items・distance_overrides と、備品〔数えるだけ〕の名前の一覧 count_items。null3 はこの4表の行）
 create function tests.audit_counts(p_persona text) returns text language plpgsql as $$
 declare v text;
 begin
@@ -457,8 +468,8 @@ begin
   select format('Y1=%s Y2=%s null3=%s null_other=%s',
                 (count(*) filter (where year_id = tests.id('Y1')) > 0)::text,
                 (count(*) filter (where year_id = tests.id('Y2')) > 0)::text,
-                (count(*) filter (where year_id is null and table_name in ('rooms', 'items', 'distance_overrides')) > 0)::text,
-                (count(*) filter (where year_id is null and table_name not in ('rooms', 'items', 'distance_overrides')) > 0)::text)
+                (count(*) filter (where year_id is null and table_name in ('rooms', 'items', 'distance_overrides', 'count_items')) > 0)::text,
+                (count(*) filter (where year_id is null and table_name not in ('rooms', 'items', 'distance_overrides', 'count_items')) > 0)::text)
   into v from public.audit_logs;
   perform tests.logout();
   return v;

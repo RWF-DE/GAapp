@@ -282,3 +282,16 @@ insert into public.lending_records (group_id, lending_item_id, year_id, lent_cou
   (tests.id('G1'), tests.id('LI_WEIGHT'), tests.id('Y1'), 8, 8, 1, 'T-メモ', tests.id('staff')),
   (tests.id('G3'), tests.id('LI_Y2_TENT'), tests.id('Y2'), 1, 0, 0, null, tests.id('admin2'));
 insert into public.lending_years (year_id, confirmed_at, confirmed_by) values (tests.id('Y2'), now(), tests.id('admin2'));
+
+-- 備品（数えるだけ。T22。D-60）：名前の一覧は年度をまたぐ（0021 が最初から出す4つ〔ゴミ箱・延長コード・扇風機・オレンジ椅子〕を入れる）。
+-- fixture は「その他」の物を2つ足す（CI_WHITE は数のある物、CI_SPARE はどこからも参照しない。011 の権限表の削除で消す）。名前は「T-」で
+-- 始める。数は Y1 の R1（ゴミ箱 5・T-白椅子 2）と Y2 の R1（ゴミ箱 3。Y2 の総務 admin2 が読む。前年の数の確かめにも使う）。
+-- 名前は tests.ids の CI_TRASH（0021 のゴミ箱）・CI_WHITE・CI_SPARE
+insert into tests.ids select 'CI_TRASH', id from public.count_items where name = 'ゴミ箱';
+with ci as (
+  insert into public.count_items (name, sort_order) values ('T-白椅子', 10), ('T-予備', 11) returning id, name)
+insert into tests.ids select case name when 'T-白椅子' then 'CI_WHITE' else 'CI_SPARE' end, id from ci;
+insert into public.count_stocks (year_id, room_id, count_item_id, count) values
+  (tests.id('Y1'), tests.id('R1'), tests.id('CI_TRASH'), 5),
+  (tests.id('Y1'), tests.id('R1'), tests.id('CI_WHITE'), 2),
+  (tests.id('Y2'), tests.id('R1'), tests.id('CI_TRASH'), 3);
