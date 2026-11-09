@@ -273,7 +273,7 @@ export interface MessageContext {
    */
   storage?: 'upload' | 'sign';
   /**
-   * 直接の書き込みの表（T21：lending_items・lending_requests・lending_records。23503・23505 の文言を分ける）。テント等の画面では
+   * 直接の書き込みの表（T21：lending_items・lending_requests・lending_records。T22：count_items・count_stocks。23503・23505 の文言を分ける）。テント等の画面では
    * names.item でテント等の備品の名前を引く（save_lending_assignments・set_lending_confirmed の details の lending_item_id）
    */
   table?: string;
@@ -339,6 +339,10 @@ export const COUNT_ITEM_DUPLICATE_MESSAGE = '同じ名前の物があります';
 export const COUNT_ITEM_IN_USE_MESSAGE = '数が入力された物は削除できません';
 /** add_count_item の invalid_input（field: name）と、名前の 23514 */
 export const COUNT_ITEM_NAME_MESSAGE = '名前は、前後の空白を除いて 1〜50 字にしてください';
+/** add_count_item の invalid_input（field: name、reason: too_many。名前の一覧がもう 500 行ある） */
+export const COUNT_ITEM_TOO_MANY_MESSAGE = '備品（数えるだけ）の名前は 500 までです。使っていない名前を管理者に消してもらってください';
+/** 在庫入力の数の保存（count_stocks の upsert）の 23503：出していた物がマスタ設定から削除された（画面は名前の一覧を読み直して外す） */
+export const COUNT_ITEM_GONE_MESSAGE = '備品（数えるだけ）の物がほかの人に削除されました。一覧を読み直したので、もう一度「保存」を押してください';
 
 /** details の備品の id（lending_item_ids）を名前にして「・」でつなぐ（名前のない id は出さない） */
 function lendingItemNames(ids: unknown, ctx: MessageContext): string {
@@ -614,6 +618,7 @@ const NOTICE_GROUP_MESSAGES: Readonly<Record<string, string>> = {
 function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '入力の形が違います';
   // 備品（数えるだけ。T22）：名前の誤り（add_count_item の field: name・送る前の確かめ・表の CHECK）
+  if (ctx.rpc === 'add_count_item' && isRecord(e.details) && e.details.reason === 'too_many') return COUNT_ITEM_TOO_MANY_MESSAGE;
   if (ctx.rpc === 'add_count_item' || ctx.table === 'count_items') {
     if (e.code === '23514' || (isRecord(e.details) && e.details.field === 'name')) return COUNT_ITEM_NAME_MESSAGE;
   }
@@ -732,6 +737,7 @@ export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string
       // テント等（T21）：備品の削除は使われている、申請・記録の書き込みは団体か備品が年度にない（消えた）
       if (ctx.table === 'lending_items') return LENDING_ITEM_IN_USE_MESSAGE;
       if (ctx.table === 'count_items') return COUNT_ITEM_IN_USE_MESSAGE;
+      if (ctx.table === 'count_stocks') return COUNT_ITEM_GONE_MESSAGE;
       if (ctx.table === 'lending_requests' || ctx.table === 'lending_records') return LENDING_NOT_IN_YEAR_MESSAGE;
       return 'ほかのデータから使われているので削除できません';
     case 'deadlock':

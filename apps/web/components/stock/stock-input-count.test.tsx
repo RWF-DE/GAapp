@@ -130,6 +130,8 @@ interface Db {
   countUpsert?: (n: number) => FakeResult | undefined;
   /** add_count_item の結果（既定は新しい id） */
   addResult?: FakeResult;
+  /** 名前の一覧（場所・品目の読み込みの count_items。既定は COUNT_ITEMS） */
+  countItems?: CountItemRow[];
 }
 
 const NETWORK: FakeResult = { error: { code: '', message: 'TypeError: Failed to fetch' }, status: 0 };
@@ -163,6 +165,7 @@ function serve(db: Db) {
     if (call.table === 'rpc:previous_year_stocks') return { data: [] };
     if (call.table === 'rpc:previous_year_count_stocks') return { data: db.prevCounts ?? [] };
     if (call.table === 'rpc:add_count_item') return db.addResult ?? { data: NEW_ID };
+    if (call.table === 'count_items') return { data: db.countItems ?? COUNT_ITEMS };
     if (call.table === 'profiles') return { data: [{ user_id: USER, display_name: 'テスト部員' }, { user_id: OTHER, display_name: 'テスト管理者' }] };
     return { data: [] };
   };
@@ -482,5 +485,86 @@ describe('StockInput の備品（数えるだけ）：保存の失敗・ほか�
     await screen.findByTestId('stock-saved');
     expect(sentCounts(0).find((x) => x.count_item_id === WHITE.id)?.count).toBe(1);
     expect(localStorage.getItem(KEY())).toBeNull();
+  });
+});
+
+describe('StockInput の備品（数えるだけ）：レビューで直したこと', () => {
+  const FK: FakeResult = { error: { code: '23503', message: 'insert or update on table "count_stocks" violates foreign key constraint' }, status: 409 };
+  const UNAUTH: FakeResult = { error: { code: 'PGRST301', message: 'JWT expired' }, status: 401 };
+
+  it('数の upsert が 23503（出していた物が削除された）なら、名前の一覧を読み直して消えた物の行を外し、専用の文言を出す。次の「保存」は通る', async () => {
+    serve({ stocks: [stock(10)], counts: [], countItems: [TRASH, CORD, FAN, ORANGE, WHITE], countUpsert: (n) => (n === 1 ? FK : undefined) });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect(countInput('ゴミ箱').value).toBe('0'));
+    await user.click(screen.getByTestId('count-item-add'));
+    await user.click(within(await screen.findByTestId('add-count-item-dialog')).getByRole('button', { name: '掃除機' }));
+    await user.click(screen.getByRole('button', { name: '掃除機の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    expect(
+      (await screen.findByText('備品（数えるだけ）の物がほかの人に削除されました。一覧を読み直したので、もう一度「保存」を押してください')).textContent,
+    ).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: '掃除機の数' })).toBeNull());
+    expect(stockUpserts()).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-saved');
+    expect(countUpserts()).toHaveLength(2);
+    expect(sentCounts(1).map((r) => r.count_item_id)).not.toContain(VACUUM.id);
+  });
+
+  it('在庫の応答が届かなかった後の「保存」で、数の行が前からあって入力と同じ数でも、在庫は送り直さず数を送って数え直しを残す', async () => {
+    // 出ている数の行（最初から出す4つ）が全部前からある（前日にほかの人が保存した）
+    serve({
+      stocks: [stock(10)],
+      counts: [cs(TRASH, 3, 'cu-y1', OTHER), cs(CORD, 0, 'cu-y2', OTHER), cs(FAN, 1, 'cu-y3', OTHER), cs(ORANGE, 0, 'cu-y4', OTHER)],
+    });
+    const base = fake.handler!;
+    let landed = false;
+    fake.handler = (call) => {
+      if (call.table === 'stocks' && opArgs(call, 'upsert').length > 0) {
+        landed = true;
+        return NETWORK;
+      }
+      if (call.table === 'stocks' && landed) return { data: [{ ...stock(11, 'saved-desk'), counted_at: '2026-10-29T09:30:00+00:00' }] };
+      return base(call);
+    };
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect(countInput('ゴミ箱').value).toBe('3'));
+    await user.click(screen.getByRole('button', { name: '机(木)の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-unknown-outcome');
+    expect(countUpserts()).toHaveLength(0);
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(screen.getByTestId('stock-saved').textContent).toContain('保存されていました'));
+    expect(stockUpserts()).toHaveLength(1);
+    expect(countUpserts()).toHaveLength(1);
+    expect(sentCounts(0).find((r) => r.count_item_id === TRASH.id)?.count).toBe(3);
+  });
+
+  it('数の upsert が 401 でセッションを更新できたら、在庫は送り直さず数だけを送り直す', async () => {
+    serve({ stocks: [stock(10)], counts: [], countUpsert: (n) => (n === 1 ? UNAUTH : undefined) });
+    auth.reauthenticate.mockResolvedValueOnce(true);
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect(countInput('ゴミ箱').value).toBe('0'));
+    await user.click(screen.getByRole('button', { name: 'ゴミ箱の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-saved');
+    expect(stockUpserts()).toHaveLength(1);
+    expect(countUpserts()).toHaveLength(2);
+    expect(sentCounts(1)[0]).toEqual({ year_id: Y, room_id: ROOM.id, count_item_id: TRASH.id, count: 1 });
+  });
+
+  it('数の upsert の応答が届かなければ、「数はまだ保存していません」とは言わない（在庫を保存したことだけを知らせる）', async () => {
+    serve({ stocks: [stock(10)], counts: [], countUpsert: (n) => (n === 1 ? NETWORK : undefined) });
+    const user = userEvent.setup();
+    renderInput({ role: 'staff', status: 'requesting' });
+    await waitFor(() => expect(countInput('ゴミ箱').value).toBe('0'));
+    await user.click(screen.getByRole('button', { name: 'ゴミ箱の数を1増やす' }));
+    await user.click(screen.getByRole('button', { name: '保存' }));
+    await screen.findByTestId('stock-unknown-outcome');
+    expect(toasts.info).not.toHaveBeenCalledWith('在庫の数は保存しました。備品（数えるだけ）の数はまだ保存していません');
+    expect(toasts.info).toHaveBeenCalledWith('在庫の数は保存しました');
   });
 });

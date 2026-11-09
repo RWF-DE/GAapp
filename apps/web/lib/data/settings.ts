@@ -320,9 +320,15 @@ export async function fetchItems(client: AppSupabaseClient = getSupabase()): Pro
 
 /** 備品（数えるだけ）の名前の一覧（並び → 名前 → id） */
 export async function fetchCountItems(client: AppSupabaseClient = getSupabase()): Promise<CountItemRow[]> {
-  const res = await client.from('count_items').select(COLUMNS.count_items).order('sort_order').order('id');
-  if (res.error) throw toAppError(res.error, res.status);
-  return ((res.data ?? []) as unknown as CountItemRow[]).sort(bySortOrder);
+  // 在庫入力から部員も名前を足せる（上限は 500。add_count_item）ので、max_rows（1000）で切れないよう range で分けて全部読む
+  const rows = await fetchAll<CountItemRow>((from, to) =>
+    client.from('count_items').select(COLUMNS.count_items).order('id').range(from, to) as unknown as PromiseLike<{
+      data: CountItemRow[] | null;
+      error: unknown;
+      status?: number;
+    }>,
+  );
+  return rows.sort(bySortOrder);
 }
 
 export async function fetchGroups(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<GroupRow[]> {

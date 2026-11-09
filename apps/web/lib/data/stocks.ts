@@ -755,6 +755,17 @@ export function stocksAlreadySaved(
   return decideStockSave(items, input, base, splitRoomRows(latest).stocks, userId).kind === 'saved';
 }
 
+/**
+ * 数の行（`c:` のキー）がどれも入力の元（base）から変わっていないか（行が増えた・消えたも変わったとする。品目の行は見ない。
+ * 数の行が1つもなければ偽）。在庫だけが自分の保存で数の行が変わっていなければ、数はまだ送っていない（前からある数の行が入力と
+ * 同じ数でも、数を送って数え直しの記録を残す。2026-11-09 のレビュー）
+ */
+export function countLinesUnchanged(lines: readonly Pick<StockLine, 'id'>[], base: StockBaseStamps, latest: readonly StockDbRow[]): boolean {
+  const countLines = lines.filter((l) => countItemIdOf(l.id) !== null);
+  if (countLines.length === 0) return false;
+  return changesFrom(countLines, base, latest, '').every((c) => !c.changed);
+}
+
 /** 保存の前の読み直し：部屋の在庫と数の行（mergeRoomRows の形） */
 export async function fetchRoomLines(yearId: string, roomId: string, client: AppSupabaseClient = getSupabase()): Promise<StockDbRow[]> {
   const [stocks, counts] = await Promise.all([fetchRoomStocks(yearId, roomId, client), fetchRoomCountStocks(yearId, roomId, client)]);

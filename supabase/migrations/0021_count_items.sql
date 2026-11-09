@@ -145,7 +145,8 @@ create policy audit_logs_select on public.audit_logs for select to authenticated
 -- add_count_item：備品（数えるだけ）の名前を足し、その id を返す。同じ名前（NFKC・小文字で同じ）があれば足さずにその id を返す。
 -- 呼べるのは在庫を書ける人（can_write_stocks。部門長以上は終了でない年度、部員は準備中・受付中）。書けなければ forbidden（年度が
 -- ない・p_year_id が null・終了の年度も）。名前が null・空・前後に空白（上の 25 文字）・51 字以上なら invalid_input（field: name）。
--- 新しい物は並びを今の最大＋1 にする（always_shown は false）。同時に同じ名前を足しても、一意の索引と on conflict do nothing で
+-- 新しい物は並びを今の最大＋1 にする（always_shown は false）。新しく足すときだけ、名前の一覧がもう 500 行あれば invalid_input
+-- （field: name、reason: too_many。2026-11-09 のセキュリティのレビュー）。同時に同じ名前を足しても、一意の索引と on conflict do nothing で
 -- 1行になり、どちらも同じ id を返す（待った側は先の行が確定してから読み直す）。名前の一覧は年度をまたぐので、年度は権限の判定にだけ使う。
 -- 表を RLS を通さずに書く（insert のポリシーは管理者だけ）ので SECURITY DEFINER
 create function public.add_count_item(p_year_id uuid, p_name text)
@@ -163,6 +164,10 @@ begin
   select ci.id into v_id from public.count_items ci where lower(normalize(ci.name, NFKC)) = lower(normalize(p_name, NFKC));
   if v_id is not null then
     return v_id;
+  end if;
+  -- 名前の一覧の上限（部員も呼べるので、いくらでも増えないようにする。同じ名前なら上で返している）
+  if (select count(*) from public.count_items) >= 500 then
+    perform private.fail('invalid_input', jsonb_build_object('field', 'name', 'reason', 'too_many'));
   end if;
   insert into public.count_items (name, sort_order)
   values (p_name, coalesce((select max(ci.sort_order) from public.count_items ci), 0) + 1)

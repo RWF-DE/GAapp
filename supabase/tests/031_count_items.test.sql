@@ -44,7 +44,7 @@ begin
   return v;
 end $$;
 
-select plan(91);
+select plan(94);
 
 -- ---------------------------------------------------------------- ① 表の形
 select col_type_is('count_items', 'name', 'text');
@@ -225,6 +225,16 @@ select is(tests.rpc_error('staff', $q$ select public.add_count_item(:Y1, repeat(
   '{"code": "invalid_input", "detail": {"field": "name"}}', '名前が 51 字');
 select is(tests.rpc_error('staff', $q$ select public.add_count_item(:Y1, repeat('い', 50)) $q$),
   '{"code": "ok"}', '50 字の名前は足せる');
+-- 名前の一覧の上限（500 行。部員も呼べるので、いくらでも増えないようにする）：新しい名前は足さずに invalid_input（reason: too_many）、
+-- 同じ名前ならその id を返す。埋めた行は後の段の表のために消す
+insert into public.count_items (name, sort_order)
+select 'T-上限-' || g, 1000 + g from generate_series(1, 500 - (select count(*)::int from public.count_items)) g;
+select is(tests.rpc_error('staff', $q$ select public.add_count_item(:Y1, 'T-上限を超える') $q$),
+  '{"code": "invalid_input", "detail": {"field": "name", "reason": "too_many"}}', '名前が 500 行あれば新しい名前は足さない');
+select is(tests.add_as('staff', 'Y1', 'ゴミ箱'), tests.id('CI_TRASH'), '500 行でも同じ名前ならその id を返す');
+delete from public.count_items where name like 'T-上限-%';
+select is(tests.rpc_error('staff', $q$ select public.add_count_item(:Y1, 'T-上限を超える') $q$),
+  '{"code": "ok"}', '500 行より少なければ新しい名前を足せる');
 select is(tests.rpc_error('viewer', $q$ select public.add_count_item(:Y1, '') $q$),
   '{"code": "forbidden", "detail": null}', '書けない人には名前を確かめる前に forbidden');
 select is(tests.rpc_error('admin', $q$ select public.add_count_item(null, 'T-机') $q$),

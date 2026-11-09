@@ -1,15 +1,26 @@
 // 備品（数えるだけ。T22・D-60）の純粋な関数と読み書き（lib/data/stocks.ts の備品〔数えるだけ〕の節）。
 import { describe, expect, it } from 'vitest';
 import type { CountItemRow, CountStockDbRow, RoomRow, StockDbRow } from '@/lib/db/types';
-import { COUNT_ITEM_DUPLICATE_MESSAGE, COUNT_ITEM_IN_USE_MESSAGE, COUNT_ITEM_NAME_MESSAGE, classifyError, messageFor, toAppError } from '@/lib/errors';
+import {
+  COUNT_ITEM_DUPLICATE_MESSAGE,
+  COUNT_ITEM_GONE_MESSAGE,
+  COUNT_ITEM_IN_USE_MESSAGE,
+  COUNT_ITEM_NAME_MESSAGE,
+  COUNT_ITEM_TOO_MANY_MESSAGE,
+  classifyError,
+  messageFor,
+  toAppError,
+} from '@/lib/errors';
 import { RPC_ARGS } from '@/lib/rpc/payloads';
 import { stockCountsSchema, stockDraftSchema } from '@/lib/schemas/stock';
 import { countItemFormSchema } from '@/lib/schemas/settings';
+import { fetchCountItems } from './settings';
 import { createFakeSupabase, opArgs } from '@/lib/testing/fake-supabase';
 import {
   addableCountItems,
   addCountItem,
   buildCountMatrix,
+  countLinesUnchanged,
   CountSaveError,
   fetchPreviousYearCountStocks,
   fetchRoomLines,
@@ -219,5 +230,48 @@ describe('マスタ設定の入力と文言', () => {
     expect(messageFor(classifyError(invalid), { rpc: 'add_count_item' })).toBe(COUNT_ITEM_NAME_MESSAGE);
     // ほかの表の 23503 は今の文言のまま
     expect(messageFor(classifyError(toAppError({ code: '23503', message: 'fk' }, 409)))).toBe('ほかのデータから使われているので削除できません');
+  });
+});
+
+describe('備品（数えるだけ）：レビューで直したこと', () => {
+  it('add_count_item の invalid_input（reason: too_many）は上限の文言、count_stocks の 23503 は物が削除された文言', () => {
+    const tooMany = toAppError({ code: 'P0001', message: 'invalid_input', details: '{"field":"name","reason":"too_many"}', hint: null }, 400);
+    expect(messageFor(classifyError(tooMany), { rpc: 'add_count_item' })).toBe(COUNT_ITEM_TOO_MANY_MESSAGE);
+    expect(messageFor(classifyError(toAppError({ code: '23503', message: 'fk' }, 409)), { table: 'count_stocks' })).toBe(COUNT_ITEM_GONE_MESSAGE);
+  });
+
+  it('fetchCountItems は range で分けて全部読む（max_rows で切れない）', async () => {
+    const rows: CountItemRow[] = Array.from({ length: 1001 }, (_, i) => ({
+      id: id(10000 + i),
+      name: `T-${i}`,
+      always_shown: false,
+      sort_order: i,
+      updated_at: 't',
+    }));
+    const { client, issued } = createFakeSupabase((call) => {
+      const [from, to] = opArgs(call, 'range')[0] as [number, number];
+      return { data: rows.slice(from, to + 1) };
+    });
+    const got = await fetchCountItems(client as never);
+    expect(got).toHaveLength(1001);
+    expect(issued.filter((c) => c.table === 'count_items')).toHaveLength(2);
+  });
+
+  it('countLinesUnchanged：数の行（c: のキー）がどれも入力の元から変わっていなければ真（品目の行は見ない。数の行がなければ偽）', () => {
+    const lines = [{ id: 'desk' }, { id: 'c:a' }, { id: 'c:b' }];
+    const row = (itemId: string, updatedAt: string): StockDbRow => ({
+      year_id: Y,
+      room_id: R1,
+      item_id: itemId,
+      count: 1,
+      counted_at: null,
+      counted_by: null,
+      updated_at: updatedAt,
+    });
+    const base = { desk: 'd0', 'c:a': 'a0' };
+    expect(countLinesUnchanged(lines, base, [row('desk', 'd1'), row('c:a', 'a0')])).toBe(true);
+    expect(countLinesUnchanged(lines, base, [row('desk', 'd1'), row('c:a', 'a1')])).toBe(false);
+    expect(countLinesUnchanged(lines, base, [row('desk', 'd1'), row('c:a', 'a0'), row('c:b', 'b0')])).toBe(false);
+    expect(countLinesUnchanged([{ id: 'desk' }], base, [row('desk', 'd1')])).toBe(false);
   });
 });

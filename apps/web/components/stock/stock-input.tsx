@@ -69,6 +69,7 @@ import type { CountItemRow, ItemRow, StockDbRow, YearRow } from '@/lib/db/types'
 import {
   addCountItem,
   CountSaveError,
+  countLinesUnchanged,
   countedByRoom,
   countsFromRows,
   decideStockSave,
@@ -270,6 +271,8 @@ export function StockInput({
   const [phase, setPhase] = useState<Phase>('idle');
   /** 応答が届いた失敗・入力の誤り（ErrorBanner で出す） */
   const [error, setError] = useState<unknown>(null);
+  /** error の文言の文脈の表（数の保存の失敗なら count_stocks。23503 の文言を分ける） */
+  const [errorTable, setErrorTable] = useState<string | undefined>(undefined);
   const [blocked, setBlocked] = useState<Shortfall[] | null>(null);
   const [conflict, setConflict] = useState<Conflict | null>(null);
   const [remote, setRemote] = useState<OtherSave | null>(null);
@@ -488,7 +491,7 @@ export function StockInput({
    * 保存の流れの失敗。応答が届かない・読み直しが通信できないときは unknownOutcome（設計 2.6 の (A) の 1・4）。応答が届いた失敗は
    * ErrorBanner に出すが、keepUnknown（「保存できたか分かりません」を出したまま確かめ始めた）なら知らせを残して toast で出す（R2）
    */
-  const handleError = async (e: unknown, keepUnknown: boolean) => {
+  const handleError = async (e: unknown, keepUnknown: boolean, table?: string) => {
     const c = classifyError(e);
     if (c.kind === 'auth') {
       // 'retry' でも自動では送り直さない（もう一度「保存」を押してもらう）。'signedOut' なら /login へ移る（下書きは残る）
@@ -496,8 +499,11 @@ export function StockInput({
       return;
     }
     if (isUnknownOutcome(e)) setUnknownOutcome(true);
-    else if (keepUnknown) toast.error(messageFor(c, { names }));
-    else setError(e);
+    else if (keepUnknown) toast.error(messageFor(c, { names, table }));
+    else {
+      setErrorTable(table);
+      setError(e);
+    }
     const eff = effectOf(c);
     if (eff.reload === 'year') {
       void queryClient.invalidateQueries({ queryKey: queryKeys.yearRow(yearId) });
@@ -540,6 +546,22 @@ export function StockInput({
     setSavedAt(kind === 'recovered' ? (latestCounted(rows)?.countedAt ?? new Date().toISOString()) : new Date().toISOString());
     toast.success(kind === 'recovered' ? '保存されていました' : '保存しました');
     invalidateStocks();
+  };
+
+  /**
+   * 数の保存が 23503（出していた物がマスタ設定から削除された）のとき：名前の一覧（場所・品目の読み込み）を読み直し、消えた物を
+   * 足したばかりの物（extraItems）と足した物（added）から外す（最初から出す物は読み直した一覧で消える）。次の「保存」は残った行だけを送る
+   */
+  const dropDeletedCountItems = async () => {
+    try {
+      const master = await queryClient.fetchQuery({ ...stockMasterOptions(yearId), staleTime: 0 });
+      const ids = new Set(master.countItems.map((c) => c.id));
+      setExtraItems((xs) => xs.filter((x) => ids.has(x.id)));
+      setAdded((a) => a.filter((x) => ids.has(x)));
+    } catch {
+      // 読み直せなければ、次に読み直したときに外れる（失敗の文言は数の保存の失敗として出す）
+      void queryClient.invalidateQueries({ queryKey: stockMasterOptions(yearId).queryKey });
+    }
   };
 
   /** values を送る。latest は送る前に読み直した部屋の行（入力の元にする。設計 2.6 の (A) の 4） */
@@ -588,22 +610,26 @@ export function StockInput({
       }
       let e = thrown;
       let next = latest;
+      const countFailed = thrown instanceof CountSaveError;
       if (thrown instanceof CountSaveError) {
         // 在庫の保存は決まった：入力の元を保存した在庫の行と、送る前に読み直した数の行にする。数は保存していない入力として残し
         // （印も残す。R1）、下書きもその元で書き直す。失敗は数の保存の失敗として出す
         next = mergeRoomRows(thrown.stocks, splitRoomRows(latest).counts);
         rebase(next);
         writeDraft(values, stampsOf(next));
-        toast.info('在庫の数は保存しました。備品（数えるだけ）の数はまだ保存していません');
+        // 数の応答が届かなかったときは、数は入っているかもしれないので「まだ保存していません」とは言わない（「保存できたか分かりません」を出す）
+        toast.info(isUnknownOutcome(thrown.cause) ? '在庫の数は保存しました' : '在庫の数は保存しました。備品（数えるだけ）の数はまだ保存していません');
         invalidateStocks();
         e = thrown.cause;
+        if (classifyError(e).kind === 'blocked') await dropDeletedCountItems();
       }
-      // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks・count_stocks の upsert は同じ値で何度送っても同じ。2.6）
+      // 401：セッションを更新できたら同じ要求を1回だけ送り直す（stocks・count_stocks の upsert は同じ値で何度送っても同じ。2.6）。
+      // 在庫がもう保存できていれば（数だけ失敗）、在庫は送り直さず数だけを送る
       if (classifyError(e).kind === 'auth' && !retried) {
-        if ((await onAuthError(e)) === 'retry') return write(values, next, true, stocksSaved);
+        if ((await onAuthError(e)) === 'retry') return write(values, next, true, stocksSaved || countFailed);
         return;
       }
-      await handleError(e, false);
+      await handleError(e, false, countFailed ? 'count_stocks' : undefined);
     } finally {
       if (sendsInFlight.get(storageKey) === inFlight) sendsInFlight.delete(storageKey);
       setPhase('idle');
@@ -628,6 +654,7 @@ export function StockInput({
     setBlocked(null);
     const parsed = stockCountsSchema.safeParse(counts);
     if (!parsed.success) {
+      setErrorTable(undefined);
       setError(appError('input', 'client_validation', { field: 'count' }));
       return;
     }
@@ -664,7 +691,13 @@ export function StockInput({
       // 毎回、送る前に部屋の行を読み直して決める（設計 2.6 の (A) の 2〜4）
       const rows = await fresh(() => fetchRoomLines(yearId, roomId));
       if (gone()) return;
-      const decision = decideStockSave(linesFor([rows]).lines, parsed.data, stamps, rows, open.userId);
+      const rowLines = linesFor([rows]).lines;
+      const decided = decideStockSave(rowLines, parsed.data, stamps, rows, open.userId);
+      // 在庫は自分の保存が入っていて、数だけがまだ（在庫の応答が届かず数を送っていなかった）なら、数だけを送る
+      const stocksDone = decided.kind !== 'conflict' && stocksAlreadySaved(items, parsed.data, stamps, rows, open.userId);
+      // 全体では「保存されていた」でも、変わったのが在庫だけで数の行が入力の元から1つも変わっていなければ、数はまだ送っていない
+      // （前からある数の行が入力と同じ数なだけ）。数を送って数え直しの記録を残す
+      const decision = decided.kind === 'saved' && stocksDone && countLinesUnchanged(rowLines, stamps, rows) ? ({ kind: 'send' } as const) : decided;
       if (decision.kind === 'saved') {
         finishSaved(rows, 'recovered');
       } else if (decision.kind === 'conflict') {
@@ -677,8 +710,7 @@ export function StockInput({
         setRoomCache(rows);
       } else {
         latest = rows;
-        // 在庫は自分の保存が入っていて、数だけがまだ（在庫の応答が届かず数を送っていなかった）なら、数だけを送る
-        stocksSaved = stocksAlreadySaved(items, parsed.data, stamps, rows, open.userId);
+        stocksSaved = stocksDone;
       }
     } catch (e) {
       // 読み直しが通信できなければ送らずに unknownOutcomeMessage を出す（(A) の 4）。コードつきの失敗は、知らせを出していれば
@@ -884,7 +916,7 @@ export function StockInput({
         {error ? (
           <ErrorBanner
             error={error}
-            context={{ names }}
+            context={{ names, table: errorTable }}
             onReload={() => {
               setError(null);
               void stocksQ.refetch();
