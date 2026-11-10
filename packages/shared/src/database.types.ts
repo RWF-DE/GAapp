@@ -1241,6 +1241,113 @@ export type Database = {
           },
         ];
       };
+      room_photo_uploads: {
+        Row: {
+          content_type: string;
+          created_at: string;
+          created_by: string | null;
+          expires_at: string;
+          id: string;
+          object_path: string;
+          room_id: string;
+          updated_at: string;
+          used_at: string | null;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          content_type: string;
+          created_at?: string;
+          created_by?: string | null;
+          expires_at: string;
+          id: string;
+          object_path: string;
+          room_id: string;
+          updated_at?: string;
+          used_at?: string | null;
+          year_id: string;
+        };
+        Update: {
+          content_type?: string;
+          created_at?: string;
+          created_by?: string | null;
+          expires_at?: string;
+          id?: string;
+          object_path?: string;
+          room_id?: string;
+          updated_at?: string;
+          used_at?: string | null;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "room_photo_uploads_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "room_photo_uploads_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      room_photos: {
+        Row: {
+          created_at: string;
+          created_by: string | null;
+          id: string;
+          memo: string;
+          object_path: string;
+          room_id: string;
+          sort_order: number;
+          updated_at: string;
+          year_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          created_by?: string | null;
+          id: string;
+          memo?: string;
+          object_path: string;
+          room_id: string;
+          sort_order: number;
+          updated_at?: string;
+          year_id: string;
+        };
+        Update: {
+          created_at?: string;
+          created_by?: string | null;
+          id?: string;
+          memo?: string;
+          object_path?: string;
+          room_id?: string;
+          sort_order?: number;
+          updated_at?: string;
+          year_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "room_photos_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "room_photos_year_id_fkey";
+            columns: ["year_id"];
+            isOneToOne: false;
+            referencedRelation: "years";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       room_years: {
         Row: {
           created_at: string;
@@ -1949,6 +2056,26 @@ export type Database = {
     Functions: {
       accept_my_invitations: { Args: Record<PropertyKey, never>; Returns: number };
       add_count_item: { Args: { p_name: string; p_year_id: string }; Returns: string };
+      add_room_photo: {
+        Args: { p_memo: string; p_photo_id: string };
+        Returns: {
+          created_at: string;
+          created_by: string | null;
+          id: string;
+          memo: string;
+          object_path: string;
+          room_id: string;
+          sort_order: number;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "room_photos";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       add_shift_slots: {
         Args: { p_needs?: Json; p_slots: Json; p_year_id: string };
         Returns: {
@@ -2074,6 +2201,7 @@ export type Database = {
         Args: { p_base_updated_at: string; p_notice_id: string };
         Returns: undefined;
       };
+      delete_room_photo: { Args: { p_photo_id: string }; Returns: string };
       delete_year_document_files: {
         Args: { p_reason?: string; p_year_id: string };
         Returns: number;
@@ -2205,6 +2333,27 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      reserve_room_photo: {
+        Args: { p_content_type: string; p_photo_id: string; p_room_id: string; p_year_id: string };
+        Returns: {
+          content_type: string;
+          created_at: string;
+          created_by: string | null;
+          expires_at: string;
+          id: string;
+          object_path: string;
+          room_id: string;
+          updated_at: string;
+          used_at: string | null;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "room_photo_uploads";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       return_document: {
         Args: {
           p_base_updated_at: string;
@@ -2234,6 +2383,26 @@ export type Database = {
         };
       };
       revoke_invitation: { Args: { p_invitation_id: string }; Returns: undefined };
+      room_photos_with_previous: {
+        Args: { p_room_id: string; p_year_id: string };
+        Returns: {
+          created_at: string;
+          created_by: string | null;
+          id: string;
+          memo: string;
+          object_path: string;
+          room_id: string;
+          sort_order: number;
+          updated_at: string;
+          year_id: string;
+        }[];
+        SetofOptions: {
+          from: "*";
+          to: "room_photos";
+          isOneToOne: false;
+          isSetofReturn: true;
+        };
+      };
       save_allocation_rows: {
         Args: { p_changes: Json; p_reason: string; p_year_id: string };
         Returns: Json;
@@ -2432,6 +2601,26 @@ export type Database = {
       update_requests_after_deadline: {
         Args: { p_group_id: string; p_reason: string; p_rows: Json; p_submission?: Json };
         Returns: undefined;
+      };
+      update_room_photo: {
+        Args: { p_memo: string; p_photo_id: string; p_sort_order: number };
+        Returns: {
+          created_at: string;
+          created_by: string | null;
+          id: string;
+          memo: string;
+          object_path: string;
+          room_id: string;
+          sort_order: number;
+          updated_at: string;
+          year_id: string;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "room_photos";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
       };
       update_year: {
         Args: { p_patch: Json; p_reason?: string; p_year_id: string };

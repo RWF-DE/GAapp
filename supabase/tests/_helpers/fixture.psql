@@ -303,3 +303,14 @@ insert into tests.ids values ('IU_STAFF', gen_random_uuid());
 insert into public.item_image_uploads (id, count_item_id, object_path, content_type, created_by, expires_at)
 values (tests.id('IU_STAFF'), tests.id('CI_WHITE'), 'count-items/' || tests.id('CI_WHITE') || '/' || tests.id('IU_STAFF') || '.webp',
         'image/webp', tests.id('staff'), now() - interval '1 day');
+
+-- 現状復帰の写真（T25。D-63）：写真を Y1・Y2 の R1 に1枚ずつ（RP_Y1・RP_Y2）と、写真の予約を1つ（RU_STAFF。staff の Y1・R1 の予約で、
+-- 期限が切れている）置く（011 の権限表・013 の D-47 で読む）。物（Storage）は置かない（027・013 の Storage の比べ方を変えない）。
+-- どちらも RPC だけで書く表なので postgres で直接入れる。Y1 の prev_year_id は入れない（前の年度の確かめは 034・013 で入れる）
+insert into tests.ids values ('RP_Y1', gen_random_uuid()), ('RP_Y2', gen_random_uuid()), ('RU_STAFF', gen_random_uuid());
+insert into public.room_photos (id, year_id, room_id, object_path, memo, sort_order, created_by) values
+  (tests.id('RP_Y1'), tests.id('Y1'), tests.id('R1'), tests.id('Y1') || '/' || tests.id('R1') || '/' || tests.id('RP_Y1') || '.webp', 'T-黒板の前', 0, tests.id('staff')),
+  (tests.id('RP_Y2'), tests.id('Y2'), tests.id('R1'), tests.id('Y2') || '/' || tests.id('R1') || '/' || tests.id('RP_Y2') || '.webp', '', 0, tests.id('admin2'));
+insert into public.room_photo_uploads (id, year_id, room_id, object_path, content_type, created_by, expires_at)
+values (tests.id('RU_STAFF'), tests.id('Y1'), tests.id('R1'), tests.id('Y1') || '/' || tests.id('R1') || '/' || tests.id('RU_STAFF') || '.webp',
+        'image/webp', tests.id('staff'), now() - interval '1 day');

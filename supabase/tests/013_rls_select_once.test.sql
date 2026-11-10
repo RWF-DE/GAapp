@@ -17,6 +17,8 @@
 -- ④にポリシーの形と実行計画を足した（集合の関数は足していない）。
 -- T21：テント等の貸し出しの5表（0018）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「テント等の貸し出しの権限」
 -- から書いた。Y1 の割り当ての確定後でも比べる）、②に集合の関数 lending_confirmed_year_ids、④に5表のポリシーの形と実行計画を足した。
+-- T25：現状復帰の写真の room_photos（0024）も同じ形で書いたので、①の比べる表に足し（行ごとの形の述語は 02 の「現状復帰の写真の権限」から
+-- 書いた。前の年度の枝のために Y1 の prev_year_id を Y2 にする）、⑤に bucket room-photos の3つのポリシーを足した。
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
@@ -67,6 +69,20 @@ from (values ('items/' || tests.id('desk') || '/' || tests.id('R13_ADMIN') || '.
              ('count-items/' || tests.id('CI_TRASH') || '/' || tests.id('O13_CI') || '.webp'),
              ('count-items/' || tests.id('CI_WHITE') || '/' || tests.id('U13_CI') || '.webp')) v(name);
 update public.count_items set image_path = 'count-items/' || tests.id('CI_WHITE') || '/' || tests.id('U13_CI') || '.webp' where id = tests.id('CI_WHITE');
+-- 現状復帰の写真（T25）：①の前の年度の枝のために、Y1 の前の年度を Y2 にする（Y2 は Y1 より前の年度。fixture の写真は Y1・Y2 の R1 に1枚ずつ）。
+-- ⑤の Storage の比べ方のために、bucket room-photos の予約（head の生きた予約〔Y1・R2。届いていない〕・admin の生きた予約〔Y1・R1。届いた〕。
+-- fixture の RU_STAFF は staff の期限の切れた予約）と、写真の行の物（RP_Y1・RP_Y2）・どの写真にも使われていない物（O13_RP。Y1・R2）を足す
+update public.years set prev_year_id = tests.id('Y2') where id = tests.id('Y1');
+insert into tests.ids values ('R13_RP_HEAD', gen_random_uuid()), ('R13_RP_ADMIN', gen_random_uuid()), ('O13_RP', gen_random_uuid());
+create function tests.photo_path(p_year text, p_room text, p_photo text) returns text language sql stable as $$
+  select tests.id(p_year) || '/' || tests.id(p_room) || '/' || tests.id(p_photo) || '.webp'
+$$;
+insert into public.room_photo_uploads (id, year_id, room_id, object_path, content_type, created_by, expires_at) values
+  (tests.id('R13_RP_HEAD'), tests.id('Y1'), tests.id('R2'), tests.photo_path('Y1', 'R2', 'R13_RP_HEAD'), 'image/webp', tests.id('head'), now() + interval '1 hour'),
+  (tests.id('R13_RP_ADMIN'), tests.id('Y1'), tests.id('R1'), tests.photo_path('Y1', 'R1', 'R13_RP_ADMIN'), 'image/webp', tests.id('admin'), now() + interval '1 hour');
+select tests.put_object('room-photos', v.name)
+from (values (tests.photo_path('Y1', 'R1', 'RP_Y1')), (tests.photo_path('Y2', 'R1', 'RP_Y2')),
+             (tests.photo_path('Y1', 'R1', 'R13_RP_ADMIN')), (tests.photo_path('Y1', 'R2', 'O13_RP'))) v(name);
 
 select plan(132);
 
@@ -134,6 +150,15 @@ insert into tests.old_pred values
 -- has_any_access の行の少ない表なので比べない。年度のない履歴の行は上の audit_logs の述語に count_items を足した）
 insert into tests.old_pred values
   ('count_stocks', $p$ private.has_any_role(year_id, '{admin,head,deputy_head,staff}') $p$);
+-- 現状復帰の写真（T25。02「現状復帰の写真の権限」）：その年度の総務か、その年度の区分「部門」の団体の代表が見る年度と、その年度の
+-- prev_year_id の年度（1つ前だけ）の写真（行ごとに判定関数を呼ぶ形。t は比べる表の行）
+create function tests.photo_see(p_year_id uuid) returns boolean language sql stable as $$
+  select private.has_any_role(p_year_id, '{admin,head,deputy_head,staff}')
+         or exists (select 1 from public.groups g where g.year_id = p_year_id and g.category = 'department' and private.is_group_member(g.id))
+$$;
+insert into tests.old_pred values
+  ('room_photos', $p$ tests.photo_see(year_id)
+                     or exists (select 1 from public.years z where z.prev_year_id = t.year_id and tests.photo_see(z.id)) $p$);
 
 -- 行の中身をまとめた指紋（件数と、行の文字列を並べた md5）
 create function tests.visible_old(p_tbl text, p_persona text) returns text language plpgsql as $$
@@ -369,6 +394,8 @@ select tests.logout();
 create function tests.path_label(p_path text) returns text language sql stable as $$
   select coalesce((select t.name from tests.ids t where t.id::text = split_part(split_part(p_path, '/', 4), '.', 1)),
                   (select t.name from tests.ids t where p_path ~ '^(items|count-items)/'
+                                                    and t.id::text = split_part(split_part(p_path, '/', 3), '.', 1)),
+                  (select t.name from tests.ids t where split_part(p_path, '/', 4) = '' and p_path ~ '^[0-9a-f-]{36}/[0-9a-f-]{36}/'
                                                     and t.id::text = split_part(split_part(p_path, '/', 3), '.', 1)),
                   replace(replace(p_path, tests.id('Y1')::text, 'Y1'), tests.id('G1')::text, 'G1'))
 $$;
@@ -644,8 +671,22 @@ create function tests.image_tier(p_folder text) returns boolean language sql sta
                                                        where yr.user_id = auth.uid() and private.can_write_stocks(yr.year_id))
                        else false end
 $$;
+-- 現状復帰の写真（T25）：bucket room-photos の行ごとの形の述語は 02 の「現状復帰の写真の権限」の Storage の表から書いた。select：1つ目のフォルダの
+-- 年度を見られる（その年度の総務か部門の代表）か、その年度を前の年度とする年度を見られる。insert：自分の、期限の切れていない、使っていない
+-- 予約の path で、今もその年度の総務で、年度が終了でない。delete：1つ目のフォルダの年度で総務で終了でなく、どの写真にも使われておらず、
+-- ほかの人の生きた予約の物でない
+create function tests.photo_write(p_folder text) returns boolean language sql stable as $$
+  select case when tests.is_uuid_text(p_folder)
+              then private.has_any_role(p_folder::uuid, '{admin,head,deputy_head,staff}') and private.year_status(p_folder::uuid) <> 'closed'
+              else false end
+$$;
 create function tests.storage_old_select(p_bucket text, p_name text) returns boolean language sql stable as $$
-  select (p_bucket = 'item-images' and private.has_any_access())
+  select (p_bucket = 'room-photos'
+          and case when tests.is_uuid_text(split_part(p_name, '/', 1))
+                   then tests.photo_see(split_part(p_name, '/', 1)::uuid)
+                        or exists (select 1 from public.years z where z.prev_year_id::text = split_part(p_name, '/', 1) and tests.photo_see(z.id))
+                   else false end)
+         or (p_bucket = 'item-images' and private.has_any_access())
          or p_bucket = 'documents'
          and (case when tests.is_uuid_text(split_part(p_name, '/', 1))
                    then private.has_any_role(split_part(p_name, '/', 1)::uuid, '{admin,head,deputy_head}') else false end
@@ -653,7 +694,11 @@ create function tests.storage_old_select(p_bucket text, p_name text) returns boo
                       then private.is_group_member(split_part(p_name, '/', 2)::uuid) else false end)
 $$;
 create function tests.storage_old_insert(p_bucket text, p_name text) returns boolean language sql stable as $$
-  select (p_bucket = 'item-images'
+  select (p_bucket = 'room-photos'
+          and exists (select 1 from public.room_photo_uploads r
+                      where r.object_path = p_name and r.created_by = auth.uid() and r.expires_at > now() and r.used_at is null
+                        and tests.photo_write(r.year_id::text)))
+         or (p_bucket = 'item-images'
           and exists (select 1 from public.item_image_uploads r
                       where r.object_path = p_name and r.created_by = auth.uid() and r.expires_at > now() and r.used_at is null
                         and tests.image_tier(case when r.item_id is not null then 'items' else 'count-items' end)))
@@ -675,6 +720,12 @@ create function tests.storage_old_delete(p_bucket text, p_name text) returns boo
                                    and not exists (select 1 from public.item_image_uploads r
                                                    where r.object_path = p_name and r.created_by <> auth.uid()
                                                      and r.expires_at > now() and r.used_at is null)
+           when 'room-photos' then tests.storage_old_select(p_bucket, p_name)
+                                   and tests.photo_write(split_part(p_name, '/', 1))
+                                   and not exists (select 1 from public.room_photos p where p.object_path = p_name)
+                                   and not exists (select 1 from public.room_photo_uploads r
+                                                   where r.object_path = p_name and r.created_by <> auth.uid()
+                                                     and r.expires_at > now() and r.used_at is null)
            else false end
 $$;
 -- 試す物と path（bucket と name）：bucket の全部の物と、予約の path の全部と、予約していない path
@@ -686,6 +737,10 @@ create function tests.storage_candidates() returns table (bucket text, name text
   select 'item-images', r.object_path from public.item_image_uploads r
   union
   select 'item-images', 'count-items/' || tests.id('CI_WHITE') || '/' || tests.id('outsider') || '.webp'
+  union
+  select 'room-photos', r.object_path from public.room_photo_uploads r
+  union
+  select 'room-photos', tests.photo_path('Y1', 'R1', 'outsider')
   union
   select 'documents', tests.id('Y1') || '/' || tests.id('G1') || '/' || tests.id('DOC_NOFILE') || '/' || tests.id('outsider') || '.pdf'
 $$;
@@ -786,11 +841,17 @@ select is((select new from tests.compared_storage where scenario = 'requesting /
 -- 使っている物（U13_CI）と、items のフォルダの管理者の生きた予約の物（R13_ADMIN）は消せない
 select is((select new from tests.compared_storage where scenario = 'requesting / Y2 preparing' and persona = 'head'),
   'select=documents:F13_REP documents:F_G1 documents:O13_G2 documents:O_G1 documents:Y1 item-images:O13_CI item-images:R13_ADMIN item-images:U13_CI '
-  || 'insert=documents:F13_HEAD item-images:R13_HEAD delete=documents:O13_G2 documents:O_G1 documents:Y1 item-images:O13_CI',
-  'head（受付中）：品目の画像は全部見え、自分の生きた予約に上げられ、count-items のフォルダの使われていない物だけを消せる（T23）');
+  || 'room-photos:O13_RP room-photos:R13_RP_ADMIN room-photos:RP_Y1 room-photos:RP_Y2 '
+  || 'insert=documents:F13_HEAD item-images:R13_HEAD room-photos:R13_RP_HEAD '
+  || 'delete=documents:O13_G2 documents:O_G1 documents:Y1 item-images:O13_CI room-photos:O13_RP',
+  'head（受付中）：品目の画像は全部見え、自分の生きた予約に上げられ、count-items のフォルダの使われていない物だけを消せる（T23）。'
+  || '現状復帰の写真（T25）は Y1 と前の年度 Y2 の物が見え、自分の生きた予約に上げられ、Y1 のどの写真にも使われていない物だけを消せる（写真の物・'
+  || '管理者の生きた予約の物は消せない）');
 select is((select new from tests.compared_storage where scenario = 'allocating / Y2 preparing' and persona = 'staff'),
-  'select=documents:F_Y2 item-images:O13_CI item-images:R13_ADMIN item-images:U13_CI insert=documents:F_Y2 delete=-',
-  'staff（振り分け中）：品目の画像は見えるが、在庫を書けないので消せない（T23）');
+  'select=documents:F_Y2 item-images:O13_CI item-images:R13_ADMIN item-images:U13_CI '
+  || 'room-photos:O13_RP room-photos:R13_RP_ADMIN room-photos:RP_Y1 room-photos:RP_Y2 insert=documents:F_Y2 delete=room-photos:O13_RP',
+  'staff（振り分け中）：品目の画像は見えるが、在庫を書けないので消せない（T23）。現状復帰の写真（T25）は振り分け中も総務が書けるので、'
+  || 'どの写真にも使われていない物を消せる');
 
 -- シフト・作業（T20）：5表の select のポリシーも集合を1回作る形で、総務の年度の集合（my_role_year_ids）だけを使う（閲覧のみ・店長・副店長の
 -- 枝はない。段の配列に viewer を足すと閲覧のみに見えてしまう）

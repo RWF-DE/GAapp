@@ -574,6 +574,26 @@ insert into tests.expect values
  ('item_image_uploads','select','*','NYNNNNN'),
  ('item_image_uploads','insert','*','NNNNNNN'), ('item_image_uploads','update','*','NNNNNNN'), ('item_image_uploads','delete','*','NNNNNNN');
 
+-- 現状復帰の写真（T25。02「現状復帰の写真の権限」から書いた）：2表とも RPC だけで書く（書き込みの権限なし）。写真を読むのは、その年度の
+-- 総務と、その年度の区分「部門」の団体の代表（viewer は G4〔部門〕の副店長を兼ねるので読む。rep は G1〔模擬店〕の店長なので読めない）と、
+-- 見られる年度の前の年度（fixture の Y1 は prev_year_id がないので、Y2 の写真は Y2 の総務 admin2 だけ）。予約は予約した人だけ（fixture の
+-- RU_STAFF は staff の期限の切れた予約）。年度の状態によらない
+insert into tests.cell_sql values
+ ('room_photos','select','select count(*) from public.room_photos where id = :RP_Y1'),
+ ('room_photos(Y2)','select','select count(*) from public.room_photos where id = :RP_Y2'),
+ ('room_photos','insert','insert into public.room_photos(id, year_id, room_id, object_path, sort_order) values (gen_random_uuid(), :Y1, :R1, ''x'', 0)'),
+ ('room_photos','update','update public.room_photos set memo = memo where id = :RP_Y1'),
+ ('room_photos','delete','delete from public.room_photos where id = :RP_Y1'),
+ ('room_photo_uploads','select','select count(*) from public.room_photo_uploads where id = :RU_STAFF'),
+ ('room_photo_uploads','insert','insert into public.room_photo_uploads(id, year_id, room_id, object_path, content_type, expires_at) values (gen_random_uuid(), :Y1, :R1, ''x'', ''image/webp'', now())'),
+ ('room_photo_uploads','update','update public.room_photo_uploads set expires_at = now() where id = :RU_STAFF'),
+ ('room_photo_uploads','delete','delete from public.room_photo_uploads where id = :RU_STAFF');
+insert into tests.expect values
+ ('room_photos','select','*','YYNYNNY'), ('room_photos(Y2)','select','*','NNNNNYN'),
+ ('room_photos','insert','*','NNNNNNN'), ('room_photos','update','*','NNNNNNN'), ('room_photos','delete','*','NNNNNNN'),
+ ('room_photo_uploads','select','*','NYNNNNN'),
+ ('room_photo_uploads','insert','*','NNNNNNN'), ('room_photo_uploads','update','*','NNNNNNN'), ('room_photo_uploads','delete','*','NNNNNNN');
+
 -- ペルソナと期待値の列。deputy は head の列で確かめる（総務副部門長の権限は総務部門長と同じ。D-48）
 create table tests.persona_col (persona text primary key, col int not null, ord int not null unique);
 insert into tests.persona_col values
@@ -603,8 +623,8 @@ select plan((select count(*)::int from tests.cells) + 6 + 31 + 14 + 22);   -- 14
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
 select is_empty($$ select e.tbl, e.op from tests.expect e left join tests.cell_sql c using (tbl, op) where c.tbl is null $$,
   '期待値の表に、試す SQL のない行がない');
-select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 41,
-  '38 表（T17 のお知らせの2表、T18 の予定と締切、T19 の提出物の3表、T20 のシフト・作業の5表、T21 のテント等の5表、T22 の備品〔数えるだけ〕の2表、T23 の品目の画像の予約を含む）と3つのビュー（v_remaining と提出物の2つ）をすべて試す');
+select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 43,
+  '40 表（T25 の現状復帰の写真と予約、T17 のお知らせの2表、T18 の予定と締切、T19 の提出物の3表、T20 のシフト・作業の5表、T21 のテント等の5表、T22 の備品〔数えるだけ〕の2表、T23 の品目の画像の予約を含む）と3つのビュー（v_remaining と提出物の2つ）をすべて試す');
 select is_empty($$ select tbl, op, scenario, yn from tests.expect where yn !~ '^[YN]{7}$' $$,
   '期待値はどの行も7列（admin staff rep viewer outsider admin2 head）');
 select is((select string_agg(persona || '=' || col, ' ' order by ord) from tests.persona_col),
