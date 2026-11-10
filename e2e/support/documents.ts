@@ -43,8 +43,8 @@ export interface DocumentInput {
   deadline: string;
   categories: readonly DocumentCategory[];
   foodOnly?: boolean;
-  /** 既定は true（ファイルが要る。DB の既定と同じ） */
-  requiresFile?: boolean;
+  /** 提出先の URL（T24。D-62。既定は null〔提出先なし〕）。requires_file は 0023 のトリガーでいつも false なので入れない */
+  submitUrl?: string | null;
   /** 書いた人の user_id（null は、アカウントが消えた・アプリの外で入れた提出物） */
   createdBy: string | null;
 }
@@ -63,9 +63,9 @@ export async function insertDocuments<const T extends readonly DocumentInput[]>(
     const out: string[] = [];
     for (const d of docs) {
       const r = await c.query<{ id: string }>(
-        `insert into public.documents (year_id, title, description, deadline, target_categories, food_only, requires_file, created_by, updated_by)
+        `insert into public.documents (year_id, title, description, deadline, target_categories, food_only, submit_url, created_by, updated_by)
          values ($1, $2, $3, $4::timestamptz, $5::public.group_category[], $6, $7, $8, $8) returning id`,
-        [yearId, d.title, d.description ?? null, d.deadline, d.categories, d.foodOnly ?? false, d.requiresFile ?? true, d.createdBy],
+        [yearId, d.title, d.description ?? null, d.deadline, d.categories, d.foodOnly ?? false, d.submitUrl ?? null, d.createdBy],
       );
       out.push(r.rows[0]!.id);
     }
@@ -367,7 +367,10 @@ export interface ReservedFile {
   object_path: string;
 }
 
-/** reserve_document_file（file_id はテストが作る。同じ file_id で送り直すと同じ行が返る） */
+/**
+ * reserve_document_file を API で呼ぶ（T24 から、呼べる人にはいつも invalid_state〔reason: uploads_disabled〕が返る。D-62）。
+ * 止まっていることの確かめに使う。T24 の前のファイルを作るときは legacyReserve・uploadFileAs を使う。
+ */
 export function reserveFile(
   token: string,
   r: { documentId: string; groupId: string; contentType: DocumentContentType; size: number; fileId?: string },
@@ -381,20 +384,65 @@ export function reserveFile(
   });
 }
 
+/** token（JWT）の利用者の id（sub） */
+function userIdOf(token: string): string {
+  const payload = token.split('.')[1];
+  if (!payload) throw new Error('token の形が違います');
+  return (JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { sub: string }).sub;
+}
+
 /**
- * API で1つ上げる（画面と同じ道：予約 → 返った path へ upload）。上げた物の file_id と path を返す（失敗なら例外）。
- * 予約した人だけがその path に上げられる（insert のポリシーとトリガー）。
+ * T24 の前の予約を SQL で作る（0016 の reserve_document_file が書いていた行と同じ：提出の行がなければ作り、document_files に
+ * 予約の行を入れ、提出の版〔updated_at〕を進める）。T24 から予約の RPC は止めたが、すでに上がったファイルは見る・外す・片付ける
+ * ことができる（D-62）ので、その確かめのために作る。予約した人（token の利用者）だけがその path に上げられる（insert のポリシーと
+ * トリガーは 0016 のまま）。
+ */
+export async function legacyReserve(
+  token: string,
+  r: { documentId: string; groupId: string; contentType: DocumentContentType; size: number; fileId?: string },
+): Promise<ReservedFile> {
+  const userId = userIdOf(token);
+  const fileId = r.fileId ?? randomUUID();
+  const ext = r.contentType === 'application/pdf' ? 'pdf' : r.contentType === 'image/jpeg' ? 'jpg' : 'png';
+  return withTx(async (c) => {
+    const y = await c.query<{ year_id: string }>('select year_id from public.groups where id = $1', [r.groupId]);
+    const yearId = y.rows[0]!.year_id;
+    await c.query(
+      `insert into public.document_submissions (document_id, group_id, year_id) values ($1, $2, $3)
+       on conflict (document_id, group_id) do nothing`,
+      [r.documentId, r.groupId, yearId],
+    );
+    const objectPath = `${yearId}/${r.groupId}/${r.documentId}/${fileId}.${ext}`;
+    await c.query(
+      `insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size, created_by)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [fileId, yearId, r.documentId, r.groupId, objectPath, r.contentType, r.size, userId],
+    );
+    await c.query('update public.document_submissions set updated_at = now() where document_id = $1 and group_id = $2', [r.documentId, r.groupId]);
+    return { id: fileId, object_path: objectPath };
+  });
+}
+
+/**
+ * T24 の前のファイルを1つ作る（legacyReserve で予約し、返った path へ token の利用者が Storage API で upload）。上げた物の file_id と
+ * path を返す（失敗なら例外）。
  */
 export async function uploadFileAs(
   token: string,
   f: { documentId: string; groupId: string; body: Buffer; contentType?: DocumentContentType },
 ): Promise<ReservedFile> {
   const contentType = f.contentType ?? 'application/pdf';
-  const reserved = await reserveFile(token, { documentId: f.documentId, groupId: f.groupId, contentType, size: f.body.length });
-  if (reserved.error || !reserved.data) throw new Error(`予約できません：${JSON.stringify(reserved.error)}`);
-  const up = await storageUpload(token, reserved.data.object_path, f.body, contentType);
+  const reserved = await legacyReserve(token, { documentId: f.documentId, groupId: f.groupId, contentType, size: f.body.length });
+  const up = await storageUpload(token, reserved.object_path, f.body, contentType);
   if (!up.ok) throw new Error(`上げられません：${up.httpStatus}・${up.statusCode ?? '?'}`);
-  return reserved.data;
+  return reserved;
+}
+
+/** 提出を取り消す（API。画面の「提出を取り消す」と同じ RPC。読んだ版で） */
+export async function withdrawAs(token: string, documentId: string, groupId: string): Promise<void> {
+  const base = await submissionVersion(token, documentId, groupId);
+  const r = await apiRpc(token, 'withdraw_document', { p_document_id: documentId, p_group_id: groupId, p_base_updated_at: base });
+  if (r.error) throw new Error(`取り消せません：${JSON.stringify(r.error)}`);
 }
 
 /** その提出の今の版（v_document_status の updated_at。行がなければ null）を、その人の読める形で読む */

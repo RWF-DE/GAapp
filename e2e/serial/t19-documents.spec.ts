@@ -42,7 +42,7 @@ async function openAs(browser: Browser, user: StoredUser, s: Scenario, viewport:
 /** 大きさの表示（04「ファイルの扱い」：1 MB 未満は切り上げの KB） */
 const kb = (bytes: number) => `${Math.ceil(bytes / 1024)} KB`;
 
-test('T19 前年度から写す：前年度の提出物を締切の順に、ずらした締切（1日目の差の日数。時刻は同じ）と一緒に並べ、同じ題名があるものは選べない。選んだものだけを写し（題名・説明・対象・ファイルが要るか）、監査の理由は「提出物の前年度からの写し」。2回目は写すものがない', async ({
+test('T19 前年度から写す：前年度の提出物を締切の順に、ずらした締切（1日目の差の日数。時刻は同じ）と一緒に並べ、同じ題名があるものは選べない。選んだものだけを写し（題名・説明・対象・提出先の URL〔T24〕）、監査の理由は「提出物の前年度からの写し」。2回目は写すものがない', async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -51,8 +51,8 @@ test('T19 前年度から写す：前年度の提出物を締切の順に、ず�
   try {
     // 1日目は前年度 2000-10-14、今の年度 2001-10-13（364 日の差。曜日も同じ）
     const [plan, food] = await insertDocuments(s.prevYearId!, [
-      { title: 'E2E 出店計画書', description: 'E2E 前年度の説明', deadline: '2000-10-05T17:00:00+09:00', categories: ['stall', 'department'], createdBy: H },
-      { title: 'E2E 食品の届け', deadline: '2000-10-01T12:00:00+09:00', categories: ['stall'], foodOnly: true, requiresFile: false, createdBy: H },
+      { title: 'E2E 出店計画書', description: 'E2E 前年度の説明', deadline: '2000-10-05T17:00:00+09:00', categories: ['stall', 'department'], submitUrl: 'https://drive.google.com/drive/folders/e2e-t24-plan', createdBy: H },
+      { title: 'E2E 食品の届け', deadline: '2000-10-01T12:00:00+09:00', categories: ['stall'], foodOnly: true, createdBy: H },
     ]);
     // この年度にはもう同じ題名（食品の届け）がある
     await insertDocuments(s.yearId, [{ title: 'E2E 食品の届け', deadline: '2001-09-29T12:00:00+09:00', categories: ['stall'], createdBy: H }]);
@@ -86,16 +86,18 @@ test('T19 前年度から写す：前年度の提出物を締切の順に、ず�
     await expect(page.getByText('1 件を写しました')).toBeVisible();
     await expect(dialog).toHaveCount(0);
 
-    // 写したもの：ずらした締切（時刻は同じ）、題名・説明・対象・飲食の団体だけ・ファイルが要るか。files_deleted_at は写さない
-    const rows = await sql<{ title: string; deadline: string; description: string | null; target_categories: string; food_only: boolean; requires_file: boolean; files_deleted_at: string | null }>(
+    // 写したもの：ずらした締切（時刻は同じ）、題名・説明・対象・飲食の団体だけ・提出先の URL（T24）。requires_file はいつも false（0023 のトリガー）。
+    // files_deleted_at は写さない
+    const rows = await sql<{ title: string; deadline: string; description: string | null; target_categories: string; food_only: boolean; requires_file: boolean; submit_url: string | null; files_deleted_at: string | null }>(
       `select title, to_char(deadline at time zone 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI') as deadline, description, target_categories::text,
-              food_only, requires_file, files_deleted_at::text
+              food_only, requires_file, submit_url, files_deleted_at::text
          from public.documents where year_id = $1 order by deadline, title`,
       [s.yearId],
     );
     expect(rows).toEqual([
-      { title: 'E2E 食品の届け', deadline: '2001-09-29 12:00', description: null, target_categories: '{stall}', food_only: false, requires_file: true, files_deleted_at: null },
-      { title: 'E2E 出店計画書', deadline: '2001-10-04 17:00', description: 'E2E 前年度の説明', target_categories: '{stall,department}', food_only: false, requires_file: true, files_deleted_at: null },
+      { title: 'E2E 食品の届け', deadline: '2001-09-29 12:00', description: null, target_categories: '{stall}', food_only: false, requires_file: false, submit_url: null, files_deleted_at: null },
+      { title: 'E2E 出店計画書', deadline: '2001-10-04 17:00', description: 'E2E 前年度の説明', target_categories: '{stall,department}', food_only: false, requires_file: false,
+        submit_url: 'https://drive.google.com/drive/folders/e2e-t24-plan', files_deleted_at: null },
     ]);
     const [audit] = await sql<{ reason: string | null; user_id: string | null }>(
       `select reason, user_id from public.audit_logs where table_name = 'documents' and action = 'insert' and year_id = $1 and after ->> 'title' = 'E2E 出店計画書'`,
@@ -116,7 +118,7 @@ test('T19 前年度から写す：前年度の提出物を締切の順に、ず�
   }
 });
 
-test('T19 終了した年度：管理者が「この年度のファイルをすべて削除」で、ファイルの行と Storage の物を消す（その年度の storage.objects は空になる）。状態・日時・理由は残り、削除した日時が出る。部門長には削除がなく、店長は読むだけ', async ({
+test('T19 終了した年度：管理者が「この年度のファイルをすべて削除」で（T24 の前のファイル）、ファイルの行と Storage の物を消す（その年度の storage.objects は空になる）。状態・日時・理由は残り、削除した日時が出る。部門長には削除がなく、店長は読むだけ', async ({
   browser,
 }) => {
   test.setTimeout(150_000);
@@ -128,7 +130,7 @@ test('T19 終了した年度：管理者が「この年度のファイルをす�
     const ga = s.ids.groups[A]!;
     const gb = s.ids.groups[B]!;
     const [docId] = await insertDocuments(s.yearId, [{ title: 'E2E 年度末の確かめ', deadline: tokyoDeadline(-2), categories: ['stall', 'department'], createdBy: H }]);
-    // 店長が2つ上げて、締切の後に提出する（「締切の後」の印）
+    // T24 の前に店長が2つ上げていて（uploadFileAs は T24 の前の予約を SQL で作る。D-62）、締切の後に提出する（「締切の後」の印）
     const repToken = await apiToken('rep');
     const p1 = makePdf('E2E T19 closed one');
     const p2 = makePdf('E2E T19 closed two');
