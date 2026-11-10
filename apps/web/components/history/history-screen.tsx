@@ -78,6 +78,8 @@ function HistoryBody({ yearId, yearLabel, adminOfOpenYear }: { yearId: string; y
       slots: o?.slots ?? new Map(),
       // テント等の貸し出し（T21）：備品の名前
       lendingItems: o?.lendingItems ?? new Map(),
+      // 備品（数えるだけ。T22）：物の名前
+      countItems: o?.countItems ?? new Map(),
     };
   }, [o, n, yearId, yearLabel]);
 

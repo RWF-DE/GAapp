@@ -32,6 +32,12 @@ const data = vi.hoisted(() => ({
   fetchAllocationSources: vi.fn(),
   fetchMyYearRoles: vi.fn(),
   fetchItems: vi.fn(),
+  fetchCountItems: vi.fn(),
+  insertCountItem: vi.fn(),
+  updateCountItem: vi.fn(),
+  deleteCountItem: vi.fn(),
+  readCountItem: vi.fn(),
+  readCountItemByName: vi.fn(),
   fetchGroups: vi.fn(),
   fetchMembers: vi.fn(),
   insertRoom: vi.fn(),
@@ -133,6 +139,7 @@ beforeEach(() => {
   for (const f of [...Object.values(data), ...Object.values(roomYearsApi), toasts.success, toasts.error, toasts.info]) f.mockReset();
   data.fetchRooms.mockResolvedValue([room]);
   data.fetchAllocationSources.mockResolvedValue({ all: new Map(), fixed: new Map() });
+  data.fetchCountItems.mockResolvedValue([]);
 });
 afterEach(() => cleanup());
 
@@ -796,5 +803,79 @@ describe('GlobalReadOnlyNote（終了した年度の、場所・品目・距離�
     expect((await screen.findByTestId('global-read-only')).textContent).toContain('終了した年度のため、品目は直せません');
     expect(screen.queryByTestId('global-read-only-no-target')).toBeNull();
     expect(screen.queryByTestId('global-read-only-roles-error')).toBeNull();
+  });
+});
+
+describe('品目のタブの「備品（数えるだけ）」の欄（T22・D-60。管理者）', () => {
+  const TRASH = { id: 'c1', name: 'ゴミ箱', always_shown: true, sort_order: 1, updated_at: T0 };
+  const WHITE = { id: 'c5', name: '白椅子', always_shown: false, sort_order: 5, updated_at: T0 };
+
+  it('一覧（名前・最初から出す・並び）を出し、足すと insert（前後の空白を除いた名前）して読み直す', async () => {
+    data.fetchItems.mockResolvedValue([]);
+    data.fetchCountItems.mockResolvedValue([TRASH, WHITE]);
+    data.insertCountItem.mockResolvedValue({ ...WHITE, id: 'c9', name: '台形机', updated_at: T1 });
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    const section = await screen.findByTestId('count-items-settings');
+    await within(section).findByText('ゴミ箱');
+    expect(within(section).getByRole('table', { name: '備品（数えるだけ）の一覧' }).textContent).toContain('出す');
+    await user.click(within(section).getByTestId('count-item-settings-add'));
+    const form = await screen.findByTestId('count-item-form');
+    await user.type(within(form).getByLabelText('名前'), ' 台形机 ');
+    await user.clear(within(form).getByLabelText('並び順'));
+    await user.type(within(form).getByLabelText('並び順'), '9');
+    await user.click(within(form).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「台形机」を足しました'));
+    expect(data.insertCountItem).toHaveBeenCalledWith({ name: '台形机', always_shown: false, sort_order: 9 });
+    await waitFor(() => expect(data.fetchCountItems).toHaveBeenCalledTimes(2));
+  });
+
+  it('編集は updated_at を条件にした更新（最初から出すを変えられる）。同じ名前（23505）は「同じ名前の物があります」', async () => {
+    data.fetchItems.mockResolvedValue([]);
+    data.fetchCountItems.mockResolvedValue([WHITE]);
+    data.updateCountItem.mockRejectedValueOnce({ code: '23505', message: 'duplicate key' });
+    data.readCountItem.mockResolvedValue(WHITE);
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    const section = await screen.findByTestId('count-items-settings');
+    await user.click(await within(section).findByRole('button', { name: '編集' }));
+    const form = await screen.findByTestId('count-item-form');
+    await user.click(within(form).getByRole('checkbox'));
+    await user.clear(within(form).getByLabelText('名前'));
+    await user.type(within(form).getByLabelText('名前'), 'ゴミ箱');
+    await user.click(within(form).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('同じ名前の物があります'));
+    expect(data.updateCountItem).toHaveBeenCalledWith(WHITE, { name: 'ゴミ箱', always_shown: true, sort_order: 5 });
+  });
+
+  it('削除は確かめてから送り、数が入力された物（23503）は「数が入力された物は削除できません」と出して閉じない', async () => {
+    data.fetchItems.mockResolvedValue([]);
+    data.fetchCountItems.mockResolvedValue([WHITE]);
+    data.deleteCountItem.mockRejectedValueOnce({ code: '23503', message: 'fk' }).mockResolvedValue(WHITE);
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    const section = await screen.findByTestId('count-items-settings');
+    await user.click(await within(section).findByRole('button', { name: '削除' }));
+    let dialog = await screen.findByRole('alertdialog');
+    expect(dialog.textContent).toContain('「白椅子」を削除しますか');
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }));
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('数が入力された物は削除できません'));
+    dialog = screen.getByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }));
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「白椅子」を削除しました'));
+    expect(data.deleteCountItem).toHaveBeenCalledTimes(2);
+    expect(data.deleteCountItem).toHaveBeenCalledWith(WHITE);
+  });
+
+  it('書けない（終了した年度など）ときは、足す・編集・削除を出さない', async () => {
+    data.fetchItems.mockResolvedValue([]);
+    data.fetchCountItems.mockResolvedValue([WHITE]);
+    data.fetchMyYearRoles.mockResolvedValue([]);
+    renderWith(<ItemsTab />, { status: 'closed', globalWritable: false, yearWritable: false });
+    const section = await screen.findByTestId('count-items-settings');
+    await within(section).findByText('白椅子');
+    expect(within(section).queryByTestId('count-item-settings-add')).toBeNull();
+    expect(within(section).queryByRole('button', { name: '編集' })).toBeNull();
+    expect(within(section).queryByRole('button', { name: '削除' })).toBeNull();
   });
 });

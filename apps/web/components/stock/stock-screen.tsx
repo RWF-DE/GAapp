@@ -12,7 +12,7 @@ import { AppLink } from '@/components/common/app-link';
 import { PageHeader } from '@/components/common/page-header';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
-import { roomStocksOptions, storageRooms, useStockMaster, yearStocksOptions } from '@/lib/data/stocks';
+import { roomCountStocksOptions, roomStocksOptions, storageRooms, useStockMaster, yearStocksOptions } from '@/lib/data/stocks';
 import { useYearRow } from '@/lib/data/year';
 import { classifyError, messageFor } from '@/lib/errors';
 import { parseRoomParam } from '@/lib/schemas/stock';
@@ -33,6 +33,7 @@ export function StockScreen() {
   useEffect(() => {
     if (!yearId || !roomId) return;
     void queryClient.prefetchQuery(roomStocksOptions(yearId, roomId));
+    void queryClient.prefetchQuery(roomCountStocksOptions(yearId, roomId));
     void queryClient.prefetchQuery(yearStocksOptions(yearId));
   }, [queryClient, yearId, roomId]);
 
@@ -81,5 +82,5 @@ export function StockScreen() {
   }
   // 部屋か年度を変えたら入力を作り直す（前の部屋・前の年度の入力と入力の元を持ち越さない。入力は年度・部屋ごとの下書きに残る）。
   // 年度の行と場所・品目がキャッシュにあると、年度を切り替えても読み込み中を挟まずにここへ来るので、キーに年度も入れる
-  return <StockInput key={`${year.id}:${target.room.id}`} open={open} year={year} target={target} storage={storage} items={master.items} />;
+  return <StockInput key={`${year.id}:${target.room.id}`} open={open} year={year} target={target} storage={storage} items={master.items} countItems={master.countItems} />;
 }

@@ -124,8 +124,8 @@ select ok((select count(*) >= 4 from public.audit_logs where action = 'delete' a
            and table_name in ('requests', 'request_submissions', 'substitution_consents', 'allocations')), '連鎖で消えた行の監査にも年度が入る');
 select tests.login_as('admin2');
 select is((select count(*)::int from public.audit_logs where group_id = tests.id('G1')), 0, '別の年度の admin には見えない');
-select is((select count(*)::int from public.audit_logs where year_id is null and table_name not in ('rooms', 'items', 'distance_overrides')), 0,
-  '年度のない行は年度をまたぐ3表のものだけ');
+select is((select count(*)::int from public.audit_logs where year_id is null and table_name not in ('rooms', 'items', 'distance_overrides', 'count_items')), 0,
+  '年度のない行は年度をまたぐ3表と備品（数えるだけ。T22）の名前の一覧のものだけ');
 select tests.logout();
 
 select * from finish();

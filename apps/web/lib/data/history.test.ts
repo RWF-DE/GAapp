@@ -22,6 +22,8 @@ import {
   historyHref,
   isDateParam,
   DELETED_LENDING_ITEM,
+  DELETED_COUNT_ITEM,
+  CROSS_YEAR_TABLES,
   fetchLendingItemNames,
   NAME_UNKNOWN,
   OUTSIDE_LABEL,
@@ -119,14 +121,14 @@ describe('差の表示', () => {
   });
 
   it('表の選びの注：開いている年度の管理者には年度をまたぐ表の説明、ほか（部門長・副部門長）には見られない理由', () => {
-    expect(crossYearNote(true)).toBe('場所・品目・距離は年度をまたぐ表です（年度のない記録も出します）。');
-    expect(crossYearNote(false)).toBe('場所・品目・距離の記録（年度のない記録）は、開いている年度の管理者だけが見られます。');
+    expect(crossYearNote(true)).toBe('場所・品目・距離・備品（数えるだけ）は年度をまたぐ表です（年度のない記録も出します）。');
+    expect(crossYearNote(false)).toBe('場所・品目・距離・備品（数えるだけ）の記録（年度のない記録）は、開いている年度の管理者だけが見られます。');
   });
 
   it('0 件のときの説明：年度をまたぐ表だけを選んだ部門長・副部門長には見られない理由を先に出す', () => {
     const f = (tables: HistoryFilter['tables'], more: Partial<HistoryFilter> = {}): HistoryFilter => ({ ...EMPTY_FILTER, tables, ...more });
     expect(historyEmptyNote(f(['rooms', 'items']), false)).toBe(
-      '場所・品目・距離の記録（年度のない記録）は、開いている年度の管理者だけが見られます。絞り込みを変えるか、消してください。',
+      '場所・品目・距離・備品（数えるだけ）の記録（年度のない記録）は、開いている年度の管理者だけが見られます。絞り込みを変えるか、消してください。',
     );
     // 開いている年度の管理者・年度の表も選んだ・絞り込みがない
     expect(historyEmptyNote(f(['rooms']), true)).toBe('絞り込みを変えるか、消してください。');
@@ -211,10 +213,11 @@ describe('差の表示', () => {
   });
 
   it('T21 テント等の貸し出し：5表を最後に足す。表の名前・対象（備品は名前、申請・割り当て・記録は団体と備品、確定の印は年度名）', () => {
-    expect(AUDIT_TABLES.slice(-5)).toEqual(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years']);
+    // T22 の備品（数えるだけ）の2表がその後ろに続く
+    expect(AUDIT_TABLES.slice(-7, -2)).toEqual(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years']);
     // T19〜T21 のマージの後の並び：T19 の提出物の3表、T20 のシフト・作業の5表の後
-    expect(AUDIT_TABLES.slice(-10, -5)).toEqual(['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']);
-    expect(AUDIT_TABLES.slice(-13, -10)).toEqual(['documents', 'document_submissions', 'document_files']);
+    expect(AUDIT_TABLES.slice(-12, -7)).toEqual(['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']);
+    expect(AUDIT_TABLES.slice(-15, -12)).toEqual(['documents', 'document_submissions', 'document_files']);
     expect(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years'].map(tableLabel)).toEqual([
       'テント等の備品',
       'テント等の申請',
@@ -237,6 +240,36 @@ describe('差の表示', () => {
       expect(auditTarget(row(t, { group_id: G, lending_item_id: 'gone' }), lookups)).toBe(`模擬店01・${DELETED_LENDING_ITEM}`);
     }
     expect(auditTarget(row('lending_years', { year_id: Y, confirmed_at: null }), lookups)).toBe('R8');
+  });
+
+  it('T22 備品（数えるだけ）：2表を最後に足す。名前の一覧は年度をまたぐ表。表の名前・対象・値・列の名前', () => {
+    expect(AUDIT_TABLES.slice(-2)).toEqual(['count_items', 'count_stocks']);
+    expect(CROSS_YEAR_TABLES).toContain('count_items');
+    expect(CROSS_YEAR_TABLES).not.toContain('count_stocks');
+    expect(['count_items', 'count_stocks'].map(tableLabel)).toEqual(['備品（数えるだけ）', '備品（数えるだけ）の数']);
+    const R = '00000000-0000-4000-8000-000000000301';
+    const lookups = { rooms: new Map([[R, '倉庫A']]), countItems: new Map([[I, 'ゴミ箱']]), users: new Map([[U, '総務 太郎']]) };
+    const row = (table_name: string, after: Record<string, unknown> | null, before: Record<string, unknown> | null = null) => ({
+      table_name,
+      row_pk: null,
+      group_id: null,
+      before,
+      after,
+    });
+    expect(auditTarget(row('count_items', { id: I, name: 'ゴミ箱' }), lookups)).toBe('ゴミ箱');
+    expect(auditTarget(row('count_items', null, { id: 'gone', name: '消した物' }), lookups)).toBe('消した物');
+    expect(auditTarget(row('count_stocks', { room_id: R, count_item_id: I, count: 3 }), lookups)).toBe('倉庫A・ゴミ箱');
+    expect(auditTarget(row('count_stocks', { room_id: R, count_item_id: 'gone', count: 3 }), lookups)).toBe(`倉庫A・${DELETED_COUNT_ITEM}`);
+    expect(formatAuditValue('count_stocks', 'count_item_id', I, lookups)).toBe('ゴミ箱');
+    expect(formatAuditValue('count_stocks', 'counted_by', U, lookups)).toBe('総務 太郎');
+    expect(formatAuditValue('count_items', 'always_shown', true)).toBe('はい');
+    expect(formatDiffEntry('count_items', { key: 'always_shown', before: false, after: true })).toBe('最初から出す：いいえ → はい');
+    expect(formatDiffEntry('count_stocks', { key: 'count', before: 2, after: 5 })).toBe('数：2 → 5');
+    // 年度をまたぐ表を選ぶと year_id is null の問い合わせも作る
+    const qs = historyQueries(Y, { ...EMPTY_FILTER, tables: ['count_items', 'count_stocks'] });
+    expect(qs).toHaveLength(2);
+    expect(qs[0]).toContainEqual({ op: 'eq', column: 'table_name', value: 'count_stocks' });
+    expect(qs[1]).toContainEqual({ op: 'eq', column: 'table_name', value: 'count_items' });
   });
 
   it('T21 テント等の5表だけ、変わった列の名前を日本語にする。区分は表示名、備品は名前、確定した人・書いた人は表示名', () => {

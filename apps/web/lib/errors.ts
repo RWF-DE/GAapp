@@ -273,7 +273,7 @@ export interface MessageContext {
    */
   storage?: 'upload' | 'sign';
   /**
-   * 直接の書き込みの表（T21：lending_items・lending_requests・lending_records。23503・23505 の文言を分ける）。テント等の画面では
+   * 直接の書き込みの表（T21：lending_items・lending_requests・lending_records。T22：count_items・count_stocks。23503・23505 の文言を分ける）。テント等の画面では
    * names.item でテント等の備品の名前を引く（save_lending_assignments・set_lending_confirmed の details の lending_item_id）
    */
   table?: string;
@@ -331,6 +331,18 @@ export const LENDING_NOT_REQUESTABLE_MESSAGE = 'この備品は、この団体�
 export const LENDING_ITEM_IN_USE_MESSAGE = '申請・割り当て・記録のある備品は削除できません';
 /** 備品の登録の 23505（同じ名前） */
 export const LENDING_ITEM_DUPLICATE_MESSAGE = '同じ名前の備品がすでにあります';
+
+// 備品（数えるだけ。T22・D-60。04「マスタ設定」の品目のタブの欄・「在庫入力」の「新しい名前で足す」）
+/** 名前の 23505（全角・半角と大文字小文字を無視して同じ名前がある） */
+export const COUNT_ITEM_DUPLICATE_MESSAGE = '同じ名前の物があります';
+/** 削除の 23503（数が入力された物） */
+export const COUNT_ITEM_IN_USE_MESSAGE = '数が入力された物は削除できません';
+/** add_count_item の invalid_input（field: name）と、名前の 23514 */
+export const COUNT_ITEM_NAME_MESSAGE = '名前は、前後の空白を除いて 1〜50 字にしてください';
+/** add_count_item の invalid_input（field: name、reason: too_many。名前の一覧がもう 500 行ある） */
+export const COUNT_ITEM_TOO_MANY_MESSAGE = '備品（数えるだけ）の名前は 500 までです。使っていない名前を管理者に消してもらってください';
+/** 在庫入力の数の保存（count_stocks の upsert）の 23503：出していた物がマスタ設定から削除された（画面は名前の一覧を読み直して外す） */
+export const COUNT_ITEM_GONE_MESSAGE = '備品（数えるだけ）の物がほかの人に削除されました。一覧を読み直したので、もう一度「保存」を押してください';
 
 /** details の備品の id（lending_item_ids）を名前にして「・」でつなぐ（名前のない id は出さない） */
 function lendingItemNames(ids: unknown, ctx: MessageContext): string {
@@ -541,6 +553,7 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
   // details（year_id・user_id・reason）によらず同じ文言（04 のエラーの一覧）
   if (e.reason === 'role_overlap') return ROLE_OVERLAP_MESSAGE;
   if (e.code === '23505' && ctx.table === 'lending_items') return LENDING_ITEM_DUPLICATE_MESSAGE;
+  if (e.code === '23505' && ctx.table === 'count_items') return COUNT_ITEM_DUPLICATE_MESSAGE;
   if (e.code === '23505') return '同じものがすでにあります（ほかの人が先に足した可能性があります）';
   // 提出物（T19）：提出・取り消し・承認・差し戻しの conflict（details は {document_id, group_id}）
   if (isDocumentRpc(ctx)) return DOCUMENT_CONFLICT_MESSAGE;
@@ -604,6 +617,11 @@ const NOTICE_GROUP_MESSAGES: Readonly<Record<string, string>> = {
 
 function inputMessage(e: ClassifiedError, ctx: MessageContext): string {
   const generic = '入力の形が違います';
+  // 備品（数えるだけ。T22）：名前の誤り（add_count_item の field: name・送る前の確かめ・表の CHECK）
+  if (ctx.rpc === 'add_count_item' && isRecord(e.details) && e.details.reason === 'too_many') return COUNT_ITEM_TOO_MANY_MESSAGE;
+  if (ctx.rpc === 'add_count_item' || ctx.table === 'count_items') {
+    if (e.code === '23514' || (isRecord(e.details) && e.details.field === 'name')) return COUNT_ITEM_NAME_MESSAGE;
+  }
   if (e.code === '23514') return '入力が範囲を超えています';
   // 22xxx などの SQLSTATE は details を持たない。code が null は画面の層が送る前に止めたもの（lib/rpc の zod）
   if (e.code !== null && e.code !== 'P0001') return generic;
@@ -718,6 +736,8 @@ export function messageFor(e: ClassifiedError, ctx: MessageContext = {}): string
     case 'blocked':
       // テント等（T21）：備品の削除は使われている、申請・記録の書き込みは団体か備品が年度にない（消えた）
       if (ctx.table === 'lending_items') return LENDING_ITEM_IN_USE_MESSAGE;
+      if (ctx.table === 'count_items') return COUNT_ITEM_IN_USE_MESSAGE;
+      if (ctx.table === 'count_stocks') return COUNT_ITEM_GONE_MESSAGE;
       if (ctx.table === 'lending_requests' || ctx.table === 'lending_records') return LENDING_NOT_IN_YEAR_MESSAGE;
       return 'ほかのデータから使われているので削除できません';
     case 'deadlock':

@@ -11,15 +11,31 @@ export const stockCountSchema = z
   .min(0, { message: '0 以上にしてください' })
   .max(MAX_COUNT, { message: `${MAX_COUNT} までです` });
 
-/** 部屋の全品目の数（品目の id → 数） */
-export const stockCountsSchema = z.record(uuidSchema, stockCountSchema);
+/**
+ * 在庫入力の1行のキー。9 品目は品目の id、備品（数えるだけ。T22・D-60）は `c:` に count_items の id を付けたもの
+ * （同じ部屋の在庫と数をまとめて1つの入力として扱うため。04「在庫入力」の備品（数えるだけ））
+ */
+export const COUNT_KEY_PREFIX = 'c:';
+/** 備品（数えるだけ）の行のキー */
+export function countKey(countItemId: string): string {
+  return `${COUNT_KEY_PREFIX}${countItemId}`;
+}
+/** 備品（数えるだけ）の行のキーなら count_items の id、品目のキーなら null */
+export function countItemIdOf(key: string): string | null {
+  return key.startsWith(COUNT_KEY_PREFIX) ? key.slice(COUNT_KEY_PREFIX.length) : null;
+}
+/** 行のキー（品目の id か `c:` と count_items の id。どちらも uuid の形） */
+export const stockLineKeySchema = z.string().refine((k) => uuidSchema.safeParse(countItemIdOf(k) ?? k).success, { message: '行の形が違います' });
+
+/** 部屋の全品目の数（行のキー → 数。品目と備品〔数えるだけ〕） */
+export const stockCountsSchema = z.record(stockLineKeySchema, stockCountSchema);
 export type StockCounts = z.output<typeof stockCountsSchema>;
 
 /**
  * 入力の元にした部屋の行の updated_at（品目の id → updated_at。行のない品目は入れない）。
  * 下書きを戻して保存するとき、下書きを作った後にほかの人が保存したかをこれと比べて確かめる。
  */
-export const stockBaseStampsSchema = z.record(uuidSchema, z.string());
+export const stockBaseStampsSchema = z.record(stockLineKeySchema, z.string());
 export type StockBaseStamps = z.output<typeof stockBaseStampsSchema>;
 
 /**

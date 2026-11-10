@@ -3,24 +3,31 @@
 // 在庫一覧 /stocks（画面の設計 3.4、04「在庫一覧」。T10）。PC。
 // 保管場所 × 品目の表（各セルに今年の数と前年との差「12（+2）」、行と列の合計）。使用不可の部屋は灰色にして印をつけ、
 // 合計は「使用不可を除く」と「全部」の2つ。部屋の名前から在庫入力へ。まだ数えていない場所（W104 と同じ）を表の上に出す。
+// 机椅子の表の下に「備品（数えるだけ）」の表（保管場所 × 物。最初から出す物と、今年か前年に数がある物。数の行がなければ 0。
+// T22・D-60）。「まだ数えていない場所」は机椅子の在庫だけで決める。
 import { Printer } from 'lucide-react';
 import { useMemo } from 'react';
 import { AppLink } from '@/components/common/app-link';
 import { PageHeader } from '@/components/common/page-header';
 import { Button } from '@/components/ui/button';
 import { ErrorState, LoadingState } from '@/components/states';
+import type { CountItemRow, ItemRow } from '@/lib/db/types';
 import {
+  buildCountMatrix,
   buildStockMatrix,
   formatCell,
   formatDiff,
   stockPath,
   storageRooms,
   uncountedRooms,
+  usePreviousYearCountStocks,
   usePreviousYearStocks,
   useStockMaster,
+  useYearCountStocks,
   useYearStocks,
   type MatrixCell,
   type MatrixTotals,
+  type StockMatrix,
 } from '@/lib/data/stocks';
 import { useYearRow } from '@/lib/data/year';
 import { classifyError, messageFor } from '@/lib/errors';
@@ -54,6 +61,78 @@ function TotalsRow({ label, totals, itemIds, testId }: { label: string; totals: 
   );
 }
 
+/** 保管場所 × 品目（または備品〔数えるだけ〕）の表 */
+function MatrixTable<T extends ItemRow | CountItemRow>({
+  matrix,
+  testId,
+  rowTestId,
+  totalsPrefix,
+  label,
+}: {
+  matrix: StockMatrix<T>;
+  testId: string;
+  rowTestId: string;
+  totalsPrefix: string;
+  label: string;
+}) {
+  const itemIds = matrix.items.map((i) => i.id);
+  return (
+    <div className="max-h-[70vh] overflow-auto rounded-lg border">
+      <table className="w-full border-collapse text-sm" data-testid={testId} aria-label={label}>
+        <thead className="sticky top-0 z-20 bg-background">
+          <tr className="border-b">
+            <th scope="col" className="sticky left-0 z-30 bg-background px-3 py-2 text-left whitespace-nowrap">
+              保管場所
+            </th>
+            {matrix.items.map((i) => (
+              <th key={i.id} scope="col" className="px-3 py-2 text-right whitespace-nowrap">
+                {i.name}
+              </th>
+            ))}
+            <th scope="col" className="px-3 py-2 text-right whitespace-nowrap">
+              合計
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {matrix.rows.map((r) => (
+            <tr
+              key={r.storage.room.id}
+              data-testid={rowTestId}
+              data-room-id={r.storage.room.id}
+              data-usable={r.storage.usable ? 'true' : 'false'}
+              className={cn('border-b', !r.storage.usable && 'bg-zinc-100 text-zinc-500')}
+            >
+              <th scope="row" className={cn('sticky left-0 z-10 px-3 py-2 text-left font-normal whitespace-nowrap', r.storage.usable ? 'bg-background' : 'bg-zinc-100')}>
+                <span className="flex items-center gap-2">
+                  <AppLink href={stockPath(r.storage.room.id)} className="font-medium underline-offset-4 hover:underline">
+                    {r.storage.room.name}
+                  </AppLink>
+                  {!r.storage.usable ? <UnusableBadge /> : null}
+                </span>
+              </th>
+              {matrix.items.map((i) => (
+                <td
+                  key={i.id}
+                  data-item-id={i.id}
+                  className={cn('px-3 py-2 text-right tabular-nums whitespace-nowrap', !r.counted && 'text-amber-700')}
+                >
+                  {formatCell(r.cells[i.id]!, r.counted)}
+                </td>
+              ))}
+              <td className="px-3 py-2 text-right font-medium tabular-nums whitespace-nowrap">{formatCell(r.total, r.counted)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <TotalsRow label="合計（使用不可を除く）" totals={matrix.usableTotals} itemIds={itemIds} testId={`${totalsPrefix}-usable`} />
+          <TotalsRow label="合計（全部）" totals={matrix.allTotals} itemIds={itemIds} testId={`${totalsPrefix}-all`} />
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 export function StocksScreen() {
   const open = useOpenYear();
   const yearId = open?.year.id ?? null;
@@ -62,6 +141,8 @@ export function StocksScreen() {
   const stocksQ = useYearStocks(yearId);
   const prevYearId = yearQ.data?.prev_year_id ?? null;
   const prevQ = usePreviousYearStocks(yearId, prevYearId);
+  const countsQ = useYearCountStocks(yearId);
+  const prevCountQ = usePreviousYearCountStocks(yearId, prevYearId);
 
   const matrix = useMemo(() => {
     if (!masterQ.data || !stocksQ.data) return null;
@@ -73,8 +154,18 @@ export function StocksScreen() {
       prev: prevYearId ? (prevQ.data ?? []) : null,
     });
   }, [masterQ.data, stocksQ.data, prevQ.data, prevYearId]);
+  const countMatrix = useMemo(() => {
+    if (!masterQ.data || !countsQ.data) return null;
+    if (prevYearId && !prevCountQ.data) return null;
+    return buildCountMatrix({
+      storage: storageRooms(masterQ.data.rooms, masterQ.data.roomYears),
+      countItems: masterQ.data.countItems ?? [],
+      counts: countsQ.data,
+      prev: prevYearId ? (prevCountQ.data ?? []) : null,
+    });
+  }, [masterQ.data, countsQ.data, prevCountQ.data, prevYearId]);
 
-  const queries = [yearQ, masterQ, stocksQ, ...(prevYearId ? [prevQ] : [])];
+  const queries = [yearQ, masterQ, stocksQ, countsQ, ...(prevYearId ? [prevQ, prevCountQ] : [])];
   const failed = queries.find((q) => q.isError);
   const fetching = queries.some((q) => q.isFetching);
   const loadedAt = stocksQ.dataUpdatedAt ? new Date(stocksQ.dataUpdatedAt) : null;
@@ -108,7 +199,7 @@ export function StocksScreen() {
       </>
     );
   }
-  if (!matrix || !yearQ.data) {
+  if (!matrix || !countMatrix || !yearQ.data) {
     return (
       <>
         {header}
@@ -131,8 +222,6 @@ export function StocksScreen() {
     matrix.rows.map((r) => r.storage),
     counted,
   );
-  const itemIds = matrix.items.map((i) => i.id);
-
   return (
     <>
       {header}
@@ -164,59 +253,21 @@ export function StocksScreen() {
           合計の前年との差は、今年数えた場所だけで比べます（まだ数えていない場所は、今年と前年の両方から除きます）。
         </p>
       ) : null}
-      <div className="max-h-[70vh] overflow-auto rounded-lg border">
-        <table className="w-full border-collapse text-sm" data-testid="stock-matrix">
-          <thead className="sticky top-0 z-20 bg-background">
-            <tr className="border-b">
-              <th scope="col" className="sticky left-0 z-30 bg-background px-3 py-2 text-left whitespace-nowrap">
-                保管場所
-              </th>
-              {matrix.items.map((i) => (
-                <th key={i.id} scope="col" className="px-3 py-2 text-right whitespace-nowrap">
-                  {i.name}
-                </th>
-              ))}
-              <th scope="col" className="px-3 py-2 text-right whitespace-nowrap">
-                合計
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {matrix.rows.map((r) => (
-              <tr
-                key={r.storage.room.id}
-                data-testid="stock-matrix-row"
-                data-room-id={r.storage.room.id}
-                data-usable={r.storage.usable ? 'true' : 'false'}
-                className={cn('border-b', !r.storage.usable && 'bg-zinc-100 text-zinc-500')}
-              >
-                <th scope="row" className={cn('sticky left-0 z-10 px-3 py-2 text-left font-normal whitespace-nowrap', r.storage.usable ? 'bg-background' : 'bg-zinc-100')}>
-                  <span className="flex items-center gap-2">
-                    <AppLink href={stockPath(r.storage.room.id)} className="font-medium underline-offset-4 hover:underline">
-                      {r.storage.room.name}
-                    </AppLink>
-                    {!r.storage.usable ? <UnusableBadge /> : null}
-                  </span>
-                </th>
-                {matrix.items.map((i) => (
-                  <td
-                    key={i.id}
-                    data-item-id={i.id}
-                    className={cn('px-3 py-2 text-right tabular-nums whitespace-nowrap', !r.counted && 'text-amber-700')}
-                  >
-                    {formatCell(r.cells[i.id]!, r.counted)}
-                  </td>
-                ))}
-                <td className="px-3 py-2 text-right font-medium tabular-nums whitespace-nowrap">{formatCell(r.total, r.counted)}</td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <TotalsRow label="合計（使用不可を除く）" totals={matrix.usableTotals} itemIds={itemIds} testId="stock-total-usable" />
-            <TotalsRow label="合計（全部）" totals={matrix.allTotals} itemIds={itemIds} testId="stock-total-all" />
-          </tfoot>
-        </table>
-      </div>
+      <MatrixTable matrix={matrix} testId="stock-matrix" rowTestId="stock-matrix-row" totalsPrefix="stock-total" label="在庫の表" />
+      <section aria-labelledby="count-matrix-heading" className="mt-8" data-testid="count-matrix-section">
+        <h2 id="count-matrix-heading" className="mb-1 text-lg font-semibold">
+          備品（数えるだけ）
+        </h2>
+        <p className="mb-2 text-xs text-muted-foreground">
+          数えるだけの物です（申請・振り分けには使いません）。数が入っていない場所は 0 です。
+          {countMatrix.hasPrev ? 'セルは「今年の数（前年との差）」。' : ''}
+        </p>
+        {countMatrix.items.length === 0 ? (
+          <p className="text-sm text-muted-foreground">備品（数えるだけ）はまだありません。</p>
+        ) : (
+          <MatrixTable matrix={countMatrix} testId="count-matrix" rowTestId="count-matrix-row" totalsPrefix="count-total" label="備品（数えるだけ）の表" />
+        )}
+      </section>
     </>
   );
 }

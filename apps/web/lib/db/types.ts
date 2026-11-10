@@ -46,6 +46,17 @@ const GROUP_COLS = [
 ] as const satisfies readonly (keyof Tables<'groups'>)[];
 const SUBMISSION_COLS = ['group_id', 'submitted_at', 'note', 'updated_at'] as const satisfies readonly (keyof Tables<'request_submissions'>)[];
 const STOCK_COLS = ['year_id', 'room_id', 'item_id', 'count', 'counted_at', 'counted_by', 'updated_at'] as const satisfies readonly (keyof Tables<'stocks'>)[];
+// 備品（数えるだけ。T22・D-60）：名前の一覧（年度をまたぐ）と、年度×保管場所×物の数（counted_by・counted_at は DB が入れる）
+const COUNT_ITEM_COLS = ['id', 'name', 'always_shown', 'sort_order', 'updated_at'] as const satisfies readonly (keyof Tables<'count_items'>)[];
+const COUNT_STOCK_COLS = [
+  'year_id',
+  'room_id',
+  'count_item_id',
+  'count',
+  'counted_at',
+  'counted_by',
+  'updated_at',
+] as const satisfies readonly (keyof Tables<'count_stocks'>)[];
 const REQUEST_COLS = ['group_id', 'item_id', 'count', 'updated_at'] as const satisfies readonly (keyof Tables<'requests'>)[];
 const RULE_COLS = ['id', 'year_id', 'code', 'kind', 'params', 'enabled', 'memo', 'updated_at'] as const satisfies readonly (keyof Tables<'rules'>)[];
 const CONSENT_COLS = [
@@ -82,6 +93,8 @@ export const COLUMNS = {
   groups: GROUP_COLS.join(', '),
   request_submissions: SUBMISSION_COLS.join(', '),
   stocks: STOCK_COLS.join(', '),
+  count_items: COUNT_ITEM_COLS.join(', '),
+  count_stocks: COUNT_STOCK_COLS.join(', '),
   requests: REQUEST_COLS.join(', '),
   rules: RULE_COLS.join(', '),
   substitution_consents: CONSENT_COLS.join(', '),
@@ -96,6 +109,8 @@ export type RoomYearRow = Pick<Tables<'room_years'>, (typeof ROOM_YEAR_COLS)[num
 export type GroupRow = Pick<Tables<'groups'>, (typeof GROUP_COLS)[number]>;
 export type SubmissionRow = Pick<Tables<'request_submissions'>, (typeof SUBMISSION_COLS)[number]>;
 export type StockDbRow = Pick<Tables<'stocks'>, (typeof STOCK_COLS)[number]>;
+export type CountItemRow = Pick<Tables<'count_items'>, (typeof COUNT_ITEM_COLS)[number]>;
+export type CountStockDbRow = Pick<Tables<'count_stocks'>, (typeof COUNT_STOCK_COLS)[number]>;
 export type RequestDbRow = Pick<Tables<'requests'>, (typeof REQUEST_COLS)[number]>;
 export type RuleDbRow = Pick<Tables<'rules'>, (typeof RULE_COLS)[number]>;
 export type ConsentDbRow = Pick<Tables<'substitution_consents'>, (typeof CONSENT_COLS)[number]>;
@@ -129,6 +144,8 @@ export const PRIMARY_KEYS = {
   groups: ['id'],
   request_submissions: ['group_id'],
   stocks: ['year_id', 'room_id', 'item_id'],
+  count_items: ['id'],
+  count_stocks: ['year_id', 'room_id', 'count_item_id'],
   requests: ['group_id', 'item_id'],
   rules: ['id'],
   substitution_consents: ['group_id', 'from_item_id', 'to_item_id'],

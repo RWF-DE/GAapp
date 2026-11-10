@@ -14,6 +14,7 @@ import {
   COLUMNS,
   type AllocationDbRow,
   type ConsentDbRow,
+  type CountItemRow,
   type GroupRow,
   type ItemRow,
   type RequestDbRow,
@@ -58,11 +59,13 @@ export interface StockMaster {
   rooms: RoomRow[];
   items: ItemRow[];
   roomYears: RoomYearRow[];
+  /** 備品（数えるだけ）の名前の一覧（年度をまたぐ。並び → 名前 → id。T22・D-60） */
+  countItems: CountItemRow[];
 }
 
 /** 場所・品目（年度をまたぐ表）と、その年度の使用（room_years） */
 export async function fetchStockMaster(yearId: string, client: AppSupabaseClient = getSupabase()): Promise<StockMaster> {
-  const [rooms, items, roomYears] = await Promise.all([
+  const [rooms, items, roomYears, countItems] = await Promise.all([
     fetchAll<RoomRow>((from, to) =>
       client.from('rooms').select(COLUMNS.rooms).order('id').range(from, to) as unknown as PromiseLike<{ data: RoomRow[] | null; error: unknown; status?: number }>,
     ),
@@ -77,8 +80,15 @@ export async function fetchStockMaster(yearId: string, client: AppSupabaseClient
         .order('room_id')
         .range(from, to) as unknown as PromiseLike<{ data: RoomYearRow[] | null; error: unknown; status?: number }>,
     ),
+    fetchAll<CountItemRow>((from, to) =>
+      client
+        .from('count_items')
+        .select(COLUMNS.count_items)
+        .order('id')
+        .range(from, to) as unknown as PromiseLike<{ data: CountItemRow[] | null; error: unknown; status?: number }>,
+    ),
   ]);
-  return { rooms: sortByOrder(rooms), items: sortByOrder(items), roomYears };
+  return { rooms: sortByOrder(rooms), items: sortByOrder(items), roomYears, countItems: sortByOrder(countItems) };
 }
 
 /** その部屋の今年の在庫の行（品目の順） */
@@ -100,6 +110,7 @@ export async function fetchYearStocks(yearId: string, client: AppSupabaseClient 
       .range(from, to) as unknown as PromiseLike<{ data: StockDbRow[] | null; error: unknown; status?: number }>,
   );
 }
+
 
 /** 場所・品目・その年度の使用のクエリの設定 */
 export function stockMasterOptions(yearId: string | null | undefined) {

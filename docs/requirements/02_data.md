@@ -1,6 +1,6 @@
 # データ設計
 
-総務アプリ（D-51）の表。机椅子の機能の表（年度の状態 year_status も、机椅子の業務の流れ〔受付・振り分け・確定〕を表す）と、機能のチケットが足した表がある：お知らせ（T17）の notices・notice_groups、締切と予定（T18）の events、提出物（T19）の documents・document_submissions・document_files とビュー2つ（ファイルの中身は Supabase Storage の bucket documents）、シフト・作業（T20）の shift_duties・shift_slots・shift_needs・shift_assignments・tasks、テント等の貸し出し（T21）の lending_items・lending_requests・lending_assignments・lending_records・lending_years。年度・ロール・団体代表・招待（years・year_roles・group_members・invitations。団体代表は groups の行に付く）は、アプリ全体の立場（ナビゲーション・ページの守り・ダッシュボード）にも使い、どの機能も同じものを使う。T16 は表・関数・ポリシーを足さない（ダッシュボードは各機能の表を今の RLS のまま読む。04「ダッシュボード」）。これから足す機能の表は、その機能のチケットがこの文書に足す（列挙型・テーブル定義・設計上の決めごと・権限表に、その機能の行と節を足す。D-52）。終了（closed）の年度では、机椅子の表がすべて読み取り専用になる（下の「設計上の決めごと」）。機能の表を終了の年度でどう扱うかは機能のチケットが決め、T17〜T21 の表はどれも読むだけ（例外は、管理者の提出物のファイルの削除〔T19〕と、ロールを外したときに消える割り当てと空になる作業の担当者〔T20〕。下の「設計上の決めごと」の各機能の項）。
+総務アプリ（D-51）の表。机椅子の機能の表（年度の状態 year_status も、机椅子の業務の流れ〔受付・振り分け・確定〕を表す）と、機能のチケットが足した表がある：お知らせ（T17）の notices・notice_groups、締切と予定（T18）の events、提出物（T19）の documents・document_submissions・document_files とビュー2つ（ファイルの中身は Supabase Storage の bucket documents）、シフト・作業（T20）の shift_duties・shift_slots・shift_needs・shift_assignments・tasks、テント等の貸し出し（T21）の lending_items・lending_requests・lending_assignments・lending_records・lending_years、机椅子の在庫入力で数えるだけの物（T22）の count_items・count_stocks。年度・ロール・団体代表・招待（years・year_roles・group_members・invitations。団体代表は groups の行に付く）は、アプリ全体の立場（ナビゲーション・ページの守り・ダッシュボード）にも使い、どの機能も同じものを使う。T16 は表・関数・ポリシーを足さない（ダッシュボードは各機能の表を今の RLS のまま読む。04「ダッシュボード」）。これから足す機能の表は、その機能のチケットがこの文書に足す（列挙型・テーブル定義・設計上の決めごと・権限表に、その機能の行と節を足す。D-52）。終了（closed）の年度では、机椅子の表がすべて読み取り専用になる（下の「設計上の決めごと」）。機能の表を終了の年度でどう扱うかは機能のチケットが決め、T17〜T21 の表はどれも読むだけ（例外は、管理者の提出物のファイルの削除〔T19〕と、ロールを外したときに消える割り当てと空になる作業の担当者〔T20〕。下の「設計上の決めごと」の各機能の項）。
 
 ## 列挙型
 
@@ -59,6 +59,8 @@ app_role の head（総務部門長）と deputy_head（総務副部門長）は
 0019_set_reason_trim.sql（監査の理由を置く private.set_reason を `create or replace` で置き換え、理由の前後から除く空白を画面の trim と同じ 25 文字にそろえる。引数・戻り値・権限・500 字の上限は変えず、表と呼び手の RPC も変えない。下の「設計上の決めごと」の理由の項）は T19〜T21 の後の片付け（FU3）で作る。
 
 0020_year_no_group_copy.sql（年度の作成 `public.create_year_from` を `create or replace` で置き換え、団体を複製しない。団体を参照するルールは無効にして複製する。引数・戻り値・権限・ロックとエラーのコードは変えない。D-59）。
+
+0021_count_items.sql（備品〔数えるだけ〕の表 count_items・count_stocks とそのトリガー・RLS、RPC add_count_item・previous_year_count_stocks、最初から出す4つの物〔ゴミ箱・延長コード・扇風機・オレンジ椅子〕の行。履歴の読み取りのポリシー audit_logs_select の「年度のない行」に count_items を足す〔作り直す。ほかの枝は変えない〕。ほかの表と関数は変えない。D-60）は T22 で作る。
 
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
 
@@ -632,18 +634,51 @@ create table lending_years (
 - 申請（lending_requests）の year_id と、割り当て・記録の year_id は、書く人（画面・RPC）が団体の年度を入れる。複合外部キーが、団体と備品が行と同じ年度であることを保証する（違えば 23503）。
 - 割り当ての確定（lending_years）は印で、確定するたびに confirmed_at・confirmed_by を入れ、解除で null にする（履歴では同じ行の変更として、理由つきで並ぶ）。年度の状態（years.status の confirmed）とは別のもの。
 
+**備品（数えるだけ）（T22。0021。D-60）**
+
+机椅子の在庫入力で、9 品目のほかに数だけを数える物（ゴミ箱・延長コード・扇風機・オレンジ椅子・白椅子など）の表。名前の一覧（count_items）は年度をまたぐ（items と同じ扱い。翌年も同じ選択肢が出て、年度の作成〔create_year_from〕は何も写さない）。数（count_stocks）は年度×保管場所×物で、在庫（stocks）と同じ人が同じ年度の状態で書く。申請・振り分け（allocate の入力）・検証コード・Excel・ダッシュボード・年度データの JSON・版（allocation_version）・確定中の守り・スナップショットには入らない。読める人・書ける人は下の「権限とRLS」の「備品（数えるだけ）の権限」。
+
+```sql
+-- 備品（数えるだけ）の名前の一覧（年度をまたぐ）
+create table count_items (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,                         -- 'ゴミ箱'。前後の空白（notices の題名と同じ 25 文字）を除いた形で 1〜50 字
+  always_shown boolean not null default false, -- 在庫入力のすべての場所に最初から行を出す（ゴミ箱・延長コード・扇風機・オレンジ椅子）
+  sort_order int not null default 0,
+  created_by uuid references auth.users on delete set null, -- DB が auth.uid() を入れる（足した人）
+  check (name <> '' and name = btrim(name, E'\t\n\u000b\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff') and length(name) <= 50)
+);
+create unique index count_items_name_key on count_items (lower(normalize(name, NFKC))); -- 全角・半角と大文字小文字を無視して1つ（画面の nameKey と同じ比べ方）
+
+-- 備品（数えるだけ）の数（年度×保管場所×物）
+create table count_stocks (
+  year_id uuid not null references years on delete cascade,
+  room_id uuid not null references rooms on delete restrict,
+  count_item_id uuid not null references count_items on delete restrict, -- 数のある物は消せない
+  count int not null check (count between 0 and 10000),
+  counted_by uuid references auth.users on delete set null, -- DB が入れる（stocks と同じ）
+  counted_at timestamptz,
+  primary key (year_id, room_id, count_item_id)
+);
+create index on count_stocks (room_id);
+create index on count_stocks (count_item_id);
+```
+
+- マイグレーションで、最初から出す4つ（always_shown が true。並びの 1〜4）を入れる：ゴミ箱・延長コード・扇風機・オレンジ椅子。ほかの選択肢（白椅子・台形机・掃除機など）は本番の SQL Editor で入れるか、在庫入力の「その他」で足す。
+- 名前の重なりは、NFKC にして小文字にした名前の一意の索引で止める（23505。画面の nameKey〔NFKC・trim・小文字〕と同じ比べ方。DB の名前は前後の空白がないので trim は要らない）。
+
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
 - 残すは allocations の is_keep = true の行。is_keep は「運び元＝団体の使用場所」と一致させる（残す ⇔ 運び元が使用場所）。is_keep は、保存する RPC が「運び元＝団体の使用場所」かどうかで決める（クライアントの値は使わない）。「is_keep の行の運び元＝団体の使用場所」は CHECK ではなくトリガーで確かめる（他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。逆向き（使用場所からの行が残すでない）はトリガーでは止めず、保存の RPC が決め直して直す（RPC で書いた行はいつもそろう）。振り分けの後に団体の使用場所を変えると、どちらの向きにもずれ得るので、確定では両方向の不一致（残すなのに運び元が使用場所でない／使用場所からの行が残すでない）を検証 E005 として確かめる（`private.confirm_issues`）。年度の一致（行の year_id と団体の year_id）は複合外部キーで保証する
 - 使用不可の部屋は allocations を作らず、Excel 出力で「残す／使用不可」の行として出す
 - 理由が要る書き込み（締切後の申請修正、手での振り分け変更、確定と確定解除）と、複数の表をまとめて変える書き込み（自動振り分けの保存、年度の複製、了承の記録、申請の提出）は、すべて DB 関数（RPC）で行う。関数の中で権限を確かめ、`set_config('app.reason', reason, true)` で理由を置いてから同じトランザクションで書き込む。PostgREST は1リクエストを1トランザクションで処理するので、別の呼び出しで置いた理由は届かない。理由は `private.set_reason` で置き、前後の空白を除く。除くのは画面の trim（JavaScript の String.prototype.trim）と同じ 25 文字（notices_title_check と同じ。タブ・改行・全角の空白など）で、除いて空の理由は理由とみなさない（理由が必須の RPC〔set_year_status の確定と確定の解除・save_allocation_rows・update_requests_after_deadline・set_lending_confirmed の解除〕は reason_required、任意なら監査の reason は null）。500 字の上限は除く前の長さで見る（invalid_input。field: reason）。0003 は半角の空白だけを除いていたので、RPC を直接呼ぶと空白に見える理由で通せた（0019 で直す。FU3）
-- audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles と、room_years・groups・group_members・rooms・items・distance_overrides と、お知らせの notices・notice_groups（T17。notice_groups の行の group_id は宛先の団体）と、予定と締切の events（T18）と、提出物の documents・document_submissions・document_files（T19）と、シフト・作業の shift_duties・shift_slots・shift_needs・shift_assignments・tasks（T20）と、テント等の貸し出しの lending_items・lending_requests・lending_assignments・lending_records・lending_years（T21）の 30 表のトリガーで書く（行の中身と row_pk の細部は各機能の項）。invitations（メール）と profiles（氏名）は個人情報を写さないため記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''` にする（audit_logs には誰にも書き込みの権限を与えないので、部員の在庫入力などで失敗しないように）。トリガーは `current_setting('app.reason', true)` で理由を、`auth.uid()` で書いた人を読む。row_pk は主キーの列を JSON にしたもの、before・after は行全体。updated_at・版の列（allocation_version）・auto_allocated_at しか変わらない更新は記録しない（auto_allocated_at は自動振り分けの保存で allocations の行と一緒に変わり、その行が監査に残るため）。year_id・group_id は行から入れ（year_id を持たない表は団体から引く）、団体の連鎖削除で消えた行にも、消える前の団体の年度を入れる
+- audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles と、room_years・groups・group_members・rooms・items・distance_overrides と、お知らせの notices・notice_groups（T17。notice_groups の行の group_id は宛先の団体）と、予定と締切の events（T18）と、提出物の documents・document_submissions・document_files（T19）と、シフト・作業の shift_duties・shift_slots・shift_needs・shift_assignments・tasks（T20）と、テント等の貸し出しの lending_items・lending_requests・lending_assignments・lending_records・lending_years（T21）と、備品（数えるだけ）の count_items・count_stocks（T22。count_items の行は年度を持たない）の 32 表のトリガーで書く（行の中身と row_pk の細部は各機能の項）。invitations（メール）と profiles（氏名）は個人情報を写さないため記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''` にする（audit_logs には誰にも書き込みの権限を与えないので、部員の在庫入力などで失敗しないように）。トリガーは `current_setting('app.reason', true)` で理由を、`auth.uid()` で書いた人を読む。row_pk は主キーの列を JSON にしたもの、before・after は行全体。updated_at・版の列（allocation_version）・auto_allocated_at しか変わらない更新は記録しない（auto_allocated_at は自動振り分けの保存で allocations の行と一緒に変わり、その行が監査に残るため）。year_id・group_id は行から入れ（year_id を持たない表は団体から引く）、団体の連鎖削除で消えた行にも、消える前の団体の年度を入れる
 - 申請できる品目はトリガーで確かめる。数が1以上で、品目の「申請できる区分」に団体の区分がなければ E006 で拒否する。ただし企業以外の長机(3人掛)は通す（前処理で長机(2人掛)に読み替える。D-05）
 - stocks の counted_by・counted_at と、request_submissions の updated_by・submitted_at は、ログインしている人が書いたときにトリガーで入れる（クライアントが送った値は使わない）。例外は、部門長以上（admin・head・deputy_head）だけが呼べる RPC `update_requests_after_deadline` が CSV の取り込みでフォームのタイムスタンプ（submittedAt）を渡したときの submitted_at で、RPC がその書き込みの間だけ transaction-local の設定（`app.keep_submitted_at`）を立て、トリガーは値を置き換えない（団体代表は日時を偽れない。D-19）
 - distance_overrides の建物の組は向きを持たない。呼ぶ側が順序を気にしなくてよいよう、トリガーが C の照合順序（コードポイント順。DB の既定の照合順序や JavaScript の並べ替えに依存しない）で小さい方を building_a に入れ替える。同じ建物どうしは CHECK で拒否する
 - rules.year_id は作った後に変えられない（トリガーで拒否する。ルールを閉じた年度へ移す抜け道を、ポリシーに頼らず DB で止める）
-- 行を別の年度・団体へ動かす更新も止める。確定中・closed の守りと版の増分は新しい行の年度しか見ないので、動かせると確定中の年度から振り分けを抜き出せるため。年度を持つ表の year_id（room_years・stocks・groups・year_roles・invitations・allocations・slots・deliveries・notices・events）と、団体を主キーに含む表の group_id（group_members・request_submissions・requests・substitution_consents）は、作った後に変えられない（トリガー `check_immutable`。`invalid_input`）。notice_groups は鍵の列（notice_id・year_id・group_id）が全部変えられない（行は足すか消すだけ。T17）。提出物の3表（T19）・シフト・作業の5表（T20）・テント等の貸し出しの5表（T21）も、year_id と鍵の列が変えられない（どの列かは各機能の項。check_immutable は合わせて 28 表）。allocations・deliveries・invitations の group_id は、複合外部キーで year_id と対になっているので、同じ年度の別の団体にだけ変えられる
+- 行を別の年度・団体へ動かす更新も止める。確定中・closed の守りと版の増分は新しい行の年度しか見ないので、動かせると確定中の年度から振り分けを抜き出せるため。年度を持つ表の year_id（room_years・stocks・groups・year_roles・invitations・allocations・slots・deliveries・notices・events）と、団体を主キーに含む表の group_id（group_members・request_submissions・requests・substitution_consents）は、作った後に変えられない（トリガー `check_immutable`。`invalid_input`）。notice_groups は鍵の列（notice_id・year_id・group_id）が全部変えられない（行は足すか消すだけ。T17）。提出物の3表（T19）・シフト・作業の5表（T20）・テント等の貸し出しの5表（T21）も、year_id と鍵の列が変えられない（どの列かは各機能の項。check_immutable は合わせて 28 表。備品（数えるだけ）の count_stocks〔T22〕の year_id・room_id・count_item_id を足して 29 表）。allocations・deliveries・invitations の group_id は、複合外部キーで year_id と対になっているので、同じ年度の別の団体にだけ変えられる
 - anon と PUBLIC には、public・private スキーマの表・ビュー・シーケンス・関数の権限を何も与えない（PUBLIC への既定の execute も外す）。authenticated には、「権限とRLS」の表の権限（全表の select と、W の表の insert・update・delete）、RPC の execute、ポリシーが呼ぶ private の判定関数の execute と private の usage だけを与える。シーケンスの権限は誰にも与えない（audit_logs は SECURITY DEFINER のトリガーだけが書く）。pgTAP が has_*_privilege で全オブジェクトを棚卸しして、一覧と比べる
 - 前年度の複製（フェーズ1、RPC `create_year_from`）は、rules・room_years を新しい year_id で作り直し（団体 groups は複製しない。毎年入れ直す。D-59）、呼んだ人を新しい年度の admin にする（year_roles に1行）。呼べるのは複製元の年度の admin だけで（複製元が closed でもよい）、複製元は最新の年度（それを複製元にした年度も、1日目が同じかそれより後の年度もない）に限る。新しい年度の1日目は複製元より後にする（update_year で1日目を変えるときも、複製元より後で、その年度を複製元にした年度より前でなければならない。崩すと、どの年度も最新でなくなり次の年度を作れなくなる）。1日目は有限で現実的な範囲（2000-01-01〜2200-12-31）に限る（years の CHECK。update_year・create_year_from は invalid_input（field: festival_start）を返す）。infinity や date の上限を入れた年度を closed にすると、それより後の1日目がなくなり、誰も次の年度を作れなくなるため（D-18）。古い年度の admin や、ほかの年度の admin が年度を作って権限を取り戻したり、ロールのない年度を複製して読んだりできないようにするため。新しい年度の prev_year_id に複製元を入れる。団体を参照するルール（params.group が文字列、または params.groups が空でない配列）は、新しい年度に団体がないので無効にして複製し、memo に「{複製元の年度名} から複製したとき、団体は複製しないので無効にした」を足す（元の memo があれば「 / 」でつなぐ。params の団体 id は前年度のまま付け替えない。団体を入れ直したあと、管理者がルール画面で団体を選び直して有効にする）。団体を参照しないルールは enabled も memo もそのまま。groups・stocks・requests・allocations・substitution_consents・year_roles（呼んだ人以外）・group_members・invitations は複製しない（在庫入力の「前年の数」と休憩所の申請の初期値は、RPC `previous_year_stocks`・`previous_year_requests` で前年度の数を読んで出す。後者は前年度の団体名で引くので、新しい年度に同じ名前の団体を入れた分にだけ初期値が出る）。ロールは年度ごとなので、管理者が毎年、総務部門長・総務副部門長などを招待し直す（D-48）
 - 最初の年度と最初の admin は、オーナーが一度アプリにログインしてから、管理画面の SQL Editor で years と year_roles に1行ずつ入れて作る。最新の年度の admin が誰も残っていないときも同じ方法で admin を足す。手順は README に書く。卒業する admin は、年度を closed にする前後に remove_role で外す（closed でも外せる）
@@ -684,6 +719,14 @@ create table lending_years (
   - 年度の削除：申請・割り当て・記録は、団体・備品への複合外部キーのほかに years への外部キー（cascade）も持つ。年度を消したときの連鎖（団体の削除と備品の削除）は after トリガーで順に処理され、その順はトリガーの名前で決まるので、子の行が years から直接消えるようにして、備品の restrict の確かめで止まらないようにする。
   - 机椅子との関係：振り分けの入力でないので、版（allocation_version）を増やさず、机椅子の確定中・終了の守り（lock_year_guard）も付けない（確定中の年度も書ける）。終了（closed）の年度は5表とも読むだけ（RLS の can_lead・can_write_requests・can_record_lending と RPC の invalid_state。SQL Editor からは書ける）。年度の複製（create_year_from）は写さない（画面の「前年度から読み込む」で備品だけを写す）。机椅子のフェーズ2の slots・deliveries は変えない：テント等の数（申請・割り当て）と受け渡し・返却の記録はこの5表だけに持ち、受け渡しの時刻を作るとき（フェーズ2）は数を確定した割り当てから読む（deliveries に数を持たせない。deliveries の tent・weight・side_curtain の status・returned はテント等の受け渡し・返却に使わない）。
   - 楽観ロック：割り当ては `save_lending_assignments` の行ごとの updatedAt（DB がミリ秒までで比べる）、備品の編集・削除は画面からの直接の update・delete に updated_at の条件（受け取った文字列のまま。マイクロ秒まで）。申請と記録は (A)（送る前に読み直す。04）。件数の上限は持たない（数・名前・メモの大きさと、申請できる区分の数〔4 個まで〕で抑える）
+- 備品（数えるだけ）（T22。D-60）：
+  - 書き込みの道：数（count_stocks）は在庫入力から直接（RLS。`private.can_write_stocks(year_id)`。在庫と同じ段と年度の状態。理由の要らない1つの表の書き込みなので RPC にしない。監査の理由は null）。在庫入力の「保存」は、在庫（stocks）の upsert の後に count_stocks の upsert（`on conflict (year_id, room_id, count_item_id)`）を送る（別のリクエスト。数を絶対値で書くので (A) の読み直しで決める。04）。名前を足すのは RPC `add_count_item(year_id, name)` だけ（在庫を書ける人が使うので、表の insert のポリシーは管理者だけのまま）。名前・最初から出す・並びを直す・消すのは、管理者がマスタ設定の品目のタブから直接（items と同じ `private.is_admin_of_open_year()`。消せるのは数の行がない物だけ。外部キーの restrict で 23503）。
+  - add_count_item：SECURITY DEFINER・`search_path = ''`。最初に `private.can_write_stocks(year_id)` を確かめ、書けなければ forbidden（段と年度の状態の両方。終了の年度・振り分け中の部員も forbidden）。名前が null・空・前後に空白（上の 25 文字）・51 字以上なら invalid_input（field: name）。同じ名前（NFKC・小文字で同じ）があればその id を返し、なければ並びを今の最大＋1 にして足し、その id を返す（同時に同じ名前を足しても、一意の索引と `on conflict do nothing` で1行になり、同じ id を返す）。新しく足すときだけ、名前の一覧（count_items）がもう 500 行あれば足さずに invalid_input（field: name、reason: too_many）にする（部員も呼べる RPC なので、名前がいくらでも増えないようにする。同じ名前ならその id を返すのは 500 行でも同じ。2026-11-09 のセキュリティのレビュー）。
+  - DB が入れる値：counted_by・counted_at は stocks の set_counted と同じ形のトリガー（`private.tg_count_stocks_set_counted`）が入れる（ログインしている人の書き込みだけ。クライアントの値は使わない）。count_items の created_by はトリガー `set_actor`（`private.tg_count_items_set_actor`。insert で auth.uid()、update では元の値のまま。seed・SQL Editor では入れた値のまま。D-10）。
+  - 変えられない列（check_immutable。invalid_input）：count_stocks の year_id・room_id・count_item_id（行は足すか消すだけ。upsert で同じ値を書き直すのは通る）。count_items は年度を持たないので付けない。
+  - 監査（tg_audit。D-11）は2表に付ける（row_pk は count_items が id、count_stocks が year_id・room_id・count_item_id）。count_items の行は年度を持たないので、履歴は年度をまたぐ3表と同じく、終了でない年度の管理者が読む（audit_logs_select の年度のない行の一覧に count_items を足す）。
+  - 机椅子との関係：振り分けの入力でないので、版（allocation_version）を増やさない（`bump_version_*` を付けない。振り分け中に数えても自動振り分けの conflict にならない）。確定中の守り（guard_confirmed）も付けない（振り分けに使わないので、確定中に減らしても在庫超過にならない）。終了（closed）の年度は読むだけ（can_write_stocks）。スナップショット（振り分けの画面の版の比べ）と年度データの JSON にも入れない（数えるだけの記録なので、入れるかは後で決める）。年度の作成は数を写さない（前年の数は RPC `previous_year_count_stocks` で読む）。
+  - 前年の数：`previous_year_count_stocks(year_id)` は `previous_year_stocks` と同じ形（総務が呼べる。前年度〔prev_year_id〕の count_stocks の room_id・count_item_id・count を返す。前年度がなければ 0 行。年度の状態によらない。前年度のロールは要らない）。
 
 ## 権限とRLS
 
@@ -739,7 +782,7 @@ R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ
 | allocations | R・RPC | R・RPC | R | R（自団体・confirmed 以降） | R（confirmed 以降） |
 | deliveries | RW | RW | R・RPC | R（自団体） | R |
 | profiles | R（自分と、その年度のメンバー） | R（自分と、その年度のメンバー） | R（自分と、その年度のメンバー。表示名） | R（自分） | R（自分） |
-| audit_logs | R（その年度。年度のない行は、年度をまたぐ3表の分を closed でない年度の admin が読む） | R（その年度。年度のない行は読めない） | — | — | — |
+| audit_logs | R（その年度。年度のない行は、年度をまたぐ3表と count_items の分を closed でない年度の admin が読む） | R（その年度。年度のない行は読めない） | — | — | — |
 | notices | R・RPC | R・RPC | R・RPC（読むのはその年度の全部。書くのは総務内のお知らせを出すことと、自分が書いたものを直す・消すことだけ。下の「お知らせの権限」） | R（代表である年度の全団体あてと、自団体を宛先の団体に含む指定の団体あて） | R（その年度の全団体あて・指定の団体あて。総務内は読めない） |
 | notice_groups | R・RPC | R・RPC | R | R（自団体の行だけ） | R（その年度の行） |
 | events | RW（closed でない年度） | RW（closed でない年度） | R | R（代表である年度の、対象が団体・全員の項目） | R（その年度の、対象が団体・全員の項目。総務の項目は読めない） |
@@ -755,6 +798,8 @@ R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ
 | lending_assignments | R・RPC | R・RPC | R | R（自団体・割り当ての確定後） | R（割り当ての確定後） |
 | lending_records | RW（closed でない年度。削除はなし） | RW（admin と同じ） | RW（admin と同じ） | R（自団体） | — |
 | lending_years | R・RPC | R・RPC | R | R（代表である年度） | R |
+| count_items | RW（closed でない年度のどれかで admin）・RPC（名前を足す） | R・RPC（名前を足す） | R・RPC（名前を足す。status が preparing / requesting のとき） | R | R |
+| count_stocks | RW | RW | RW（status が preparing / requesting のとき） | — | — |
 
 admin・head・deputy_head・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。「自分のメール」は、本人のものと確かめられる今のメール（`private.verified_email`。下の招待の受け入れと同じ判定。ポリシーは自分の分だけを返す `private.my_verified_email()` を呼ぶ）で、JWT の email とは比べない（email を他人のアドレスに変えた状態で、その人あての未使用の招待を読ませないため。D-17a）。head・deputy_head が読める招待は、その年度の staff のロールの招待と団体代表の招待（と自分のメールの行）で、admin・head・deputy_head・viewer のロールの招待は読めない。admin と viewer は、同じ年度の団体代表を兼ねられ、兼ねた人は両方の権限を持つ（例：admin が自団体の代表として申請を書く）。head・deputy_head・staff は、同じ年度の団体代表を兼ねられない（兼任の禁止。「設計上の決めごと」。違う年度なら兼ねてよい）。店長と副店長の権限は同じ。
 
@@ -832,6 +877,17 @@ Storage（bucket documents の物。storage.objects のポリシーとトリガ�
 | 確定する・確定を解除する（RPC。終了でない年度。確定は締切の後で、在庫超過と未入力がないとき。解除は理由が要る） | ○ | ○ | — | — | — |
 | 受け渡し・返却の記録（lending_records）を読む | その年度の全部 | その年度の全部 | その年度の全部 | 自団体 | — |
 | 記録を書く（終了でない年度。確定の前でも） | ○ | ○ | ○ | — | — |
+
+**備品（数えるだけ）の権限**（T22。D-60）：数（count_stocks）の書き込みは画面から直接（RLS。insert・update・delete は `private.can_write_stocks(year_id)`。在庫と同じ）。名前の一覧（count_items）の insert・update・delete は items と同じ `private.is_admin_of_open_year()`（管理者がマスタ設定から）。名前を足すのは RPC `add_count_item` で、在庫を書ける人が呼べる（書けなければ forbidden）。読み取りは年度の状態によらない。count_stocks の select は D-47 の形（`year_id in (select private.my_role_year_ids('{admin,head,deputy_head,staff}'))`）。
+
+| 操作 | admin | head・deputy_head | staff | 団体代表（店長・副店長） | viewer |
+| --- | --- | --- | --- | --- | --- |
+| 名前の一覧（count_items）を読む | ○ | ○ | ○ | ○ | ○ |
+| 名前を足す（RPC add_count_item。同じ名前ならその id を返す） | 終了でない年度 | 終了でない年度 | 準備中・受付中 | — | — |
+| 名前・最初から出す・並びを直す、数のない物を消す（直接） | ○（終了でない年度のどれかで admin） | — | — | — | — |
+| 数（count_stocks）を読む | その年度 | その年度 | その年度 | — | — |
+| 数を書く（直接。upsert・削除） | 終了でない年度 | 終了でない年度 | 準備中・受付中 | — | — |
+| 前年の数を読む（RPC previous_year_count_stocks） | ○ | ○ | ○ | — | — |
 
 - allocations は誰にも直接の書き込みを許さない。すべて RPC で書き、確定中は RPC がエラーを返す。団体の連鎖削除などで確定中・終了の年度の allocations が変わることも、トリガーが止める。これで確定後の書き込みは確実に止まる
 - 締切前：団体代表が申請を書けるのは、status が requesting で、request_open_at が null か過ぎていて、now() が request_close_at より前のとき。request_close_at が null なら締切前とみなさない（書けない）。部門長以上（admin・head・deputy_head）が RPC なしで書けるのは、status が preparing のときと、requesting で締切前のとき。受付開始（requesting への遷移）は request_close_at が未来でなければエラーにする
