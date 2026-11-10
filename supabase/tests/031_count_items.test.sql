@@ -56,8 +56,8 @@ select col_type_is('count_stocks', 'count', 'integer');
 select col_type_is('count_stocks', 'counted_at', 'timestamp with time zone');
 select is((select string_agg(table_name || '.' || column_name, ' ' order by table_name, column_name) from information_schema.columns
            where table_schema = 'public' and table_name in ('count_items', 'count_stocks') and is_nullable = 'YES'),
-  'count_items.created_by count_stocks.counted_at count_stocks.counted_by',
-  '2表で null を許すのは足した人・数えた人・数えた日時だけ');
+  'count_items.created_by count_items.image_path count_stocks.counted_at count_stocks.counted_by',
+  '2表で null を許すのは足した人・数えた人・数えた日時と、品目の画像（T23。032 で見る）だけ');
 select is((select string_agg(table_name || '.' || column_name, ' ' order by table_name, column_name) from information_schema.columns
            where table_schema = 'public' and table_name in ('count_items', 'count_stocks') and column_default is not null
              and column_name not in ('created_at', 'updated_at')),
@@ -68,7 +68,7 @@ select col_is_pk('count_stocks', array['year_id','room_id','count_item_id']);
 -- CHECK：名前は lending_items_name_check と同じ式（同じ 25 文字の空白を除いた形）で 50 字まで。数は 0〜10000
 select is((select string_agg(conname, ' ' order by conname) from pg_constraint
            where contype = 'c' and conrelid in ('public.count_items'::regclass, 'public.count_stocks'::regclass)),
-  'count_items_name_check count_stocks_count_check', '2表の CHECK は名前と数の2つ');
+  'count_items_image_path_check count_items_name_check count_stocks_count_check', '2表の CHECK は名前と数の2つと、品目の画像の path の形（T23。032 で見る）');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'count_items_name_check'),
   (select replace(pg_get_constraintdef(oid), '<= 100', '<= 50') from pg_constraint where conname = 'lending_items_name_check'),
   'count_items_name_check は lending_items_name_check と同じ式で 50 字まで');
@@ -90,9 +90,9 @@ select has_index('count_stocks', 'count_stocks_count_item_id_idx');
 -- トリガー：版の増分（bump_version_*）・確定中の守り（guard_confirmed）・終了の守り（lock_year_guard）はない
 select is((select string_agg(c.relname || '.' || t.tgname, ' ' order by c.relname, t.tgname) from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where c.oid in ('public.count_items'::regclass, 'public.count_stocks'::regclass) and not t.tgisinternal),
-  'count_items.audit count_items.set_actor count_items.set_timestamps '
+  'count_items.audit count_items.check_image_path count_items.set_actor count_items.set_timestamps '
   || 'count_stocks.audit count_stocks.check_immutable count_stocks.set_counted count_stocks.set_timestamps',
-  '2表のトリガーは監査・日時・足した人・数えた人・付け替えの禁止だけ（版の増分と確定中の守りはない）');
+  '2表のトリガーは監査・日時・足した人・数えた人・付け替えの禁止と、品目の画像の守り（T23。032 で見る）だけ（版の増分と確定中の守りはない）');
 select is((select pg_get_triggerdef(t.oid) from pg_trigger t where t.tgname = 'check_immutable' and t.tgrelid = 'public.count_stocks'::regclass),
   'CREATE TRIGGER check_immutable BEFORE UPDATE OF year_id, room_id, count_item_id ON public.count_stocks FOR EACH ROW EXECUTE FUNCTION private.tg_immutable_columns(''year_id'', ''room_id'', ''count_item_id'')',
   'count_stocks の check_immutable は年度・場所・物の3列');

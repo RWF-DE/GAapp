@@ -55,8 +55,20 @@ from (values (tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F13_REP'), '{"size": 10}
              (tests.doc_path('Y2', 'G3', 'DOC_Y2', 'F_Y2'), '{"size": 2000}'),
              ('pgtap/' || tests.id('G1') || '/x.pdf', '{"size": 1}'),
              (tests.id('Y1') || '', '{"size": 1}')) v(name, metadata);
+-- 品目の画像（T23）：⑤の Storage の比べ方のために、bucket item-images の予約（head の生きた予約〔届いていない〕・admin の生きた予約〔届いた〕。
+-- fixture の IU_STAFF は staff の期限の切れた予約）と、行の画像に使っている物（U13_CI。T-白椅子の image_path）・どの行にも使われていない物
+-- （O13_CI。ゴミ箱のフォルダ）を足す。行の画像は postgres で入れる（auth.uid() がないので check_image_path は通す）
+insert into tests.ids values ('R13_HEAD', gen_random_uuid()), ('R13_ADMIN', gen_random_uuid()), ('O13_CI', gen_random_uuid()), ('U13_CI', gen_random_uuid());
+insert into public.item_image_uploads (id, item_id, count_item_id, object_path, content_type, created_by, expires_at) values
+  (tests.id('R13_HEAD'), null, tests.id('CI_WHITE'), 'count-items/' || tests.id('CI_WHITE') || '/' || tests.id('R13_HEAD') || '.webp', 'image/webp', tests.id('head'), now() + interval '1 hour'),
+  (tests.id('R13_ADMIN'), tests.id('desk'), null, 'items/' || tests.id('desk') || '/' || tests.id('R13_ADMIN') || '.webp', 'image/webp', tests.id('admin'), now() + interval '1 hour');
+select tests.put_object('item-images', v.name)
+from (values ('items/' || tests.id('desk') || '/' || tests.id('R13_ADMIN') || '.webp'),
+             ('count-items/' || tests.id('CI_TRASH') || '/' || tests.id('O13_CI') || '.webp'),
+             ('count-items/' || tests.id('CI_WHITE') || '/' || tests.id('U13_CI') || '.webp')) v(name);
+update public.count_items set image_path = 'count-items/' || tests.id('CI_WHITE') || '/' || tests.id('U13_CI') || '.webp' where id = tests.id('CI_WHITE');
 
-select plan(130);
+select plan(132);
 
 -- ---------------------------------------------------------------- ① 行ごとの形の述語と同じ行が見える
 -- 0004 の述語の形のまま、ロールの配列だけを T15 の段にした（年度の行の履歴は部門長以上、ほかは総務。groups は総務と viewer）
@@ -356,6 +368,8 @@ select tests.logout();
 -- 自分の範囲（1つ目のフォルダが部門長以上の年度、または2つ目が自分の団体）の、どの提出にも属さない物の path。どれも呼んだ人についてだけ答える
 create function tests.path_label(p_path text) returns text language sql stable as $$
   select coalesce((select t.name from tests.ids t where t.id::text = split_part(split_part(p_path, '/', 4), '.', 1)),
+                  (select t.name from tests.ids t where p_path ~ '^(items|count-items)/'
+                                                    and t.id::text = split_part(split_part(p_path, '/', 3), '.', 1)),
                   replace(replace(p_path, tests.id('Y1')::text, 'Y1'), tests.id('G1')::text, 'G1'))
 $$;
 grant execute on function tests.path_label(text) to authenticated;
@@ -620,15 +634,30 @@ select tests.logout();
 create function tests.is_uuid_text(p text) returns boolean language sql immutable as $$
   select p ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 $$;
+-- 品目の画像（T23）：bucket item-images の行ごとの形の述語は 02 の「品目の画像の権限」の Storage の表から書いた。select：ロールか団体代表が
+-- ある人。insert：自分の、期限の切れていない、使っていない予約の path で、今もその段（item は管理者、count_item は在庫を書ける人）。
+-- delete：どの行の image_path にも使われていない物で、フォルダの段（items は管理者、count-items は在庫を書ける人）があり、ほかの人の
+-- 生きた予約の物でない
+create function tests.image_tier(p_folder text) returns boolean language sql stable as $$
+  select case p_folder when 'items' then private.is_admin_of_open_year()
+                       when 'count-items' then exists (select 1 from public.year_roles yr
+                                                       where yr.user_id = auth.uid() and private.can_write_stocks(yr.year_id))
+                       else false end
+$$;
 create function tests.storage_old_select(p_bucket text, p_name text) returns boolean language sql stable as $$
-  select p_bucket = 'documents'
+  select (p_bucket = 'item-images' and private.has_any_access())
+         or p_bucket = 'documents'
          and (case when tests.is_uuid_text(split_part(p_name, '/', 1))
                    then private.has_any_role(split_part(p_name, '/', 1)::uuid, '{admin,head,deputy_head}') else false end
               or case when tests.is_uuid_text(split_part(p_name, '/', 2))
                       then private.is_group_member(split_part(p_name, '/', 2)::uuid) else false end)
 $$;
 create function tests.storage_old_insert(p_bucket text, p_name text) returns boolean language sql stable as $$
-  select p_bucket = 'documents'
+  select (p_bucket = 'item-images'
+          and exists (select 1 from public.item_image_uploads r
+                      where r.object_path = p_name and r.created_by = auth.uid() and r.expires_at > now() and r.used_at is null
+                        and tests.image_tier(case when r.item_id is not null then 'items' else 'count-items' end)))
+         or p_bucket = 'documents'
          and exists (select 1 from public.document_files f
                      join public.document_submissions s on s.document_id = f.document_id and s.group_id = f.group_id
                      where f.object_path = p_name and f.created_by = auth.uid() and private.year_status(f.year_id) <> 'closed'
@@ -636,14 +665,27 @@ create function tests.storage_old_insert(p_bucket text, p_name text) returns boo
                             or (s.status <> 'approved' and private.has_any_role(f.year_id, '{admin,head,deputy_head}'))))
 $$;
 create function tests.storage_old_delete(p_bucket text, p_name text) returns boolean language sql stable as $$
-  select tests.storage_old_select(p_bucket, p_name)
-         and not exists (select 1 from public.document_files f where f.object_path = p_name)
+  select case p_bucket
+           when 'documents' then tests.storage_old_select(p_bucket, p_name)
+                                 and not exists (select 1 from public.document_files f where f.object_path = p_name)
+           when 'item-images' then tests.storage_old_select(p_bucket, p_name)
+                                   and tests.image_tier(split_part(p_name, '/', 1))
+                                   and not exists (select 1 from public.items i where i.image_path = p_name)
+                                   and not exists (select 1 from public.count_items c where c.image_path = p_name)
+                                   and not exists (select 1 from public.item_image_uploads r
+                                                   where r.object_path = p_name and r.created_by <> auth.uid()
+                                                     and r.expires_at > now() and r.used_at is null)
+           else false end
 $$;
 -- 試す物と path（bucket と name）：bucket の全部の物と、予約の path の全部と、予約していない path
 create function tests.storage_candidates() returns table (bucket text, name text) language sql stable as $$
   select o.bucket_id, o.name from storage.objects o
   union
   select 'documents', f.object_path from public.document_files f
+  union
+  select 'item-images', r.object_path from public.item_image_uploads r
+  union
+  select 'item-images', 'count-items/' || tests.id('CI_WHITE') || '/' || tests.id('outsider') || '.webp'
   union
   select 'documents', tests.id('Y1') || '/' || tests.id('G1') || '/' || tests.id('DOC_NOFILE') || '/' || tests.id('outsider') || '.pdf'
 $$;
@@ -736,8 +778,19 @@ select ok((select count(distinct new) >= 5 and bool_or(new ~ 'select=documents:'
                   and bool_or(new ~ 'delete=documents:') from tests.compared_storage),
   'Storage の比べたものに中身がある（見える物・上げられる path・消せる物がある組と、ない組がある）');
 select is((select new from tests.compared_storage where scenario = 'requesting / Y2 preparing' and persona = 'rep'),
-  'select=documents:F13_REP documents:F_G1 documents:O_G1 documents:pgtap/G1/x.pdf insert=documents:F13_REP delete=documents:O_G1 documents:pgtap/G1/x.pdf',
-  'rep（受付中）：G1 のフォルダの物が見え、自分の予約（F13_REP）に上げられ（届いていても一意の索引で止まるだけ）、どの提出にも属さない物を消せる');
+  'select=documents:F13_REP documents:F_G1 documents:O_G1 documents:pgtap/G1/x.pdf item-images:O13_CI item-images:R13_ADMIN item-images:U13_CI '
+  || 'insert=documents:F13_REP delete=documents:O_G1 documents:pgtap/G1/x.pdf',
+  'rep（受付中）：G1 のフォルダの物が見え、自分の予約（F13_REP）に上げられ（届いていても一意の索引で止まるだけ）、どの提出にも属さない物を消せる。'
+  || '品目の画像（T23）は全部見えるが、上げられず消せない');
+-- 品目の画像（T23）：head は自分の生きた予約（R13_HEAD）に上げられ、count-items のフォルダの使われていない物（O13_CI）を消せる。行の画像に
+-- 使っている物（U13_CI）と、items のフォルダの管理者の生きた予約の物（R13_ADMIN）は消せない
+select is((select new from tests.compared_storage where scenario = 'requesting / Y2 preparing' and persona = 'head'),
+  'select=documents:F13_REP documents:F_G1 documents:O13_G2 documents:O_G1 documents:Y1 item-images:O13_CI item-images:R13_ADMIN item-images:U13_CI '
+  || 'insert=documents:F13_HEAD item-images:R13_HEAD delete=documents:O13_G2 documents:O_G1 documents:Y1 item-images:O13_CI',
+  'head（受付中）：品目の画像は全部見え、自分の生きた予約に上げられ、count-items のフォルダの使われていない物だけを消せる（T23）');
+select is((select new from tests.compared_storage where scenario = 'allocating / Y2 preparing' and persona = 'staff'),
+  'select=documents:F_Y2 item-images:O13_CI item-images:R13_ADMIN item-images:U13_CI insert=documents:F_Y2 delete=-',
+  'staff（振り分け中）：品目の画像は見えるが、在庫を書けないので消せない（T23）');
 
 -- シフト・作業（T20）：5表の select のポリシーも集合を1回作る形で、総務の年度の集合（my_role_year_ids）だけを使う（閲覧のみ・店長・副店長の
 -- 枝はない。段の配列に viewer を足すと閲覧のみに見えてしまう）

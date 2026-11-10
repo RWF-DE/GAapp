@@ -137,6 +137,7 @@ export type Database = {
           created_at: string;
           created_by: string | null;
           id: string;
+          image_path: string | null;
           name: string;
           sort_order: number;
           updated_at: string;
@@ -147,6 +148,7 @@ export type Database = {
           created_at?: string;
           created_by?: string | null;
           id?: string;
+          image_path?: string | null;
           name: string;
           sort_order?: number;
           updated_at?: string;
@@ -156,6 +158,7 @@ export type Database = {
           created_at?: string;
           created_by?: string | null;
           id?: string;
+          image_path?: string | null;
           name?: string;
           sort_order?: number;
           updated_at?: string;
@@ -694,12 +697,71 @@ export type Database = {
           },
         ];
       };
+      item_image_uploads: {
+        Row: {
+          content_type: string;
+          count_item_id: string | null;
+          created_at: string;
+          created_by: string | null;
+          expires_at: string;
+          id: string;
+          item_id: string | null;
+          object_path: string;
+          replaced_path: string | null;
+          updated_at: string;
+          used_at: string | null;
+        };
+        ComputedFields: never;
+        Insert: {
+          content_type: string;
+          count_item_id?: string | null;
+          created_at?: string;
+          created_by?: string | null;
+          expires_at: string;
+          id: string;
+          item_id?: string | null;
+          object_path: string;
+          replaced_path?: string | null;
+          updated_at?: string;
+          used_at?: string | null;
+        };
+        Update: {
+          content_type?: string;
+          count_item_id?: string | null;
+          created_at?: string;
+          created_by?: string | null;
+          expires_at?: string;
+          id?: string;
+          item_id?: string | null;
+          object_path?: string;
+          replaced_path?: string | null;
+          updated_at?: string;
+          used_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "item_image_uploads_count_item_id_fkey";
+            columns: ["count_item_id"];
+            isOneToOne: false;
+            referencedRelation: "count_items";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "item_image_uploads_item_id_fkey";
+            columns: ["item_id"];
+            isOneToOne: false;
+            referencedRelation: "items";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       items: {
         Row: {
           aliases: string[];
           code: string;
           created_at: string;
           id: string;
+          image_path: string | null;
           name: string;
           requestable_categories: Database["public"]["Enums"]["group_category"][];
           sort_order: number;
@@ -711,6 +773,7 @@ export type Database = {
           code: string;
           created_at?: string;
           id?: string;
+          image_path?: string | null;
           name: string;
           requestable_categories?: Database["public"]["Enums"]["group_category"][];
           sort_order: number;
@@ -721,6 +784,7 @@ export type Database = {
           code?: string;
           created_at?: string;
           id?: string;
+          image_path?: string | null;
           name?: string;
           requestable_categories?: Database["public"]["Enums"]["group_category"][];
           sort_order?: number;
@@ -2114,6 +2178,28 @@ export type Database = {
           isSetofReturn: false;
         };
       };
+      reserve_item_image: {
+        Args: { p_content_type: string; p_image_id: string; p_kind: string; p_target_id: string };
+        Returns: {
+          content_type: string;
+          count_item_id: string | null;
+          created_at: string;
+          created_by: string | null;
+          expires_at: string;
+          id: string;
+          item_id: string | null;
+          object_path: string;
+          replaced_path: string | null;
+          updated_at: string;
+          used_at: string | null;
+        };
+        SetofOptions: {
+          from: "*";
+          to: "item_image_uploads";
+          isOneToOne: true;
+          isSetofReturn: false;
+        };
+      };
       return_document: {
         Args: {
           p_base_updated_at: string;
@@ -2215,6 +2301,10 @@ export type Database = {
           p_user_id: string;
         };
         Returns: undefined;
+      };
+      set_item_image: {
+        Args: { p_image_id: string; p_kind: string; p_target_id: string };
+        Returns: string;
       };
       set_lending_confirmed: {
         Args: { p_confirmed: boolean; p_reason?: string; p_year_id: string };

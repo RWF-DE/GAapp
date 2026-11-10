@@ -295,3 +295,11 @@ insert into public.count_stocks (year_id, room_id, count_item_id, count) values
   (tests.id('Y1'), tests.id('R1'), tests.id('CI_TRASH'), 5),
   (tests.id('Y1'), tests.id('R1'), tests.id('CI_WHITE'), 2),
   (tests.id('Y2'), tests.id('R1'), tests.id('CI_TRASH'), 3);
+
+-- 品目の画像（T23。D-61）：画像の予約を1つ置く（011 の権限表で読む）。IU_STAFF は staff の T-白椅子の予約で、期限が切れている（032 の
+-- 予約の数の上限・bucket の合計に数えない）。物（Storage）は置かない（027・013 の Storage の比べ方を変えない）。予約は RPC だけで書く表
+-- なので postgres で直接入れる
+insert into tests.ids values ('IU_STAFF', gen_random_uuid());
+insert into public.item_image_uploads (id, count_item_id, object_path, content_type, created_by, expires_at)
+values (tests.id('IU_STAFF'), tests.id('CI_WHITE'), 'count-items/' || tests.id('CI_WHITE') || '/' || tests.id('IU_STAFF') || '.webp',
+        'image/webp', tests.id('staff'), now() - interval '1 day');

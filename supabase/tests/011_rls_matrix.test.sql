@@ -563,6 +563,17 @@ insert into tests.expect values
  ('count_stocks','delete','*','YYNNNNY'), ('count_stocks','delete','allocating','YNNNNNY'), ('count_stocks','delete','confirmed','YNNNNNY'),
  ('count_stocks','delete','closed','NNNNNNN');
 
+-- 品目の画像の予約（T23。02「品目の画像の権限」から書いた）：RPC だけで書く（書き込みの権限なし）。読むのは予約した人だけ（fixture の
+-- IU_STAFF は staff の期限の切れた予約）。年度の状態によらない
+insert into tests.cell_sql values
+ ('item_image_uploads','select','select count(*) from public.item_image_uploads where id = :IU_STAFF'),
+ ('item_image_uploads','insert','insert into public.item_image_uploads(id, count_item_id, object_path, content_type, expires_at) values (gen_random_uuid(), :CI_WHITE, ''x'', ''image/webp'', now())'),
+ ('item_image_uploads','update','update public.item_image_uploads set expires_at = now() where id = :IU_STAFF'),
+ ('item_image_uploads','delete','delete from public.item_image_uploads where id = :IU_STAFF');
+insert into tests.expect values
+ ('item_image_uploads','select','*','NYNNNNN'),
+ ('item_image_uploads','insert','*','NNNNNNN'), ('item_image_uploads','update','*','NNNNNNN'), ('item_image_uploads','delete','*','NNNNNNN');
+
 -- ペルソナと期待値の列。deputy は head の列で確かめる（総務副部門長の権限は総務部門長と同じ。D-48）
 create table tests.persona_col (persona text primary key, col int not null, ord int not null unique);
 insert into tests.persona_col values
@@ -592,8 +603,8 @@ select plan((select count(*)::int from tests.cells) + 6 + 31 + 14 + 22);   -- 14
 select is((select count(*)::int from tests.cells where expected is null), 0, '全セルに期待値がある（既定の * か状態ごとの行）');
 select is_empty($$ select e.tbl, e.op from tests.expect e left join tests.cell_sql c using (tbl, op) where c.tbl is null $$,
   '期待値の表に、試す SQL のない行がない');
-select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 40,
-  '37 表（T17 のお知らせの2表、T18 の予定と締切、T19 の提出物の3表、T20 のシフト・作業の5表、T21 のテント等の5表、T22 の備品〔数えるだけ〕の2表を含む）と3つのビュー（v_remaining と提出物の2つ）をすべて試す');
+select is((select count(distinct tbl)::int from tests.cell_sql where tbl !~ '\('), 41,
+  '38 表（T17 のお知らせの2表、T18 の予定と締切、T19 の提出物の3表、T20 のシフト・作業の5表、T21 のテント等の5表、T22 の備品〔数えるだけ〕の2表、T23 の品目の画像の予約を含む）と3つのビュー（v_remaining と提出物の2つ）をすべて試す');
 select is_empty($$ select tbl, op, scenario, yn from tests.expect where yn !~ '^[YN]{7}$' $$,
   '期待値はどの行も7列（admin staff rep viewer outsider admin2 head）');
 select is((select string_agg(persona || '=' || col, ' ' order by ord) from tests.persona_col),
