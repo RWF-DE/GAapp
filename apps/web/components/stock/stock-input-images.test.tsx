@@ -380,3 +380,16 @@ describe('T23 在庫入力の行のメニュー「写真を足す」「写真を
     expect(toasts.success).toHaveBeenCalledWith('写真を送りました');
   });
 });
+
+describe('T25 在庫入力の場所名の近くに「現状復帰の写真」へのリンク（D-63）', () => {
+  it('総務にはいつもリンク（/room-photos?room=…）。写真の枚数は読まない（room_photos・RPC を呼ばない）', async () => {
+    serve();
+    renderInput('staff', 'requesting');
+    const link = await screen.findByTestId('room-photos-link');
+    expect(link.tagName).toBe('A');
+    expect(link.textContent).toBe('現状復帰の写真');
+    expect(link.getAttribute('href')).toBe(`/room-photos?room=${ROOM.id}`);
+    await waitFor(() => expect(fake.signed).toHaveLength(1));
+    expect(fake.issued.some((c) => c.table.includes('room_photo'))).toBe(false);
+  });
+});

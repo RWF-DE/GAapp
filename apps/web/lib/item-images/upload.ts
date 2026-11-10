@@ -27,8 +27,13 @@ export interface ItemImageBucketApi {
   list(folder: string, options?: { limit?: number }): Promise<{ data: { name: string }[] | null; error: unknown }>;
 }
 
+/** Storage の bucket の操作（既定は item-images。現状復帰の写真〔lib/room-photos/upload.ts〕は room-photos を渡す。T25） */
+export function storageBucket(client: AppSupabaseClient, id: string = ITEM_IMAGES_BUCKET): ItemImageBucketApi {
+  return (client as unknown as { storage: { from(id: string): ItemImageBucketApi } }).storage.from(id);
+}
+
 function bucket(client: AppSupabaseClient): ItemImageBucketApi {
-  return (client as unknown as { storage: { from(id: string): ItemImageBucketApi } }).storage.from(ITEM_IMAGES_BUCKET);
+  return storageBucket(client);
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);

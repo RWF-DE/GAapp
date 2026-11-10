@@ -2,7 +2,7 @@
 -- anon と PUBLIC に何もないことは 001_schema が確かめる。ここでは authenticated と supabase_auth_admin を一覧で比べる（supabase_auth_admin は T04 でフックを足した）。
 begin;
 \ir _helpers/personas.psql
-select plan(55);
+select plan(57);
 
 -- 一覧（T15 から版〔引数の型〕まで比べる。同じ名前の古い版〔4引数の invite など〕が残れば落ちる）
 create table tests.expected_fn (kind text not null, sig text primary key);
@@ -127,6 +127,24 @@ insert into tests.expected_fn values
 -- 置き換えるだけで数・引数・返り値は変えない
 insert into tests.expected_fn values
   ('document_helper', 'private.tg_documents_keep_requires_file_off()');
+-- 現状復帰の写真（0024。T25）：RPC 5つ、ポリシーが呼ぶ集合の関数3つ（authenticated が実行できる）、誰も実行できない判定・段・上限の補助と
+-- トリガー関数2つ（6 枚の上限・storage.objects の書き込みの守り）
+insert into tests.expected_fn values
+  ('rpc', 'public.reserve_room_photo(uuid, uuid, uuid, text)'),
+  ('rpc', 'public.add_room_photo(uuid, text)'),
+  ('rpc', 'public.update_room_photo(uuid, text, integer)'),
+  ('rpc', 'public.delete_room_photo(uuid)'),
+  ('rpc', 'public.room_photos_with_previous(uuid, uuid)'),
+  ('predicate', 'private.room_photo_year_ids()'),
+  ('predicate', 'private.my_room_photo_upload_paths()'),
+  ('predicate', 'private.my_room_photo_orphan_paths()'),
+  ('photo_internal', 'private.can_see_room_photos(uuid)'),
+  ('photo_internal', 'private.can_write_room_photos(uuid)'),
+  ('photo_internal', 'private.lock_room_photo_year(uuid)'),
+  ('photo_internal', 'private.lock_room_photo(uuid)'),
+  ('photo_internal', 'private.assert_room_photo_quota(uuid, uuid, uuid)'),
+  ('photo_internal', 'private.tg_room_photos_check_limit()'),
+  ('photo_internal', 'private.tg_room_photos_objects_guard()');
 
 -- ---------------------------------------------------------------- 関数
 select is_empty($$ select sig from tests.expected_fn where to_regprocedure(sig) is null $$,
@@ -138,11 +156,11 @@ select is_empty($$ select p.oid::regprocedure::text from pg_proc p
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace = 'public'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   $$ select to_regprocedure(sig)::text from tests.expected_fn where kind = 'rpc' $$,
-  'authenticated が実行できる public の関数は RPC 40 個だけ（版まで比べる。T19 で提出物の 11 個を、T20 で set_task_status・add_shift_slots を、T21 でテント等の3つを、T22 で備品〔数えるだけ〕の2つを、T23 で品目の画像の2つを足した）');
+  'authenticated が実行できる public の関数は RPC 45 個だけ（版まで比べる。T25 で現状復帰の写真の5つを足した。T19 で提出物の 11 個を、T20 で set_task_status・add_shift_slots を、T21 でテント等の3つを、T22 で備品〔数えるだけ〕の2つを、T23 で品目の画像の2つを足した）');
 select set_eq($$ select p.oid::regprocedure::text from pg_proc p
                  where p.pronamespace = 'private'::regnamespace and has_function_privilege('authenticated', p.oid, 'execute') $$,
   $$ select to_regprocedure(sig)::text from tests.expected_fn where kind = 'predicate' $$,
-  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 26 個だけ（0010 の集合の3個・can_lead・お知らせの集合の2個・提出物の集合の3個・テント等の2個・品目の画像の集合の2個を含む。RPC の補助・トリガー関数・verified_email・兼任の補助・テント等の年度のロックは実行できない）');
+  'authenticated が実行できる private の関数は、ポリシーが呼ぶ判定関数 29 個だけ（T25 で現状復帰の写真の集合の3個を足した。0010 の集合の3個・can_lead・お知らせの集合の2個・提出物の集合の3個・テント等の2個・品目の画像の集合の2個を含む。RPC の補助・トリガー関数・verified_email・兼任の補助・テント等の年度のロックは実行できない）');
 -- 同じ名前の public の関数は版が1つだけ（2つあると、名前つきの引数で呼ぶ PostgREST が版を選べない。PGRST203）
 select is_empty($$ select p.proname::text from pg_proc p where p.pronamespace = 'public'::regnamespace
                    and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
@@ -328,6 +346,24 @@ select is((select string_agg(p.proname || '(' || array_to_string(p.proargnames[1
   'reserve_item_image(p_kind,p_target_id,p_image_id,p_content_type) defaults=0 returns=item_image_uploads | '
   || 'set_item_image(p_kind,p_target_id,p_image_id) defaults=0 returns=text',
   '品目の画像の RPC 2つの引数名・既定値の数・返り値（T23）');
+select is_empty($$ select f.sig from tests.expected_fn f
+                   where f.kind = 'photo_internal'
+                     and (has_function_privilege('authenticated', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('anon', to_regprocedure(f.sig), 'execute')
+                          or has_function_privilege('supabase_auth_admin', to_regprocedure(f.sig), 'execute')
+                          or exists (select 1 from pg_proc p, aclexplode(p.proacl) a
+                                     where p.oid = to_regprocedure(f.sig) and a.grantee = 0)) $$,
+  '現状復帰の写真の判定・段・上限の補助とトリガー関数は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T25）');
+select is((select string_agg(p.proname || '(' || array_to_string(p.proargnames[1:p.pronargs], ',') || ') defaults=' || p.pronargdefaults
+                             || ' returns=' || pg_get_function_result(p.oid), ' | ' order by p.proname)
+           from tests.expected_fn f join pg_proc p on p.oid = to_regprocedure(f.sig)
+           where f.kind = 'rpc' and p.proname ~ 'room_photo'),
+  'add_room_photo(p_photo_id,p_memo) defaults=0 returns=room_photos | '
+  || 'delete_room_photo(p_photo_id) defaults=0 returns=text | '
+  || 'reserve_room_photo(p_year_id,p_room_id,p_photo_id,p_content_type) defaults=0 returns=room_photo_uploads | '
+  || 'room_photos_with_previous(p_year_id,p_room_id) defaults=0 returns=SETOF room_photos | '
+  || 'update_room_photo(p_photo_id,p_memo,p_sort_order) defaults=0 returns=room_photos',
+  '現状復帰の写真の RPC 5つの引数名・既定値の数・返り値（T25）');
 
 -- ---------------------------------------------------------------- スキーマ・表・シーケンス
 select ok(has_schema_privilege('authenticated', 'private', 'usage') and not has_schema_privilege('authenticated', 'private', 'create')
@@ -343,7 +379,7 @@ select set_eq($$ select format('%s %s', c.relname, p.p) from pg_class c
           'documents','document_submissions','document_files','v_document_status','v_document_files',
           'shift_duties','shift_slots','shift_needs','shift_assignments','tasks',
           'lending_items','lending_requests','lending_assignments','lending_records','lending_years',
-          'count_items','count_stocks','item_image_uploads']) t, unnest(array['select']) p
+          'count_items','count_stocks','item_image_uploads','room_photos','room_photo_uploads']) t, unnest(array['select']) p
         union all
         select format('%s %s', t, p) from unnest(array['rooms','items','room_years','distance_overrides','stocks','groups',
           'request_submissions','requests','rules','slots','deliveries','events',
@@ -354,7 +390,7 @@ select set_eq($$ select format('%s %s', c.relname, p.p) from pg_class c
         union all
         -- テント等の申請と記録（T21）：insert と update だけ（削除はしない。0 にして残す）
         select format('%s %s', t, p) from unnest(array['lending_requests','lending_records']) t, unnest(array['insert','update']) p),
-  'authenticated の表の権限：全表（T23 の品目の画像の予約 item_image_uploads を含む。RPC だけで書く）の select と、W の 21 表（T18 の予定と締切、T19 の提出物、T20 のシフト・作業の5表、T21 のテント等の備品、T22 の備品〔数えるだけ〕の2表を含む）の insert・update・delete、テント等の申請と記録の insert・update だけ（RPC だけで書く表〔お知らせの2表、提出・ファイル、テント等の割り当てと確定の印を含む〕には書き込みの権限がない）');
+  'authenticated の表の権限：全表（T23 の品目の画像の予約 item_image_uploads と、T25 の現状復帰の写真 room_photos・予約 room_photo_uploads を含む。RPC だけで書く）の select と、W の 21 表（T18 の予定と締切、T19 の提出物、T20 のシフト・作業の5表、T21 のテント等の備品、T22 の備品〔数えるだけ〕の2表を含む）の insert・update・delete、テント等の申請と記録の insert・update だけ（RPC だけで書く表〔お知らせの2表、提出・ファイル、テント等の割り当てと確定の印を含む〕には書き込みの権限がない）');
 select is_empty($$ select c.relname::text from pg_class c
                    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'v')
                      and (has_any_column_privilege('anon', c.oid, 'select') or has_any_column_privilege('anon', c.oid, 'insert')
@@ -401,11 +437,11 @@ select set_eq($$ select format('%s %s', tablename, cmd) from pg_policies where s
           'allocations','profiles','audit_logs','notices','notice_groups',
           'document_submissions','document_files',
           'lending_assignments','lending_years',
-          'item_image_uploads']) t
+          'item_image_uploads','room_photos','room_photo_uploads']) t
         union all
         -- テント等の申請と記録（T21）：select・insert・update（削除のポリシーはない）
         select format('%s %s', t, c) from unnest(array['lending_requests','lending_records']) t, unnest(array['SELECT','INSERT','UPDATE']) c),
-  'ポリシーは 105 個（W の 21 表は4操作、RPC だけで書く 15 表〔T23 の品目の画像の予約を含む〕は select だけ、テント等の申請と記録は3操作。T17 でお知らせの2表、T18 で予定と締切の4つ、T19 で提出物の6つ、T20 でシフト・作業の 20 個、T21 でテント等の 12 個、T22 で備品〔数えるだけ〕の8つを足した）');
+  'ポリシーは 107 個（W の 21 表は4操作、RPC だけで書く 17 表〔T23 の品目の画像の予約、T25 の現状復帰の写真と予約を含む〕は select だけ、テント等の申請と記録は3操作。T17 でお知らせの2表、T18 で予定と締切の4つ、T19 で提出物の6つ、T20 でシフト・作業の 20 個、T21 でテント等の 12 個、T22 で備品〔数えるだけ〕の8つを足した）');
 -- 予定と締切（T18）の書き込みは、その年度の部門長以上で年度が終了でないとき（can_lead。room_years・slots・deliveries と同じ）
 select is((select string_agg(format('%s %s using=%s check=%s', policyname, cmd, coalesce(qual, '-'), coalesce(with_check, '-')), ' / ' order by policyname)
            from pg_policies where schemaname = 'public' and tablename = 'events' and cmd <> 'SELECT'),
@@ -426,13 +462,16 @@ select is((select string_agg(format('%s %s %s %s', policyname, cmd, array_to_str
   'documents_objects_delete DELETE authenticated PERMISSIVE / documents_objects_insert INSERT authenticated PERMISSIVE / '
   || 'documents_objects_select SELECT authenticated PERMISSIVE / '
   || 'item_images_objects_delete DELETE authenticated PERMISSIVE / item_images_objects_insert INSERT authenticated PERMISSIVE / '
-  || 'item_images_objects_select SELECT authenticated PERMISSIVE',
-  'storage のポリシーは storage.objects の bucket documents の3つと bucket item-images の3つだけ（update と anon 向けはない）');
+  || 'item_images_objects_select SELECT authenticated PERMISSIVE / '
+  || 'room_photos_objects_delete DELETE authenticated PERMISSIVE / room_photos_objects_insert INSERT authenticated PERMISSIVE / '
+  || 'room_photos_objects_select SELECT authenticated PERMISSIVE',
+  'storage のポリシーは storage.objects の bucket documents・item-images・room-photos（T25）の3つずつだけ（update と anon 向けはない）');
 select ok((select bool_and(case when policyname like 'documents\_%' then coalesce(qual, with_check) ~ '^\(\(bucket_id = ''documents''::text\) AND '
                                 when policyname like 'item\_images\_%' then coalesce(qual, with_check) ~ '^\(\(bucket_id = ''item-images''::text\) AND '
+                                when policyname like 'room\_photos\_%' then coalesce(qual, with_check) ~ '^\(\(bucket_id = ''room-photos''::text\) AND '
                                 else false end)
            from pg_policies where schemaname = 'storage' and tablename = 'objects'),
-  'storage.objects の6つのポリシーは、どれも自分の bucket（documents か item-images）の物だけに効く（式の先頭で bucket を見る）');
+  'storage.objects の9つのポリシーは、どれも自分の bucket（documents・item-images・room-photos）の物だけに効く（式の先頭で bucket を見る）');
 select is((select format('%s %s', (qual is null)::text, with_check) from pg_policies where schemaname = 'storage' and policyname = 'documents_objects_insert'),
   'true ((bucket_id = ''documents''::text) AND (name IN ( SELECT private.my_document_upload_paths() AS my_document_upload_paths)))',
   'documents_objects_insert：予約した、今書ける提出の path だけ（with check。集合を1回作る形）');

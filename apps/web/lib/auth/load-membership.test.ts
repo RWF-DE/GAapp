@@ -78,17 +78,18 @@ describe('loadMembershipSource', () => {
 
   it('団体代表の行は、団体とその団体での立場（店長・副店長。group_members.role）を1つにする（T15b）', async () => {
     const members = [
-      { group_id: 'g1', role: 'deputy_manager', groups: { id: 'g1', name: '模擬店01', year_id: 'y1' } },
-      { group_id: 'g2', role: 'manager', groups: { id: 'g2', name: '2年2組', year_id: 'y1' } },
+      { group_id: 'g1', role: 'deputy_manager', groups: { id: 'g1', name: '模擬店01', year_id: 'y1', category: 'stall' } },
+      { group_id: 'g2', role: 'manager', groups: { id: 'g2', name: '2年2組', year_id: 'y1', category: 'department' } },
       // 団体を読めなかった行（RLS）は立場に入れない
       { group_id: 'g3', role: 'manager', groups: null },
     ];
     const { client, selects } = fakeClient({ accepted: ok(0), tables: { ...tables([ok([])]), group_members: [ok(members)] } });
     const src = await loadMembershipSource(client, 'u1');
-    expect(selects.group_members).toBe('group_id, role, groups (id, name, year_id)');
+    // 区分（category）も読む（部門の団体の呼び方と現状復帰の写真の立場。T25・D-63）
+    expect(selects.group_members).toBe('group_id, role, groups (id, name, year_id, category)');
     expect(src.groups).toEqual([
-      { id: 'g1', name: '模擬店01', year_id: 'y1', role: 'deputy_manager' },
-      { id: 'g2', name: '2年2組', year_id: 'y1', role: 'manager' },
+      { id: 'g1', name: '模擬店01', year_id: 'y1', category: 'stall', role: 'deputy_manager' },
+      { id: 'g2', name: '2年2組', year_id: 'y1', category: 'department', role: 'manager' },
     ]);
   });
 

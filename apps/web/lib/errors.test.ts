@@ -126,6 +126,16 @@ describe('classifyError と messageFor：2.5 の表の行', () => {
     expect(msg(p0001('conflict', { field: 'group_role' }))).toBe(
       'この人はすでにこの団体の店長・副店長です。店長・副店長の切り替えはメンバーの一覧から',
     );
+    // 部門の団体は部門長・副部門長（04「団体の立場の呼び方」。T25 のレビュー）
+    expect(msg(p0001('conflict', { field: 'group_role', current: 'manager' }), { rpc: 'invite', groupCategory: 'department' })).toBe(
+      'この人はすでにこの団体の部門長です。部門長・副部門長の切り替えはメンバーの一覧から',
+    );
+    expect(msg(p0001('conflict', { field: 'group_role' }), { groupCategory: 'department' })).toBe(
+      'この人はすでにこの団体の部門長・副部門長です。部門長・副部門長の切り替えはメンバーの一覧から',
+    );
+    expect(msg(p0001('conflict', { field: 'group_role', current: 'manager' }), { groupCategory: 'stall' })).toBe(
+      'この人はすでにこの団体の店長です。店長・副店長の切り替えはメンバーの一覧から',
+    );
   });
 
   it('P0001 role_overlap（兼任の禁止。T15）→ conflict。details によらず同じ文言で、読み直して入力を残す', () => {

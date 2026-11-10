@@ -672,7 +672,8 @@ test('T16 管理者で店長も務める人：ダッシュボードに代表す�
     await sql('delete from public.request_submissions where group_id = $1', [gid]);
     await loginWith(page, u);
     await openPortal(page, 'ダッシュボード');
-    await expect(page.getByTestId('home-roles')).toHaveText(`管理者${SMALL.groups.department} の店長`);
+    // 区分「部門」の団体の代表は「部門長」と呼ぶ（T25・D-63）
+    await expect(page.getByTestId('home-roles')).toHaveText(`管理者${SMALL.groups.department} の部門長`);
     // 要対応は1つの欄に（総務の未提出と、自団体の未提出。同じ期日なら総務 → 団体代表の順）
     expect(await todoIds(page)).toEqual(['furniture:soumu:unsubmitted', `furniture:rep:${gid}:unsubmitted`]);
     await expect(todo(page, `furniture:rep:${gid}:unsubmitted`)).toContainText(`${SMALL.groups.department}：申請が未提出です`);
@@ -713,7 +714,7 @@ test.describe('T16 ナビの見出し（管理者・PC）', () => {
     await expect(home.getByRole('link', { name: 'ホーム' })).toHaveAttribute('aria-current', 'page');
     const furniture = nav.getByRole('group', { name: '机椅子' });
     await expect(furniture.getByRole('heading', { level: 2, name: '机椅子' })).toBeVisible();
-    await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換']);
+    await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '現状復帰の写真', '申請一覧', 'ルール', '振り分け', 'キャスター机交換']);
     // お知らせ（T17）：機能の登録の順で、机椅子の後・共通の前
     const notices = nav.getByRole('group', { name: 'お知らせ' });
     await expect(notices.getByRole('heading', { level: 2, name: 'お知らせ' })).toBeVisible();
@@ -766,7 +767,7 @@ test.describe('T16 ナビの見出し（総務部門員・スマホ）', () => {
     await expect(nav.getByRole('group')).toHaveCount(7);
     await expect(nav.getByRole('group', { name: 'ホーム' }).getByRole('link')).toHaveText(['ホーム']);
     const furniture = nav.getByRole('group', { name: '机椅子' });
-    await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
+    await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '現状復帰の写真', '申請一覧', '振り分け']);
     await expect(nav.getByRole('group', { name: 'お知らせ' }).getByRole('link')).toHaveText(['お知らせ一覧']);
     await expect(nav.getByRole('group', { name: '締切と予定' }).getByRole('link')).toHaveText(['締切と予定の一覧']);
     await expect(nav.getByRole('group', { name: '提出物' }).getByRole('link')).toHaveText(['提出状況']);

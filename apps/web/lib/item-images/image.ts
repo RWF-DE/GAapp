@@ -6,8 +6,10 @@
 // （在庫入力・申請・マスタ設定の最初に読む JS に入れない）。createImageBitmap（使えなければ img 要素）と canvas（OffscreenCanvas、
 // なければ canvas 要素）は、呼んだときの処理の中だけで使う（プリレンダーの間はない）。テストは ItemImageEnv を偽にする。
 
-/** 長い辺の上限（px） */
+/** 長い辺の上限（px。品目の画像） */
 export const ITEM_IMAGE_MAX_SIDE = 1024;
+/** 長い辺の上限（px。現状復帰の写真。T25・D-63。部屋の様子が分かるように品目より大きくする） */
+export const ROOM_PHOTO_MAX_SIDE = 1600;
 /** WebP・JPEG の品質 */
 export const ITEM_IMAGE_QUALITY = 0.8;
 /** 1 枚の上限（bucket item-images の file_size_limit。1 MiB） */
@@ -130,14 +132,25 @@ async function tryEncode(env: ItemImageEnv, image: DecodedItemImage, w: number, 
   }
 }
 
+/** 作り直しの設定（長い辺の上限。品目の画像は 1024px、現状復帰の写真は 1600px。どちらも 1 枚 1 MiB まで） */
+export interface PrepareImageOptions {
+  maxSide?: number;
+}
+
 /**
- * 写真を品目の画像にする（長い辺 1024px まで・向きを当てる・品質 0.8 の WebP、作れなければ JPEG。EXIF は残らない）。
- * 読めない・どちらの形にも描き直せないときは ItemImageDecodeError、1 MiB を超えれば ItemImageTooLargeError。
+ * 写真を品目の画像にする（長い辺 1024px まで〔opts.maxSide で変える。現状復帰の写真は 1600px〕・向きを当てる・品質 0.8 の WebP、
+ * 作れなければ JPEG。EXIF は残らない）。読めない・どちらの形にも描き直せないときは ItemImageDecodeError、1 MiB を超えれば
+ * ItemImageTooLargeError。
  *
  * @example
  * const { blob, contentType } = await prepareItemImage(file); // reserve_item_image の content_type は contentType
+ * await prepareItemImage(file, undefined, { maxSide: ROOM_PHOTO_MAX_SIDE }); // 現状復帰の写真
  */
-export async function prepareItemImage(file: Blob, env: ItemImageEnv = BROWSER_ITEM_IMAGE_ENV): Promise<PreparedItemImage> {
+export async function prepareItemImage(
+  file: Blob,
+  env: ItemImageEnv = BROWSER_ITEM_IMAGE_ENV,
+  opts: PrepareImageOptions = {},
+): Promise<PreparedItemImage> {
   let image: DecodedItemImage;
   try {
     image = await env.decode(file);
@@ -145,7 +158,7 @@ export async function prepareItemImage(file: Blob, env: ItemImageEnv = BROWSER_I
     throw new ItemImageDecodeError();
   }
   try {
-    const { width, height } = itemImageSize(image.width, image.height);
+    const { width, height } = itemImageSize(image.width, image.height, opts.maxSide ?? ITEM_IMAGE_MAX_SIDE);
     for (const type of ['image/webp', 'image/jpeg'] as const) {
       const blob = await tryEncode(env, image, width, height, type);
       if (!blob) continue;

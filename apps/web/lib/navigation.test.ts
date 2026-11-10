@@ -20,7 +20,7 @@ import {
 const labels = (a: Parameters<typeof navItemsFor>[0], s?: Parameters<typeof navItemsFor>[1]) => navItemsFor(a, s).map((i) => i.label);
 
 /** 机椅子の見出しの総務の画面（部門長以上。T16 で机椅子の状況を足し、マスタ設定・履歴は共通の見出しへ） */
-const FURNITURE_LEAD = ['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換'];
+const FURNITURE_LEAD = ['机椅子の状況', '在庫入力', '在庫一覧', '現状復帰の写真', '申請一覧', 'ルール', '振り分け', 'キャスター机交換'];
 /** お知らせの見出しの項目（T17。招待されている全員） */
 const NOTICES = 'お知らせ一覧';
 /** 締切と予定の見出しの項目（T18。招待されている全員。見出しと同じ言葉を縦に並べないよう「の一覧」を付ける） */
@@ -45,8 +45,8 @@ describe('navItemsFor', () => {
     expect(labels(['head'], 'confirmed')).toEqual(SOUMU_SCREENS);
   });
   it('総務部門員は机椅子の状況・在庫・申請一覧と振り分け（いつでも読み取り。Q1）', () => {
-    expect(labels(['staff'])).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', NOTICES, CALENDAR, DOCUMENTS_SOUMU, ...SHIFTS, ...LENDING_SOUMU]);
-    expect(labels(['staff'], 'requesting')).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け', NOTICES, CALENDAR, DOCUMENTS_SOUMU, ...SHIFTS, ...LENDING_SOUMU]);
+    expect(labels(['staff'])).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '現状復帰の写真', '申請一覧', '振り分け', NOTICES, CALENDAR, DOCUMENTS_SOUMU, ...SHIFTS, ...LENDING_SOUMU]);
+    expect(labels(['staff'], 'requesting')).toEqual(['ホーム', '机椅子の状況', '在庫入力', '在庫一覧', '現状復帰の写真', '申請一覧', '振り分け', NOTICES, CALENDAR, DOCUMENTS_SOUMU, ...SHIFTS, ...LENDING_SOUMU]);
   });
   it('閲覧のみは、確定・終了の年度でだけ振り分けを見る（Q1）', () => {
     // T21：備品と割り当ては、割り当ての確定によらず開ける（確定前は画面の中で「割り当ては確定後に表示されます」）
@@ -171,7 +171,7 @@ describe('T16 ナビの見出し（NAV_SECTIONS・navSectionsFor。04「共通�
     expect(headings(['staff'])).toEqual(['ホーム', '机椅子', 'お知らせ', '締切と予定', '提出物', 'シフト・作業', 'テント等の貸し出し']);
     expect(itemsOf(['staff'])).toEqual({
       ホーム: ['ホーム'],
-      机椅子: ['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け'],
+      机椅子: ['机椅子の状況', '在庫入力', '在庫一覧', '現状復帰の写真', '申請一覧', '振り分け'],
       お知らせ: [NOTICES],
       締切と予定: [CALENDAR],
       提出物: [DOCUMENTS_SOUMU],
@@ -381,8 +381,8 @@ describe('audiencesFor・canOpen（立場はロールの段から作る。D-50�
     expect(audiencesFor('/')).toEqual([...APP_ROLES, 'rep']);
     expect(audiencesFor('/nothing')).toEqual([]);
   });
-  it('どのルートの立場も、5つのロールと rep のどれか', () => {
-    const known = new Set<string>([...APP_ROLES, 'rep']);
+  it('どのルートの立場も、5つのロールと rep・dept_rep（部門の団体の代表。T25）のどれか', () => {
+    const known = new Set<string>([...APP_ROLES, 'rep', 'dept_rep']);
     for (const r of ROUTES) expect(r.audiences.every((a) => known.has(a))).toBe(true);
   });
   it('総務部門員は /swaps・/rules・/history を開けない（リンクにせず文字だけにする）。部門長以上は開ける', () => {
@@ -485,3 +485,30 @@ describe('isActivePath', () => {
     expect(isActivePath('/', '/furniture')).toBe(false);
   });
 });
+
+describe('T25 現状復帰の写真 /room-photos（D-63）', () => {
+  it('「現状復帰の写真」、見出しは机椅子の在庫一覧の次、総務と部門の団体の代表（dept_rep）、ナビに出す、T25', () => {
+    expect(routeFor('/room-photos/?room=r1')).toMatchObject({ href: '/room-photos', label: '現状復帰の写真', section: 'furniture', nav: true, ticket: 'T25' });
+    expect(audiencesFor('/room-photos')).toEqual(['admin', 'head', 'deputy_head', 'staff', 'dept_rep']);
+    const furniture = NAV_ITEMS.filter((i) => i.section === 'furniture').map((i) => i.href);
+    expect(furniture.indexOf('/room-photos')).toBe(furniture.indexOf('/stocks') + 1);
+  });
+
+  it('canOpen：総務と部門の代表は年度の状態によらず開ける。閲覧のみ・模擬店などの代表（rep だけ）・立場なしは開けない', () => {
+    for (const st of ['preparing', 'requesting', 'allocating', 'confirmed', 'closed'] as const) {
+      for (const a of ['admin', 'head', 'deputy_head', 'staff'] as const) expect(canOpen('/room-photos?room=r1', [a], st)).toBe(true);
+      expect(canOpen('/room-photos', ['rep', 'dept_rep'], st)).toBe(true);
+      expect(canOpen('/room-photos', ['viewer', 'rep', 'dept_rep'], st)).toBe(true);
+      for (const a of [['viewer'], ['rep'], ['viewer', 'rep'], []] as const) expect(canOpen('/room-photos', a, st), a.join('+')).toBe(false);
+    }
+  });
+
+  it('部門の代表のナビ：机椅子は申請・自団体の振り分けに「現状復帰の写真」を足すだけ（ほかの机椅子の画面は出さない）', () => {
+    const furniture = (a: Parameters<typeof navSectionsFor>[0]) => navSectionsFor(a).find((x) => x.id === 'furniture')?.items.map((i) => i.label);
+    expect(furniture(['rep'])).toEqual(['申請', '自団体の振り分け']);
+    expect(furniture(['rep', 'dept_rep'])).toEqual(['現状復帰の写真', '申請', '自団体の振り分け']);
+    // dept_rep はマスタ設定のタブを開けない
+    expect(canOpen('/settings?tab=users', ['rep', 'dept_rep'])).toBe(false);
+  });
+});
+

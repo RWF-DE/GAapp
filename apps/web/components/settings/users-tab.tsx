@@ -27,7 +27,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/lib/auth/auth-provider';
-import { GROUP_ROLE_LABELS, groupPositionLabel, ROLE_LABELS } from '@/lib/auth/membership';
+import { groupPositionLabel, groupRoleLabel, ROLE_LABELS, type GroupCategory } from '@/lib/auth/membership';
 import {
   APP_ROLES,
   canRevokeInvitation,
@@ -48,8 +48,10 @@ import { EMAIL_MAX } from '@/lib/schemas/common';
 import { inviteFormSchema, type InviteFormInput, type InviteFormOutput } from '@/lib/schemas/settings';
 import { Field, selectClass, settingsKeys, TabHeading, useSettings, useWriteErrorHandler } from './shared';
 
-/** 招待の立場の表示名（ロールと、店長・副店長） */
-const INVITE_KIND_LABELS: Record<InviteKind, string> = { ...ROLE_LABELS, ...GROUP_ROLE_LABELS };
+/** 招待の立場の表示名（ロールと、店長・副店長。団体の立場は選んだ団体の区分で呼び分ける〔部門なら部門長・副部門長。T25・D-63〕） */
+function inviteKindLabel(k: InviteKind, category: GroupCategory | null | undefined): string {
+  return isGroupRole(k) ? groupRoleLabel(k, category) : ROLE_LABELS[k];
+}
 const NO_NAME = '名前を表示できません';
 
 /** 店長⇄副店長の切り替えの行き先（店長なら副店長、副店長なら店長） */
@@ -58,11 +60,12 @@ const switchedGroupRole = (r: GroupRole): GroupRole => (r === 'manager' ? 'deput
 /** 兼任の禁止（role_overlap。D-49）か。招待は立場の欄の下、ロールの変更はダイアログの中に出す（04） */
 const isRoleOverlap = (c: ClassifiedError) => c.kind === 'conflict' && c.reason === 'role_overlap';
 
-/** 招待の「立場」の列：ロールの招待はロールの表示名、団体の招待は「{団体} の店長」「{団体} の副店長」 */
-function invitationTarget(inv: InvitationRow, groupName: ReadonlyMap<string, string>): string {
+/** 招待の「立場」の列：ロールの招待はロールの表示名、団体の招待は「{団体} の店長」「{団体} の副店長」（部門の団体は部門長・副部門長） */
+function invitationTarget(inv: InvitationRow, groupOf: ReadonlyMap<string, { name: string; category: GroupCategory }>): string {
   if (inv.role) return ROLE_LABELS[inv.role];
+  const g = groupOf.get(inv.groupId ?? '');
   // 団体の招待の立場は 0013 から必ず入る（CHECK）。入っていなければ invite の既定の店長として出す
-  return groupPositionLabel({ name: groupName.get(inv.groupId ?? '') ?? '（団体）', role: inv.groupRole ?? 'manager' });
+  return groupPositionLabel({ name: g?.name ?? '（団体）', role: inv.groupRole ?? 'manager', category: g?.category ?? null });
 }
 
 type Pending =
@@ -86,7 +89,7 @@ export function UsersTab() {
   const queryClient = useQueryClient();
   const { reloadMembership } = useAuth();
   const onError = useWriteErrorHandler();
-  const groupName = useMemo(() => new Map((groupsQ.data ?? []).map((g) => [g.id, g.name] as const)), [groupsQ.data]);
+  const groupOf = useMemo(() => new Map((groupsQ.data ?? []).map((g) => [g.id, { name: g.name, category: g.category }] as const)), [groupsQ.data]);
 
   /** ダイアログを開く（前のダイアログのエラーを持ち越さない） */
   const open = useCallback((p: Pending) => {
@@ -165,7 +168,7 @@ export function UsersTab() {
                         className="h-7"
                         onClick={() => open({ kind: 'switch_group_role', member: row.original, group: g, to })}
                       >
-                        {`${GROUP_ROLE_LABELS[to]}にする`}
+                        {`${groupRoleLabel(to, g.category)}にする`}
                       </Button>
                     ) : null}
                     {lead ? (
@@ -214,7 +217,7 @@ export function UsersTab() {
   const invitationCols = useMemo<ColumnDef<InvitationRow>[]>(
     () => [
       { accessorKey: 'email', header: 'メール' },
-      { id: 'target', header: '立場', cell: ({ row }) => invitationTarget(row.original, groupName) },
+      { id: 'target', header: '立場', cell: ({ row }) => invitationTarget(row.original, groupOf) },
       { id: 'state', header: '状態', cell: ({ row }) => (row.original.usedAt ? '使用済み' : '未使用') },
       { id: 'created', header: '招待した日時', cell: ({ row }) => <TokyoTime value={row.original.createdAt} /> },
       {
@@ -230,7 +233,7 @@ export function UsersTab() {
           ),
       },
     ],
-    [groupName, actor, open],
+    [groupOf, actor, open],
   );
 
   const who = (m: MemberRow) => m.displayName ?? 'この人';
@@ -313,10 +316,10 @@ export function UsersTab() {
         <ReasonDialog
           open
           onOpenChange={(o) => !o && setPending(null)}
-          title={`${who(pending.member)}を「${pending.group.name}」の${GROUP_ROLE_LABELS[pending.to]}にしますか`}
-          description="店長と副店長は、できることが同じです（表示だけが変わります）。"
+          title={`${who(pending.member)}を「${pending.group.name}」の${groupRoleLabel(pending.to, pending.group.category)}にしますか`}
+          description={`${groupRoleLabel('manager', pending.group.category)}と${groupRoleLabel('deputy_manager', pending.group.category)}は、できることが同じです（表示だけが変わります）。`}
           required={false}
-          confirmLabel={`${GROUP_ROLE_LABELS[pending.to]}にする`}
+          confirmLabel={`${groupRoleLabel(pending.to, pending.group.category)}にする`}
           pendingLabel="変えています…"
           error={reasonError}
           onSubmit={(reason) =>
@@ -328,7 +331,7 @@ export function UsersTab() {
                   p_group_role: pending.to,
                   ...(reason ? { p_reason: reason } : {}),
                 }),
-              `${who(pending.member)}を「${pending.group.name}」の${GROUP_ROLE_LABELS[pending.to]}にしました`,
+              `${who(pending.member)}を「${pending.group.name}」の${groupRoleLabel(pending.to, pending.group.category)}にしました`,
               'set_group_member_role',
             )
           }
@@ -338,7 +341,7 @@ export function UsersTab() {
         <ReasonDialog
           open
           onOpenChange={(o) => !o && setPending(null)}
-          title={`${who(pending.member)}を「${pending.group.name}」の${GROUP_ROLE_LABELS[pending.group.role]}から外しますか`}
+          title={`${who(pending.member)}を「${pending.group.name}」の${groupRoleLabel(pending.group.role, pending.group.category)}から外しますか`}
           required={false}
           destructive
           confirmLabel="外す"
@@ -347,7 +350,7 @@ export function UsersTab() {
           onSubmit={(reason) =>
             run(
               () => callRpc('remove_group_member', { p_group_id: pending.group.id, p_user_id: pending.member.userId, ...(reason ? { p_reason: reason } : {}) }),
-              `「${pending.group.name}」の${GROUP_ROLE_LABELS[pending.group.role]}から外しました`,
+              `「${pending.group.name}」の${groupRoleLabel(pending.group.role, pending.group.category)}から外しました`,
               'remove_group_member',
             )
           }
@@ -488,6 +491,8 @@ function InviteCard({
   const [result, setResult] = useState<string | null>(null);
   const kind = useWatch({ control, name: 'kind' });
   const groupId = useWatch({ control, name: 'group_id' });
+  // 選んだ団体の区分（部門なら団体の立場を「部門長」「副部門長」と呼ぶ。団体を選ぶまでは店長・副店長。T25・D-63）
+  const selectedCategory = groups.find((g) => g.id === groupId)?.category ?? null;
 
   const onSubmit = handleSubmit(async (v) => {
     setSaving(true);
@@ -508,6 +513,7 @@ function InviteCard({
           : `この人はすでにアカウントがあるので、その場で「${groupPositionLabel({
               name: groups.find((g) => g.id === v.group_id)?.name ?? '（団体）',
               role: v.group_role,
+              category: groups.find((g) => g.id === v.group_id)?.category ?? null,
             })}」にしました`;
       setResult(message);
       toast.success(message);
@@ -521,7 +527,13 @@ function InviteCard({
       else if (c.kind === 'conflict' && (isRoleOverlap(c) || field === 'role' || field === 'group_role')) {
         // 兼任の禁止・別のロールを持つ・同じ団体に別の立場でいる：立場の欄の下に出し、入力は残す（直す操作はメンバーの一覧か、
         // 別の立場。04・D-50）。一覧は、ほかの人が先に付けた立場も見せるために読み直す
-        setError('kind', { message: messageFor(c, { rpc: 'invite', canChangeRoles }) });
+        setError('kind', {
+          message: messageFor(c, {
+            rpc: 'invite',
+            canChangeRoles,
+            groupCategory: groups.find((g) => g.id === v.group_id)?.category ?? null,
+          }),
+        });
         await onRejected();
       } else {
         // forbidden は toast と立場の読み直し（部門長・副部門長には、管理者の未使用の招待があるメールかもしれないと添える。lib/errors.ts）
@@ -568,7 +580,7 @@ function InviteCard({
               <select {...p} {...register('kind')} className={selectClass}>
                 {kinds.map((k) => (
                   <option key={k} value={k}>
-                    {INVITE_KIND_LABELS[k]}
+                    {inviteKindLabel(k, selectedCategory)}
                   </option>
                 ))}
               </select>

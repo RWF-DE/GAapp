@@ -201,3 +201,40 @@ describe('AllocationScreen：振り分け中の段（T15b・D-50）', () => {
     );
   });
 });
+
+// ---- 部屋の見出しの「現状復帰の写真」へのリンク（04「振り分け」。T25・D-63。T25 のレビュー：画面の出し分け〔photoLinks={full}〕を通す） ----
+
+function renderConfirmed(role: AppRole, part: Snapshot['part']) {
+  const s = allocatingSnapshot();
+  const year = { ...s.year, status: 'confirmed' as const };
+  // public は閲覧のみが読む形（在庫・申請・ルール・了承・距離は読まない。lib/data/snapshot.ts）
+  snap.current =
+    part === 'full'
+      ? { ...s, year }
+      : { ...s, year, part, submissions: [], stocks: [], requests: [], rules: [], consents: [], distanceOverrides: [] };
+  auth.membership = as(role, 'confirmed');
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <AllocationScreen />
+    </QueryClientProvider>,
+  );
+}
+
+describe('AllocationScreen：部屋の見出しの「現状復帰の写真」（T25・D-63）', () => {
+  it('総務（スナップショットの全部）には、行のある部屋の見出しにリンク（/room-photos?room={場所の id}）', async () => {
+    renderConfirmed('staff', 'full');
+    await waitFor(() => expect(rowEl()).not.toBeNull());
+    const block = rowEl()!.closest('[data-room-block]')!;
+    expect(block.getAttribute('data-room-block')).toBe(deskRoom);
+    expect(within(block as HTMLElement).getByTestId('room-photos-link').getAttribute('href')).toBe(`/room-photos?room=${deskRoom}`);
+  });
+
+  it('閲覧のみ（確定後の行の一覧だけ。part: public）には出さない', async () => {
+    renderConfirmed('viewer', 'public');
+    await waitFor(() => expect(rowEl()).not.toBeNull());
+    // AppLink は開けない立場には文字だけを出す（testid なし）ので、文字が出ていないことも確かめる（見出しに出さない）
+    expect(screen.queryAllByTestId('room-photos-link')).toEqual([]);
+    expect(screen.queryByText('現状復帰の写真')).toBeNull();
+  });
+});

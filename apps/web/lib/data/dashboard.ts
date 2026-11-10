@@ -168,7 +168,7 @@ export function summarizeDashboard(
   const status = snapshot.year.status;
   const link = (href: string): string | null => (canOpen(href, opts.audiences, status) ? href : null);
   // マスタを直す案内のリンクは管理者だけ（D-50）。管理者で店長も務める人は audiences に admin と rep がある
-  const admin = opts.audiences.some((a) => a !== 'rep' && isAdmin(a));
+  const admin = opts.audiences.some((a) => a !== 'rep' && a !== 'dept_rep' && isAdmin(a));
   const masterLink = (href: string): string | null => (admin ? link(href) : null);
 
   // 申請（counts.ts。団体の並びは sort_order → 名前 → id）

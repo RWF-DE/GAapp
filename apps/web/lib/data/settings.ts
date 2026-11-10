@@ -377,6 +377,8 @@ export interface MemberGroup {
   name: string;
   /** 店長・副店長（group_members.role） */
   role: GroupRole;
+  /** 団体の区分（部門なら「部門長」「副部門長」と呼ぶ。T25・D-63） */
+  category: GroupCategory | null;
 }
 
 export interface MemberRow {
@@ -421,7 +423,7 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
     client.from('year_roles').select('user_id, role, updated_at').eq('year_id', yearId).order('user_id'),
     client
       .from('group_members')
-      .select('group_id, user_id, role, groups!inner(year_id, name)')
+      .select('group_id, user_id, role, groups!inner(year_id, name, category)')
       .eq('groups.year_id', yearId)
       .order('group_id')
       .order('user_id'),
@@ -433,7 +435,7 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
       .order('id'),
   ]);
   for (const r of [roles, reps, invs]) if (r.error) throw toAppError(r.error, r.status);
-  const repRows = (reps.data ?? []) as unknown as { group_id: string; user_id: string; role: GroupRole; groups: { name: string } }[];
+  const repRows = (reps.data ?? []) as unknown as { group_id: string; user_id: string; role: GroupRole; groups: { name: string; category?: GroupCategory | null } }[];
   const userIds = [...new Set([...(roles.data ?? []).map((r) => r.user_id), ...repRows.map((r) => r.user_id)])];
   const names = new Map<string, string>();
   if (userIds.length > 0) {
@@ -457,7 +459,7 @@ export async function fetchMembers(yearId: string, client: AppSupabaseClient = g
   }
   const repCount = new Map<string, number>();
   for (const r of repRows) {
-    memberOf(r.user_id).groups.push({ id: r.group_id, name: r.groups.name, role: r.role });
+    memberOf(r.user_id).groups.push({ id: r.group_id, name: r.groups.name, role: r.role, category: r.groups.category ?? null });
     repCount.set(r.group_id, (repCount.get(r.group_id) ?? 0) + 1);
   }
   const members = [...byUser.values()].sort(

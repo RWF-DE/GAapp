@@ -12,6 +12,7 @@ import {
   AUDIT_TABLE_LABELS,
   CATEGORY_LABELS,
   CONSENT_STATUS_LABELS,
+  DEPARTMENT_GROUP_ROLE_LABELS,
   GROUP_ROLE_LABELS,
   NOTICE_AUDIENCE_LABELS,
   ORIGIN_LABELS,
@@ -71,6 +72,8 @@ export const AUDIT_TABLES = [
   // 備品（数えるだけ。T22。足すだけ）
   'count_items',
   'count_stocks',
+  // 現状復帰の写真（T25。足すだけ）
+  'room_photos',
 ] as const;
 export type AuditTable = (typeof AUDIT_TABLES)[number];
 
@@ -124,8 +127,13 @@ const COUNT_COLUMN_LABELS: Readonly<Record<string, string>> = {
   created_by: '足した人',
 };
 
+/** 現状復帰の写真の変更の列の名前（T25。履歴だけが使うのでここに置く） */
+const ROOM_PHOTO_COLUMN_LABELS: Readonly<Record<string, string>> = { memo: 'メモ', sort_order: '並び' };
+
 /** 履歴の変更の列の名前（表ごと。表にない表・列は列名のまま。今はテント等の5表だけ日本語にする。T21） */
 export const AUDIT_COLUMN_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  // 現状復帰の写真（T25）
+  room_photos: ROOM_PHOTO_COLUMN_LABELS,
   lending_items: LENDING_COLUMN_LABELS,
   lending_requests: LENDING_COLUMN_LABELS,
   lending_assignments: LENDING_COLUMN_LABELS,
@@ -425,6 +433,13 @@ export interface HistoryLookups {
   lendingItems?: Map<string, string>;
   /** 備品（数えるだけ）の名前（T22。今の一覧。数の対象と count_item_id） */
   countItems?: Map<string, string>;
+  /** 団体の区分（T25・D-63。団体代表の立場を部門なら「部門長」「副部門長」と出す。分からない団体は店長・副店長） */
+  groupCategories?: Map<string, string>;
+}
+
+/** 差の行の文脈（団体代表の行の団体。区分で立場の呼び方を変える。T25） */
+export interface DiffContext {
+  groupId?: string | null;
 }
 
 export interface HistoryOptions {
@@ -638,13 +653,17 @@ function asRecord(v: unknown): Record<string, unknown> | null {
  * before と after の差（画面の設計 3.12）。値の違う列だけを、列名の順で返す。created_at・updated_at は除く。
  * 追加（before が null）は after の全部の列、削除（after が null）は before の全部の列。どちらにもない列は、ないほうを undefined にする。
  */
-export function diffAudit(before: unknown, after: unknown): DiffEntry[] {
+export function diffAudit(before: unknown, after: unknown, table?: string): DiffEntry[] {
   const b = asRecord(before);
   const a = asRecord(after);
   const keys = new Set([...Object.keys(b ?? {}), ...Object.keys(a ?? {})]);
   const out: DiffEntry[] = [];
+  // 現状復帰の写真（T25。04「履歴」）：追加・削除は「写真を足した」「写真を消した」だけ（object_path の1行。formatDiffEntry が文にする）、
+  // 変更はメモと並びだけ（id・年度・場所・path・足した人は出さない。path は変えられない）
+  const photo = table === 'room_photos';
   for (const key of [...keys].sort(cmp)) {
     if (DIFF_IGNORED_KEYS.includes(key)) continue;
+    if (photo && (b && a ? !Object.hasOwn(ROOM_PHOTO_COLUMN_LABELS, key) : key !== 'object_path')) continue;
     const bv = b && Object.hasOwn(b, key) ? b[key] : undefined;
     const av = a && Object.hasOwn(a, key) ? a[key] : undefined;
     if (b && a && sameJson(bv, av)) continue;
@@ -676,7 +695,7 @@ const ENUM_LABELS: Readonly<Record<string, Readonly<Record<string, string>>>> = 
 };
 
 /** 値の表示（null は「なし」、真偽は「はい・いいえ」、参照は名前、日時は Asia/Tokyo、列挙は日本語） */
-export function formatAuditValue(table: string, key: string, v: unknown, lookups?: Partial<HistoryLookups>): string {
+export function formatAuditValue(table: string, key: string, v: unknown, lookups?: Partial<HistoryLookups>, context?: DiffContext): string {
   if (v === undefined) return '';
   if (v === null) return 'なし';
   if (typeof v === 'boolean') return v ? 'はい' : 'いいえ';
@@ -715,7 +734,11 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
     // （groups を「指定の団体」と出さない）
     if (key === 'audience' && table === 'events') return labelOf(EVENT_AUDIENCE_LABELS, v, v);
     // 団体代表の行の role は店長・副店長（group_role）。ほかの表（year_roles）の role はロールの表示名（下の ENUM_LABELS）
-    if (key === 'role' && table === 'group_members') return labelOf(GROUP_ROLE_LABELS, v, v);
+    // 部門の団体（区分が分かるときだけ）は部門長・副部門長（T25・D-63）
+    if (key === 'role' && table === 'group_members') {
+      const department = !!context?.groupId && lookups?.groupCategories?.get(context.groupId) === 'department';
+      return labelOf(department ? DEPARTMENT_GROUP_ROLE_LABELS : GROUP_ROLE_LABELS, v, v);
+    }
     const labels = ENUM_LABELS[key];
     if (labels) return labelOf(labels, v, v);
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v)) return formatDateTime(v) || v;
@@ -744,16 +767,24 @@ function imageChangeLabel(d: DiffEntry): string {
 }
 
 /** 差の1行（「count：3 → 5」。追加は「count：5」、削除は「count：3（削除前）」） */
-export function formatDiffEntry(table: string, d: DiffEntry, lookups?: Partial<HistoryLookups>): string {
+export function formatDiffEntry(table: string, d: DiffEntry, lookups?: Partial<HistoryLookups>, context?: DiffContext): string {
   // 品目の画像（T23・D-61。04「履歴」）：path は出さず、足した・外した・変えたと出す
   if (d.key === 'image_path' && (table === 'items' || table === 'count_items')) return imageChangeLabel(d);
-  const bv = formatAuditValue(table, d.key, d.before, lookups);
-  const av = formatAuditValue(table, d.key, d.after, lookups);
+  // 現状復帰の写真（T25）：path は出さず、足した・消したと出す
+  if (d.key === 'object_path' && table === 'room_photos') return d.before === undefined ? '写真を足した' : d.after === undefined ? '写真を消した' : '写真を変えた';
+  const bv = formatAuditValue(table, d.key, d.before, lookups, context);
+  const av = formatAuditValue(table, d.key, d.after, lookups, context);
   // 列の名前（テント等の5表は日本語。ほかの表は列名のまま。T21）
   const key = auditColumnLabel(table, d.key);
   if (d.before === undefined) return `${key}：${av}`;
   if (d.after === undefined) return `${key}：${bv}（削除前）`;
   return `${key}：${bv} → ${av}`;
+}
+
+/** 記録の行の団体（after、なければ before の group_id。なければ null。団体代表の立場の呼び方に使う。T25） */
+export function auditGroupId(row: Pick<AuditLogRow, 'before' | 'after'>): string | null {
+  const v = asRecord(row.after)?.group_id ?? asRecord(row.before)?.group_id;
+  return typeof v === 'string' ? v : null;
 }
 
 /** 操作の日本語（追加・変更・削除） */
@@ -848,6 +879,9 @@ export function auditTarget(row: Pick<AuditLogRow, 'table_name' | 'row_pk' | 'be
         return [lookups.countItems?.get(str('id') ?? '') ?? str('name')];
       case 'count_stocks':
         return [room(str('room_id')), str('count_item_id') ? (lookups.countItems?.get(str('count_item_id')!) ?? DELETED_COUNT_ITEM) : null];
+      // 現状復帰の写真（T25）：場所の名前
+      case 'room_photos':
+        return [room(str('room_id'))];
       default:
         return [];
     }

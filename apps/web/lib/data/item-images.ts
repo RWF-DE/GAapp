@@ -85,10 +85,14 @@ interface SignBucketApi {
  * path の署名つき URL をまとめて作る（createSignedUrls を1回。有効 10 分）。作れなかった path は入れない（画面は頭文字のカード）。
  * 全体が失敗したら AppError を投げる。
  */
-export async function signItemImagePaths(paths: readonly string[], client: AppSupabaseClient = getSupabase()): Promise<ReadonlyMap<string, string>> {
+export async function signItemImagePaths(
+  paths: readonly string[],
+  client: AppSupabaseClient = getSupabase(),
+  bucketId: string = ITEM_IMAGES_BUCKET,
+): Promise<ReadonlyMap<string, string>> {
   const out = new Map<string, string>();
   if (paths.length === 0) return out;
-  const bucket = (client as unknown as { storage: { from(id: string): SignBucketApi } }).storage.from(ITEM_IMAGES_BUCKET);
+  const bucket = (client as unknown as { storage: { from(id: string): SignBucketApi } }).storage.from(bucketId);
   let res: Awaited<ReturnType<SignBucketApi['createSignedUrls']>>;
   try {
     res = await bucket.createSignedUrls([...paths], ITEM_IMAGE_SIGNED_URL_SECONDS);
@@ -117,17 +121,19 @@ const NO_URLS: ReadonlyMap<string, string> = new Map();
 /**
  * 一覧の画像の署名つき URL をまとめて作る（path を並べて重なりを除き、createSignedUrls を1回。キーは path の並び）。
  * URL はメモリーのキャッシュにだけ持ち（9 分で古くなり、10 分で捨てる）、窓に戻ったときには作り直さない。
+ * opts.bucket で別の bucket（現状復帰の写真の room-photos。T25）の URL を作る（キーは bucket の名前から始める）。
  *
  * @example
  * const images = useItemImageUrls(rows.map((r) => paths.get(r.id)));
  * <ItemImage name={r.name} path={paths.get(r.id)} images={images} />
  */
-export function useItemImageUrls(paths: readonly (string | null | undefined)[]): ItemImageUrls {
+export function useItemImageUrls(paths: readonly (string | null | undefined)[], opts: { bucket?: string } = {}): ItemImageUrls {
+  const bucketId = opts.bucket ?? ITEM_IMAGES_BUCKET;
   const joined = [...new Set(paths.filter((p): p is string => typeof p === 'string' && p !== ''))].sort().join('\n');
   const list = useMemo(() => (joined === '' ? [] : joined.split('\n')), [joined]);
   const q = useQuery({
-    queryKey: itemImageKeys.urls(list),
-    queryFn: () => signItemImagePaths(list),
+    queryKey: bucketId === ITEM_IMAGES_BUCKET ? itemImageKeys.urls(list) : ([bucketId, 'urls', ...list] as const),
+    queryFn: () => signItemImagePaths(list, undefined, bucketId),
     enabled: list.length > 0,
     staleTime: ITEM_IMAGE_URL_REFRESH_MS,
     gcTime: ITEM_IMAGE_SIGNED_URL_SECONDS * 1000,

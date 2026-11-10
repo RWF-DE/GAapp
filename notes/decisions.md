@@ -810,6 +810,33 @@
 - **反映先**：00 の機能の一覧、01 の用語集、02（列・ビュー・Storage の容量・権限・設計上の決めごと）、04（提出物の節・/document・/documents・DB関数・エラーの文言・testid）、05 の T24 の行、README の 5（0023）。
 - **状態**：作業中（notes/T24.md）。
 
+## D-63 現状復帰の写真：部屋ごと・年度ごとの写真を総務が撮り、総務と執行部が見る（2026-11-10、ユーザーの決定。T25。ブランチ feat/T25-room-photos）
+
+- **きっかけ**：教室の現状復帰（祭の後に部屋を元に戻すこと）のとき、祭の前の部屋の様子を写真で見たい。登録する所と見る所を作る（ユーザーの希望。2026-11-10）。
+- **決定**（ユーザーの決め。2026-11-10）：
+  - 写真は「部屋ごと・年度ごと」に持つ。前の年度の写真も参考に見られる。
+  - 写真の数は 1 部屋 6 枚まで。1 枚ごとに一言のメモ（50 字まで）。
+  - 登録できるのは総務全員（管理者・総務部門長・総務副部門長・総務部門員）。
+  - 見られるのは総務と執行部。執行部＝各部門の長・副長で、アプリでは区分「部門」の団体（設営・警備・SE技術など）の代表（店長・副店長のどちらも）。閲覧のみと、模擬店・企業・休憩所の代表は見られない。
+  - 区分「部門」の団体の代表は、「店長・副店長」ではなく「部門長・副部門長」と呼ぶ（表示名だけ。DB の値 manager・deputy_manager は変えない。総務部門のロールの「総務部門長」「総務副部門長」とは別）。
+  - 容量：T24（D-62）で提出物のファイルをドライブに移して空けた分を、部屋の写真に当てる（bucket room-photos は合計 800 MiB）。
+- **形**（計画。notes/T25.md）：
+  - 表 room_photos（id・year_id・room_id・object_path〔DB が作る〕・memo・sort_order・created_by・日時）と予約の表 room_photo_uploads。年度 × 場所で 6 枚まで（トリガー）。
+  - bucket room-photos（非公開。1 枚 1 MiB。WebP と JPEG。合計 800 MiB）。path は `{year_id}/{room_id}/{photo_id}.webp`（JPEG は .jpg）。
+  - 書き込みは T23（D-61）の形：予約 → upload（upsert: false）→ add_room_photo。送り直し・期限切れ・上限（1 人の予約 10・使われていない物は部屋ごとに 3 未満）・使われていない物の片付けは T23 と同じ。メモの変更と並べ替えは update_room_photo、削除は delete_room_photo（行を消し、画面が Storage から remove）。終了した年度は書けない。
+  - 見る：判定 `private.can_see_room_photos(year_id)`（その年度の総務と、区分「部門」の団体の代表）。前の年度（prev_year_id）の写真は、今の年度の立場で読める（読み取りの RPC room_photos_with_previous と、select のポリシー・Storage の select のポリシー）。
+  - 画面 /room-photos（ナビの「机椅子」。開ける人にだけ出す）。部屋の一覧（建物ごと・枚数・名前で絞る）と部屋ごとの今年と前年の写真。写真の追加（「撮る」「写真を選ぶ」。長い辺 1600px・WebP 0.8 に描き直して EXIF を消す。「人の顔・名前・掲示物が写らないように撮ってください」）、メモの変更・並べ替え・削除。在庫入力と振り分けの部屋の見出しからリンク。T23 の部品と流れ（item-image.tsx・item-photo-field.tsx・lib/item-images/*）を、縮める大きさと bucket を引数で変えられるようにして使い回す。
+  - / の JS は増やさない（写真の部品は /room-photos だけ。在庫入力・振り分けはリンクだけ）。
+  - 振り分けの版・確定中の守り・スナップショット・年度データの JSON には入れない（振り分けの入力でない。写真は Storage の物）。
+- **作るときに決めたこと**（T25。notes/T25.md の「判断したこと」）：
+  - select のポリシーは、行の列を判定関数に渡さない D-47 の形にするため、集合の関数 `private.room_photo_year_ids()`（見られる年度と、その prev_year_id の年度）を足し、room_photos と Storage の select のポリシーはこれを使う。判定の can_see_room_photos と書き込みの段 can_write_room_photos は RPC の中からだけ呼ぶ（誰にも execute を与えない）。
+  - 前の年度は、select のポリシーでも読めるようにした（Storage の署名つき URL を作るのに、Storage の select のポリシーが前の年度の物を許す必要があるため。表とそろえる）。1つ前の年度だけ。
+  - room_photos.room_id は restrict（写真のある場所は消せない。場所への参照の決まり）。予約の表の room_id は cascade（品目の画像の予約と同じ）。
+  - 終了の年度は、ロールの確かめの後に invalid_state（detail は status。提出物と同じ形）。年度の行は for share でロックしてから見る。
+- **本番**：マージの後に Migrate production DB で 0024 を流す（README の 5。0021〜0023 がまだならそれも続けて流れる）。
+- **反映先**：00 の机椅子の行と画面の一覧、01 の用語集（現状復帰の写真・写真の予約・執行部・部門長・副部門長〔団体〕と、店長・副店長の行）、02（表・Storage の容量・権限・設計上の決めごと）、04（現状復帰の写真の節・ナビ・団体の立場の呼び方・在庫入力と振り分けのリンク・ユーザーのタブ・履歴・DB関数）、05 の T25 の行、README の 5（0024）。
+- **状態**：作業中（notes/T25.md）。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。

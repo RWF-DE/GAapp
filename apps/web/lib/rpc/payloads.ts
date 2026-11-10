@@ -16,6 +16,7 @@ import {
 import { charCount, NOTICE_BODY_MAX, NOTICE_GROUPS_MAX, noticeTitleSchema } from '@/lib/schemas/notice-fields';
 import { reviewNoteSchema } from '@/lib/schemas/document-fields';
 import { countItemNameSchema } from '@/lib/schemas/count-items';
+import { roomPhotoMemoSchema, roomPhotoSortSchema } from '@/lib/schemas/room-photos';
 
 const E = Constants.public.Enums;
 const uuid = uuidSchema;
@@ -240,6 +241,13 @@ export const RPC_ARGS = {
     p_content_type: z.enum(['image/webp', 'image/jpeg']),
   }),
   set_item_image: z.object({ p_kind: z.enum(['item', 'count_item']), p_target_id: uuid, p_image_id: uuid.nullable() }),
+  // 現状復帰の写真（T25・D-63）。photo_id は画面が作る uuid（送り直しの鍵）。メモは前後の空白を除いて 50 字まで（改行なし）。
+  // update_room_photo の null の引数は変えない。room_photos_with_previous の room_id が null なら全部の場所（一覧で数える）
+  reserve_room_photo: z.object({ p_year_id: uuid, p_room_id: uuid, p_photo_id: uuid, p_content_type: z.enum(['image/webp', 'image/jpeg']) }),
+  add_room_photo: z.object({ p_photo_id: uuid, p_memo: roomPhotoMemoSchema }),
+  update_room_photo: z.object({ p_photo_id: uuid, p_memo: roomPhotoMemoSchema.nullable(), p_sort_order: roomPhotoSortSchema.nullable() }),
+  delete_room_photo: z.object({ p_photo_id: uuid }),
+  room_photos_with_previous: z.object({ p_year_id: uuid, p_room_id: uuid.nullable() }),
 } as const;
 
 // ---- jsonb の返り値 ----

@@ -4,7 +4,8 @@
 // 部門長以上が振り分け中のときは、行の操作（row-edit.tsx）と部屋の見出しのメニュー（今年は使用不可にする・使用可に戻す。room_years は
 // 部門長以上が書ける。D-48）を出す（段 2）。
 import type { StoredAllocationRow } from '@gaapp/shared';
-import { MoreHorizontal, Pin } from 'lucide-react';
+import { Camera, MoreHorizontal, Pin } from 'lucide-react';
+import { AppLink } from '@/components/common/app-link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -14,6 +15,7 @@ import type { ItemTab } from '@/lib/allocation/tabs';
 import type { ViewModel } from '@/lib/allocation/view-model';
 import { UNUSABLE_ROW_NOTE } from '@/lib/allocation/pending';
 import { ORIGIN_LABELS } from '@/lib/labels';
+import { ROOM_PHOTOS_LINK_LABEL, roomPhotosPath } from '@/lib/room-photos/path';
 import { cn } from '@/lib/utils';
 import { ActionsCell, CountCell, NoteCell, PinCell, useRowEdit, type RowEditApi } from './row-edit';
 
@@ -49,6 +51,7 @@ export function ItemTabView({
   highlightRowId,
   highlightRoomId,
   readOnlyList = false,
+  photoLinks = false,
 }: {
   vm: ViewModel;
   rows: readonly StoredAllocationRow[];
@@ -57,6 +60,8 @@ export function ItemTabView({
   highlightRoomId?: string | null;
   /** viewer（Q1）：行の一覧だけ（在庫・余り・備考・自動／手動・固定を出さない） */
   readOnlyList?: boolean;
+  /** 部屋の見出しに「現状復帰の写真」のリンクを出す（総務だけ。閲覧のみには出さない。T25・D-63。リンクだけで写真の部品は読まない） */
+  photoLinks?: boolean;
 }) {
   const edit = useRowEdit();
   const blocks = itemTabBlocks(vm, rows, tab);
@@ -78,6 +83,16 @@ export function ItemTabView({
             <h3 className="font-semibold">{b.room.name}</h3>
             {!b.room.usable ? <Badge variant="outline">使用不可</Badge> : null}
             {vm.hasStock ? <span className="text-sm text-muted-foreground">在庫 {stockText(b)}</span> : null}
+            {photoLinks ? (
+              <AppLink
+                href={roomPhotosPath(b.room.id)}
+                className={cn('inline-flex items-center gap-1 text-sm underline underline-offset-4', !edit && 'ml-auto')}
+                data-testid="room-photos-link"
+              >
+                <Camera aria-hidden className="size-4" />
+                {ROOM_PHOTOS_LINK_LABEL}
+              </AppLink>
+            ) : null}
             {edit ? <RoomMenu api={edit} roomId={b.room.id} roomName={b.room.name} usable={b.room.usable} /> : null}
             {edit && !b.room.usable && b.rows.length > 0 ? (
               <p className="basis-full text-xs text-amber-800" data-testid="unusable-row-note">
