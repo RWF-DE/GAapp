@@ -586,7 +586,7 @@ describe('T19 提出・取り消し・承認・差し戻し（RPC の引数）',
     expect(messageFor(await caught(approveDocument(D, G, null, V, state('approved').client)), { rpc: 'approve_document' })).toBe('すでに承認されています。読み直しました');
     const conflict = fake(() => ({ error: { code: 'P0001', message: 'conflict', details: JSON.stringify({ document_id: D, group_id: G }) }, status: 400 }));
     expect(messageFor(await caught(submitDocument(D, G, V, conflict.client)), { rpc: 'submit_document' })).toBe(
-      'ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください',
+      'ほかの人がこの提出を先に変えました（提出・取り消し・ファイルを外すなど）。読み直しました。確かめてから、もう一度押してください',
     );
     const notFound = fake(() => ({ error: { code: 'P0001', message: 'not_found' }, status: 400 }));
     expect(messageFor(await caught(withdrawDocument(D, G, V, notFound.client)), { rpc: 'withdraw_document' })).toBe(

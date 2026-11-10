@@ -194,7 +194,8 @@ function soumuCard(raw: DocumentsSoumuPortalRaw, counts: SoumuCounts, ctx: Porta
     );
   }
   if (isAdmin(ctx.role) && raw.usage) {
-    lines.push(`ファイル ${formatFileSize(raw.usage.bucket_bytes)}（上限 ${formatFileSize(raw.usage.limit_bytes)}）`);
+    // T24（D-62）から提出物は新しく上げない。limit_bytes（900 MiB）は T19 の形の記録なので出さない（まだ使えるように見えるため）
+    lines.push(`前に上げたファイル ${formatFileSize(raw.usage.bucket_bytes)}（新しくは上げません）`);
   }
   const href = canOpen('/documents', ctx.audiences, ctx.year.status) ? '/documents' : null;
   return { moduleId: MODULE_ID, title: moduleLabel(MODULE_ID), lines, href, linkLabel: '提出状況へ' };

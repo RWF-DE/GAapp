@@ -658,7 +658,7 @@ test('T19 同時の操作：店長と副店長が同時に「提出した」を�
     await expect(staleDialog.getByTestId('document-submit-confirm')).toHaveText('');
     await staleDialog.getByRole('button', { name: '提出する' }).click();
     await expect(depStale.getByTestId('document-error')).toHaveText(
-      'ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください',
+      'ほかの人がこの提出を先に変えました（提出・取り消し・ファイルを外すなど）。読み直しました。確かめてから、もう一度押してください',
     );
     await expect(depStale).toHaveAttribute('data-status', 'not_submitted');
     expect((await submissionOf(stale, ga))?.status).toBe('not_submitted');

@@ -1391,6 +1391,12 @@ describe('T19 提出状況：前年度から写すの応答が届かなかった
 // ---------------------------------------------------------------- 終了した年度
 
 describe('T19 提出状況：終了した年度', () => {
+  it('T24 提出先の URL がないとき、終了した年度では「（「提出物の設定」で入れられます）」を添えない（設定は読むだけ）', async () => {
+    renderScreen({ role: 'head', status: 'closed', search: `document=${D_NOTE}&group=${G4.id}` });
+    await waitFor(() => expect(sheet()).toBeTruthy());
+    expect(within(sheet()).getByTestId('documents-sheet-no-submit-url').textContent).toBe('提出先の URL はまだありません');
+  });
+
   it('帯を出し、書くためのもの（設定の登録・編集・削除・写す、シートの操作・ファイルの追加と外す）を出さない。開く・保存・CSV はできる', async () => {
     renderScreen({ role: 'head', status: 'closed', search: `document=${D_PLAN}&group=${G2.id}` });
     await waitFor(() => expect(sheet()).toBeTruthy());

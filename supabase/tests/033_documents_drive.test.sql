@@ -57,7 +57,7 @@ begin
   return v;
 end $$;
 
-select plan(44);
+select plan(47);
 
 -- ================================================================ ① 形
 select has_column('public', 'documents', 'submit_url', 'documents に submit_url（提出先の URL）がある');
@@ -107,7 +107,18 @@ select is(tests.as_text('rep', $q$ select submit_url from public.v_document_stat
 
 -- ================================================================ ③ requires_file はいつも false
 select is((select count(*)::int from public.documents where requires_file), 0,
-  '今の行（fixture は DOC_STALL などを true で入れた）は、どれも false');
+  '今の行（fixture は 0023 の後に DOC_STALL などを true で入れた）は、insert のトリガーで false になっている');
+-- 0023 の既存の行の update（`update … set requires_file = false where requires_file`）：fixture はマイグレーションの後に入るので、トリガーを
+-- 止めて T24 の前の true の行を作り、0023 と同じ update を流してからトリガーを戻す（レビューで直したこと 7）
+alter table public.documents disable trigger keep_requires_file_off;
+update public.documents set requires_file = true where id in (tests.id('DOC_STALL'), tests.id('DOC_NOFILE'));
+select is((select count(*)::int from public.documents where requires_file), 2, 'トリガーを止めると T24 の前の形の true の行を作れる');
+create temp table t24_fixed on commit drop as
+  with u as (update public.documents set requires_file = false where requires_file returning id) select id from u;
+alter table public.documents enable trigger keep_requires_file_off;
+select is((select count(*)::int from public.documents where requires_file), 0, '0023 の update の後は true の行がない');
+select set_eq($$ select id from t24_fixed $$, array[tests.id('DOC_STALL'), tests.id('DOC_NOFILE')],
+  '0023 の update は true だった行だけを書く（ほかの行の版〔updated_at〕を進めない）');
 insert into public.documents (year_id, title, deadline, target_categories, requires_file)
 values (tests.id('Y1'), 'T-DOC_T24', '2027-10-02 17:00+09', '{stall}', true);
 select is((select requires_file from public.documents where title = 'T-DOC_T24'), false, 'postgres の insert で true を送っても false になる');

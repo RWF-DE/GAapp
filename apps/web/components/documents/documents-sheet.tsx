@@ -505,7 +505,7 @@ function SheetBody({
             ) : (
               <p data-testid="documents-sheet-no-submit-url" className="text-muted-foreground">
                 {NO_SUBMIT_URL_SHEET_TEXT}
-                {showFiles ? NO_SUBMIT_URL_LEAD_HINT : ''}
+                {writable && userId ? NO_SUBMIT_URL_LEAD_HINT : ''}
               </p>
             )}
           </div>

@@ -394,7 +394,7 @@ create table documents (
   deadline timestamptz not null,              -- 締切（Asia/Tokyo の日付で 2000-01-01〜2200-12-31）
   target_categories group_category[] not null, -- 出す団体の区分（1〜4 個。トリガーが重なりを除き、列挙の順に並べる。null の要素は不可）
   food_only boolean not null default false,   -- 飲食の団体（groups.is_food）だけに出す（Q8）
-  requires_file boolean not null default true, -- 「提出した」にファイルが1つ以上要る（Q7）。T24（0023）から既定は false で、トリガー keep_requires_file_off がいつも false にする（列は年度データの互換のために残す。D-62）
+  requires_file boolean not null default false, -- T19 では「提出した」にファイルが1つ以上要る（Q7。0016 の既定は true）。T24（0023）から既定は false で、トリガー keep_requires_file_off がいつも false にする（列は年度データの互換のために残す。D-62）
   submit_url text,                            -- 提出先の URL（T24。0023。任意。共有ドライブのフォルダ・Google フォームなど。`https://` で始まり、空白・制御文字を含まない 500 字まで〔CHECK documents_submit_url_check〕）
   files_deleted_at timestamptz,               -- 年度のファイルを削除した日時（delete_year_document_files だけが入れる。Q3）
   created_by uuid references auth.users on delete set null, -- 書いた人。DB が auth.uid() を入れる（変えない）

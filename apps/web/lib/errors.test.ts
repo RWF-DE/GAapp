@@ -568,7 +568,7 @@ describe('T19 提出物の RPC と Storage の文言（04「提出物」のエ�
   it('conflict（details は document_id・group_id）と not_found（外すは別の文）', () => {
     for (const name of ['submit_document', 'withdraw_document', 'approve_document', 'return_document']) {
       expect(msg(p0001('conflict', { document_id: 'd', group_id: 'g' }), rpc(name))).toBe(
-        'ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください',
+        'ほかの人がこの提出を先に変えました（提出・取り消し・ファイルを外すなど）。読み直しました。確かめてから、もう一度押してください',
       );
       expect(msg(p0001('not_found'), rpc(name))).toBe('この提出物は見つかりません（削除されたか、この団体が対象から外れた可能性があります）。読み直しました');
     }
@@ -602,7 +602,7 @@ describe('T19 提出物の RPC と Storage の文言（04「提出物」のエ�
   });
 
   it('定数の名前は DOCUMENT_・STORAGE_ で始め、文言の表は 04 のとおり', () => {
-    expect(DOCUMENT_CONFLICT_MESSAGE).toBe('ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください');
+    expect(DOCUMENT_CONFLICT_MESSAGE).toBe('ほかの人がこの提出を先に変えました（提出・取り消し・ファイルを外すなど）。読み直しました。確かめてから、もう一度押してください');
     expect(DOCUMENT_MISSING_MESSAGE).toContain('この提出物は見つかりません');
     expect(DOCUMENT_FILE_MISSING_MESSAGE).toContain('このファイルはもうありません');
     expect(Object.keys(DOCUMENT_FILES_LOCKED_MESSAGES)).toEqual(['submitted', 'approved']);

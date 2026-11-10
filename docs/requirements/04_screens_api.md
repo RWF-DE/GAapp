@@ -405,7 +405,7 @@
   - 予約の size には、上げる物（JPEG は作り直した後）の大きさをそのまま送る。届いた物が申告より大きいと、Storage が 403 で止める（トリガー。申告で数える容量を実際より小さく見せない）
   - どの提出にも属さない物が団体のフォルダに 5 つ以上あると、予約が invalid_state（reason too_many_orphans）になる。画面は外した直後に remove し、too_many_orphans が返ったら document_orphan_paths の path を remove してから予約し直す
 - 提出・取り消し・承認・差し戻しは、読んだときの提出の updated_at（v_document_status の updated_at。行がなければ null）を base_updated_at に渡す。ファイルを足す・外すと提出の updated_at が進むので、続けて提出するときは読み直した版で送る
-- 提出・取り消し・承認で同じ操作が重なったとき（店長と副店長が同時に「提出した」を押した、部門長2人が同時に承認した）と、成功した後の送り直しは、conflict でなく invalid_state（reason not_editable と今の status）になる（RPC は状態を版より先に見る。後の操作はロックを待った後の状態で決まる）。画面は読み直して今の状態を出す（「すでに提出されています。読み直しました」など。下の「エラーの文言」）。conflict になるのは、読んだ後にほかの人がファイルを足す・外すなどで版が進み、状態は変わっていないとき（差し戻しは差し戻しからもできるので、差し戻しが重なったときも conflict）
+- 提出・取り消し・承認で同じ操作が重なったとき（店長と副店長が同時に「提出した」を押した、部門長2人が同時に承認した）と、成功した後の送り直しは、conflict でなく invalid_state（reason not_editable と今の status）になる（RPC は状態を版より先に見る。後の操作はロックを待った後の状態で決まる）。画面は読み直して今の状態を出す（「すでに提出されています。読み直しました」など。下の「エラーの文言」）。conflict になるのは、読んだ後にほかの人が提出して取り消す・ファイルを外すなどで版が進み、状態は変わっていないとき（差し戻しは差し戻しからもできるので、差し戻しが重なったときも conflict）
 - 通信が切れたとき（「DB関数とブラウザ側の処理」の (B1)）：提出物の登録・変更・削除（直接）、予約と上げる（file_id と path が鍵）、提出・取り消し・承認・差し戻し（base_updated_at）はどれも (B1)。前年度から写す・年度のファイルの削除・片付けは、何度しても同じ結果になる。(B2) になる書き込みはない
 - エラー：RPC の invalid_state の reason（not_editable・no_file・not_uploaded・too_many_files・too_many_orphans・storage_full・not_closed・uploads_disabled〔T24〕）と invalid_input の field・reason（in_use・required・too_long・not_in_prev_year など）は、下の DB関数の表。画面の文言は下の「エラーの文言」（apps/web/lib/errors.ts）
 
@@ -458,7 +458,7 @@
 | invalid_state の not_uploaded | 届いていないファイルがあります。外してから提出してください（T24 で「もう一度送って」をやめた） |
 | invalid_state の too_many_files | ファイルは1つの提出物に 5 つまでです |
 | invalid_state の too_many_orphans（片付けて予約し直しても返ったとき） | 前に外したファイルを片付けられませんでした。通信を確かめてから、もう一度足してください |
-| invalid_state の storage_full | ファイルの置き場がいっぱいです（上限 900 MB）。総務に知らせてください（管理者が終了した年度のファイルを削除すると空きます） |
+| invalid_state の storage_full（T24 から返らない。予約は先に uploads_disabled で止まる。T19 の形の記録） | ファイルの置き場がいっぱいです（上限 900 MB）。総務に知らせてください（管理者が終了した年度のファイルを削除すると空きます） |
 | invalid_state の not_closed | 年度が終了していないので、ファイルを削除できません |
 | invalid_input（field: note、reason: required）。差し戻し | 差し戻しの理由を入れてください |
 | invalid_input（field: note、reason: required）。未提出・差し戻しからの承認 | 紙などで受け取ったときは、メモを入れてください |
@@ -471,7 +471,7 @@
 | invalid_input（field: reason。年度のファイルの削除） | 理由は 500 字までです（今の文言） |
 | not_found（discard_document_file 以外） | この提出物は見つかりません（削除されたか、この団体が対象から外れた可能性があります）。読み直しました |
 | not_found（discard_document_file） | このファイルはもうありません（ほかの人が外した可能性があります）。読み直しました |
-| conflict（detail は document_id・group_id） | ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください |
+| conflict（detail は document_id・group_id） | ほかの人がこの提出を先に変えました（提出・取り消し・ファイルを外すなど）。読み直しました。確かめてから、もう一度押してください |
 | Storage の upload の 403（ポリシー・トリガー） | アップロードできませんでした。提出の状態か立場が変わった可能性があります。読み直しました |
 | Storage の署名つき URL の 403（開く・保存。立場が変わった・ログインが切れた。2026-11-03。レビューの UX-4） | ファイルを開けませんでした。立場が変わった可能性があります（読み直すのは年度の行と立場だけなので「読み直しました」は付けない） |
 | Storage の upload の 413・415 | ファイルは1つ 10 MB までです／PDF・JPEG・PNG のファイルを選んでください |
@@ -491,11 +491,11 @@
 | 画面 | testid |
 | --- | --- |
 | /document | `document-screen`・`document-group-select`・`document-group-name`・`document-closed`・`document-empty`・`document-card`（data-document-id・data-status・data-late・data-highlighted）・`document-card-title`・`document-card-deadline`（data-overdue）・`document-card-status`・`document-card-late`・`document-card-proxy`・`document-card-paper`・`document-card-no-file`（T24 でやめた）・`document-card-submit-url`（T24。リンク）・`document-card-no-submit-url`（T24）・`document-card-description`・`document-returned`・`document-returned-reason`・`document-previous-reason`・`document-submitted-at`・`document-approved`・`document-approved-note`・`document-error`・`document-reread` |
-| /document のファイル | `document-files`・`document-file`（data-file-id・data-state="uploaded\|uploading\|failed\|missing"）・`document-file-label`・`document-file-open`・`document-file-save`・`document-file-remove`・`document-file-retry`・`document-file-add`・`document-file-input`・`document-file-hint`・`document-file-error`・`document-uploading`・`document-remove-confirm` |
+| /document のファイル | `document-files`・`document-file`（data-file-id・data-state="uploaded\|uploading\|failed\|missing"）・`document-file-label`・`document-file-open`・`document-file-save`・`document-file-remove`・`document-file-retry`（T24 でやめた）・`document-file-add`（T24 でやめた）・`document-file-input`（T24 でやめた）・`document-file-hint`（T24 でやめた）・`document-file-error`・`document-uploading`（T24 でやめた）・`document-remove-confirm` |
 | /document の提出 | `document-submit`・`document-submit-hint`・`document-submit-confirm`・`document-withdraw`・`document-withdraw-confirm` |
 | /documents | `documents-screen`・`documents-tab-status`・`documents-tab-settings`・`documents-closed`・`documents-filter`・`documents-filter-item`（data-status="all\|not_submitted\|submitted\|returned\|approved\|overdue"・data-count）・`documents-table`・`documents-col`（data-document-id）・`documents-row`（data-group-id）・`documents-cell`（data-document-id・data-group-id・data-status="not_submitted\|submitted\|returned\|approved\|none"〔none は対象でない「—」〕・data-late・data-proxy・data-paper・data-overdue・data-dimmed・data-highlighted）・`documents-cell-files`・`documents-list`・`documents-list-document`（data-document-id）・`documents-list-item`（data-document-id・data-group-id・data-status）・`documents-empty`・`documents-no-targets`・`documents-filter-empty`・`documents-csv` |
 | /documents の終了した年度 | `documents-delete-files`・`documents-delete-files-confirm`・`documents-delete-files-reason`・`documents-files-deleted`・`documents-cleanup`・`documents-cleanup-error`・`documents-usage-error`（使った量を読み込めない。2026-11-03） |
-| セルのシート | `documents-sheet`・`documents-sheet-title`・`documents-sheet-status`・`documents-sheet-history`・`documents-sheet-note`・`documents-sheet-submit-url`・`documents-sheet-no-submit-url`（T24）・`documents-sheet-files`・`documents-sheet-file`（data-file-id・data-state）・`documents-sheet-file-open`・`documents-sheet-file-save`・`documents-sheet-file-remove`・`documents-sheet-file-retry`・`documents-sheet-file-add`・`documents-sheet-file-input`・`documents-sheet-file-error`・`documents-sheet-uploading`・`documents-sheet-staff-note`・`documents-sheet-approve`・`documents-sheet-return`・`documents-sheet-paper`・`documents-sheet-submit`・`documents-sheet-withdraw`・`documents-sheet-error`・`documents-sheet-reread` |
+| セルのシート | `documents-sheet`・`documents-sheet-title`・`documents-sheet-status`・`documents-sheet-history`・`documents-sheet-note`・`documents-sheet-submit-url`・`documents-sheet-no-submit-url`（T24）・`documents-sheet-files`・`documents-sheet-file`（data-file-id・data-state）・`documents-sheet-file-open`・`documents-sheet-file-save`・`documents-sheet-file-remove`・`documents-sheet-file-retry`（T24 でやめた）・`documents-sheet-file-add`（T24 でやめた）・`documents-sheet-file-input`（T24 でやめた）・`documents-sheet-file-error`・`documents-sheet-uploading`（T24 でやめた）・`documents-sheet-staff-note`・`documents-sheet-approve`・`documents-sheet-return`・`documents-sheet-paper`・`documents-sheet-submit`・`documents-sheet-withdraw`・`documents-sheet-error`・`documents-sheet-reread` |
 | シートのダイアログ | `documents-approve-dialog`・`documents-approve-note`・`documents-approve-note-count`・`documents-approve-submit`・`documents-return-dialog`・`documents-return-reason`・`documents-return-reason-count`・`documents-return-submit`・`documents-paper-dialog`・`documents-paper-note`・`documents-paper-note-count`・`documents-paper-submit`・`documents-review-error`・`documents-proxy-confirm`・`documents-withdraw-confirm`・`documents-remove-confirm` |
 | 提出物の設定 | `documents-settings`・`documents-settings-row`（data-document-id）・`documents-settings-submit-url`（T24）・`documents-settings-add`・`documents-settings-copy`・`documents-settings-edit`・`documents-settings-delete`・`documents-settings-empty`・`documents-delete-confirm`・`documents-delete-error` |
 | 提出物のダイアログ | `doc-dialog`・`doc-form`・`doc-title`・`doc-title-count`・`doc-description`・`doc-description-count`・`doc-deadline-date`・`doc-deadline-time`・`doc-category`（data-category）・`doc-food-only`・`doc-requires-file`（T24 でやめた）・`doc-submit-url`・`doc-submit-url-count`（T24）・`doc-target-count`・`doc-narrowing`・`doc-submit`・`doc-conflict`・`doc-missing`・`doc-error` |
@@ -513,7 +513,7 @@
   - 題名と状態の印（未提出・提出済み（総務の確認待ち）・差し戻し・承認と、締切の後）
   - 締切：「締切 10/5（月）17:00」と相対の言い方（今日・明日・あと N 日・締切を過ぎました。「締切と予定」の日付の出し方）。未提出・差し戻しで過ぎていれば注意の色と文字
   - 説明（書いたとおりの文字で出す。改行を残し、長い語も折り返す。リンクにしない・HTML として読まない。空なら出さない）。T24 で「ファイルは要りません…」の文はやめた（どの提出物もファイルなしで出す）
-  - 提出先（T24。D-62）：提出先の URL があれば「提出先を開く」のリンク（`<a href={submit_url} target="_blank" rel="noopener noreferrer">`。新しいタブ。読み上げの名前は「提出先を開く（新しいタブ）」）と、「ドライブやフォームで出してから、「提出した」を押してください（出せる人・見られる人は、提出先の共有の設定で決まります）」。URL がなければ「提出先は総務から知らされます（決まると、ここに「提出先を開く」が出ます）」。href には `https://` で始まる URL だけを入れる（DB の CHECK と同じ形。ほかの形ならリンクを出さない）
+  - 提出先（T24。D-62）：「提出した」を押せる間（未提出・差し戻しで、書ける年度）だけ出す（提出済み・承認・終了した年度・年度の状態が分からないときは、リンクも下の2つの文も出さない）。提出先の URL があれば「提出先を開く」のリンク（`<a href={submit_url} target="_blank" rel="noopener noreferrer">`。新しいタブ。読み上げの名前は「提出先を開く（新しいタブ）」）と、「ドライブやフォームで出してから、「提出した」を押してください（出せる人・見られる人は、提出先の共有の設定で決まります）」。URL がなければ「提出先は総務から知らされます（決まると、ここに「提出先を開く」が出ます）」。href には `https://` で始まる URL だけを入れる（DB の CHECK と同じ形。ほかの形ならリンクを出さない）
   - 差し戻し：目立つ枠（注意の色と文字。色だけにしない）に「差し戻されました（{日時}）」「理由：{理由}」（書いたとおり。改行を残す）と「直してから、もう一度「提出した」を押してください」
   - 提出済み：「提出しました（{日時}）」。前に差し戻されていれば「前回の差し戻しの理由：{理由}」を小さく
   - 承認：「承認されました（{日時}）」と、メモがあれば「メモ：{メモ}」。紙などで受け取った承認には「紙などで受け取りました」
@@ -526,7 +526,7 @@
 - フォーカス（2026-11-03。レビューの F4）：「提出した」「提出を取り消す」が成功すると押したボタンが消えるので、確かめのダイアログが閉じた後に、フォーカスをそのカードの題名に移す（止められた・分からなかったときは、今までどおり押したボタンに戻る）
 - 最新でない年度：上に「最新の年度に切り替える」（今の部品）を出し、書き込み（ファイルを外す・「提出した」・取り消す）の前に確かめる（D-31。確かめの動詞は、ファイルを外すは「変更」、「提出した」は「提出」、取り消すは「取り消し」）
 - 終了した年度：書くためのもの（ファイルを外す・「提出した」・取り消す）を出さず、「終了した年度のため、提出物は読むだけです（ファイルは、総務が年度の終わりに削除します）」の帯を出す。開く・保存はできる
-- 同じ操作が重なったとき（店長と副店長が同時に「提出した」を押した、成功した後の送り直し。invalid_state の not_editable）は、読み直して今の状態を出し、エラーの文言（「すでに提出されています。読み直しました」など）を出す。conflict（読んだ後に、ほかの人がファイルを足す・外すなどで版が進んだ）は、読み直してエラーの文言を出す（もう一度押すと、読み直した版で送る）。forbidden・invalid_state の closed は、年度の行と立場を読み直して書けない形にする（「共通レイアウト」）
+- 同じ操作が重なったとき（店長と副店長が同時に「提出した」を押した、成功した後の送り直し。invalid_state の not_editable）は、読み直して今の状態を出し、エラーの文言（「すでに提出されています。読み直しました」など）を出す。conflict（読んだ後に、ほかの人が提出して取り消す・ファイルを外すなどで版が進んだ）は、読み直してエラーの文言を出す（もう一度押すと、読み直した版で送る）。forbidden・invalid_state の closed は、年度の行と立場を読み直して書けない形にする（「共通レイアウト」）
 - 空の表示：その団体が対象の提出物がなければ「この団体が出す提出物はまだありません」。読み込み中・読み込みの失敗（もう一度）はほかの画面と同じ部品
 
 ### 提出状況 /documents（PC）
@@ -546,7 +546,7 @@
 - セルのシート（横から開く。見出し「{団体}・{提出物}」。開いたまま、裏の読み直しで中身を変える）：
   - 状態の印と経過：「提出 {日時}（{した人}）」（代理なら「代理」の印）、「承認 {日時}（{した人}）」または「差し戻し {日時}（{した人}）」。した人は表示名（読めない・記録がないときは「名前を表示できません」）。締切の後・紙・締切を過ぎたの印
   - 理由・メモ（書いたとおり。改行を残す）：差し戻しなら「差し戻しの理由」、提出済みで前に差し戻していれば「前回の差し戻しの理由」、承認でメモがあれば「承認のメモ」
-  - 提出先（T24）：提出先の URL があれば「提出先を開く」（/document と同じリンク。新しいタブ。総務の段によらず出す。中を見られるかはドライブの共有の設定で決まる）。なければ「提出先の URL はまだありません」（部門長以上には「（「提出物の設定」で入れられます）」を添える）
+  - 提出先（T24）：提出先の URL があれば「提出先を開く」（/document と同じリンク。新しいタブ。総務の段によらず出す。中を見られるかはドライブの共有の設定で決まる）。なければ「提出先の URL はまだありません」（部門長以上で、書ける年度〔設定の登録・編集が出る年度〕だけ「（「提出物の設定」で入れられます）」を添える）
   - ファイル（部門長以上だけ。T24 の前に上がったものがあるときだけ一覧を出す）：「ファイルの扱い」の形で1件ずつ、届いたものに「開く」「保存」、承認でなければ「外す」。総務部門員には、ファイルの欄の代わりに「ファイルを開けるのは部門長以上です」とだけ出す
   - 操作（部門長以上。終了した年度を除く。今の状態で押せるものだけを出す）：
     - 「承認する」（提出済み）：ダイアログ（見出し「承認する」、メモ〔任意。1000 字まで。「{n}/1000」〕、「メモは団体にも見えます。個人の名前は書かないでください。」、ボタン「承認する」）→ approve_document（メモが空なら null）→「承認しました」
@@ -592,7 +592,7 @@
 - 機能ごとのカード「提出物」（総務）：
   - 1行目：「提出物 6 件（次の締切 10/5 17:00）」（次の締切は今より後でいちばん早い締切。なければ「（締切はすべて過ぎました）」）。提出物がなければ「提出物はまだありません」だけ
   - 2行目：「承認 40／61・承認待ち 7・差し戻し 2・未提出 12」（団体 × その団体が対象の提出物で数える）。対象の団体がなければ「対象の団体がありません」
-  - 3行目（管理者だけ）：「ファイル 180 MB（上限 900 MB）」（bucket_bytes・limit_bytes。年度をまたぐ置き場の合計）
+  - 3行目（管理者だけ）：「前に上げたファイル 180 MB（新しくは上げません）」（bucket_bytes。年度をまたぐ置き場の合計。T24 から上限は出さない：提出物は新しく上げず〔02 の「Storage の容量」で documents は 0〕、limit_bytes の 900 MiB は T19 の形の記録なので、出すとまだ 900 MB 使えるように見える。D-62）
   - リンクは「提出状況へ」（/documents）
 - 先読み：ダッシュボードの先読み（「共通レイアウト」の読み込みの項）に、総務の分（部門長以上と総務部門員で別のキー）を足す。軽いモジュール（読み取りとキーだけ。並べ方や組み立てを持たない）から読む（D-52）。店長・副店長の分（団体の id つきのキー）は、足した形の団体代表の / が 4G で 2 秒を下回らなかったので（`pnpm e2e:perf`。notes/T19.md の「実行したコマンドと結果（パート B・C）」）、先読みに入れず、記録・先送り（2回目から JS より先に送る）だけにした（D-45 の T19 の直し）
 
@@ -827,7 +827,7 @@
 | copy_previous_documents(year_id, document_ids) | その年度の部門長以上 | 選んだ前年度の提出物を、ずらした締切でこの年度に写す（題名・説明・対象の区分・飲食の団体だけ・提出先の URL〔T24〕。ファイルが要るはいつも false。同じ題名は飛ばす。Q10）。写した行を返す（何度呼んでも同じ結果）。終了した年度ではできない。理由は「提出物の前年度からの写し」。エラーの順：forbidden → invalid_state（終了）→ invalid_input（field document_ids、reason：required・too_many〔1000 を超える〕・invalid〔null・重なり〕・not_in_prev_year・deadline_out_of_range） |
 | delete_year_document_files(year_id, reason) | その年度の管理者（終了の年度だけ） | その年度の提出物のファイルの行を全部消し、提出物の files_deleted_at を入れる（最初の削除の日時のまま）。提出の状態・日時・理由は残す（Q3）。消した行の数を返す（Storage の物は、画面が document_orphan_paths の path を remove する）。reason は省ける（省けば理由は「提出物のファイルの削除」）。エラーの順：forbidden → invalid_state（終了でない：reason not_closed）→ invalid_input（reason が 500 字を超える） |
 | document_orphan_paths(year_id) | その年度の部門長以上、その年度の団体の店長・副店長 | 呼んだ人が Storage から消せる「どの提出にも属さないファイル」の path を返す（その年度のフォルダの分。部門長以上は年度の全部、店長・副店長は自団体の分。読み取りのみ。終了の年度も） |
-| document_storage_usage(year_id) | その年度の部門長以上 | 1行を返す（読み取りのみ）：bucket documents の合計（全年度の届いた物の大きさ）bucket_bytes と上限 limit_bytes（900 MiB）、その年度のファイルの行の数 file_count と大きさ file_bytes（届いたものは実際、届いていないものは申告）、その年度のどの提出にも属さない物の数 orphan_count |
+| document_storage_usage(year_id) | その年度の部門長以上 | 1行を返す（読み取りのみ）：bucket documents の合計（全年度の届いた物の大きさ）bucket_bytes と上限 limit_bytes（900 MiB。T19 の形の記録で、T24 から画面は出さない。D-62）、その年度のファイルの行の数 file_count と大きさ file_bytes（届いたものは実際、届いていないものは申告）、その年度のどの提出にも属さない物の数 orphan_count |
 | set_task_status(task_id, status, base_updated_at) | 総務で、その作業の担当者か部門長以上（T20・D-56） | 作業の状態（未着手・作業中・完了）だけを変える（どの状態からどの状態へも。完了から戻すのもよい。同じ状態でも書いて updated_at を進める）。RLS は列を分けられないので、担当の総務部門員が状態だけを変えるための RPC。終了した年度では変えられない（確定中は変えられる）。エラーの順：作業がない・その作業の年度の総務でない → forbidden（有無を漏らさない）、終了 → invalid_state、status か base_updated_at が null → invalid_input（field: status・base_updated_at）、ロックを待つ間に消えた → not_found、担当者でも部門長以上でもない → forbidden（担当者なしの作業は部門長以上だけ）、base_updated_at（読んだときの updated_at の文字列のまま。ミリ秒までで比べる）が今の行と違う → conflict（detail は id）。理由は「作業の状態」。返り値は作業の行 |
 | add_shift_slots(year_id, slots, needs) | 部門長以上（T20・D-56） | 「1日分をまとめて作る」：時間枠（slots：`[{starts_at, ends_at}]`。オフセットつきの ISO 8601 の日時。1〜96 個）と、作った時間枠のすべてに同じ持ち場のます（needs：`[{duty_id, required_count}]`。0〜100 個。必要人数 0〜100）を1回で作る（2つの表をまとめて変えるので RPC）。needs は省ける（空。時間枠だけ）。終了した年度では作れない（確定中は作れる）。エラーの順：年度がない・部門長以上でない → forbidden、終了 → invalid_state、slots が空・配列でない → invalid_input（field: slots、reason: required）、97 個以上 → too_many、時間枠の形 → invalid・順 → order・24 時間より長い → too_long・日付が 2000-01-01〜2200-12-31 の外 → out_of_range、送った時間枠どうしが重なる → overlap（どれも field: slots と、送った順の番号 ord〔1 から〕）、needs の形 → invalid・101 個以上 → too_many・同じ持ち場が2回 → duplicate・その年度の持ち場でない → not_in_year（どれも field: needs）、今ある時間枠と重なる → invalid_input（field: starts_at、reason: overlap、slot_id。時間枠のトリガー）。冪等の鍵はない。理由は「シフトの時間枠」。返り値は作った時間枠（開始の早い順） |
 | save_lending_assignments(year_id, changes) | 部門長以上（T21・D-57） | テント等の割り当てを1回で保存する（全部か何も）。changes は 1〜1000 件の `[{ groupId, itemId, count, updatedAt }]`（count は 0〜10000 の整数か null。null は行を消して未入力に戻す。updatedAt は行があれば読んだときの updated_at の文字列、なければ null）。どの区分の団体にも入れられ、在庫を超えても保存できる（確定で止める）。年度の行はロックせず、年度ごとの勧告的ロックで順に処理する。理由は「テント等の割り当て」。返り値は changes の順の `[{ groupId, itemId, count, updatedAt }]`（消した・何もしなかった行は count・updatedAt が null）。エラーの順：forbidden（その年度の部門長以上でない・年度がない）→ invalid_state（終了〔status: closed〕→ 割り当ての確定中〔reason: confirmed〕）→ invalid_input（field：changes〔配列でない・0 件・1000 件を超える。reason：shape・duplicate〕・groupId・itemId〔reason: not_in_year〕）→ conflict（行があるのに updatedAt が null・行がないのに updatedAt がある・ミリ秒までで違う。detail は group_id・lending_item_id）。画面は「テント等の貸し出し」 |

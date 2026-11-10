@@ -52,7 +52,7 @@ describe('T19 runSubmissionWrite', () => {
     const changed = await runSubmissionWrite(req({ send, reread: async () => ({ status: 'returned', updated_at: V2, review_note: null }) }), other);
     expect(changed.type).toBe('rejected');
     expect(messageFor(classifyError((changed as { error: unknown }).error), { rpc: SUBMISSION_RPCS.submit })).toBe(
-      'ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください',
+      'ほかの人がこの提出を先に変えました（提出・取り消し・ファイルを外すなど）。読み直しました。確かめてから、もう一度押してください',
     );
     expect(await runSubmissionWrite(req({ send, reread: async () => Promise.reject(NETWORK) }), other)).toEqual({ type: 'unknown' });
   });

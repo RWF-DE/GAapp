@@ -14,7 +14,7 @@ export const DOCUMENTS_BUCKET = 'documents';
 export const MAX_FILES = 5;
 /** 1つのファイルの大きさの上限（10 MiB。document_files_size_check と bucket の file_size_limit） */
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
-/** bucket 全体の上限（900 MiB。reserve_document_file の storage_full と document_storage_usage の limit_bytes） */
+/** bucket 全体の上限（900 MiB。T19 の reserve_document_file の storage_full と document_storage_usage の limit_bytes。T24 から画面には出さない） */
 export const STORAGE_LIMIT_BYTES = 900 * 1024 * 1024;
 /** 署名つき URL の有効な秒数（押したときに作り、残さない） */
 export const SIGNED_URL_SECONDS = 60;
