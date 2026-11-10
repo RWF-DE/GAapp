@@ -228,9 +228,9 @@ GitHub Actions の変数に `NEXT_PUBLIC_GOOGLE_HD_HINT`（学校のドメイン
 
 マイグレーションを含む PR をマージしたあと、Actions → Migrate production DB → Run workflow で、**ブランチに `main` を選んで**手動実行する（先に 2 の環境 `production` を設定しておく。Required reviewers の承認の後に動く）。Migrate production DB（`supabase db push`）は、本番 DB にまだ流していないマイグレーションを、番号の順に全部流す。CLI はファイルごとに1つのトランザクションで流すので、途中のファイルで止まると、そのファイルの変更は何も残らず、それより前のファイルは流れたまま残る（もう一度流すと、止まったファイルから続く）。本番 DB に流したファイルは、管理画面の SQL Editor で `select version from supabase_migrations.schema_migrations order by version;` を流すと分かる（`0008` のようなファイルの番号が並ぶ）。
 
-#### 本番を使い始める前に流すもの（0009〜0021）
+#### 本番を使い始める前に流すもの（0009〜0022）
 
-main には T15〜T18（PR #19〜#23）と T19〜T21（PR #25〜#28）が入り、GitHub Pages の画面（deploy.yml が main へのマージのたびに出す）は 0018 までのマイグレーションがあることを前提にしている（0019 は理由の空白の直し、0020 は年度の作成で団体を複製しない変更で、画面は前提にしない。0021 は T22 の備品〔数えるだけ〕で、T22 の画面が入った後は前提にする）。本番 DB に流していないファイルが残っていると、それを使う画面（招待とロールの段・お知らせ・締切と予定・提出物・シフト・作業・テント等の貸し出しなど）が失敗を出す。本番を使い始める前に（誰かがアプリで書き込む前に）、下の手順で Migrate production DB を流し、次の13個を流し終えておく（本番 DB が 0008 までなら、1回の実行でこの順に流れる）。0016（提出物の DB と Storage。T19 のパート A）は画面（パート B・C）より先に main に入った。画面が入った後は、0016 を流すまで提出物の画面と、ダッシュボード・締切と予定の一覧の提出物の分が読み込みの失敗を出す（0016 の行）。
+main には T15〜T18（PR #19〜#23）と T19〜T21（PR #25〜#28）が入り、GitHub Pages の画面（deploy.yml が main へのマージのたびに出す）は 0018 までのマイグレーションがあることを前提にしている（0019 は理由の空白の直し、0020 は年度の作成で団体を複製しない変更で、画面は前提にしない。0021 は T22 の備品〔数えるだけ〕で、T22 の画面が入った後は前提にする。0022 は T23 の品目の画像で、T23 の画面が入った後は前提にする。0021 と 0022 はどちらも、マージの後に必ず流す）。本番 DB に流していないファイルが残っていると、それを使う画面（招待とロールの段・お知らせ・締切と予定・提出物・シフト・作業・テント等の貸し出しなど）が失敗を出す。本番を使い始める前に（誰かがアプリで書き込む前に）、下の手順で Migrate production DB を流し、次の14個を流し終えておく（本番 DB が 0008 までなら、1回の実行でこの順に流れる）。0016（提出物の DB と Storage。T19 のパート A）は画面（パート B・C）より先に main に入った。画面が入った後は、0016 を流すまで提出物の画面と、ダッシュボード・締切と予定の一覧の提出物の分が読み込みの失敗を出す（0016 の行）。
 
 | ファイル | 中身 | 流すときの注意 |
 | --- | --- | --- |
@@ -247,6 +247,7 @@ main には T15〜T18（PR #19〜#23）と T19〜T21（PR #25〜#28）が入り�
 | 0019_set_reason_trim.sql | 監査の理由を置く関数 private.set_reason を置き換え、理由の前後から除く空白を画面の trim と同じ 25 文字（タブ・改行・全角の空白など）にそろえる（T19〜T21 の後の片付け〔FU3〕。T21 の「確認したいこと」の 6）。表・権限・関数の引数は変えない | 0003 の関数を置き換えるだけで、0016〜0018 とは独立。画面は変わらない（画面は前から除いてから送る）。流すまでは、RPC を直接呼ぶと空白に見えるだけの理由で確定の解除などが通る |
 | 0020_year_no_group_copy.sql | 年度の作成の関数 public.create_year_from を置き換え、前年度の団体を複製しない。団体を参照するルールは無効にして複製する（D-59）。表・権限・関数の引数と戻り値は変えない | 0005 の関数を置き換えるだけで、0016〜0019 とは独立。流すまでは、新しい年度に前年度の団体が複製される（画面の説明の文言とずれる）。作った年度には効かない |
 | 0021_count_items.sql | 備品（数えるだけ。T22。D-60）の表 count_items・count_stocks・RLS・RPC add_count_item・previous_year_count_stocks と、最初から出す4つ（ゴミ箱・延長コード・扇風機・オレンジ椅子）の行。履歴の読み取りのポリシー audit_logs_select を作り直し、年度のない行に count_items を足す（ほかの枝は変えない） | 0013 の関数（can_write_stocks など）を使う。0014〜0020 とは独立。T22 の画面（在庫入力の「備品（数えるだけ）」・在庫一覧の表・マスタ設定の品目のタブの欄）は、流すまで読み込みの失敗を出す（机椅子の在庫はそのまま） |
+| 0022_item_images.sql | 品目の画像（T23。D-61）の列 items.image_path・count_items.image_path、予約の表 item_image_uploads・RLS・RPC reserve_item_image・set_item_image と、Storage の bucket item-images・storage.objects のポリシー3つとトリガー1つ。版の増分の関数 private.tg_bump_allocation_version を置き換え、画像だけの変更では版を上げない（ほかの枝は変えない） | 下の「0022 の注意」。0021 の count_items を使うので、0021 の後。T23 の画面（在庫入力・申請・マスタ設定の品目のタブの画像）は、流すまで読み込みの失敗を出す |
 
 流す手順：
 
@@ -255,7 +256,7 @@ main には T15〜T18（PR #19〜#23）と T19〜T21（PR #25〜#28）が入り�
 3. 止まったら、ログのエラーを見る。止まったファイルの変更は何も残らないので、直すものを直してから、もう一度 Migrate production DB を流せば、止まったファイルから続く。
    - `role_overlap: …`（0013 の最初の文）：兼任を探す問い合わせで探して直してから流し直す。
    - lock timeout（SQLSTATE 55P03）・デッドロック（40P01）：直すものはない。そのまま流し直す。
-4. 流し終えたら、上の `supabase_migrations.schema_migrations` の問い合わせで 0021 まで並ぶことを確かめ、下の「0016 の注意」の確かめの問い合わせを流し、管理者が総務部門長・総務副部門長を招待する（下の「総務部門長・総務副部門長の付け方」）。
+4. 流し終えたら、上の `supabase_migrations.schema_migrations` の問い合わせで 0022 まで並ぶことを確かめ、下の「0016 の注意」と「0022 の注意」の確かめの問い合わせを流し、管理者が総務部門長・総務副部門長を招待する（下の「総務部門長・総務副部門長の付け方」）。
 
 #### 0011〜0013（T15 のロールの見直し。D-48・D-49）の注意
 
@@ -314,6 +315,28 @@ main には T15〜T18（PR #19〜#23）と T19〜T21（PR #25〜#28）が入り�
   2. bucket の行かポリシーが通らないとき：手で入れる。bucket は管理画面の Storage → New bucket で作る（名前 `documents`、Public bucket はオフ、Restrict file upload size は 10 MB〔10485760 バイト〕、Allowed MIME types は `application/pdf`・`image/jpeg`・`image/png`）。ポリシーは Storage → Policies の bucket documents で New policy → For full customization を選び、0016 の3つの `create policy` と同じ名前・操作（SELECT・INSERT・DELETE）・対象のロール（authenticated）・式で作る。入れた後に上の確かめの問い合わせを流し、0016 から手で入れた文を除く PR を出してから（除いたことを notes/T19.md に書く）、Migrate production DB を流し直す。
   3. トリガーが通らないとき（postgres が storage.objects にトリガーを作れない）：トリガーのないまま 0016 を流さない（署名つきアップロードの URL を取っておくと、承認の後のファイルを差し替えられる。T19-SEC-1）。代わりの守りを入れる PR を出してから流す：authenticated から storage.objects の update の権限を外して upsert の署名つき URL を作れなくし（`revoke update on storage.objects from authenticated`）、提出・承認のときに各物の版（storage.objects の version）を document_files に控えて、違えば v_document_files と承認で見つける（notes/T19.md の判断したことの 29）。
   4. lock timeout（55P03）・デッドロック（40P01）：直すものはない。そのまま流し直す。
+
+#### 0022（品目の画像。T23。D-61）の注意
+
+- 0022 は列・表・関数・ポリシーを足し、版の増分の関数を置き換える（items の画像だけの変更で版を上げない枝を足すだけ）。Storage の部分で、storage.buckets に bucket `item-images` の行（非公開・1 枚 1 MiB・WebP・JPEG）を入れ、storage.objects に bucket item-images の物だけに効くポリシー3つ（item_images_objects_select・item_images_objects_insert・item_images_objects_delete）とトリガー item_images_objects_guard を作る。0016 の bucket documents のポリシー・トリガーは変えない（「0016 の注意」の確かめのポリシーの問い合わせは、0022 の後は6行になる）。
+- 流し終えたら、管理画面の SQL Editor で次を流して確かめる（最後の4行は取り消すトランザクションで、何も残らない）：
+
+  ```sql
+  select id, public, file_size_limit, allowed_mime_types from storage.buckets where id = 'item-images';
+  -- 1 行：item-images | false | 1048576 | {image/webp,image/jpeg}
+  select policyname, cmd from pg_policies where schemaname = 'storage' and policyname like 'item_images_%' order by policyname;
+  -- 3 行：item_images_objects_delete | DELETE、item_images_objects_insert | INSERT、item_images_objects_select | SELECT
+  select tgname, tgenabled from pg_trigger where tgrelid = 'storage.objects'::regclass and tgname = 'item_images_objects_guard';
+  -- 1 行：item_images_objects_guard | O
+  begin;
+  set local role service_role;
+  insert into storage.objects (bucket_id, name) values ('item-images', 'items/check/not-reserved.webp');
+  rollback;
+  -- ERROR: forbidden（42501。DETAIL は {"reason": "not_reserved"}）になれば、トリガーが効いている
+  ```
+
+- 止まったときは「0016 の注意」の手順と同じ（bucket の行・ポリシー・トリガーのどれが通らないかを `begin;`〜`rollback;` で確かめる。トリガーが作れないときは、トリガーのないまま流さない）。
+- 写真は SQL で入れない。アプリから管理者（9 品目）か在庫を書ける人（備品〔数えるだけ〕）が撮って登録する。
 
 ### 6. 最初の年度と最初の管理者（D-01）
 

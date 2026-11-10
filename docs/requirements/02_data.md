@@ -1,6 +1,6 @@
 # データ設計
 
-総務アプリ（D-51）の表。机椅子の機能の表（年度の状態 year_status も、机椅子の業務の流れ〔受付・振り分け・確定〕を表す）と、機能のチケットが足した表がある：お知らせ（T17）の notices・notice_groups、締切と予定（T18）の events、提出物（T19）の documents・document_submissions・document_files とビュー2つ（ファイルの中身は Supabase Storage の bucket documents）、シフト・作業（T20）の shift_duties・shift_slots・shift_needs・shift_assignments・tasks、テント等の貸し出し（T21）の lending_items・lending_requests・lending_assignments・lending_records・lending_years、机椅子の在庫入力で数えるだけの物（T22）の count_items・count_stocks。年度・ロール・団体代表・招待（years・year_roles・group_members・invitations。団体代表は groups の行に付く）は、アプリ全体の立場（ナビゲーション・ページの守り・ダッシュボード）にも使い、どの機能も同じものを使う。T16 は表・関数・ポリシーを足さない（ダッシュボードは各機能の表を今の RLS のまま読む。04「ダッシュボード」）。これから足す機能の表は、その機能のチケットがこの文書に足す（列挙型・テーブル定義・設計上の決めごと・権限表に、その機能の行と節を足す。D-52）。終了（closed）の年度では、机椅子の表がすべて読み取り専用になる（下の「設計上の決めごと」）。機能の表を終了の年度でどう扱うかは機能のチケットが決め、T17〜T21 の表はどれも読むだけ（例外は、管理者の提出物のファイルの削除〔T19〕と、ロールを外したときに消える割り当てと空になる作業の担当者〔T20〕。下の「設計上の決めごと」の各機能の項）。
+総務アプリ（D-51）の表。机椅子の機能の表（年度の状態 year_status も、机椅子の業務の流れ〔受付・振り分け・確定〕を表す）と、機能のチケットが足した表がある：お知らせ（T17）の notices・notice_groups、締切と予定（T18）の events、提出物（T19）の documents・document_submissions・document_files とビュー2つ（ファイルの中身は Supabase Storage の bucket documents）、シフト・作業（T20）の shift_duties・shift_slots・shift_needs・shift_assignments・tasks、テント等の貸し出し（T21）の lending_items・lending_requests・lending_assignments・lending_records・lending_years、机椅子の在庫入力で数えるだけの物（T22）の count_items・count_stocks、品目の画像（T23）の予約 item_image_uploads（画像の中身は Supabase Storage の bucket item-images。items・count_items には画像の列 image_path を足す）。年度・ロール・団体代表・招待（years・year_roles・group_members・invitations。団体代表は groups の行に付く）は、アプリ全体の立場（ナビゲーション・ページの守り・ダッシュボード）にも使い、どの機能も同じものを使う。T16 は表・関数・ポリシーを足さない（ダッシュボードは各機能の表を今の RLS のまま読む。04「ダッシュボード」）。これから足す機能の表は、その機能のチケットがこの文書に足す（列挙型・テーブル定義・設計上の決めごと・権限表に、その機能の行と節を足す。D-52）。終了（closed）の年度では、机椅子の表がすべて読み取り専用になる（下の「設計上の決めごと」）。機能の表を終了の年度でどう扱うかは機能のチケットが決め、T17〜T21 の表はどれも読むだけ（例外は、管理者の提出物のファイルの削除〔T19〕と、ロールを外したときに消える割り当てと空になる作業の担当者〔T20〕。下の「設計上の決めごと」の各機能の項）。
 
 ## 列挙型
 
@@ -62,6 +62,8 @@ app_role の head（総務部門長）と deputy_head（総務副部門長）は
 
 0021_count_items.sql（備品〔数えるだけ〕の表 count_items・count_stocks とそのトリガー・RLS、RPC add_count_item・previous_year_count_stocks、最初から出す4つの物〔ゴミ箱・延長コード・扇風機・オレンジ椅子〕の行。履歴の読み取りのポリシー audit_logs_select の「年度のない行」に count_items を足す〔作り直す。ほかの枝は変えない〕。ほかの表と関数は変えない。D-60）は T22 で作る。
 
+0022_item_images.sql（品目の画像。items・count_items の列 image_path、予約の表 item_image_uploads とその RLS、Storage の非公開の bucket item-images と storage.objects のポリシー3つ・トリガー1つ、RPC reserve_item_image・set_item_image、image_path を RPC の外で変えさせないトリガー。版の増分の関数 private.tg_bump_allocation_version を `create or replace` で置き換え、set_item_image が items の画像だけを変えるときは版を上げない〔ほかの枝は変えない〕。0016 の bucket documents のポリシー・トリガーは変えない。D-61）は T23 で作る。
+
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
 
 文字列と数には上限を付ける。自由記述（note・memo・problem_note）は 2000 字、名前・表示名・ラベルは 100 字（年度名は 50 字）、コードと建物は 50 字、aliases は 20 個・合計 1000 字、rules.params は 20000 字、数（count）は 10000 まで。団体代表と部員も書ける列があるので、大きな値で無料プランの容量（500MB）を使い切らせず、解けない申請を入れさせないため。
@@ -110,7 +112,8 @@ create table items (
   name text not null check (btrim(name) <> '' and length(name) <= 100), -- '机(木)'
   aliases text[] not null default '{}' check (cardinality(aliases) <= 20 and length(array_to_string(aliases, '')) <= 1000), -- フォームでの表記 '{机(キャスター有)}'
   requestable_categories group_category[] not null default '{}', -- 申請できる区分。不可机・不可椅子は '{}'
-  sort_order int not null
+  sort_order int not null,
+  image_path text -- 品目の画像（T23。0022。下の「品目の画像」）。null なら画像なし
 );
 
 -- 在庫
@@ -667,6 +670,34 @@ create index on count_stocks (count_item_id);
 - マイグレーションで、最初から出す4つ（always_shown が true。並びの 1〜4）を入れる：ゴミ箱・延長コード・扇風機・オレンジ椅子。ほかの選択肢（白椅子・台形机・掃除機など）は本番の SQL Editor で入れるか、在庫入力の「その他」で足す。
 - 名前の重なりは、NFKC にして小文字にした名前の一意の索引で止める（23505。画面の nameKey〔NFKC・trim・小文字〕と同じ比べ方。DB の名前は前後の空白がないので trim は要らない）。
 
+**品目の画像（T23。0022。D-61）**
+
+9 品目（items）と備品（数えるだけ。count_items）に、写真を1枚ずつ付けられる（なくてもよい）。画像の中身は Supabase Storage の非公開の bucket `item-images`（1 枚 1 MiB〔1048576 バイト〕まで、形は `image/webp` と `image/jpeg` だけ。0022 が作る）。行の列 `image_path` が今の画像の path（null なら画像なし）。書き込みは T19 の提出物のファイルと同じ「DB が予約してから上げる」形にする。
+
+```sql
+alter table items add column image_path text;       -- 'items/{items.id}/{予約の id}.webp'。null なら画像なし
+alter table count_items add column image_path text; -- 'count-items/{count_items.id}/{予約の id}.webp'
+-- どちらも CHECK で形を固定する（その行の id のフォルダ。予約の id は小文字の uuid。拡張子は webp か jpg）
+
+-- 画像の予約（RPC だけで書く。行は予約した人だけが読む）
+create table item_image_uploads (
+  id uuid primary key,                -- 画面が作る（reserve_item_image の p_image_id。送り直しの鍵）
+  item_id uuid references items on delete cascade,
+  count_item_id uuid references count_items on delete cascade,
+  object_path text not null unique,   -- DB が作る。'items/{item_id}/{id}.webp' か 'count-items/{count_item_id}/{id}.webp'（JPEG は .jpg）
+  content_type text not null check (content_type in ('image/webp', 'image/jpeg')),
+  created_by uuid references auth.users on delete set null, -- 予約した人（Storage に上げられるのはこの人だけ）
+  expires_at timestamptz not null,    -- 予約から 1 時間。過ぎたら上げられない（同じ id で予約し直せる）
+  used_at timestamptz,                -- set_item_image が行の画像にした日時
+  replaced_path text,                 -- そのときの前の画像の path（送り直しで同じ値を返す）
+  check (num_nonnulls(item_id, count_item_id) = 1)
+  -- CHECK で object_path を item_id・count_item_id・id・content_type から決まる形に固定する
+);
+```
+
+- path に日本語・名前・個人の情報を入れない（DB が id から作る）。元のファイル名は持たない。
+- 画像を消す・替えると、前の物は「どの行にも使われていない物」になる。SQL では消せない（storage.protect_delete）ので、画面が Storage API の remove で消す（set_item_image が前の path を返す）。品目・備品の行を消したとき（管理者）も、その画像は使われていない物として残り、画面が消す。
+
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
@@ -727,6 +758,15 @@ create index on count_stocks (count_item_id);
   - 監査（tg_audit。D-11）は2表に付ける（row_pk は count_items が id、count_stocks が year_id・room_id・count_item_id）。count_items の行は年度を持たないので、履歴は年度をまたぐ3表と同じく、終了でない年度の管理者が読む（audit_logs_select の年度のない行の一覧に count_items を足す）。
   - 机椅子との関係：振り分けの入力でないので、版（allocation_version）を増やさない（`bump_version_*` を付けない。振り分け中に数えても自動振り分けの conflict にならない）。確定中の守り（guard_confirmed）も付けない（振り分けに使わないので、確定中に減らしても在庫超過にならない）。終了（closed）の年度は読むだけ（can_write_stocks）。スナップショット（振り分けの画面の版の比べ）と年度データの JSON にも入れない（数えるだけの記録なので、入れるかは後で決める）。年度の作成は数を写さない（前年の数は RPC `previous_year_count_stocks` で読む）。
   - 前年の数：`previous_year_count_stocks(year_id)` は `previous_year_stocks` と同じ形（総務が呼べる。前年度〔prev_year_id〕の count_stocks の room_id・count_item_id・count を返す。前年度がなければ 0 行。年度の状態によらない。前年度のロールは要らない）。
+- 品目の画像（T23。D-61）：
+  - 書き込みの道：画像の予約（item_image_uploads）と行の画像（items・count_items の image_path）は RPC だけで書く（予約の表には書き込みの権限を与えない。image_path は、BEFORE のトリガー `check_image_path` が、ログインしている人の書き込みで RPC の外から変えるのを invalid_input〔column: image_path、reason: immutable〕で止める。RLS は列を制限できないので、管理者の items・count_items の直接の update でも変えられない。seed・SQL Editor〔auth.uid() が null〕では入れた値のまま）。Storage の物は Storage API（画面の upload・remove）。上げられるのは DB が予約した path だけ（storage.objects の insert のポリシーと、ロールによらず動くトリガー `item_images_objects_guard`。署名つきアップロードなど RLS を通らない書き込みも同じ条件で止め、上書き・移動はいつでも止める）。
+  - 順番（画面）：`reserve_item_image(kind, target_id, image_id, content_type)` で予約し、返った object_path へ upload（`upsert: false`）し、`set_item_image(kind, target_id, image_id)` で行の画像にする。set_item_image は前の画像の path を返し、画面がそれを remove する。画像を外すのは `set_item_image(kind, target_id, null)`（前の path を返す）。kind は `item`（9 品目）か `count_item`（備品〔数えるだけ〕）。
+  - 段：kind が item なら終了でない年度のどれかの管理者（`private.is_admin_of_open_year()`。マスタの書き込みと同じ）、count_item なら終了でない年度のどれかで在庫を書ける人（`private.can_write_stocks_any()`：部門長以上は終了でない年度、総務部門員は準備中・受付中の年度。add_count_item と同じ段を、年度を選ばずに見る）。予約・画像にする・外すのどれも同じ段。どちらでもない人は、kind の確かめより先に forbidden。
+  - 予約の決まり：予約は 1 時間で期限切れ（expires_at）。同じ id・同じ中身（kind・対象・形・予約した人）の送り直しはその行を返し、期限が切れていてまだ上げていなければ期限を延ばす（予約し直し）。中身が違えば invalid_input（field: image_id、reason: in_use）。1人の、上げていない生きた予約は 10 個まで（invalid_state、reason: too_many_reservations）。bucket の合計（届いた物の metadata の size ＋ 届いていない生きた予約 × 1 MiB ＋ 今回の 1 MiB）が 100 MiB（104857600 バイト）を超えるなら invalid_state（reason: storage_full。bucket documents の上限 900 MiB と合わせて、無料プランの 1 GB を超えない）。容量は勧告的ロックで予約どうしを順にして数える。
+  - set_item_image の決まり：予約の行が、その kind・対象・呼んだ人の物でなければ invalid_input（field: image_id、reason: not_reserved）。Storage に届いていなければ invalid_state（reason: not_uploaded）。もう使った予約で、行の画像がその path のままなら、前と同じ前の path を返す（送り直し）。行の画像がもう別の物なら invalid_state（reason: used）。行は for update でロックし、同時に替えても片方ずつ処理する。理由は置かない（監査の理由は null）。
+  - 監査：image_path の変更は items・count_items の audit に残る（tg_audit。履歴の画面は path を出さず「画像を変えた」と出す。04）。予約の表は監査しない（行は手順の途中の記録で、使った物は行の画像の変更として残る）。
+  - 机椅子との関係：items の画像だけを変える set_item_image は、振り分けの版（allocation_version）を上げない（0022 が `private.tg_bump_allocation_version` を置き換え、set_item_image が transaction-local の `app.item_image` を立てた items の書き込みでは何もしない。写真は振り分けの入力でないので、振り分け中に画像を替えても自動振り分けの conflict にしない）。ほかの items の変更（名前・区分など）は今までどおり版を上げる。count_items はもともと版を上げない。確定中・終了の守りも付けない（画像は振り分けに使わない）。年度の作成・年度データの JSON・スナップショットにも入れない（画像は年度をまたぐ）。
+  - 読み取り：画像を読めるのは、どこかの年度のロールか団体代表がある人（`private.has_any_access()`。品目の一覧を読める人と同じ。閲覧のみと店長・副店長も読む。申請の画面に出すため）。画面は `createSignedUrls` で、一覧の画像の署名つき URL を1回にまとめて作る（有効は 10 分。URL はメモリーにだけ持ち、下書き・ログ・localStorage に残さない）。
 
 ## 権限とRLS
 
@@ -800,6 +840,7 @@ R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ
 | lending_years | R・RPC | R・RPC | R | R（代表である年度） | R |
 | count_items | RW（closed でない年度のどれかで admin）・RPC（名前を足す） | R・RPC（名前を足す） | R・RPC（名前を足す。status が preparing / requesting のとき） | R | R |
 | count_stocks | RW | RW | RW（status が preparing / requesting のとき） | — | — |
+| item_image_uploads | R（自分の予約）・RPC（9 品目と備品〔数えるだけ〕の画像） | R（自分の予約）・RPC（備品〔数えるだけ〕の画像） | R（自分の予約）・RPC（備品〔数えるだけ〕の画像。status が preparing / requesting の年度があるとき） | — | — |
 
 admin・head・deputy_head・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。「自分のメール」は、本人のものと確かめられる今のメール（`private.verified_email`。下の招待の受け入れと同じ判定。ポリシーは自分の分だけを返す `private.my_verified_email()` を呼ぶ）で、JWT の email とは比べない（email を他人のアドレスに変えた状態で、その人あての未使用の招待を読ませないため。D-17a）。head・deputy_head が読める招待は、その年度の staff のロールの招待と団体代表の招待（と自分のメールの行）で、admin・head・deputy_head・viewer のロールの招待は読めない。admin と viewer は、同じ年度の団体代表を兼ねられ、兼ねた人は両方の権限を持つ（例：admin が自団体の代表として申請を書く）。head・deputy_head・staff は、同じ年度の団体代表を兼ねられない（兼任の禁止。「設計上の決めごと」。違う年度なら兼ねてよい）。店長と副店長の権限は同じ。
 
@@ -906,6 +947,25 @@ Storage（bucket documents の物。storage.objects のポリシーとトリガ�
 - E2E・CI のテストユーザー（管理者・総務部門長・総務部門員・団体代表〔店長〕・閲覧のみ・未招待。総務部門長は T15b で足す）は supabase/seed.sql で auth.users と auth.identities に直接入れる（フックは通らないが、上のトリガーは動く）。年度・団体・招待を先に入れておき、email_confirmed_at を入れたユーザーと、同じメールで email_verified が true の email の identity を足して、identity の追加のトリガーでロールを付ける。メールは予約済みのドメイン（`@example.test`）、パスワードはローカル専用の固定値にする。seed は本番に流さず、本番ではメールログインを無効にする（D-02）。画面のメール＋パスワードのログインは、ビルド時のフラグがあり、Supabase がローカルのときだけ出る
 - 学校の Google Workspace では、18歳未満に指定された利用者は、管理者が許可していない外部アプリにログインできない。1〜3年生が使えるかは情報担当への確認待ち（[概要](00_overview.md) の未決事項）
 - RLS と RPC の権限は pgTAP（`supabase test db`）でロールごとにテストする。権限表の全セルは、期待値の表（表・操作・年度の状態・ペルソナごとの可否）から生成して確かめる。確定中の守りも、confirmed のセルとして確かめる。関数の execute と表の権限の棚卸し（anon が何も実行・参照できないこと、authenticated が実行できるのは RPC とポリシーの判定関数だけであること、supabase_auth_admin が実行できるのはフックと、フックが呼ぶ private.school_domain() だけであること）もテストする
+
+**品目の画像の権限**（T23。D-61）：予約と行の画像（items・count_items の image_path）は RPC（reserve_item_image・set_item_image）だけで書く（予約の表の直接の insert・update・delete は 42501。image_path の直接の変更はトリガーが invalid_input で止める）。段は年度を選ばずに見る（画像は年度をまたぐ）：「管理者」は終了でない年度のどれかの admin、「在庫を書ける人」は終了でない年度のどれかの部門長以上か、準備中・受付中の年度のどれかの総務部門員。
+
+| 操作 | admin | head・deputy_head | staff | 団体代表（店長・副店長） | viewer |
+| --- | --- | --- | --- | --- | --- |
+| 画像を見る（Storage の select。署名つき URL） | ○ | ○ | ○ | ○ | ○ |
+| 9 品目の画像を足す・替える・外す（kind: item） | ○（終了でない年度のどれかで admin） | — | — | — | — |
+| 備品（数えるだけ）の画像を足す・替える・外す（kind: count_item） | ○ | ○（終了でない年度） | ○（準備中・受付中の年度） | — | — |
+| 自分の予約を読む（item_image_uploads） | ○ | ○ | ○ | — | — |
+| 使われていない画像を Storage から消す | ○（items と count-items のフォルダ） | ○（count-items のフォルダ） | ○（count-items のフォルダ。準備中・受付中の年度） | — | — |
+
+Storage（bucket item-images の物。storage.objects のポリシーとトリガー。anon 向けと update のポリシーは作らない。bucket documents のポリシー・トリガーは変えない）：
+
+| 操作（Storage API） | ポリシー | 許す条件 |
+| --- | --- | --- |
+| select（署名つき URL・ダウンロード。消すときの読み取りにも要る） | item_images_objects_select | `bucket_id = 'item-images' and (select private.has_any_access())`（集合を1回作る形。行の列を判定関数に渡さない） |
+| insert（アップロード） | item_images_objects_insert | name が `private.my_item_image_upload_paths()` に入る：自分が予約した、期限の切れていない、まだ使っていない予約の path で、今もその段（item は管理者、count_item は在庫を書ける人）。届いた後の2回目は一意の索引で止まる（23505。Storage API は 409） |
+| RLS を通らない書き込み（署名つきアップロード・service_role の鍵・SQL Editor の postgres） | トリガー item_images_objects_guard（BEFORE INSERT OR UPDATE・行ごと。SECURITY DEFINER） | insert：予約の行があり、期限が切れておらず、まだ使っておらず、予約した人が今もその段で、metadata の mimetype があれば予約の形と同じ物だけ（違えば 42501。detail の reason は not_reserved・expired・used・not_editable・type）。update：bucket item-images の物の名前・bucket・版・metadata を変える update（上書き・移動）はいつでも 42501（immutable） |
+| delete（削除） | item_images_objects_delete | name が `private.my_item_image_orphan_paths()` に入る：どの行の image_path にも使われていない物で、1つ目のフォルダが items なら管理者、count-items なら在庫を書ける人。ほかの人の生きた（期限の切れていない、使っていない）予約の物は消せない |
 
 ## 年度ステータスの状態遷移
 
