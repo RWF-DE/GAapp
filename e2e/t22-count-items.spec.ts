@@ -109,10 +109,10 @@ test.describe('T22 部員', () => {
       await input(page, listed).fill('4');
       await input(page, listed).press('Enter');
 
-      // 新しい名前で足す（前後の空白は除いて送る）
+      // 新しく登録（前後の空白は除いて送る）
       await page.getByTestId('count-item-add').click();
-      await dialog.getByLabel('新しい名前で足す').fill(`  ${created}  `);
-      await dialog.getByRole('button', { name: '新しい名前で足す' }).click();
+      await dialog.getByLabel('新しく登録する名前').fill(`  ${created}  `);
+      await dialog.getByRole('button', { name: '新しく登録' }).click();
       await expect(dialog).toBeHidden();
       await expect(input(page, created)).toHaveValue('0');
       await plus(page, created).click();
@@ -159,8 +159,8 @@ test.describe('T22 部員', () => {
       await page.getByTestId('count-item-add').click();
       await dialog.getByLabel('名前で絞る').fill('E2E-T22-');
       await expect(dialog.getByTestId('add-count-item-option').filter({ hasText: created })).toHaveCount(1);
-      await dialog.getByLabel('新しい名前で足す').fill(created.toLowerCase());
-      await dialog.getByRole('button', { name: '新しい名前で足す' }).click();
+      await dialog.getByLabel('新しく登録する名前').fill(created.toLowerCase());
+      await dialog.getByRole('button', { name: '新しく登録' }).click();
       await expect(dialog).toBeHidden();
       await expect(input(page, created)).toHaveValue('0');
       const [same] = await sql<{ n: number }>('select count(*)::int as n from public.count_items where lower(name) = lower($1)', [created]);

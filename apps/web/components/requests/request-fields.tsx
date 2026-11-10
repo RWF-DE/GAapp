@@ -23,6 +23,7 @@ export function RequestFields({
   disabled,
   audience = 'rep',
   idPrefix,
+  imageFor,
 }: {
   fields: readonly RequestField[];
   extras: readonly ExtraRequestRow[];
@@ -34,6 +35,8 @@ export function RequestFields({
   /** 読み取り専用の行の説明の言い方（団体代表には「総務へ」） */
   audience?: 'rep' | 'lead';
   idPrefix: string;
+  /** 品目の名前の左に出す画像（申請の画面だけ。T23・D-61） */
+  imageFor?: (item: { id: string; name: string }) => React.ReactNode;
 }) {
   const noteTooLong = note.length > NOTE_MAX;
   return (
@@ -49,9 +52,12 @@ export function RequestFields({
               data-item-code={f.item.code}
               className={cn('flex items-center justify-between gap-3 px-3 py-2', changed && 'bg-amber-50')}
             >
-              <span className="min-w-0 text-sm font-medium">
-                {f.item.name}
-                {changed ? <span className="ml-2 text-xs font-normal text-amber-800">（今 {f.current}）</span> : null}
+              <span className="flex min-w-0 items-center gap-3">
+                {imageFor ? imageFor(f.item) : null}
+                <span className="min-w-0 text-sm font-medium">
+                  {f.item.name}
+                  {changed ? <span className="ml-2 text-xs font-normal text-amber-800">（今 {f.current}）</span> : null}
+                </span>
               </span>
               <CountStepper
                 id={`${idPrefix}-${f.item.code}`}

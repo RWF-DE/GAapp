@@ -773,7 +773,7 @@ export async function fetchRoomLines(yearId: string, roomId: string, client: App
 }
 
 /**
- * 備品（数えるだけ）の名前を足して、その id を返す（RPC add_count_item。同じ名前があればその id。04「在庫入力」の「新しい名前で足す」）。
+ * 備品（数えるだけ）の名前を足して、その id を返す（RPC add_count_item。同じ名前があればその id。04「在庫入力」の「新しく登録」）。
  * 名前は前後の空白を除いて送る（DB は除かずに拒む）。書けなければ forbidden、名前の誤りは invalid_input（field: name）
  */
 export async function addCountItem(yearId: string, name: string, client: AppSupabaseClient = getSupabase()): Promise<string> {

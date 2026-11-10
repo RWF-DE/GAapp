@@ -733,8 +733,20 @@ export function formatAuditValue(table: string, key: string, v: unknown, lookups
   return JSON.stringify(v);
 }
 
+/** 品目の画像の変更の文（path を出さない）。追加・削除の行は「画像：あり・なし」 */
+function imageChangeLabel(d: DiffEntry): string {
+  const has = (v: unknown) => typeof v === 'string' && v !== '';
+  if (d.before === undefined) return `画像：${has(d.after) ? 'あり' : 'なし'}`;
+  if (d.after === undefined) return `画像：${has(d.before) ? 'あり' : 'なし'}（削除前）`;
+  if (!has(d.before)) return '画像を足した';
+  if (!has(d.after)) return '画像を外した';
+  return '画像を変えた';
+}
+
 /** 差の1行（「count：3 → 5」。追加は「count：5」、削除は「count：3（削除前）」） */
 export function formatDiffEntry(table: string, d: DiffEntry, lookups?: Partial<HistoryLookups>): string {
+  // 品目の画像（T23・D-61。04「履歴」）：path は出さず、足した・外した・変えたと出す
+  if (d.key === 'image_path' && (table === 'items' || table === 'count_items')) return imageChangeLabel(d);
   const bv = formatAuditValue(table, d.key, d.before, lookups);
   const av = formatAuditValue(table, d.key, d.after, lookups);
   // 列の名前（テント等の5表は日本語。ほかの表は列名のまま。T21）

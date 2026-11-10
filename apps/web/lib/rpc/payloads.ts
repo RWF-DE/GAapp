@@ -231,6 +231,15 @@ export const RPC_ARGS = {
   // 送る前に除く。送る前の確かめに落ちたときの field も name）
   add_count_item: z.object({ p_year_id: uuid, p_name: countItemNameSchema }),
   previous_year_count_stocks: z.object({ p_year_id: uuid }),
+  // 品目の画像（T23・D-61）。kind は item（9 品目）か count_item（備品〔数えるだけ〕）。image_id は画面が作る uuid（送り直しの鍵）。
+  // 形は作り直した後の形（WebP、作れない端末は JPEG）。set_item_image の image_id が null なら画像を外す
+  reserve_item_image: z.object({
+    p_kind: z.enum(['item', 'count_item']),
+    p_target_id: uuid,
+    p_image_id: uuid,
+    p_content_type: z.enum(['image/webp', 'image/jpeg']),
+  }),
+  set_item_image: z.object({ p_kind: z.enum(['item', 'count_item']), p_target_id: uuid, p_image_id: uuid.nullable() }),
 } as const;
 
 // ---- jsonb の返り値 ----

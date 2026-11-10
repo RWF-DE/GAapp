@@ -1,13 +1,18 @@
 'use client';
 
 // 在庫入力の「＋ その他を足す」のダイアログ（04「在庫入力」の備品〔数えるだけ〕。T22・D-60）。
-// 選択肢（最初から出す物と、もう出ている物を除いた count_items。名前で絞れる）から選ぶか、「新しい名前で足す」で名前を書く
+// 選択肢（最初から出す物と、もう出ている物を除いた count_items。名前で絞れる）から選ぶか、「新しく登録」で名前を書く
 // （1〜50 字。同じ名前〔全角・半角と大文字小文字を無視〕があれば、その物を足す。なければ RPC add_count_item。呼ぶ側の onCreate）。
+// T23・D-61：選択肢は画像のカード（画像と名前。画像のない物は頭文字のカード。44px 以上の押せる大きさ）。「新しく登録」には写真の欄
+// （任意。カメラかファイル。注意の文つき）があり、写真は呼ぶ側が名前を足した後に送る（画像の段で失敗しても名前の登録は残す）。
 import { useId, useState } from 'react';
+import { ItemImage } from '@/components/common/item-image';
+import { ItemPhotoField } from '@/components/common/item-photo-field';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import type { ItemImagePaths, ItemImageUrls } from '@/lib/data/item-images';
 import { addableCountItems, findCountItemByName } from '@/lib/data/stocks';
 import type { CountItemRow } from '@/lib/db/types';
 import { COUNT_ITEM_NAME_MAX, countItemNameSchema } from '@/lib/schemas/count-items';
@@ -19,6 +24,8 @@ export function AddCountItemDialog({
   shownIds,
   onPick,
   onCreate,
+  imagePaths,
+  images,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -28,11 +35,15 @@ export function AddCountItemDialog({
   shownIds: ReadonlySet<string>;
   /** 一覧から選んだ（同じ名前の物を書いたときも） */
   onPick: (countItemId: string) => void;
-  /** 新しい名前を足す（RPC）。失敗したら文言を返す（成功なら null。ダイアログは閉じる） */
-  onCreate: (name: string) => Promise<string | null>;
+  /** 新しい名前を足す（RPC。写真があれば続けて送る）。名前を足せなければ文言を返す（足せたら null。ダイアログは閉じる） */
+  onCreate: (name: string, photo: File | null) => Promise<string | null>;
+  /** 備品（数えるだけ）の id → 画像の path */
+  imagePaths: ItemImagePaths;
+  images: ItemImageUrls;
 }) {
   const [filter, setFilter] = useState('');
   const [name, setName] = useState('');
+  const [photo, setPhoto] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const filterId = useId();
@@ -43,6 +54,7 @@ export function AddCountItemDialog({
   const close = () => {
     setFilter('');
     setName('');
+    setPhoto(null);
     setError(null);
     onOpenChange(false);
   };
@@ -65,7 +77,7 @@ export function AddCountItemDialog({
     setBusy(true);
     setError(null);
     try {
-      const message = await onCreate(parsed.data);
+      const message = await onCreate(parsed.data, photo);
       if (message) setError(message);
       else close();
     } finally {
@@ -78,7 +90,7 @@ export function AddCountItemDialog({
       <DialogContent data-testid="add-count-item-dialog" className="max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>その他を足す</DialogTitle>
-          <DialogDescription>一覧から選ぶか、新しい名前で足してください。足した物は数 0 で行が出ます（「保存」で保存します）。</DialogDescription>
+          <DialogDescription>一覧から選ぶか、新しく登録してください。足した物は数 0 で行が出ます（「保存」で保存します）。</DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
           <Label htmlFor={filterId}>名前で絞る</Label>
@@ -88,16 +100,17 @@ export function AddCountItemDialog({
               {filter.trim() === '' ? '選べる物はありません。' : '当てはまる物はありません。'}
             </p>
           ) : (
-            <ul className="max-h-60 divide-y overflow-y-auto rounded-md border" aria-label="選べる物">
+            <ul className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto p-0.5 sm:grid-cols-4" aria-label="選べる物">
               {candidates.map((c) => (
                 <li key={c.id}>
                   <button
                     type="button"
-                    className="w-full px-3 py-3 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+                    className="flex min-h-11 w-full flex-col items-center gap-1 rounded-md border p-2 text-center text-xs hover:bg-accent focus-visible:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
                     data-testid="add-count-item-option"
                     onClick={() => pick(c.id)}
                   >
-                    {c.name}
+                    <ItemImage name={c.name} path={imagePaths.get(c.id)} images={images} size="lg" decorative />
+                    <span className="w-full break-words">{c.name}</span>
                   </button>
                 </li>
               ))}
@@ -112,7 +125,8 @@ export function AddCountItemDialog({
             void create();
           }}
         >
-          <Label htmlFor={nameId}>新しい名前で足す</Label>
+          <h3 className="text-sm font-semibold">新しく登録</h3>
+          <Label htmlFor={nameId}>新しく登録する名前</Label>
           <Input
             id={nameId}
             value={name}
@@ -125,13 +139,14 @@ export function AddCountItemDialog({
             aria-describedby={error ? errorId : undefined}
           />
           <p className="text-xs text-muted-foreground">1〜{COUNT_ITEM_NAME_MAX} 字。足した名前は、ほかの場所と翌年も選べます。</p>
+          <ItemPhotoField file={photo} onChange={setPhoto} disabled={busy} />
           {error ? (
             <p id={errorId} role="alert" className="text-sm text-destructive">
               {error}
             </p>
           ) : null}
           <Button type="submit" variant="outline" className="h-11 w-full" disabled={busy}>
-            {busy ? '足しています…' : '新しい名前で足す'}
+            {busy ? '登録しています…' : '新しく登録'}
           </Button>
         </form>
       </DialogContent>

@@ -59,6 +59,32 @@ const data = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/data/settings', async (orig) => ({ ...(await orig<typeof import('@/lib/data/settings')>()), ...data }));
 
+// 品目の画像（T23）：path の読み込み・URL・送る・外すを差し替える（Storage と canvas は lib/item-images のテストで確かめる）
+const imageApi = vi.hoisted(() => ({
+  paths: { item: new Map<string, string>(), count_item: new Map<string, string>() } as Record<'item' | 'count_item', Map<string, string>>,
+  urlCache: new Map<string, unknown>(),
+  sendItemImage: vi.fn<(...a: unknown[]) => Promise<{ ok: true } | { ok: false; message: string }>>(async () => ({ ok: true })),
+  removeItemImage: vi.fn<(...a: unknown[]) => Promise<{ ok: true } | { ok: false; message: string }>>(async () => ({ ok: true })),
+}));
+vi.mock('@/lib/data/item-images', async (orig) => {
+  const actual = await orig<typeof import('@/lib/data/item-images')>();
+  return {
+    ...actual,
+    itemImagePathsOptions: (kind: 'item' | 'count_item') => ({ queryKey: ['item-images', 'paths', kind], queryFn: async () => imageApi.paths[kind] }),
+    // 本物と同じく、同じ path の並びなら同じ物を返す（表の列が描き直しのたびに変わらないように）
+    useItemImageUrls: (paths: readonly (string | null | undefined)[]) => {
+      const key = paths.filter((p): p is string => !!p).join('\n');
+      const hit = imageApi.urlCache.get(key);
+      if (hit) return hit;
+      const v = { urls: new Map(key ? key.split('\n').map((p) => [p, `https://img.test/${p}`]) : []), pending: false, reportError: () => false };
+      imageApi.urlCache.set(key, v);
+      return v;
+    },
+    sendItemImage: imageApi.sendItemImage,
+    removeItemImage: imageApi.removeItemImage,
+  };
+});
+
 const roomYearsApi = vi.hoisted(() => ({ setRoomUsable: vi.fn(), readRoomYear: vi.fn() }));
 vi.mock('@/lib/data/room-years', async (orig) => ({ ...(await orig<typeof import('@/lib/data/room-years')>()), ...roomYearsApi }));
 
@@ -877,5 +903,75 @@ describe('品目のタブの「備品（数えるだけ）」の欄（T22・D-60
     expect(within(section).queryByTestId('count-item-settings-add')).toBeNull();
     expect(within(section).queryByRole('button', { name: '編集' })).toBeNull();
     expect(within(section).queryByRole('button', { name: '削除' })).toBeNull();
+  });
+});
+
+describe('T23 品目のタブの画像（管理者）', () => {
+  const DESK = { id: 'i1', code: 'desk', name: '机(木)', aliases: [], requestable_categories: [], sort_order: 1, updated_at: T0 };
+  const FAN = { id: 'c3', name: '扇風機', always_shown: true, sort_order: 3, updated_at: T0 };
+  const DESK_IMG = 'items/i1/a.webp';
+
+  beforeEach(() => {
+    imageApi.paths.item = new Map([[DESK.id, DESK_IMG]]);
+    imageApi.paths.count_item = new Map();
+    imageApi.sendItemImage.mockClear();
+    imageApi.removeItemImage.mockClear();
+  });
+
+  it('9 品目の行に画像と「画像を替える」「画像を外す」、画像のない備品は「画像を足す」。足すは写真を送る', async () => {
+    data.fetchItems.mockResolvedValue([DESK]);
+    data.fetchCountItems.mockResolvedValue([FAN]);
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    const table = await screen.findByRole('table', { name: '品目の一覧' });
+    await waitFor(() => expect(within(table).getByRole('img', { name: '机(木)' }).getAttribute('src')).toBe(`https://img.test/${DESK_IMG}`));
+    expect(within(table).getByTestId('item-image-replace')).toBeTruthy();
+    expect(within(table).getByTestId('item-image-remove')).toBeTruthy();
+    const section = screen.getByTestId('count-items-settings');
+    await user.click(await within(section).findByTestId('item-image-add'));
+    const dialog = await screen.findByTestId('item-photo-dialog');
+    expect(dialog.textContent).toContain('「扇風機」の画像を足す');
+    expect(dialog.textContent).toContain('人の顔・名前・掲示物が写らないように撮ってください');
+    const file = new File(['x'], 'p.jpg', { type: 'image/jpeg' });
+    await user.upload(within(dialog).getByTestId('item-photo-input'), file);
+    await user.click(within(dialog).getByTestId('item-photo-submit'));
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「扇風機」の画像を足しました'));
+    expect(imageApi.sendItemImage).toHaveBeenCalledWith(expect.anything(), 'count_item', FAN.id, file);
+  });
+
+  it('替えるの失敗はダイアログに出して閉じない。外すは確かめてから送る', async () => {
+    data.fetchItems.mockResolvedValue([DESK]);
+    data.fetchCountItems.mockResolvedValue([]);
+    imageApi.sendItemImage.mockResolvedValueOnce({ ok: false, message: '写真は1枚 1 MB までです' });
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    const table = await screen.findByRole('table', { name: '品目の一覧' });
+    await user.click(await within(table).findByTestId('item-image-replace'));
+    const dialog = await screen.findByTestId('item-photo-dialog');
+    expect(dialog.textContent).toContain('前の画像は消えます');
+    await user.upload(within(dialog).getByTestId('item-photo-input'), new File(['x'], 'p.jpg', { type: 'image/jpeg' }));
+    await user.click(within(dialog).getByTestId('item-photo-submit'));
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('写真は1枚 1 MB までです');
+    expect(screen.getByTestId('item-photo-dialog')).toBeTruthy();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('item-photo-dialog')).toBeNull());
+
+    await user.click(within(table).getByTestId('item-image-remove'));
+    const confirm = await screen.findByRole('alertdialog');
+    expect(confirm.textContent).toContain('「机(木)」の画像を外しますか');
+    expect(confirm.textContent).toContain('画像を外します。名前はそのまま残ります。');
+    await user.click(within(confirm).getByRole('button', { name: '外す' }));
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「机(木)」の画像を外しました'));
+    expect(imageApi.removeItemImage).toHaveBeenCalledWith(expect.anything(), 'item', DESK.id);
+  });
+
+  it('終了した年度（管理者でない）では画像のボタンを出さない', async () => {
+    data.fetchItems.mockResolvedValue([DESK]);
+    data.fetchCountItems.mockResolvedValue([]);
+    data.fetchMyYearRoles.mockReturnValue(new Promise(() => {}));
+    renderWith(<ItemsTab />, { status: 'closed', globalWritable: false, yearWritable: false });
+    const table = await screen.findByRole('table', { name: '品目の一覧' });
+    await waitFor(() => expect(within(table).getByRole('img', { name: '机(木)' })).toBeTruthy());
+    expect(within(table).queryByTestId('item-image-replace')).toBeNull();
   });
 });
