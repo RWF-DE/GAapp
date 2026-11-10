@@ -4,7 +4,8 @@
 // 選択肢（最初から出す物と、もう出ている物を除いた count_items。名前で絞れる）から選ぶか、「新しく登録」で名前を書く
 // （1〜50 字。同じ名前〔全角・半角と大文字小文字を無視〕があれば、その物を足す。なければ RPC add_count_item。呼ぶ側の onCreate）。
 // T23・D-61：選択肢は画像のカード（画像と名前。画像のない物は頭文字のカード。44px 以上の押せる大きさ）。「新しく登録」には写真の欄
-// （任意。カメラかファイル。注意の文つき）があり、写真は呼ぶ側が名前を足した後に送る（画像の段で失敗しても名前の登録は残す）。
+// （任意。「撮る」と「写真を選ぶ」。注意の文つき）があり、写真は呼ぶ側が名前を足した後に送る（画像の段で失敗しても名前の登録は残す）。
+// 既にある名前でも写真があれば onCreate に渡す（捨てない。画像のある物には呼ぶ側が送らない）。
 import { useId, useState } from 'react';
 import { ItemImage } from '@/components/common/item-image';
 import { ItemPhotoField } from '@/components/common/item-photo-field';
@@ -68,9 +69,10 @@ export function AddCountItemDialog({
       setError(parsed.error.issues[0]?.message ?? '名前を確かめてください');
       return;
     }
-    // 同じ名前の物があれば、新しく足さずにその物の行を出す（DB の add_count_item と同じ比べ方）
+    // 同じ名前の物があれば、新しく足さずにその物の行を出す（DB の add_count_item と同じ比べ方）。写真があるときは捨てずに onCreate へ
+    // 渡す（add_count_item が同じ id を返し、呼ぶ側が今の画像を確かめて、画像がなければ送る。04「在庫入力」の「新しく登録」）
     const same = findCountItemByName(countItems, parsed.data);
-    if (same) {
+    if (same && !photo) {
       pick(same.id);
       return;
     }

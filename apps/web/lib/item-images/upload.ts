@@ -6,7 +6,7 @@
 // 外すのは set_item_image(…, null) → 前の物を remove。
 // このファイルは写真を選んだ後に画面が動的 import で読む（`await import('@/lib/item-images/upload')`。最初に読む JS に入れない）。
 // 署名つき URL・path は返すだけで、ログ・下書きに残さない。元のファイル名は Storage へ送らない（送る Blob は作り直した物）。
-import { AppError, toAppError } from '@/lib/errors';
+import { AppError, classifyError, toAppError } from '@/lib/errors';
 import { ITEM_IMAGES_BUCKET, type ItemImageKind } from '@/lib/data/item-images';
 import { callRpc } from '@/lib/rpc';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
@@ -24,6 +24,7 @@ import { itemImageMessageFor } from './messages';
 export interface ItemImageBucketApi {
   upload(path: string, body: Blob, options: { contentType: string; upsert: boolean }): Promise<{ data: unknown; error: unknown }>;
   remove(paths: string[]): Promise<{ data: unknown[] | null; error: unknown }>;
+  list(folder: string, options?: { limit?: number }): Promise<{ data: { name: string }[] | null; error: unknown }>;
 }
 
 function bucket(client: AppSupabaseClient): ItemImageBucketApi {
@@ -108,6 +109,56 @@ export interface ItemImageDeps {
   env?: ItemImageEnv;
   /** image_id を作る（既定は crypto.randomUUID） */
   newId?: () => string;
+  /**
+   * 送り直しで使う image_id（ダイアログが開いている間、同じ対象・同じ写真なら同じ id。04「品目の画像の共通の部品」・(B1)）。
+   * 渡せば newId は呼ばない。同じ id なら reserve は同じ予約、upload の2回目は 409（届いていた）、set は同じ前の path を返す
+   */
+  imageId?: string;
+}
+
+/** 予約の invalid_state の reason が too_many_reservations か */
+function isTooManyReservations(e: unknown): boolean {
+  const c = classifyError(e);
+  return c.kind === 'state' && isRecord(c.details) && c.details.reason === 'too_many_reservations';
+}
+
+/**
+ * 自分の、期限の切れた使っていない予約の物を Storage から消す（too_many_reservations のとき。行の画像にしていない物は上限に数えられ、
+ * 消せば数えない。0022 の reserve_item_image）。予約の表は自分の行だけ読める。消せなくても投げない
+ */
+async function removeMyStaleUploads(client: AppSupabaseClient): Promise<void> {
+  try {
+    const res = await client
+      .from('item_image_uploads')
+      .select('object_path')
+      .is('used_at', null)
+      .lt('expires_at', new Date().toISOString())
+      .limit(100);
+    if (res.error) return;
+    const paths = ((res.data ?? []) as { object_path: string }[]).map((r) => r.object_path).filter((p) => typeof p === 'string' && p !== '');
+    if (paths.length > 0) await bucket(client).remove(paths);
+  } catch {
+    // 片付けられなくても、予約し直しの結果（too_many_reservations の文言）を出すだけ
+  }
+}
+
+/**
+ * 消した行（備品の削除など）のフォルダ `items/{id}/`・`count-items/{id}/` の物を一覧して remove する（行の画像と、送り直しの残りの物。
+ * 02「品目の画像」）。消せたら true。失敗しても投げない（どの行にも使われていない物として残るだけ）
+ */
+export async function removeItemImageFolder(kind: ItemImageKind, targetId: string, deps: Pick<ItemImageDeps, 'client'> = {}): Promise<boolean> {
+  const client = deps.client ?? getSupabase();
+  const folder = `${kind === 'item' ? 'items' : 'count-items'}/${targetId}`;
+  try {
+    const listed = await bucket(client).list(folder, { limit: 100 });
+    if (listed.error) return false;
+    const paths = (listed.data ?? []).map((o) => o.name).filter((n) => typeof n === 'string' && n !== '').map((n) => `${folder}/${n}`);
+    if (paths.length === 0) return true;
+    const res = await bucket(client).remove(paths);
+    return !res.error;
+  } catch {
+    return false;
+  }
 }
 
 async function removeQuietly(client: AppSupabaseClient, path: string | null): Promise<boolean> {
@@ -135,14 +186,20 @@ export async function attachItemImage(kind: ItemImageKind, targetId: string, fil
   } catch (e) {
     throw new ItemImageError('prepare', e);
   }
-  const imageId = (deps.newId ?? (() => crypto.randomUUID()))();
+  const imageId = deps.imageId ?? (deps.newId ?? (() => crypto.randomUUID()))();
+  const reserve = () =>
+    callRpc('reserve_item_image', { p_kind: kind, p_target_id: targetId, p_image_id: imageId, p_content_type: prepared.contentType }, client);
   let objectPath: string;
   try {
-    const row = await callRpc(
-      'reserve_item_image',
-      { p_kind: kind, p_target_id: targetId, p_image_id: imageId, p_content_type: prepared.contentType },
-      client,
-    );
+    let row: Awaited<ReturnType<typeof reserve>>;
+    try {
+      row = await reserve();
+    } catch (e) {
+      if (!isTooManyReservations(e)) throw e;
+      // 上限：自分の期限の切れた残りの物を片付けてから、1回だけ予約し直す
+      await removeMyStaleUploads(client);
+      row = await reserve();
+    }
     objectPath = row.object_path;
   } catch (e) {
     throw new ItemImageError('reserve', e);

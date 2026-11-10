@@ -25,8 +25,37 @@ vi.mock('@/lib/supabase/client', () => ({
   }),
 }));
 
+const upload = vi.hoisted(() => ({
+  attach: [] as { kind: string; id: string; imageId: string | undefined }[],
+  detach: [] as { kind: string; id: string }[],
+  folder: [] as { kind: string; id: string }[],
+}));
+vi.mock('@/lib/item-images/upload', () => {
+  class ItemImageError extends Error {}
+  return {
+    ItemImageError,
+    itemImageErrorMessage: () => 'x',
+    attachItemImage: async (kind: string, id: string, _file: Blob, deps: { imageId?: string } = {}) => {
+      upload.attach.push({ kind, id, imageId: deps.imageId });
+      return { path: 'p', previous: null, previousRemoved: true };
+    },
+    detachItemImage: async (kind: string, id: string) => {
+      upload.detach.push({ kind, id });
+      return null;
+    },
+    removeItemImageFolder: async (kind: string, id: string) => {
+      upload.folder.push({ kind, id });
+      return true;
+    },
+  };
+});
+
 import {
+  fetchItemImagePath,
   fetchItemImagePaths,
+  removeDeletedItemImages,
+  removeItemImage,
+  sendItemImage,
   ITEM_IMAGE_SIGNED_URL_SECONDS,
   ITEM_IMAGE_URL_REFRESH_MS,
   signItemImagePaths,
@@ -111,5 +140,71 @@ describe('T23 useItemImageUrls', () => {
     await waitFor(() => expect(result.current.pending).toBe(false), { timeout: 4000 });
     expect(result.current.urls.size).toBe(0);
     expect(sign.calls).toHaveLength(2);
+  });
+});
+
+describe('T23 レビューで直したこと：送る・外すの後に行の一覧も読み直す（updated_at の楽観ロック）', () => {
+  const keysOf = (qc: QueryClient) => {
+    const spy = vi.spyOn(qc, 'invalidateQueries');
+    return () => spy.mock.calls.map((c) => c[0]);
+  };
+  const matched = (qc: QueryClient, filters: unknown[]) => {
+    const cache = qc.getQueryCache();
+    return (key: readonly unknown[]) => filters.some((f) => cache.findAll(f as Parameters<typeof cache.findAll>[0]).some((q) => q.queryKey === key || JSON.stringify(q.queryKey) === JSON.stringify(key)));
+  };
+  const seed = (qc: QueryClient) => {
+    for (const key of [
+      ['item-images', 'paths', 'item'],
+      ['item-images', 'paths', 'count_item'],
+      ['items', 'settings'],
+      ['count_items', 'settings'],
+      ['year', 'Y1', 'stock-master'],
+      ['year', 'Y1', 'stocks', 'room', 'R1'],
+    ]) qc.setQueryData(key, 1);
+  };
+
+  it('count_item を送ったら、画像の path・備品の表・在庫入力の名前の一覧を読み直す（品目の表と在庫は読み直さない）。imageId を渡す', async () => {
+    const qc = new QueryClient();
+    seed(qc);
+    const calls = keysOf(qc);
+    const r = await sendItemImage(qc, 'count_item', 'C1', new Blob(['x']), { imageId: 'IMG' });
+    expect(r).toEqual({ ok: true });
+    expect(upload.attach.at(-1)).toEqual({ kind: 'count_item', id: 'C1', imageId: 'IMG' });
+    const hit = matched(qc, calls());
+    expect(hit(['item-images', 'paths', 'count_item'])).toBe(true);
+    expect(hit(['count_items', 'settings'])).toBe(true);
+    expect(hit(['year', 'Y1', 'stock-master'])).toBe(true);
+    expect(hit(['items', 'settings'])).toBe(false);
+    expect(hit(['year', 'Y1', 'stocks', 'room', 'R1'])).toBe(false);
+  });
+
+  it('item を外したら、画像の path・品目の表（settingsKeys.items）・在庫入力の名前の一覧を読み直す', async () => {
+    const qc = new QueryClient();
+    seed(qc);
+    const calls = keysOf(qc);
+    await removeItemImage(qc, 'item', 'I1');
+    expect(upload.detach.at(-1)).toEqual({ kind: 'item', id: 'I1' });
+    const hit = matched(qc, calls());
+    expect(hit(['item-images', 'paths', 'item'])).toBe(true);
+    expect(hit(['items', 'settings'])).toBe(true);
+    expect(hit(['year', 'Y1', 'stock-master'])).toBe(true);
+    expect(hit(['count_items', 'settings'])).toBe(false);
+  });
+
+  it('removeDeletedItemImages：消した行のフォルダを片付ける（投げない）', async () => {
+    await removeDeletedItemImages('count_item', 'C9');
+    expect(upload.folder.at(-1)).toEqual({ kind: 'count_item', id: 'C9' });
+  });
+
+  it('fetchItemImagePath：その行の image_path だけを読む（なければ null）', async () => {
+    const fake = createFakeSupabase(() => ({ data: { image_path: 'count-items/C1/a.webp' } }));
+    expect(await fetchItemImagePath('count_item', 'C1', fake.client as unknown as AppSupabaseClient)).toBe('count-items/C1/a.webp');
+    const call = fake.issued[0]!;
+    expect(call.table).toBe('count_items');
+    expect(opArgs(call, 'select')).toEqual([['image_path']]);
+    expect(opArgs(call, 'eq')).toEqual([['id', 'C1']]);
+    const none = createFakeSupabase(() => ({ data: null }));
+    expect(await fetchItemImagePath('item', 'I1', none.client as unknown as AppSupabaseClient)).toBeNull();
+    expect(none.issued[0]!.table).toBe('items');
   });
 });

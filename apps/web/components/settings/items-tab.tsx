@@ -3,8 +3,9 @@
 // 品目のタブ（画面の設計 3.2「品目」。T09）。items は年度をまたぐ表。コードは作った後に変えない（ルールがコードで参照するため）。
 // 削除は出さない（使われていれば消せず、フェーズ1で消す用途がない）。
 // 品目の画像（管理者。T23・D-61）：9 品目と備品（数えるだけ）の行に画像（共通の部品）と「画像を足す」「画像を替える」「画像を外す」。
-// 足す・替えるは写真の欄（カメラかファイル。作り直し・注意の文・順番は在庫入力の「新しく登録」と同じ）、外すは確かめの後に
-// set_item_image(…, null)。替えた・外した前の画像は Storage から消す（lib/item-images/upload.ts）。
+// 足す・替えるは写真の欄（「撮る」と「写真を選ぶ」。作り直し・注意の文・順番は在庫入力の「新しく登録」と同じ）、外すは確かめの後に
+// set_item_image(…, null)。替えた・外した前の画像は Storage から消す（lib/item-images/upload.ts）。送った・外した後は path と行の一覧
+// （updated_at が進む）を読み直す（invalidateItemImagePaths）。備品を削除したら、そのフォルダの物を Storage から片付ける。
 // 品目の表の下に「備品（数えるだけ）」の欄（管理者。T22・D-60）：count_items の名前・最初から出す・並びの編集と追加、数の行がない物の
 // 削除（23503 は「数が入力された物は削除できません」）。保存は1行ずつの楽観ロック（useLockedSave）。
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -41,6 +42,7 @@ import {
 import type { CountItemRow, ItemRow } from '@/lib/db/types';
 import {
   itemImagePathsOptions,
+  removeDeletedItemImages,
   removeItemImage,
   sendItemImage,
   useItemImageUrls,
@@ -208,9 +210,9 @@ function useImageEdit(kind: ItemImageKind, paths: ItemImagePaths) {
         onOpenChange={(o) => !o && close()}
         title={target ? `「${target.row.name}」の${target.action === 'replace' ? '画像を替える' : '画像を足す'}` : '画像を足す'}
         description={target?.action === 'replace' ? '送ると前の画像は消えます。写真は縮めてから送ります（位置情報などは残りません）。' : undefined}
-        onSubmit={async (file) => {
+        onSubmit={async (file, imageId) => {
           if (!target) return null;
-          const r = await sendItemImage(queryClient, kind, target.row.id, file);
+          const r = await sendItemImage(queryClient, kind, target.row.id, file, { imageId });
           if (!r.ok) return r.message;
           toast.success(`「${target.row.name}」の画像を${target.action === 'replace' ? '替えました' : '足しました'}`);
           return null;
@@ -349,6 +351,8 @@ function CountItemsSection() {
           onConfirm={async () => {
             try {
               await deleteCountItem(deleting);
+              // 消した備品の画像（とフォルダの残りの物）を Storage から片付ける（失敗しても知らせない。02「品目の画像」）
+              void removeDeletedItemImages('count_item', deleting.id);
               toast.success(`「${deleting.name}」を削除しました`);
               await invalidate();
             } catch (e) {

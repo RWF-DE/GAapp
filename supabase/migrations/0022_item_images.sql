@@ -247,8 +247,8 @@ end $$;
 
 -- reserve_item_image：画像の予約を作り、予約の行（DB が作った object_path を含む）を返す。画面はその path へ Storage API で upload する
 -- （upsert: false）。同じ id・同じ中身（kind・対象・形・予約した人）の送り直しは、その行を返す（期限が切れていて、まだ上げておらず、まだ
--- 使っていなければ、期限を延ばす〔予約し直し〕）。中身が違えば invalid_input（image_id・in_use）。新しい予約は、呼んだ人の上げていない生きた
--- 予約が 10 個未満（invalid_state・too_many_reservations）で、bucket の合計（届いた物の metadata の size ＋ 届いていない生きた予約 × 1 MiB
+-- 使っていなければ、期限を延ばす〔予約し直し〕）。中身が違えば invalid_input（image_id・in_use）。新しい予約は、呼んだ人の行の画像にしていない
+-- 予約（生きている物と、期限が切れても物が残っている物）が 10 個未満（invalid_state・too_many_reservations）で、bucket の合計（届いた物の metadata の size ＋ 届いていない生きた予約 × 1 MiB
 -- ＋ 今回の 1 MiB）が 100 MiB（104857600 バイト）以下のとき（invalid_state・storage_full。bucket documents の 900 MiB と合わせて無料プランの
 -- 1 GB を超えない）。容量と数は勧告的ロックで予約どうしを順にして数える
 create function public.reserve_item_image(p_kind text, p_target_id uuid, p_image_id uuid, p_content_type text)
@@ -295,9 +295,12 @@ begin
     return v_up;                                     -- 送り直し（同じ id・同じ中身）
   end if;
 
+  -- 人ごとの上限：行の画像にしていない予約のうち、生きている物と、物が Storage に残っている物（期限が切れても）を 10 個まで。上げて
+  -- set_item_image を呼ばない物を積み上げて bucket を埋めさせない（2026-11-10 のセキュリティのレビュー）。物を消せば数えない
   if (select count(*) from public.item_image_uploads r
-      where r.created_by = auth.uid() and r.expires_at > now() and r.used_at is null
-        and not exists (select 1 from storage.objects o where o.bucket_id = 'item-images' and o.name = r.object_path)) >= 10 then
+      where r.created_by = auth.uid() and r.used_at is null
+        and (r.expires_at > now()
+             or exists (select 1 from storage.objects o where o.bucket_id = 'item-images' and o.name = r.object_path))) >= 10 then
     perform private.fail('invalid_state', jsonb_build_object('reason', 'too_many_reservations'));
   end if;
   if (select coalesce(sum((o.metadata ->> 'size')::bigint), 0) from storage.objects o where o.bucket_id = 'item-images')

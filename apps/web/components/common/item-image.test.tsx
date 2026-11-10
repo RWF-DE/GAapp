@@ -105,14 +105,56 @@ describe('T23 画像の部品を読むページ', () => {
 });
 
 describe('T23 ItemPhotoField・ItemPhotoDialog', () => {
-  it('カメラを開く input（accept image/*・capture environment）と注意の文', () => {
-    render(<ItemPhotoField file={null} onChange={() => {}} />);
+  it('「撮る」は capture environment でカメラを開き、「写真を選ぶ」は capture なし（撮ってある写真を選べる）。注意の文。ボタンは 44px', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const { rerender } = render(<ItemPhotoField file={null} onChange={onChange} />);
+    const camera = screen.getByTestId('item-photo-camera');
+    expect(camera.getAttribute('type')).toBe('file');
+    expect(camera.getAttribute('accept')).toBe('image/*');
+    expect(camera.getAttribute('capture')).toBe('environment');
     const input = screen.getByTestId('item-photo-input');
     expect(input.getAttribute('type')).toBe('file');
     expect(input.getAttribute('accept')).toBe('image/*');
-    expect(input.getAttribute('capture')).toBe('environment');
+    expect(input.hasAttribute('capture')).toBe(false);
+    expect(screen.getByRole('button', { name: '撮る' }).className).toContain('h-11');
+    expect(screen.getByRole('button', { name: '写真を選ぶ' }).className).toContain('h-11');
     expect(screen.getByText(ITEM_PHOTO_NOTE)).toBeTruthy();
     expect(ITEM_PHOTO_NOTE).toBe('人の顔・名前・掲示物が写らないように撮ってください');
+    const file = new File(['x'], 'p.jpg', { type: 'image/jpeg' });
+    await user.upload(camera, file);
+    expect(onChange).toHaveBeenLastCalledWith(file);
+    rerender(<ItemPhotoField file={file} onChange={onChange} />);
+    expect(screen.getByRole('button', { name: '撮り直す' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '選び直す' })).toBeTruthy();
+    // 写真の「外す」も 44px 以上（04 の在庫入力の決まり）
+    const remove = screen.getByRole('button', { name: '外す' });
+    expect(remove.className).toContain('h-11');
+    await user.click(remove);
+    expect(onChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it('ダイアログ：送り直しは同じ image_id、写真を選び直したら新しい id（04「品目の画像の共通の部品」・(B1)）', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi
+      .fn<(f: File, imageId: string) => Promise<string | null>>()
+      .mockResolvedValueOnce('通信できませんでした。電波の良い所でもう一度')
+      .mockResolvedValueOnce('通信できませんでした。電波の良い所でもう一度')
+      .mockResolvedValueOnce(null);
+    render(<ItemPhotoDialog open onOpenChange={() => {}} title="写真を足す" onSubmit={onSubmit} />);
+    await screen.findByTestId('item-photo-dialog');
+    await user.upload(screen.getByTestId('item-photo-input'), new File(['x'], 'p.jpg', { type: 'image/jpeg' }));
+    await user.click(screen.getByTestId('item-photo-submit'));
+    await screen.findByRole('alert');
+    await user.click(screen.getByTestId('item-photo-submit'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+    const first = onSubmit.mock.calls[0]![1];
+    expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(onSubmit.mock.calls[1]![1]).toBe(first);
+    await user.upload(screen.getByTestId('item-photo-input'), new File(['y'], 'q.jpg', { type: 'image/jpeg' }));
+    await user.click(screen.getByTestId('item-photo-submit'));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(3));
+    expect(onSubmit.mock.calls[2]![1]).not.toBe(first);
   });
 
   it('ダイアログ：写真を選ぶまで送れず、失敗の文言を出して閉じない。成功したら閉じる。ファイルの名前は出さない', async () => {
@@ -123,10 +165,10 @@ describe('T23 ItemPhotoField・ItemPhotoDialog', () => {
     const dialog = await screen.findByTestId('item-photo-dialog');
     const submit = screen.getByTestId('item-photo-submit');
     expect((submit as HTMLButtonElement).disabled).toBe(true);
-    const file = new File(['x'], '山田の写真.jpg', { type: 'image/jpeg' });
+    const file = new File(['x'], '人の名前の写真.jpg', { type: 'image/jpeg' });
     await user.upload(screen.getByTestId('item-photo-input'), file);
     expect(dialog.textContent).toContain('写真を選びました');
-    expect(dialog.textContent).not.toContain('山田の写真');
+    expect(dialog.textContent).not.toContain('人の名前の写真');
     await user.click(submit);
     expect(await screen.findByRole('alert')).toHaveProperty('textContent', '写真は1枚 1 MB までです');
     expect(onOpenChange).not.toHaveBeenCalledWith(false);

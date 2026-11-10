@@ -72,7 +72,7 @@ import { ErrorState, LoadingState, ReadOnlyNotice } from '@/components/states';
 import { useAuth } from '@/lib/auth/auth-provider';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
 import type { CountItemRow, ItemRow, StockDbRow, YearRow } from '@/lib/db/types';
-import { itemImagePathsOptions, sendItemImage, useItemImageUrls } from '@/lib/data/item-images';
+import { fetchItemImagePath, invalidateItemImagePaths, itemImagePathsOptions, sendItemImage, useItemImageUrls } from '@/lib/data/item-images';
 import {
   addCountItem,
   CountSaveError,
@@ -496,18 +496,36 @@ export function StockInput({
       if (isUnknownOutcome(e)) return '足せたか分かりません。もう一度「新しく登録」を押してください（同じ名前は二重になりません）';
       return messageFor(c, { rpc: 'add_count_item' });
     }
-    if (!allCountItems.some((c) => c.id === newId)) {
+    const existed = allCountItems.some((c) => c.id === newId);
+    if (!existed) {
       setExtraItems((xs) => [...xs, { id: newId, name, always_shown: false, sort_order: EXTRA_SORT_ORDER, updated_at: '' }]);
     }
     // 名前の一覧（場所・品目の読み込み）を読み直す（ほかの部屋・翌年の選択肢にも出る）
     void queryClient.invalidateQueries({ queryKey: stockMasterOptions(yearId).queryKey });
     addLine(newId);
-    // 写真（任意）：名前を足した後に送る。画像の段で失敗しても名前の登録（行）は残す（T23・D-61）
-    if (photo) {
-      const r = await sendItemImage(queryClient, 'count_item', newId, photo);
-      if (!r.ok) toast.error('名前は登録しました。画像は後から足せます', { description: r.message });
-    }
+    // 写真（任意）：名前を足した後に送る。画像の段で失敗しても名前の登録（行）は残す（T23・D-61）。既にある物だったとき（手元の
+    // 一覧にあった、または add_count_item が既にある id を返した）は、今の画像を DB から読み直し、画像があれば黙って替えない（04）
+    if (photo) await sendNewItemPhoto(newId, name, photo, existed);
     return null;
+  };
+
+  /** 「新しく登録」の写真を送る（今の画像を読み直し、画像のある物には送らない。04「在庫入力」の「新しく登録」） */
+  const sendNewItemPhoto = async (countItemId: string, name: string, photo: File, existed: boolean) => {
+    let current: string | null;
+    try {
+      current = await fetchItemImagePath('count_item', countItemId);
+    } catch (e) {
+      toast.error('名前は登録しました。画像は後から足せます', { description: messageFor(classifyError(e)) });
+      return;
+    }
+    if (current) {
+      void invalidateItemImagePaths(queryClient, 'count_item');
+      toast.info(`「${name}」は既にある物で、画像もあります。写真は送っていません。替えるときは行のメニューの「写真を替える」から`);
+      return;
+    }
+    const r = await sendItemImage(queryClient, 'count_item', countItemId, photo);
+    if (!r.ok) toast.error('名前は登録しました。画像は後から足せます', { description: r.message });
+    else if (existed) toast.success(`「${name}」は既にある物でした。写真を足しました`);
   };
 
   /**
@@ -1123,10 +1141,10 @@ export function StockInput({
           open={photoFor !== null}
           onOpenChange={(o) => !o && setPhotoFor(null)}
           title={photoFor ? `「${photoFor.name}」の写真${countPaths.has(countItemIdOf(photoFor.id) ?? '') ? 'を替える' : 'を足す'}` : '写真を足す'}
-          onSubmit={async (file) => {
+          onSubmit={async (file, imageId) => {
             const ci = photoFor ? countItemIdOf(photoFor.id) : null;
             if (!ci) return null;
-            const r = await sendItemImage(queryClient, 'count_item', ci, file);
+            const r = await sendItemImage(queryClient, 'count_item', ci, file, { imageId });
             if (!r.ok) return r.message;
             toast.success('写真を送りました');
             return null;

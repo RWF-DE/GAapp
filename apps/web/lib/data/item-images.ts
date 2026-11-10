@@ -10,6 +10,7 @@
 import { queryOptions, useQuery, type QueryClient } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
 import { toAppError } from '@/lib/errors';
+import { queryKeys } from '@/lib/query';
 import { getSupabase, type AppSupabaseClient } from '@/lib/supabase/client';
 
 /** Storage の bucket（非公開。0022） */
@@ -48,9 +49,28 @@ export function itemImagePathsOptions(kind: ItemImageKind) {
   return queryOptions({ queryKey: itemImageKeys.paths(kind), queryFn: () => fetchItemImagePaths(kind) });
 }
 
-/** 画像を変えた後に、その種類の path を読み直す */
+/** その行の今の画像の path を DB から読む（なければ null。在庫入力の「新しく登録」で、既にある物の画像を確かめる。04） */
+export async function fetchItemImagePath(kind: ItemImageKind, id: string, client: AppSupabaseClient = getSupabase()): Promise<string | null> {
+  const res = await client.from(TABLE_OF[kind]).select('image_path').eq('id', id).maybeSingle();
+  if (res.error) throw toAppError(res.error, res.status);
+  const p = (res.data as { image_path?: string | null } | null)?.image_path;
+  return typeof p === 'string' && p !== '' ? p : null;
+}
+
+/** 行の一覧のキー（品目：['items', …]〔マスタ設定の settingsKeys.items も〕、備品：['count_items', …]〔settingsKeys.countItems〕） */
+const ROWS_KEY_OF = { item: queryKeys.items(), count_item: ['count_items'] } as const;
+
+/**
+ * 画像を変えた後に、その種類の path と行の一覧を読み直す。set_item_image は行を update するので updated_at が進む。古い updated_at の
+ * ままだと、マスタ設定の「編集」「削除」（楽観ロック）が自分の操作なのに conflict で止まる（2026-11-10 のレビュー）。在庫入力の名前の
+ * 一覧（年度ごとの stock-master。品目と備品の行を持つ）も読み直す
+ */
 export function invalidateItemImagePaths(queryClient: QueryClient, kind: ItemImageKind): Promise<void> {
-  return queryClient.invalidateQueries({ queryKey: itemImageKeys.paths(kind) });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: itemImageKeys.paths(kind) }),
+    queryClient.invalidateQueries({ queryKey: ROWS_KEY_OF[kind] }),
+    queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === 'year' && q.queryKey[2] === 'stock-master' }),
+  ]).then(() => undefined);
 }
 
 /** Storage の操作で使う最小の形（storage.from(bucket)。テストの偽物もこの形を満たす） */
@@ -137,13 +157,20 @@ async function loadUpload() {
 }
 
 /**
- * 写真をその行の画像にする（送る部品は押したときに動的 import で読む）。終わったら（失敗でも）その種類の path を読み直す。
+ * 写真をその行の画像にする（送る部品は押したときに動的 import で読む）。終わったら（失敗でも）その種類の path と行の一覧を読み直す。
+ * opts.imageId は送り直しの id（ダイアログが保つ。04「品目の画像の共通の部品」）。
  *
  * @example
  * const r = await sendItemImage(queryClient, 'count_item', id, file);
  * if (!r.ok) setError(r.message);
  */
-export async function sendItemImage(queryClient: QueryClient, kind: ItemImageKind, targetId: string, file: Blob): Promise<ItemImageWriteResult> {
+export async function sendItemImage(
+  queryClient: QueryClient,
+  kind: ItemImageKind,
+  targetId: string,
+  file: Blob,
+  opts: { imageId?: string } = {},
+): Promise<ItemImageWriteResult> {
   let mod: Awaited<ReturnType<typeof loadUpload>>;
   try {
     mod = await loadUpload();
@@ -151,7 +178,7 @@ export async function sendItemImage(queryClient: QueryClient, kind: ItemImageKin
     return { ok: false, message: LOAD_FAILED_MESSAGE };
   }
   try {
-    await mod.attachItemImage(kind, targetId, file);
+    await mod.attachItemImage(kind, targetId, file, opts.imageId ? { imageId: opts.imageId } : {});
     return { ok: true };
   } catch (e) {
     return { ok: false, message: e instanceof mod.ItemImageError ? e.message : mod.itemImageErrorMessage('set', e) };
@@ -175,5 +202,18 @@ export async function removeItemImage(queryClient: QueryClient, kind: ItemImageK
     return { ok: false, message: e instanceof mod.ItemImageError ? e.message : mod.itemImageErrorMessage('set', e) };
   } finally {
     void invalidateItemImagePaths(queryClient, kind);
+  }
+}
+
+/**
+ * 消した行（マスタ設定の備品の削除）のフォルダの物を Storage から片付ける（送る部品を動的 import。失敗しても投げない・知らせない。
+ * 02「品目の画像」）
+ */
+export async function removeDeletedItemImages(kind: ItemImageKind, targetId: string): Promise<void> {
+  try {
+    const mod = await loadUpload();
+    await mod.removeItemImageFolder(kind, targetId);
+  } catch {
+    // どの行にも使われていない物として残るだけ
   }
 }

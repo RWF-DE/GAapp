@@ -6,7 +6,7 @@ import { RPC_ARGS } from '@/lib/rpc/payloads';
 import { createFakeSupabase, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
 import { ITEM_IMAGE_DECODE_MESSAGE, type ItemImageEnv } from './image';
-import { attachItemImage, detachItemImage, ItemImageError, isItemImageAlreadyUploaded, toItemImageStorageError } from './upload';
+import { attachItemImage, detachItemImage, ItemImageError, isItemImageAlreadyUploaded, removeItemImageFolder, toItemImageStorageError } from './upload';
 
 const TARGET = '00000000-0000-4000-8000-000000000101';
 const IMAGE = '00000000-0000-4000-8000-0000000000aa';
@@ -19,8 +19,16 @@ const env: ItemImageEnv = {
 };
 const storageError = (statusCode: string, code: string) => ({ __isStorageError: true, name: 'StorageApiError', message: code, status: 400, statusCode, code });
 
-function setup(opts: { rpc?: (c: FakeCall) => FakeResult | undefined; upload?: () => { data: unknown; error: unknown }; remove?: () => { data: unknown[] | null; error: unknown } } = {}) {
+function setup(
+  opts: {
+    rpc?: (c: FakeCall) => FakeResult | undefined;
+    upload?: () => { data: unknown; error: unknown };
+    remove?: () => { data: unknown[] | null; error: unknown };
+    list?: (folder: string) => { data: { name: string }[] | null; error: unknown };
+  } = {},
+) {
   const log: string[] = [];
+  const lists: string[] = [];
   const fake = createFakeSupabase((call) => {
     log.push(call.table);
     const o = opts.rpc?.(call);
@@ -48,12 +56,17 @@ function setup(opts: { rpc?: (c: FakeCall) => FakeResult | undefined; upload?: (
             removes.push(paths);
             return opts.remove?.() ?? { data: paths.map((name) => ({ name })), error: null };
           },
+          list: async (folder: string) => {
+            log.push('list');
+            lists.push(folder);
+            return opts.list?.(folder) ?? { data: [], error: null };
+          },
         };
       },
     },
   } as unknown as AppSupabaseClient;
   const args = (name: string) => fake.issued.filter((c) => c.table === `rpc:${name}`).map((c) => c.ops[0]?.args[0]);
-  return { client, log, uploads, removes, bucketName, args };
+  return { client, log, uploads, removes, lists, bucketName, args, issued: fake.issued };
 }
 
 describe('T23 attachItemImage（作り直す → 予約 → 上げる → 行の画像にする → 前の物を消す）', () => {
@@ -98,9 +111,8 @@ describe('T23 attachItemImage（作り直す → 予約 → 上げる → 行の
     expect(s.log).toEqual([]);
   });
 
-  it('予約の invalid_state（too_many_reservations・storage_full）と not_found は品目の画像の文言で、上げない', async () => {
+  it('予約の invalid_state（storage_full）と not_found は品目の画像の文言で、上げない（too_many_reservations は下の「レビューで直したこと」）', async () => {
     for (const [details, message] of [
-      [{ reason: 'too_many_reservations' }, '送っている途中の写真が多すぎます（1人 10 枚まで）。1 時間ほど待ってから、もう一度送ってください'],
       [{ reason: 'storage_full' }, '画像の置き場がいっぱいです（上限 100 MB）。管理者に知らせてください'],
     ] as const) {
       const s = setup({
@@ -139,6 +151,66 @@ describe('T23 attachItemImage（作り直す → 予約 → 上げる → 行の
     expect(e.step).toBe('set');
     expect(e.message).toBe('写真が届いていませんでした。もう一度送ってください');
     expect(s.removes).toEqual([[PATH]]);
+  });
+});
+
+describe('T23 レビューで直したこと（送り直しの id・上限の片付け・削除した備品のフォルダ）', () => {
+  it('deps.imageId を渡すと、その id で予約し直す（ダイアログの送り直し。newId は呼ばない）', async () => {
+    const s = setup();
+    const newId = vi.fn(() => 'x');
+    await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env, imageId: IMAGE, newId });
+    expect(newId).not.toHaveBeenCalled();
+    expect(s.args('reserve_item_image')[0]).toMatchObject({ p_image_id: IMAGE });
+    expect(s.args('set_item_image')[0]).toMatchObject({ p_image_id: IMAGE });
+  });
+
+  it('too_many_reservations なら、自分の期限の切れた使っていない予約の物を消してから1回だけ予約し直す', async () => {
+    let reserves = 0;
+    const STALE = `count-items/${TARGET}/00000000-0000-4000-8000-0000000000cc.webp`;
+    const s = setup({
+      rpc: (c) => {
+        if (c.table === 'rpc:reserve_item_image') {
+          reserves += 1;
+          if (reserves === 1) return { error: { code: 'P0001', message: 'invalid_state', details: JSON.stringify({ reason: 'too_many_reservations' }) } };
+          return undefined;
+        }
+        if (c.table === 'item_image_uploads') return { data: [{ object_path: STALE }] };
+        return undefined;
+      },
+    });
+    await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env, newId: () => IMAGE });
+    expect(s.log).toEqual(['rpc:reserve_item_image', 'item_image_uploads', 'remove', 'rpc:reserve_item_image', 'upload', 'rpc:set_item_image', 'remove']);
+    const read = s.issued.find((c) => c.table === 'item_image_uploads')!;
+    expect(read.ops.map((o) => o.op)).toEqual(expect.arrayContaining(['select', 'is', 'lt']));
+    expect(read.ops.find((o) => o.op === 'is')!.args).toEqual(['used_at', null]);
+    expect(s.removes[0]).toEqual([STALE]);
+  });
+
+  it('片付けても上限なら、片付けは1回だけで too_many_reservations の文言', async () => {
+    const s = setup({
+      rpc: (c) => {
+        if (c.table === 'rpc:reserve_item_image') return { error: { code: 'P0001', message: 'invalid_state', details: JSON.stringify({ reason: 'too_many_reservations' }) } };
+        if (c.table === 'item_image_uploads') return { data: [] };
+        return undefined;
+      },
+    });
+    const e = (await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env }).catch((x: unknown) => x)) as ItemImageError;
+    expect(e.step).toBe('reserve');
+    expect(e.message).toBe('送っている途中の写真が多すぎます（1人 10 枚まで）。1 時間ほど待ってから、もう一度送ってください');
+    expect(s.log).toEqual(['rpc:reserve_item_image', 'item_image_uploads', 'rpc:reserve_item_image']);
+  });
+
+  it('removeItemImageFolder：消した行のフォルダの物を一覧して remove する（失敗しても投げない）', async () => {
+    const s = setup({ list: () => ({ data: [{ name: 'a.webp' }, { name: 'b.jpg' }], error: null }) });
+    expect(await removeItemImageFolder('count_item', TARGET, { client: s.client })).toBe(true);
+    expect(s.lists).toEqual([`count-items/${TARGET}`]);
+    expect(s.removes).toEqual([[`count-items/${TARGET}/a.webp`, `count-items/${TARGET}/b.jpg`]]);
+    const empty = setup();
+    expect(await removeItemImageFolder('item', TARGET, { client: empty.client })).toBe(true);
+    expect(empty.lists).toEqual([`items/${TARGET}`]);
+    expect(empty.removes).toEqual([]);
+    const broken = setup({ list: () => ({ data: null, error: new Error('x') }) });
+    expect(await removeItemImageFolder('count_item', TARGET, { client: broken.client })).toBe(false);
   });
 });
 

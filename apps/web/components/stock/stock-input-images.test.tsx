@@ -143,15 +143,21 @@ function membership(role: 'admin' | 'head' | 'staff', status: YearStatus): Membe
 const reserveArgs = () => fake.issued.filter((c) => c.table === 'rpc:reserve_item_image').map((c) => c.ops[0]!.args[0]);
 const setArgs = () => fake.issued.filter((c) => c.table === 'rpc:set_item_image').map((c) => c.ops[0]!.args[0]);
 
-function serve(o: { reserve?: FakeResult } = {}) {
+function serve(o: { reserve?: FakeResult; addReturns?: string } = {}) {
   fake.handler = (call) => {
     if (call.table === 'items') return { data: [{ id: DESK.id, image_path: DESK_IMG }, { id: CHAIR.id, image_path: null }] };
+    if (call.table === 'count_items' && call.ops.some((op) => op.op === 'eq')) {
+      // 1行の今の画像（fetchItemImagePath）
+      const target = call.ops.find((op) => op.op === 'eq')!.args[1];
+      const paths: Record<string, string> = { [TRASH.id]: TRASH_IMG, [VACUUM.id]: VACUUM_IMG };
+      return { data: { image_path: paths[target as string] ?? null } };
+    }
     if (call.table === 'count_items') {
       // 画像の path の読み込み（id, image_path）
       return { data: [{ id: TRASH.id, image_path: TRASH_IMG }, { id: VACUUM.id, image_path: VACUUM_IMG }, { id: FAN.id, image_path: null }] };
     }
     if (call.table === 'stocks' || call.table === 'count_stocks') return { data: [] };
-    if (call.table === 'rpc:add_count_item') return { data: NEW_ID };
+    if (call.table === 'rpc:add_count_item') return { data: o.addReturns ?? NEW_ID };
     if (call.table === 'rpc:reserve_item_image') {
       if (o.reserve) return o.reserve;
       const a = call.ops[0]!.args[0] as { p_target_id: string; p_image_id: string };
@@ -291,6 +297,63 @@ describe('T23 在庫入力の「新しく登録」の写真', () => {
     await waitFor(() =>
       expect(toasts.error).toHaveBeenCalledWith('名前は登録しました。画像は後から足せます', { description: '写真を読み込めませんでした。別の写真を選んでください' }),
     );
+  });
+});
+
+describe('T23 レビューで直したこと：「新しく登録」で既にある名前に写真をつけたとき', () => {
+  const register = async (name: string) => {
+    const user = userEvent.setup();
+    await user.click(await screen.findByTestId('count-item-add'));
+    const dialog = await screen.findByTestId('add-count-item-dialog');
+    await user.type(within(dialog).getByLabelText('新しく登録する名前'), name);
+    await user.upload(within(dialog).getByTestId('item-photo-input'), new File(['x'], 'p.jpg', { type: 'image/jpeg' }));
+    await user.click(within(dialog).getByRole('button', { name: '新しく登録' }));
+    await waitFor(() => expect(screen.queryByTestId('add-count-item-dialog')).toBeNull());
+  };
+
+  it('手元の一覧にある画像のない物（白椅子）：写真を捨てずに、その物の画像として送り、知らせる', async () => {
+    serve({ addReturns: WHITE.id });
+    renderInput('staff', 'requesting');
+    await register('白椅子');
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「白椅子」は既にある物でした。写真を足しました'));
+    expect(fake.log.filter((t) => t === 'rpc:add_count_item')).toHaveLength(1);
+    expect(reserveArgs()).toMatchObject([{ p_kind: 'count_item', p_target_id: WHITE.id }]);
+    expect(setArgs()).toMatchObject([{ p_kind: 'count_item', p_target_id: WHITE.id }]);
+    expect(screen.getByRole('textbox', { name: '白椅子の数' })).toBeTruthy();
+  });
+
+  it('手元の一覧にある画像のある物（掃除機）：写真は送らず（黙って替えない）、行のメニューから替えるよう知らせる', async () => {
+    serve({ addReturns: VACUUM.id });
+    renderInput('staff', 'requesting');
+    await register('掃除機');
+    await waitFor(() =>
+      expect(toasts.info).toHaveBeenCalledWith('「掃除機」は既にある物で、画像もあります。写真は送っていません。替えるときは行のメニューの「写真を替える」から'),
+    );
+    expect(reserveArgs()).toEqual([]);
+    expect(fake.uploads).toEqual([]);
+    expect(fake.removes).toEqual([]);
+    expect(screen.getByRole('textbox', { name: '掃除機の数' })).toBeTruthy();
+  });
+
+  it('手元の一覧にない名前で、add_count_item が画像のある既存の id を返した（ほかの人が同時に足した）：送らない', async () => {
+    serve({ addReturns: VACUUM.id });
+    renderInput('staff', 'requesting');
+    await register('そうじき');
+    await waitFor(() => expect(toasts.info).toHaveBeenCalled());
+    expect(reserveArgs()).toEqual([]);
+    expect(fake.removes).toEqual([]);
+  });
+
+  it('写真がなければ、手元の一覧の同じ名前は今までどおり RPC を呼ばずに行を出す', async () => {
+    serve();
+    const user = userEvent.setup();
+    renderInput('staff', 'requesting');
+    await user.click(await screen.findByTestId('count-item-add'));
+    const dialog = await screen.findByTestId('add-count-item-dialog');
+    await user.type(within(dialog).getByLabelText('新しく登録する名前'), '白椅子');
+    await user.click(within(dialog).getByRole('button', { name: '新しく登録' }));
+    await waitFor(() => expect(screen.getByRole('textbox', { name: '白椅子の数' })).toBeTruthy());
+    expect(fake.log.filter((t) => t === 'rpc:add_count_item')).toEqual([]);
   });
 });
 

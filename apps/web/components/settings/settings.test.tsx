@@ -65,6 +65,7 @@ const imageApi = vi.hoisted(() => ({
   urlCache: new Map<string, unknown>(),
   sendItemImage: vi.fn<(...a: unknown[]) => Promise<{ ok: true } | { ok: false; message: string }>>(async () => ({ ok: true })),
   removeItemImage: vi.fn<(...a: unknown[]) => Promise<{ ok: true } | { ok: false; message: string }>>(async () => ({ ok: true })),
+  removeDeletedItemImages: vi.fn(async () => {}),
 }));
 vi.mock('@/lib/data/item-images', async (orig) => {
   const actual = await orig<typeof import('@/lib/data/item-images')>();
@@ -80,8 +81,22 @@ vi.mock('@/lib/data/item-images', async (orig) => {
       imageApi.urlCache.set(key, v);
       return v;
     },
-    sendItemImage: imageApi.sendItemImage,
-    removeItemImage: imageApi.removeItemImage,
+    // 本物と同じく、送る・外すの後に（成否によらず）path と行の一覧を読み直す（invalidateItemImagePaths は本物）
+    sendItemImage: async (...a: unknown[]) => {
+      try {
+        return await imageApi.sendItemImage(...a);
+      } finally {
+        await actual.invalidateItemImagePaths(a[0] as never, a[1] as 'item' | 'count_item');
+      }
+    },
+    removeItemImage: async (...a: unknown[]) => {
+      try {
+        return await imageApi.removeItemImage(...a);
+      } finally {
+        await actual.invalidateItemImagePaths(a[0] as never, a[1] as 'item' | 'count_item');
+      }
+    },
+    removeDeletedItemImages: imageApi.removeDeletedItemImages,
   };
 });
 
@@ -936,7 +951,62 @@ describe('T23 品目のタブの画像（管理者）', () => {
     await user.upload(within(dialog).getByTestId('item-photo-input'), file);
     await user.click(within(dialog).getByTestId('item-photo-submit'));
     await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「扇風機」の画像を足しました'));
-    expect(imageApi.sendItemImage).toHaveBeenCalledWith(expect.anything(), 'count_item', FAN.id, file);
+    expect(imageApi.sendItemImage).toHaveBeenCalledWith(expect.anything(), 'count_item', FAN.id, file, { imageId: expect.any(String) });
+  });
+
+  it('レビューで直したこと：画像を足した直後の「編集」は、読み直した行の updated_at で送る（自分の操作で conflict にしない）', async () => {
+    const FAN_AFTER = { ...FAN, updated_at: T1 };
+    data.fetchItems.mockResolvedValue([DESK]);
+    data.fetchCountItems.mockResolvedValueOnce([FAN]).mockResolvedValue([FAN_AFTER]);
+    data.updateCountItem.mockResolvedValue({ ...FAN_AFTER, name: '扇風機2' });
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    const section = await screen.findByTestId('count-items-settings');
+    await user.click(await within(section).findByTestId('item-image-add'));
+    const dialog = await screen.findByTestId('item-photo-dialog');
+    await user.upload(within(dialog).getByTestId('item-photo-input'), new File(['x'], 'p.jpg', { type: 'image/jpeg' }));
+    await user.click(within(dialog).getByTestId('item-photo-submit'));
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「扇風機」の画像を足しました'));
+    await waitFor(() => expect(data.fetchCountItems).toHaveBeenCalledTimes(2));
+    await user.click(within(section).getByRole('button', { name: '編集' }));
+    const form = await screen.findByTestId('count-item-form');
+    await user.clear(within(form).getByLabelText('名前'));
+    await user.type(within(form).getByLabelText('名前'), '扇風機2');
+    await user.click(within(form).getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(data.updateCountItem).toHaveBeenCalled());
+    expect(data.updateCountItem.mock.calls[0]![0]).toMatchObject({ id: FAN.id, updated_at: T1 });
+  });
+
+  it('レビューで直したこと：画像を外した後も品目の表を読み直す（品目の「編集」の updated_at）', async () => {
+    data.fetchItems.mockResolvedValue([DESK]);
+    data.fetchCountItems.mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    const table = await screen.findByRole('table', { name: '品目の一覧' });
+    await waitFor(() => expect(data.fetchItems).toHaveBeenCalledTimes(1));
+    await user.click(await within(table).findByTestId('item-image-remove'));
+    const confirm = await screen.findByRole('alertdialog');
+    await user.click(within(confirm).getByRole('button', { name: '外す' }));
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「机(木)」の画像を外しました'));
+    await waitFor(() => expect(data.fetchItems).toHaveBeenCalledTimes(2));
+  });
+
+  it('レビューで直したこと：備品を削除したら、そのフォルダの画像を Storage から片付ける（削除の失敗では片付けない）', async () => {
+    data.fetchItems.mockResolvedValue([]);
+    data.fetchCountItems.mockResolvedValue([FAN]);
+    data.deleteCountItem.mockRejectedValueOnce({ code: '23503', message: 'fk' }).mockResolvedValue(FAN);
+    imageApi.removeDeletedItemImages.mockClear();
+    const user = userEvent.setup();
+    renderWith(<ItemsTab />);
+    const section = await screen.findByTestId('count-items-settings');
+    await user.click(await within(section).findByRole('button', { name: '削除' }));
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }));
+    await waitFor(() => expect(toasts.error).toHaveBeenCalledWith('数が入力された物は削除できません'));
+    expect(imageApi.removeDeletedItemImages).not.toHaveBeenCalled();
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: '削除する' }));
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「扇風機」を削除しました'));
+    expect(imageApi.removeDeletedItemImages).toHaveBeenCalledWith('count_item', FAN.id);
   });
 
   it('替えるの失敗はダイアログに出して閉じない。外すは確かめてから送る', async () => {
