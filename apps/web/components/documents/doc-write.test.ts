@@ -14,7 +14,7 @@ const W: DocumentWrite = {
   deadline: '2026-10-05T17:00:00+09:00',
   target_categories: ['stall'],
   food_only: false,
-  requires_file: true,
+  submit_url: null,
 };
 const row = (over: Partial<DocumentRow> = {}): DocumentRow => ({
   id: ID,
@@ -23,7 +23,7 @@ const row = (over: Partial<DocumentRow> = {}): DocumentRow => ({
   deadline: '2026-10-05T08:00:00+00:00',
   target_categories: ['stall'],
   food_only: false,
-  requires_file: true,
+  submit_url: null,
   files_deleted_at: null,
   updated_at: V1,
   ...over,

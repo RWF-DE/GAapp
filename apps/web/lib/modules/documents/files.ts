@@ -14,7 +14,7 @@ export const DOCUMENTS_BUCKET = 'documents';
 export const MAX_FILES = 5;
 /** 1つのファイルの大きさの上限（10 MiB。document_files_size_check と bucket の file_size_limit） */
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
-/** bucket 全体の上限（900 MiB。reserve_document_file の storage_full と document_storage_usage の limit_bytes） */
+/** bucket 全体の上限（900 MiB。T19 の reserve_document_file の storage_full と document_storage_usage の limit_bytes。T24 から画面には出さない） */
 export const STORAGE_LIMIT_BYTES = 900 * 1024 * 1024;
 /** 署名つき URL の有効な秒数（押したときに作り、残さない） */
 export const SIGNED_URL_SECONDS = 60;
@@ -228,18 +228,16 @@ export function fileStateOf(f: { id: string; uploaded: boolean | null }, local: 
 
 /** 「提出した」を押せない理由（04「自団体の提出物」。押せるなら null） */
 export const SUBMIT_BLOCKERS = {
-  noFile: 'ファイルを1つ以上足してください',
-  notUploaded: '届いていないファイルがあります。外すか、もう一度送ってください',
+  notUploaded: '届いていないファイルがあります。外してから提出してください',
   uploading: 'アップロードが終わるまでお待ちください',
 } as const;
 
 /**
- * 「提出した」（代わりに提出するも同じ）を押せない理由：アップロード中 → 届いていないファイルがある → ファイルが要る提出物でファイルが
- * 0（DB の not_uploaded・no_file と同じ条件。アップロード中は終わった後の読み直しを待つ）。押せるなら null。
+ * 「提出した」（代わりに提出するも同じ）を押せない理由：送っている間 → T24 の前の届いていないファイルがある（DB の not_uploaded と同じ条件）。
+ * T24（D-62）から requires_file はいつも偽なので、ファイルがなくても出せる（no_file は返らない）。押せるなら null。
  */
-export function submitBlocker(requiresFile: boolean, files: readonly { uploaded: boolean | null }[], uploading: boolean): string | null {
+export function submitBlocker(files: readonly { uploaded: boolean | null }[], uploading: boolean): string | null {
   if (uploading) return SUBMIT_BLOCKERS.uploading;
   if (files.some((f) => !f.uploaded)) return SUBMIT_BLOCKERS.notUploaded;
-  if (requiresFile && files.length === 0) return SUBMIT_BLOCKERS.noFile;
   return null;
 }

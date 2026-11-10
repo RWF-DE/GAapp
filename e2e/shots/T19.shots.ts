@@ -1,6 +1,7 @@
 // T19 提出物（/document・/documents とダッシュボード）のスクリーンショット（画面の設計 7.4。notes/T19.md の「スクリーンショット」）。
 // `pnpm e2e:shots --grep "T19 "` で notes/T19/ に撮る（CI では流さない）。年度をまたぐ表には書かない。
-// 提出物と提出は SQL で入れ、ファイル（テストの中で作る PDF）は API（画面と同じ予約 → Storage へ上げる）で上げる。Storage の物は撮り終えたら
+// 提出物と提出は SQL で入れ、ファイル（テストの中で作る PDF）は T24 の前のファイルとして上げる（uploadFileAs が SQL で T24 の前の予約を
+// 作り、Storage へ上げる。T24 から画面にファイルを上げる欄はないので「アップロード中」は撮らない。D-62）。Storage の物は撮り終えたら
 // Storage API で消す（cleanupDocumentsScenario。SQL では消さない）。
 // 「最新でない年度」の帯を出さず、締切を今日のまわりに並べるため、撮るときだけシナリオの年度の1日目を今日（Asia/Tokyo）の 35 日後に、
 // 前年度の1日目をその 364 日前に動かす（T18 の撮影と同じ考え。撮影は1つずつ流れ〔shots のプロジェクトは workers 1〕、年度は pinYear で
@@ -63,7 +64,7 @@ async function noToasts(page: Page): Promise<void> {
 /** 今から何時間前の日時（timestamptz の文字列） */
 const hoursAgo = (h: number) => new Date(Date.now() - h * 60 * 60 * 1000).toISOString();
 
-test('T19 店長のスマホ（一覧・アップロード中・提出済み・差し戻し）とホームの要対応、提出状況（表・シート・差し戻しのダイアログ）、提出物の設定・前年度から写す、部門員の見え方、管理者のダッシュボードのカード', async ({
+test('T19 店長のスマホ（一覧・提出済み・差し戻し）とホームの要対応、提出状況（表・シート・差し戻しのダイアログ）、提出物の設定・前年度から写す、部門員の見え方、管理者のダッシュボードのカード', async ({
   browser,
 }) => {
   test.setTimeout(420_000);
@@ -102,8 +103,15 @@ test('T19 店長のスマホ（一覧・アップロード中・提出済み・�
         foodOnly: true,
         createdBy: H,
       },
-      { title: '出店計画書', description: '配置図と、使う机・椅子の数を書いてください。', deadline: tokyoDeadline(6), categories: ['stall', 'department'], createdBy: H },
-      { title: '企業ブースの配置図', deadline: tokyoDeadline(12, '12:00'), categories: ['company', 'rest_area'], requiresFile: false, createdBy: H },
+      {
+        title: '出店計画書',
+        description: '配置図と、使う机・椅子の数を書いてください。',
+        deadline: tokyoDeadline(6),
+        categories: ['stall', 'department'],
+        submitUrl: 'https://drive.google.com/drive/folders/e2e-plan',
+        createdBy: H,
+      },
+      { title: '企業ブースの配置図', deadline: tokyoDeadline(12, '12:00'), categories: ['company', 'rest_area'], submitUrl: 'https://forms.gle/e2e-layout', createdBy: H },
     ]);
     // 前年度の提出物（前年度から写す）。同じ題名の「出店計画書」は写さない
     await insertDocuments(s.prevYearId!, [
@@ -112,7 +120,7 @@ test('T19 店長のスマホ（一覧・アップロード中・提出済み・�
       { title: '備品の借用書', deadline: `${addDays(today, 14 - 364)}T12:00:00+09:00`, categories: ['stall', 'department', 'company', 'rest_area'], createdBy: H },
     ]);
 
-    // ファイル：店長が「出店計画書」に1つ（まだ提出しない）、部門長が模擬店2 の「食品の取り扱い届」を代わりに上げて提出（代理）
+    // T24 の前のファイル：店長が「出店計画書」に1つ（まだ提出しない）、部門長が模擬店2 の「食品の取り扱い届」を代わりに上げて提出（代理）
     const [repToken, headToken] = await Promise.all([apiToken('rep'), apiToken('head')]);
     await uploadFileAs(repToken, { documentId: plan, groupId: g(A), body: makePdf('E2E T19 plan draft') });
     await uploadFileAs(headToken, { documentId: food, groupId: g(EXTRA.stall2), body: makePdf('E2E T19 food proxy') });
@@ -145,7 +153,7 @@ test('T19 店長のスマホ（一覧・アップロード中・提出済み・�
         reviewNote: '配置図に出入口がありません。',
       },
       { documentId: plan, groupId: g(EXTRA.stall3), status: 'submitted', submittedAt: hoursAgo(3) },
-      // 企業ブースの配置図（ファイルは要らない）：企業1 は提出済み
+      // 企業ブースの配置図（提出先は Google フォーム）：企業1 は提出済み
       { documentId: layout, groupId: g(C), status: 'submitted', submittedAt: hoursAgo(2) },
     ]);
 
@@ -159,25 +167,7 @@ test('T19 店長のスマホ（一覧・アップロード中・提出済み・�
     await expectNoOverflow(rep);
     await shoot(rep, 'T19', 'document-rep-list-mobile', { fullPage: true });
 
-    // アップロード中（Storage への送信を止めておく間に撮る）
     const planCard = documentCard(rep, plan);
-    let release!: () => void;
-    const held = new Promise<void>((r) => (release = r));
-    const uploadRoute = '**/storage/v1/object/documents/**';
-    await rep.route(uploadRoute, async (route) => {
-      if (route.request().method() !== 'POST') return route.fallback();
-      await held;
-      await route.continue();
-    });
-    await planCard.getByTestId('document-file-input').setInputFiles({ name: 'e2e-plan-2.pdf', mimeType: 'application/pdf', buffer: makePdf('E2E T19 plan page 2') });
-    await expect(planCard.getByTestId('document-uploading')).toBeVisible();
-    await planCard.scrollIntoViewIfNeeded();
-    await expectNoOverflow(rep);
-    await shoot(rep, 'T19', 'document-rep-uploading-mobile');
-    release();
-    await expect(planCard.getByTestId('document-file')).toHaveCount(2);
-    await expect(planCard.getByTestId('document-file').nth(1)).toHaveAttribute('data-state', 'uploaded', { timeout: 20_000 });
-    await rep.unroute(uploadRoute);
 
     // 提出済み（「提出を取り消す」）
     await planCard.getByTestId('document-submit').click();
@@ -200,7 +190,8 @@ test('T19 店長のスマホ（一覧・アップロード中・提出済み・�
 
     await documentsCell(head, plan, g(A)).click();
     const sheet = head.getByTestId('documents-sheet');
-    await expect(sheet.getByTestId('documents-sheet-file')).toHaveCount(2);
+    await expect(sheet.getByTestId('documents-sheet-file')).toHaveCount(1);
+    await expect(sheet.getByTestId('documents-sheet-submit-url')).toBeVisible();
     await expect(sheet.getByTestId('documents-sheet-approve')).toBeVisible();
     // マス目を押した位置にマウスが残ると、その下に開いたシートのボタンが hover の見た目で写る
     await head.mouse.move(0, 0);

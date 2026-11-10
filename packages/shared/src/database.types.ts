@@ -443,6 +443,7 @@ export type Database = {
           food_only: boolean;
           id: string;
           requires_file: boolean;
+          submit_url: string | null;
           target_categories: Database["public"]["Enums"]["group_category"][];
           title: string;
           updated_at: string;
@@ -459,6 +460,7 @@ export type Database = {
           food_only?: boolean;
           id?: string;
           requires_file?: boolean;
+          submit_url?: string | null;
           target_categories: Database["public"]["Enums"]["group_category"][];
           title: string;
           updated_at?: string;
@@ -474,6 +476,7 @@ export type Database = {
           food_only?: boolean;
           id?: string;
           requires_file?: boolean;
+          submit_url?: string | null;
           target_categories?: Database["public"]["Enums"]["group_category"][];
           title?: string;
           updated_at?: string;
@@ -1890,6 +1893,7 @@ export type Database = {
           reviewed_at: string | null;
           reviewed_by: string | null;
           status: Database["public"]["Enums"]["document_status"] | null;
+          submit_url: string | null;
           submitted_at: string | null;
           submitted_by: string | null;
           title: string;
@@ -2030,6 +2034,7 @@ export type Database = {
           food_only: boolean;
           id: string;
           requires_file: boolean;
+          submit_url: string | null;
           target_categories: Database["public"]["Enums"]["group_category"][];
           title: string;
           updated_at: string;

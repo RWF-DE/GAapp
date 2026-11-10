@@ -99,21 +99,21 @@ describe('T19 段（documentsTier・canManageDocuments・seesDocumentFiles・can
 });
 
 describe('T19 状態 × 段の操作（repDocumentActions・leadDocumentActions）', () => {
-  it('店長・副店長：未提出・差し戻しはファイルと「提出した」、提出済みは取り消しだけ、承認は何も（届いていない予約は外せる）', () => {
+  it('店長・副店長：未提出・差し戻しは T24 の前のファイルを外す・「提出した」、提出済みは取り消しだけ、承認は何も。ファイルを足すのは T24 で止めた', () => {
     const table: Record<DocumentStatus, ReturnType<typeof repDocumentActions>> = {
-      not_submitted: { addFile: true, removeFile: true, removePending: true, submit: true, withdraw: false },
-      returned: { addFile: true, removeFile: true, removePending: true, submit: true, withdraw: false },
+      not_submitted: { addFile: false, removeFile: true, removePending: true, submit: true, withdraw: false },
+      returned: { addFile: false, removeFile: true, removePending: true, submit: true, withdraw: false },
       submitted: { addFile: false, removeFile: false, removePending: true, submit: false, withdraw: true },
       approved: { addFile: false, removeFile: false, removePending: true, submit: false, withdraw: false },
     };
     for (const st of OPEN_YEARS) for (const s of DOCUMENT_STATUSES) expect(repDocumentActions(s, st), `${s}・${st}`).toEqual(table[s]);
   });
 
-  it('部門長以上：承認でなければ代理のファイル、提出済みは承認・差し戻す・取り消し、承認は承認を取り消して差し戻す、差し戻しは理由を書き直す・紙での承認・代わりに提出', () => {
+  it('部門長以上：承認でなければ代理でファイルを外す（足すのは T24 で止めた）、提出済みは承認・差し戻す・取り消し、承認は承認を取り消して差し戻す、差し戻しは理由を書き直す・紙での承認・代わりに提出', () => {
     const table: Record<DocumentStatus, ReturnType<typeof leadDocumentActions>> = {
-      not_submitted: { addFile: true, removeFile: true, removePending: true, approve: false, returnKind: null, paper: true, submit: true, withdraw: false },
-      submitted: { addFile: true, removeFile: true, removePending: true, approve: true, returnKind: 'return', paper: false, submit: false, withdraw: true },
-      returned: { addFile: true, removeFile: true, removePending: true, approve: false, returnKind: 'rewrite', paper: true, submit: true, withdraw: false },
+      not_submitted: { addFile: false, removeFile: true, removePending: true, approve: false, returnKind: null, paper: true, submit: true, withdraw: false },
+      submitted: { addFile: false, removeFile: true, removePending: true, approve: true, returnKind: 'return', paper: false, submit: false, withdraw: true },
+      returned: { addFile: false, removeFile: true, removePending: true, approve: false, returnKind: 'rewrite', paper: true, submit: true, withdraw: false },
       approved: { addFile: false, removeFile: false, removePending: true, approve: false, returnKind: 'unapprove', paper: false, submit: false, withdraw: false },
     };
     for (const st of OPEN_YEARS) for (const s of DOCUMENT_STATUSES) expect(leadDocumentActions(s, st), `${s}・${st}`).toEqual(table[s]);

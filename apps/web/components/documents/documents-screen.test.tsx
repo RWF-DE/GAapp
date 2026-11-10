@@ -37,7 +37,6 @@ import { DOCUMENT_TITLE_TAKEN_MESSAGE } from './doc-write';
 import { DELETE_FILES_HELP, leftoverText } from './delete-year-files';
 import { CLOSED_DOCUMENTS, DocumentsScreen, EMPTY_DOCUMENTS, EMPTY_DOCUMENTS_HINT, FILTER_EMPTY_TEXT, NO_TARGETS_TEXT } from './documents-screen';
 import { DELETE_COUNT_FAILED_TEXT, DELETE_COUNTING_TEXT, deleteConfirmText } from './documents-settings';
-import { SAVE_BLOCKED_TEXT } from './document-file-list';
 import { PROXY_CONFIRM_TEXT, PROXY_SUBMIT_UNKNOWN, STAFF_FILES_NOTE, UNKNOWN_ACTOR } from './documents-sheet';
 import { fileWindow } from './file-open';
 import { NOTE_VISIBLE_HELP, RETURN_REASON_HELP } from './review-dialogs';
@@ -157,7 +156,7 @@ interface DbDoc {
   deadline: string;
   target_categories: DbGroup['category'][];
   food_only: boolean;
-  requires_file: boolean;
+  submit_url: string | null;
   files_deleted_at: string | null;
   updated_at: string;
 }
@@ -231,9 +230,9 @@ let yearStatus: YearStatus = 'requesting';
 function seed() {
   db.groups = [G1, G2, G3, G4, G5];
   db.docs = [
-    { id: D_PLAN, year_id: Y, title: '出店計画書', description: null, deadline: '2026-10-05T08:00:00+00:00', target_categories: ['stall', 'department'], food_only: false, requires_file: true, files_deleted_at: null, updated_at: V0 },
-    { id: D_FOOD, year_id: Y, title: '食品の届け', description: null, deadline: '2026-10-08T08:00:00+00:00', target_categories: ['stall'], food_only: true, requires_file: true, files_deleted_at: null, updated_at: V0 },
-    { id: D_NOTE, year_id: Y, title: '保健所への報告', description: null, deadline: '2026-10-20T08:00:00+00:00', target_categories: ['stall', 'department', 'company', 'rest_area'], food_only: false, requires_file: false, files_deleted_at: null, updated_at: V0 },
+    { id: D_PLAN, year_id: Y, title: '出店計画書', description: null, deadline: '2026-10-05T08:00:00+00:00', target_categories: ['stall', 'department'], food_only: false, submit_url: 'https://drive.google.com/drive/folders/plan', files_deleted_at: null, updated_at: V0 },
+    { id: D_FOOD, year_id: Y, title: '食品の届け', description: null, deadline: '2026-10-08T08:00:00+00:00', target_categories: ['stall'], food_only: true, submit_url: null, files_deleted_at: null, updated_at: V0 },
+    { id: D_NOTE, year_id: Y, title: '保健所への報告', description: null, deadline: '2026-10-20T08:00:00+00:00', target_categories: ['stall', 'department', 'company', 'rest_area'], food_only: false, submit_url: null, files_deleted_at: null, updated_at: V0 },
   ];
   db.subs = [
     sub(D_PLAN, G1.id, { status: 'approved', submitted_at: '2026-10-03T00:00:00+00:00', submitted_by: U_REP, reviewed_at: '2026-10-04T00:00:00+00:00', reviewed_by: U_ADMIN }),
@@ -364,7 +363,6 @@ function rpc(name: string, a: Record<string, unknown>): FakeResult {
       const st = cur?.status ?? 'not_submitted';
       if (!isOpen(st)) return p0001('invalid_state', { status: st, reason: 'not_editable' });
       const mine = db.files.filter((f) => f.document_id === doc.id && f.group_id === group.id);
-      if (doc.requires_file && mine.length === 0) return p0001('invalid_state', { status: st, reason: 'no_file' });
       if (mine.some((f) => !db.objects.has(f.object_path))) return p0001('invalid_state', { status: st, reason: 'not_uploaded' });
       if (!sameVersion(versionOf(cur), a.p_base_updated_at as string | null)) return p0001('conflict', { document_id: doc.id, group_id: group.id });
       const s = ensureSub(doc.id, group.id);
@@ -425,7 +423,7 @@ function rpc(name: string, a: Record<string, unknown>): FakeResult {
           deadline: p.new_deadline as string,
           target_categories: p.target_categories as DbDoc['target_categories'],
           food_only: p.food_only as boolean,
-          requires_file: p.requires_file as boolean,
+          submit_url: null,
           files_deleted_at: null,
           updated_at: nextAt(),
         };
@@ -447,7 +445,7 @@ function rpc(name: string, a: Record<string, unknown>): FakeResult {
   }
 }
 
-const DOC_COLUMNS = ['id', 'title', 'description', 'deadline', 'target_categories', 'food_only', 'requires_file', 'files_deleted_at', 'updated_at'] as const;
+const DOC_COLUMNS = ['id', 'title', 'description', 'deadline', 'target_categories', 'food_only', 'submit_url', 'files_deleted_at', 'updated_at'] as const;
 const docOut = (d: DbDoc) => Object.fromEntries(DOC_COLUMNS.map((k) => [k, d[k]]));
 const titleTaken = (): FakeResult => ({
   error: { code: '23505', message: 'duplicate key value violates unique constraint "documents_year_id_title_key"', details: null, hint: null },
@@ -652,12 +650,6 @@ async function openSheet(d: string, g: string) {
   return user;
 }
 
-const PDF_HEAD = [0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37];
-const pdf = (size = 4000) => {
-  const bytes = new Uint8Array(size);
-  bytes.set(PDF_HEAD);
-  return new File([bytes], 'scan.pdf', { type: 'application/pdf' });
-};
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -887,6 +879,13 @@ describe('T19 提出状況：セルのシート', () => {
     expect(within(sheet()).getByTestId('documents-sheet-withdraw')).toBeTruthy();
     expect(within(sheet()).queryByTestId('documents-sheet-paper')).toBeNull();
     expect(within(sheet()).queryByTestId('documents-sheet-submit')).toBeNull();
+    // 提出先（T24）：新しいタブ・noopener noreferrer。ファイルを上げる欄は出さない
+    const link = within(sheet()).getByTestId('documents-sheet-submit-url') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://drive.google.com/drive/folders/plan');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(within(sheet()).queryByTestId('documents-sheet-file-add')).toBeNull();
+    expect(within(sheet()).queryByTestId('documents-sheet-file-input')).toBeNull();
     // 閉じる（×）
     await user.click(within(sheet()).getByRole('button', { name: '閉じる' }));
     expect(h.replace).toHaveBeenLastCalledWith('/documents');
@@ -902,6 +901,10 @@ describe('T19 提出状況：セルのシート', () => {
     // 承認には「承認を取り消して差し戻す」だけ（ファイルを足す・外すは出さない）
     expect(within(sheet()).getByTestId('documents-sheet-return').textContent).toBe('承認を取り消して差し戻す');
     expect(within(sheet()).queryByTestId('documents-sheet-file-add')).toBeNull();
+    // 提出先の URL がない（T24）：部門長以上には設定で入れられることを添える。ファイルがなければファイルの欄は出さない
+    expect(within(sheet()).queryByTestId('documents-sheet-submit-url')).toBeNull();
+    expect(within(sheet()).getByTestId('documents-sheet-no-submit-url').textContent).toBe('提出先の URL はまだありません（「提出物の設定」で入れられます）');
+    expect(within(sheet()).queryByTestId('documents-sheet-files')).toBeNull();
   });
 
   it('承認する：メモ（任意。字数と注意）→ approve_document（開いたときの版）→「承認しました」。シートは開いたまま読み直す', async () => {
@@ -1028,11 +1031,11 @@ describe('T19 提出状況：セルのシート', () => {
     expect(within(screen.getByRole('alertdialog')).getByTestId('documents-proxy-confirm').textContent).toBe('');
   });
 
-  it('代わりに提出する：ファイルが要る提出物でファイルがなければ押せず、理由を出す。応答が届かなければ「代わりに提出する」の名前で知らせる', async () => {
+  it('代わりに提出する：ファイルがなくても押せる（T24。ファイルは提出先に出す）。応答が届かなければ「代わりに提出する」の名前で知らせる', async () => {
     renderScreen();
     await openSheet(D_PLAN, G5.id);
-    expect((within(sheet()).getByTestId('documents-sheet-submit') as HTMLButtonElement).disabled).toBe(true);
-    expect(sheet().textContent).toContain('ファイルを1つ以上足してください');
+    expect((within(sheet()).getByTestId('documents-sheet-submit') as HTMLButtonElement).disabled).toBe(false);
+    expect(sheet().textContent).not.toContain('ファイルを1つ以上足してください');
     cleanup();
     renderScreen();
     const user2 = await openSheet(D_NOTE, G2.id);
@@ -1055,16 +1058,12 @@ describe('T19 提出状況：セルのシート', () => {
     await waitFor(() => expect(within(sheet()).getByTestId('documents-sheet-status').getAttribute('data-status')).toBe('not_submitted'));
   });
 
-  it('代理のファイル：PDF を足す（予約 → 上げる → 読み直す）。届いたファイルを外すときは確かめる。開く・保存', async () => {
+  it('T24 の前のファイル：ファイルを上げる欄は出さず、届いたファイルは開く・保存・確かめてから外す（代理）', async () => {
     renderScreen();
     const user = await openSheet(D_PLAN, G3.id);
-    const input = within(sheet()).getByTestId('documents-sheet-file-input') as HTMLInputElement;
-    fireEvent.change(input, { target: { files: [pdf()] } });
-    await waitFor(() => expect(within(sheet()).getAllByTestId('documents-sheet-file')).toHaveLength(2));
-    await waitFor(() => expect(within(sheet()).getAllByTestId('documents-sheet-file').every((f) => f.getAttribute('data-state') === 'uploaded')).toBe(true));
-    expect(rpcArgs(rpcCalls('reserve_document_file')[0]!)).toMatchObject({ p_document_id: D_PLAN, p_group_id: G3.id, p_content_type: 'application/pdf', p_size: 4000 });
-    expect(storageCalls.filter((c) => c.op === 'upload')).toHaveLength(1);
-    expect(toast.success).toHaveBeenCalledWith('ファイル 1 つをアップロードしました');
+    expect(within(sheet()).queryByTestId('documents-sheet-file-input')).toBeNull();
+    await waitFor(() => expect(within(sheet()).getAllByTestId('documents-sheet-file')).toHaveLength(1));
+    expect(rpcCalls('reserve_document_file')).toHaveLength(0);
     // 開く（先にタブ）・保存（名前）
     const tab = { opener: {}, location: { href: '' }, close: vi.fn() };
     vi.spyOn(fileWindow, 'openBlank').mockReturnValue(tab as unknown as Window);
@@ -1081,45 +1080,7 @@ describe('T19 提出状況：セルのシート', () => {
     await user.click(within(confirm).getByRole('button', { name: '外す' }));
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('ファイル 1 を外しました'));
     expect(rpcCalls('discard_document_file')).toHaveLength(1);
-    await waitFor(() => expect(within(sheet()).getAllByTestId('documents-sheet-file')).toHaveLength(1));
-  });
-
-  it('上げている間は「保存」を押せず理由を出す（開くは押せる）。進み具合はいつも置いた1つの role="status" の中身だけを変え、終わったら知らせる（レビューの F2・UX-2）', async () => {
-    const gate: { release: (() => void) | null } = { release: null };
-    storageOverride = (c) =>
-      c.op === 'upload'
-        ? new Promise((resolve) => {
-            gate.release = () => {
-              const [path, blob] = c.args as [string, Blob];
-              db.objects.set(path, blob.size);
-              resolve({ data: { path }, error: null });
-            };
-          })
-        : undefined;
-    renderScreen();
-    await openSheet(D_PLAN, G3.id);
-    const region = within(sheet()).getByRole('status');
-    expect(region.textContent).toBe('');
-    const assign = vi.spyOn(fileWindow, 'assign').mockImplementation(() => {});
-    fireEvent.change(within(sheet()).getByTestId('documents-sheet-file-input'), { target: { files: [pdf()] } });
-    await waitFor(() => expect(within(sheet()).getByRole('status').textContent).toContain('アップロード中…（1/1）'));
-    expect(within(sheet()).getByRole('status')).toBe(region);
-    // 届いていた1つ目のファイルの「保存」は押せない（理由を出す）。「開く」は押せる
-    const first = within(sheet()).getAllByTestId('documents-sheet-file')[0]!;
-    const save = within(first).getByTestId('documents-sheet-file-save') as HTMLButtonElement;
-    expect(save.disabled).toBe(true);
-    expect(within(sheet()).getByText(SAVE_BLOCKED_TEXT)).toBeTruthy();
-    expect((within(first).getByTestId('documents-sheet-file-open') as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(save);
-    expect(assign).not.toHaveBeenCalled();
-    await waitFor(() => expect(gate.release).not.toBeNull());
-    await act(async () => gate.release!());
-    await waitFor(() => expect(within(sheet()).queryByTestId('documents-sheet-uploading')).toBeNull());
-    expect(within(sheet()).getByRole('status')).toBe(region);
-    expect(region.textContent).toBe('');
-    expect(toast.success).toHaveBeenCalledWith('ファイル 1 つをアップロードしました');
-    expect(within(sheet()).queryByText(SAVE_BLOCKED_TEXT)).toBeNull();
-    expect((within(within(sheet()).getAllByTestId('documents-sheet-file')[0]!).getByTestId('documents-sheet-file-save') as HTMLButtonElement).disabled).toBe(false);
+    await waitFor(() => expect(within(sheet()).queryAllByTestId('documents-sheet-file')).toHaveLength(0));
   });
 
   it('開く・保存が 403（立場が変わった）→「ファイルを開けませんでした。立場が変わった可能性があります」（アップロードとは言わない。レビューの UX-4）', async () => {
@@ -1147,63 +1108,6 @@ describe('T19 提出状況：セルのシート', () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('承認しました'));
     await waitFor(() => expect(within(sheet()).queryByTestId('documents-sheet-approve')).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(within(sheet()).getByTestId('documents-sheet-title')));
-  });
-
-  it('上げている間はシートを閉じない（×を出さない）。進み具合はそのセルだけに出る', async () => {
-    const gate: { release: (() => void) | null } = { release: null };
-    storageOverride = (c) =>
-      c.op === 'upload'
-        ? new Promise((resolve) => {
-            gate.release = () => {
-              const [path, blob] = c.args as [string, Blob];
-              db.objects.set(path, blob.size);
-              resolve({ data: { path }, error: null });
-            };
-          })
-        : undefined;
-    renderScreen();
-    await openSheet(D_PLAN, G3.id);
-    fireEvent.change(within(sheet()).getByTestId('documents-sheet-file-input'), { target: { files: [pdf()] } });
-    await waitFor(() => expect(within(sheet()).getByTestId('documents-sheet-uploading')).toBeTruthy());
-    expect(within(sheet()).queryByRole('button', { name: '閉じる' })).toBeNull();
-    fireEvent.keyDown(sheet(), { key: 'Escape' });
-    expect(screen.getByTestId('documents-sheet')).toBeTruthy();
-    await waitFor(() => expect(gate.release).not.toBeNull());
-    await act(async () => gate.release!());
-    await waitFor(() => expect(within(sheet()).queryByTestId('documents-sheet-uploading')).toBeNull());
-    expect(within(sheet()).getByRole('button', { name: '閉じる' })).toBeTruthy();
-  });
-
-  it('代理で上げている間に離れるときは「アップロード中です。離れると、残りのファイルは送られません」で確かめる（下書きの文は出さない）', async () => {
-    const gate: { release: (() => void) | null } = { release: null };
-    storageOverride = (c) =>
-      c.op === 'upload'
-        ? new Promise((resolve) => {
-            gate.release = () => {
-              const [path, blob] = c.args as [string, Blob];
-              db.objects.set(path, blob.size);
-              resolve({ data: { path }, error: null });
-            };
-          })
-        : undefined;
-    renderScreen();
-    await openSheet(D_PLAN, G3.id);
-    fireEvent.change(within(sheet()).getByTestId('documents-sheet-file-input'), { target: { files: [pdf()] } });
-    await waitFor(() => expect(within(sheet()).getByTestId('documents-sheet-uploading')).toBeTruthy());
-    // アプリの中で移る前（シートの外のリンク。押せない覆いの下なので、クリックの出来事だけを送る）
-    fireEvent.click(screen.getByTestId('probe-nav'));
-    const leave = await screen.findByRole('alertdialog');
-    expect(within(leave).getByRole('heading').textContent).toBe('アップロード中です');
-    expect(leave.textContent).toContain('離れると、残りのファイルは送られません。');
-    expect(leave.textContent).not.toContain('下書き');
-    expect(leave.textContent).not.toContain(LEAVE_MESSAGES.navigate.title);
-    expect(within(leave).getByRole('button', { name: '移る' })).toBeTruthy();
-    fireEvent.click(within(leave).getByRole('button', { name: 'やめる（アップロードを続ける）' }));
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
-    expect(h.push).not.toHaveBeenCalled();
-    await waitFor(() => expect(gate.release).not.toBeNull());
-    await act(async () => gate.release!());
-    await waitFor(() => expect(within(sheet()).queryByTestId('documents-sheet-uploading')).toBeNull());
   });
 
   it('下書き：理由を入れたまま離れようとすると確かめ、開き直すと「戻す」で戻せる。成功したら消す', async () => {
@@ -1248,16 +1152,19 @@ async function fillNew(user: ReturnType<typeof setUser>, title: string) {
 }
 
 describe('T19 提出状況：提出物の設定', () => {
-  it('一覧：締切の順に題名・締切・対象（飲食の団体だけ）・ファイル・承認の数と、編集・削除。登録と前年度から写す', async () => {
+  it('一覧：締切の順に題名・締切・対象（飲食の団体だけ）・提出先（T24）・承認の数と、編集・削除。登録と前年度から写す', async () => {
     await openSettings();
     const rows = screen.getAllByTestId('documents-settings-row');
     expect(rows.map((r) => r.getAttribute('data-document-id'))).toEqual([D_PLAN, D_FOOD, D_NOTE]);
     expect(rows[0]!.textContent).toContain('10/5（月）17:00');
     expect(rows[0]!.textContent).toContain('模擬店・部門');
-    expect(rows[0]!.textContent).toContain('要る');
+    const link = within(rows[0]!).getByTestId('documents-settings-submit-url') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://drive.google.com/drive/folders/plan');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
     expect(rows[0]!.textContent).toContain('承認 1／4');
     expect(rows[1]!.textContent).toContain('模擬店（飲食の団体だけ）');
-    expect(rows[2]!.textContent).toContain('要らない');
+    expect(within(rows[2]!).queryByTestId('documents-settings-submit-url')).toBeNull();
+    expect(rows[2]!.textContent).toContain('—');
     expect(screen.getAllByTestId('documents-settings-edit')).toHaveLength(3);
     expect(screen.getAllByTestId('documents-settings-delete')).toHaveLength(3);
     expect(screen.getByTestId('documents-settings-add')).toBeTruthy();
@@ -1276,7 +1183,8 @@ describe('T19 提出状況：提出物の設定', () => {
     await user.click(screen.getByTestId('documents-settings-add'));
     const dialog = screen.getByTestId('doc-dialog');
     expect((within(dialog).getByTestId('doc-deadline-time') as HTMLInputElement).value).toBe('17:00');
-    expect(within(dialog).getByTestId('doc-requires-file').getAttribute('data-state')).toBe('checked');
+    expect(within(dialog).queryByTestId('doc-requires-file')).toBeNull();
+    expect((within(dialog).getByTestId('doc-submit-url') as HTMLInputElement).value).toBe('');
     await user.click(within(dialog).getByTestId('doc-submit'));
     expect(dialog.textContent).toContain(DOCUMENT_FORM_MESSAGES.titleRequired);
     expect(dialog.textContent).toContain(DOCUMENT_FORM_MESSAGES.dateRequired);
@@ -1285,6 +1193,14 @@ describe('T19 提出状況：提出物の設定', () => {
     expect(within(dialog).getByTestId('doc-target-count').textContent).toBe('対象の団体：3 団体');
     await user.click(within(dialog).getByTestId('doc-food-only'));
     expect(within(dialog).getByTestId('doc-target-count').textContent).toBe('対象の団体：1 団体');
+    // 提出先の URL（T24）：https でなければ欄の誤りで送らない。直すと送る
+    await user.type(within(dialog).getByTestId('doc-submit-url'), 'http://forms.gle/fire');
+    await user.click(within(dialog).getByTestId('doc-submit'));
+    expect(dialog.textContent).toContain(DOCUMENT_FORM_MESSAGES.submitUrlInvalid);
+    expect(issued.some((c) => c.table === 'documents' && opOf(c, 'insert'))).toBe(false);
+    await user.clear(within(dialog).getByTestId('doc-submit-url'));
+    await user.type(within(dialog).getByTestId('doc-submit-url'), ' https://forms.gle/fire ');
+    expect(within(dialog).getByTestId('doc-submit-url-count').textContent).toBe('22/500');
     await user.click(within(dialog).getByTestId('doc-submit'));
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('「火気の使用届」を登録しました'));
     const insert = issued.find((c) => c.table === 'documents' && opOf(c, 'insert'))!;
@@ -1295,8 +1211,9 @@ describe('T19 提出状況：提出物の設定', () => {
       deadline: '2026-10-09T17:00:00+09:00',
       target_categories: ['stall'],
       food_only: true,
-      requires_file: true,
+      submit_url: 'https://forms.gle/fire',
     });
+    expect(opOf(insert, 'insert')!.args[0]).not.toHaveProperty('requires_file');
     expect((opOf(insert, 'insert')!.args[0] as { id: string }).id).toMatch(/^[0-9a-f-]{36}$/);
     await waitFor(() => expect(screen.getAllByTestId('documents-settings-row')).toHaveLength(4));
   });
@@ -1474,6 +1391,12 @@ describe('T19 提出状況：前年度から写すの応答が届かなかった
 // ---------------------------------------------------------------- 終了した年度
 
 describe('T19 提出状況：終了した年度', () => {
+  it('T24 提出先の URL がないとき、終了した年度では「（「提出物の設定」で入れられます）」を添えない（設定は読むだけ）', async () => {
+    renderScreen({ role: 'head', status: 'closed', search: `document=${D_NOTE}&group=${G4.id}` });
+    await waitFor(() => expect(sheet()).toBeTruthy());
+    expect(within(sheet()).getByTestId('documents-sheet-no-submit-url').textContent).toBe('提出先の URL はまだありません');
+  });
+
   it('帯を出し、書くためのもの（設定の登録・編集・削除・写す、シートの操作・ファイルの追加と外す）を出さない。開く・保存・CSV はできる', async () => {
     renderScreen({ role: 'head', status: 'closed', search: `document=${D_PLAN}&group=${G2.id}` });
     await waitFor(() => expect(sheet()).toBeTruthy());

@@ -37,10 +37,12 @@ import {
 import { classifyError, effectOf, messageFor } from '@/lib/errors';
 import type { BoardCell } from '@/lib/modules/documents/board';
 import { downloadNameFor, numberFiles, submitBlocker } from '@/lib/modules/documents/files';
+import { submitUrlHref } from '@/lib/modules/documents/submit-url';
 import { DOCUMENT_MARK_LABELS, SOUMU_STATUS_LABELS } from '@/lib/modules/documents/labels';
 import { leadDocumentActions, RETURN_KIND_LABELS, type LeadDocumentActions } from '@/lib/modules/documents/permissions';
 import { cn } from '@/lib/utils';
-import { DocumentFileAdder, DocumentFileList, fileEntriesOf, REMOVE_CONFIRM_TEXT, SHEET_ADDER_TESTIDS, SHEET_FILE_TESTIDS, type FileEntry } from './document-file-list';
+import { DocumentFileList, fileEntriesOf, REMOVE_CONFIRM_TEXT, SHEET_FILE_TESTIDS, type FileEntry } from './document-file-list';
+import { SubmitLink } from './submit-link';
 import { cellMarkLabels, columnDeadlineText, COLUMN_OVERDUE_TEXT } from './documents-board';
 import { openDocumentFile, POPUP_BLOCKED_MESSAGE, saveDocumentFile, type FileOpenResult } from './file-open';
 import { focusAfterDialogs } from './focus-after-dialog';
@@ -60,6 +62,10 @@ import { DISCARD_UNKNOWN_MESSAGE, uploadSlot, type DocumentFileTarget, type Docu
 
 /** 総務部門員のシートのファイルの欄の代わり（Q4） */
 export const STAFF_FILES_NOTE = 'ファイルを開けるのは部門長以上です';
+/** 提出先の URL がないときの文（T24。D-62） */
+export const NO_SUBMIT_URL_SHEET_TEXT = '提出先の URL はまだありません';
+/** 部門長以上に添える文（「提出物の設定」で入れられる） */
+export const NO_SUBMIT_URL_LEAD_HINT = '（「提出物の設定」で入れられます）';
 /** した人を読めない・記録がない */
 export const UNKNOWN_ACTOR = '名前を表示できません';
 /** 提出がまだない（未提出で、経過がない） */
@@ -199,7 +205,7 @@ function SheetBody({
   const entries = fileEntriesOf(numbered, localOnly, uploader.uploading, uploader.failed, uploader.sent);
   const uploadBusy = uploader.busy(slot);
   const busy = pending || uploadBusy || rereading;
-  const blocker = submitBlocker(doc.requires_file, [...numbered.map((f) => f.file), ...localOnly.map(() => ({ uploaded: false }))], uploadBusy);
+  const blocker = submitBlocker([...numbered.map((f) => f.file), ...localOnly.map(() => ({ uploaded: false }))], uploadBusy);
 
   /** 読み直して、このセルの提出の行を返す（読めなければ投げる。対象でない・消えたなら null） */
   const rereadRow = async (): Promise<BoardStatusRow | null> => {
@@ -492,33 +498,42 @@ function SheetBody({
             </div>
           ) : null}
 
+          {/* 提出先（T24。D-62）：ドライブ・フォームを新しいタブで開く。中を見られるかはドライブの共有の設定で決まる */}
+          <div className="text-sm">
+            {submitUrlHref(doc.submit_url) ? (
+              <SubmitLink url={doc.submit_url} testId="documents-sheet-submit-url" />
+            ) : (
+              <p data-testid="documents-sheet-no-submit-url" className="text-muted-foreground">
+                {NO_SUBMIT_URL_SHEET_TEXT}
+                {writable && userId ? NO_SUBMIT_URL_LEAD_HINT : ''}
+              </p>
+            )}
+          </div>
+
           {showFiles ? (
-            <section data-testid="documents-sheet-files" aria-label="ファイル" className="space-y-2">
-              <h3 className="text-sm font-medium">ファイル</h3>
-              {entries.length === 0 ? <p className="text-sm text-muted-foreground">ファイルはありません</p> : null}
-              <DocumentFileList
-                entries={entries}
-                testIds={SHEET_FILE_TESTIDS}
-                canRemoveUploaded={actions.removeFile}
-                canRemovePending={actions.removePending}
-                canRetry={actions.addFile}
-                disabled={busy}
-                saveBlocked={uploader.active}
-                onOpen={(e) => void onOpenFile(e)}
-                onSave={(e) => void onSaveFile(e)}
-                onRemove={(e) => void onRemoveFile(e)}
-                onRetry={(e) => void uploader.retry(e.id)}
-              />
-              <DocumentFileAdder
-                testIds={SHEET_ADDER_TESTIDS}
-                canAdd={actions.addFile}
-                count={numbered.length + localOnly.length}
-                disabled={busy}
-                progress={uploader.progress(slot)}
-                error={uploader.error(slot)}
-                onFiles={(picked) => void uploader.add(target, picked, numbered.length + localOnly.length)}
-              />
-            </section>
+            entries.length > 0 || uploader.error(slot) ? (
+              <section data-testid="documents-sheet-files" aria-label="ファイル" className="space-y-2">
+                <h3 className="text-sm font-medium">ファイル</h3>
+                <DocumentFileList
+                  entries={entries}
+                  testIds={SHEET_FILE_TESTIDS}
+                  canRemoveUploaded={actions.removeFile}
+                  canRemovePending={actions.removePending}
+                  canRetry={false}
+                  disabled={busy}
+                  saveBlocked={uploader.active}
+                  onOpen={(e) => void onOpenFile(e)}
+                  onSave={(e) => void onSaveFile(e)}
+                  onRemove={(e) => void onRemoveFile(e)}
+                  onRetry={() => undefined}
+                />
+                {uploader.error(slot) ? (
+                  <p role="alert" data-testid="documents-sheet-file-error" className="text-sm text-destructive">
+                    {uploader.error(slot)}
+                  </p>
+                ) : null}
+              </section>
+            ) : null
           ) : (
             <p data-testid="documents-sheet-staff-note" className="rounded-md bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
               {STAFF_FILES_NOTE}

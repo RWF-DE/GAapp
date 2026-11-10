@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { expect, test, type Browser, type Page } from '@playwright/test';
+import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import { navLabels } from './helpers';
 import { storageStateFor, type StoredUser } from './support/auth';
 import { addDays, tokyoToday, weekdayOf } from './support/calendar';
@@ -19,7 +19,7 @@ import {
   fileTimeLabel,
   filesOf,
   insertDocuments,
-  makeJpeg,
+  legacyReserve,
   makePdf,
   objectExists,
   objectsOfYears,
@@ -35,6 +35,7 @@ import {
   submitAs,
   tokyoDeadline,
   uploadFileAs,
+  withdrawAs,
 } from './support/documents';
 import { openPortal } from './support/notices';
 import { loginWith } from './support/roles';
@@ -45,9 +46,12 @@ import { pinYear } from './support/year';
 // T19 提出物（/document〔店長・副店長。スマホ〕・/documents〔総務。PC〕とダッシュボード。04「提出物」「自団体の提出物」「提出状況」
 // 「ダッシュボードに出すもの（提出物）」、D-55、notes/T19.md の計画の 8 の E2E と「パート B・C の約束」15）。シナリオの年度（small。
 // 1日目は 2001 年）で閉じる（年度をまたぐ表には書かない）。提出物は画面から登録するほか、e2e/support/documents.ts で SQL から入れる。
-// ファイル（PDF・JPEG）はテストの中で作る（個人名なし）。Storage の物は Storage API で消す（cleanupDocumentsScenario。SQL では消さない）。
+// T24（D-62）から、ファイルは提出先（ドライブ・フォーム）に出し、アプリは「提出先を開く」（新しいタブ）と「提出した」だけ。新しいファイルの
+// 予約は止めた（uploads_disabled）ので、T24 の前のファイル（開く・保存・外す・Storage の守り）は uploadFileAs・legacyReserve が SQL で
+// T24 の前の予約を作って上げる。提出先（drive.google.com）はテストの中で小さなページを返す（外に出ない）。
+// ファイル（PDF）はテストの中で作る（個人名なし）。Storage の物は Storage API で消す（cleanupDocumentsScenario。SQL では消さない）。
 // 団体は A＝E2E模擬店1（seed の店長〔rep〕が代表する団体）・B＝E2E部門1。シナリオの年度は seed の利用者の最新の年度（R8）より前なので、
-// 店長の書き込みの前に「最新でない年度」の確かめが出る（D-31。動詞は、ファイルを足す・外すは「変更」、「提出した」は「提出」）。
+// 店長の書き込みの前に「最新でない年度」の確かめが出る（D-31。動詞は、ファイルを外すは「変更」、「提出した」は「提出」）。
 // 期待値の文言は 04 のとおりに書く（アプリの定数から引かない）。前年度から写すと、終了した年度のファイルの削除は
 // e2e/serial/t19-documents.spec.ts。
 
@@ -77,28 +81,43 @@ function shortDay(date: string): string {
   return Number(date.slice(0, 4)) === Number(tokyoToday().slice(0, 4)) ? md : `${Number(date.slice(0, 4))}/${md}`;
 }
 
-/** JPEG の幅と高さ（SOF0〜SOF2 の印から読む。読めなければ null） */
-function jpegSize(buf: Buffer): { width: number; height: number } | null {
-  let i = 2;
-  while (i + 9 < buf.length) {
-    if (buf[i] !== 0xff) return null;
-    const marker = buf[i + 1]!;
-    const len = buf.readUInt16BE(i + 2);
-    if (marker >= 0xc0 && marker <= 0xc2) return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
-    i += 2 + len;
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------- 通しの流れ
 
-test('T19 通しの流れ：部門長が提出物を登録し、店長（スマホ）が PDF を上げて「提出した」。部門長が開く（新しいタブ）・保存（名前と中身）・差し戻すと、店長のホームの要対応に理由の2行目。店長が外して PDF と写真（縮める）を足して出し直し、部門長が承認する。ダッシュボードの要対応・締切と予定・カードと CSV', async ({
+/** 提出先（ドライブ）の代わりに返す小さなページ（テストは外に出ない。開いた先から window.opener と Referer が見えないかを確かめる） */
+const DRIVE_URL = 'https://drive.google.com/drive/folders/e2e-t24-plan';
+async function fakeDrive(page: Page): Promise<void> {
+  await page.context().route('https://drive.google.com/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: '<!doctype html><title>E2E 提出先</title><p>E2E 提出先</p>' }),
+  );
+}
+
+/** 「提出先を開く」のリンク：href・新しいタブ・rel。押すと新しいタブで開き、開いた先からこのページ（window.opener）と Referer が見えない */
+async function expectSubmitLink(page: Page, link: Locator, url: string): Promise<void> {
+  await expect(link).toHaveText('提出先を開く（新しいタブ）');
+  await expect(link).toHaveAttribute('href', url);
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(link).toHaveAttribute('rel', /(^|\s)noopener(\s|$)/);
+  await expect(link).toHaveAttribute('rel', /(^|\s)noreferrer(\s|$)/);
+  const before = page.url();
+  const popupPromise = page.waitForEvent('popup');
+  await link.click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState();
+  expect(popup.url()).toBe(url);
+  expect(await popup.evaluate('[window.opener === null, document.referrer]')).toEqual([true, '']);
+  await popup.close();
+  expect(page.url()).toBe(before);
+}
+
+test('T19 T24 通しの流れ：部門長が提出先の URL（https だけ）を入れて提出物を登録し、店長（スマホ）は「提出先を開く」（新しいタブ・noopener noreferrer）で出してから、ファイルなしで「提出した」。部門長はシートの提出先を開いて差し戻すと、店長のホームの要対応に理由の2行目。店長が出し直し、部門長が承認する。ファイルを上げる欄はどこにも出ない。ダッシュボードの要対応・締切と予定・カードと CSV', async ({
   browser,
 }) => {
   test.setTimeout(300_000);
   const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { head: true }, repGroup: A });
   const head = await openAs(browser, 'head', s);
   const rep = await openAs(browser, 'rep', s, MOBILE);
+  await fakeDrive(head);
+  await fakeDrive(rep);
   try {
     const ga = s.ids.groups[A]!;
     const gb = s.ids.groups[B]!;
@@ -108,7 +127,7 @@ test('T19 通しの流れ：部門長が提出物を登録し、店長（スマ�
     const deadlineIso = `${deadlineDate}T17:00:00+09:00`;
     const deadlineShort = await shortTimeOf(deadlineIso);
 
-    // 1. 部門長が提出物を登録する（提出物の設定のタブ。対象は模擬店と部門。ファイルが要る〔既定〕）
+    // 1. 部門長が提出物を登録する（提出物の設定のタブ。対象は模擬店と部門。提出先の URL。「ファイルが要る」は出ない〔T24〕）
     await openDocuments(head, '?tab=settings');
     await expect(head.getByTestId('documents-settings-empty')).toContainText('提出物はまだありません');
     await head.getByTestId('documents-settings-add').click();
@@ -121,30 +140,57 @@ test('T19 通しの流れ：部門長が提出物を登録し、店長（スマ�
     await form.locator('[data-testid="doc-category"][data-category="stall"]').click();
     await form.locator('[data-testid="doc-category"][data-category="department"]').click();
     await expect(form.getByTestId('doc-food-only')).not.toBeChecked();
-    await expect(form.getByTestId('doc-requires-file')).toBeChecked();
+    await expect(form.getByTestId('doc-requires-file')).toHaveCount(0);
+    await expect(form.getByText('提出先の URL（任意）')).toBeVisible();
+    await expect(form).toContainText(
+      '共有ドライブのフォルダや Google フォームの URL（https:// で始まるもの）。出せる人・見られる人は、ドライブやフォームの共有の設定で決めてください',
+    );
+    await expect(form.getByTestId('doc-submit-url-count')).toHaveText('0/500');
+    // https でない URL は送らずに誤りを出す（javascript: などをリンクにさせない）
+    await form.getByTestId('doc-submit-url').fill('http://drive.google.com/drive/folders/e2e');
+    await form.getByTestId('doc-submit').click();
+    await expect(form.locator('[data-field-error="submitUrl"]')).toHaveText('提出先の URL は https:// で始まる形で入れてください（空白は入れられません）');
+    await expect(form).toBeVisible();
+    expect(await sql('select id from public.documents where year_id = $1', [s.yearId])).toEqual([]);
+    // 前後の空白は数えず、送らない（type="url" の欄は値の前後の空白を除く）
+    await form.getByTestId('doc-submit-url').fill(`  ${DRIVE_URL}  `);
+    await expect(form.getByTestId('doc-submit-url-count')).toHaveText(`${DRIVE_URL.length}/500`);
     await expect(form.getByTestId('doc-target-count')).toHaveText('対象の団体：2 団体');
     await form.getByTestId('doc-submit').click();
     await expect(head.getByText(`「${title}」を登録しました`)).toBeVisible();
     await expect(form).toHaveCount(0);
-    const [doc] = await sql<{ id: string; deadline: string; target_categories: string; requires_file: boolean; created_by: string }>(
-      `select id, to_char(deadline at time zone 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI') as deadline, target_categories::text, requires_file, created_by
+    const [doc] = await sql<{ id: string; deadline: string; target_categories: string; requires_file: boolean; submit_url: string | null; created_by: string }>(
+      `select id, to_char(deadline at time zone 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI') as deadline, target_categories::text, requires_file, submit_url, created_by
          from public.documents where year_id = $1`,
       [s.yearId],
     );
-    expect(doc).toEqual({ id: expect.any(String), deadline: `${deadlineDate} 17:00`, target_categories: '{stall,department}', requires_file: true, created_by: H });
+    // 前後の空白は除いて送る。requires_file はいつも false（0023 のトリガー）
+    expect(doc).toEqual({
+      id: expect.any(String),
+      deadline: `${deadlineDate} 17:00`,
+      target_categories: '{stall,department}',
+      requires_file: false,
+      submit_url: DRIVE_URL,
+      created_by: H,
+    });
     const docId = doc!.id;
     const row = head.locator(`[data-testid="documents-settings-row"][data-document-id="${docId}"]`);
     await expect(row).toContainText(title);
     await expect(row).toContainText(`${shortDay(deadlineDate)}17:00`);
     await expect(row).toContainText('模擬店・部門');
-    await expect(row).toContainText('要る');
     await expect(row).toContainText('承認 0／2');
+    await expectSubmitLink(head, row.getByTestId('documents-settings-submit-url'), DRIVE_URL);
 
-    // 2. 店長（390px）：自団体の提出物。読むのは提出の状況とファイルの2本（版は読まない）
+    // 2. 店長（390px）：自団体の提出物。読むのは提出の状況とファイルの2本（版は読まない）。提出先を開くリンクがあり、ファイルを上げる欄はない
     const reads: string[] = [];
     rep.on('request', (r) => {
       const m = /\/rest\/v1\/(.+)$/.exec(new URL(r.url()).pathname);
       if (m && r.method() !== 'OPTIONS') reads.push(`${r.method()} ${m[1]}${new URL(r.url()).searchParams.get('select') === 'allocation_version' ? '?select=allocation_version' : ''}`);
+    });
+    const rpcs: string[] = [];
+    rep.on('request', (r) => {
+      const m = /\/rest\/v1\/rpc\/([a-z_]+)/.exec(r.url());
+      if (m) rpcs.push(m[1]!);
     });
     await openDocument(rep);
     await expect(rep.getByTestId('document-group-name')).toHaveText(A);
@@ -155,53 +201,44 @@ test('T19 通しの流れ：部門長が提出物を登録し、店長（スマ�
     await expect(card.getByTestId('document-card-status')).toHaveText('未提出');
     await expect(card.getByTestId('document-card-deadline')).toHaveText(`締切 ${shortDay(deadlineDate)}17:00あと 7 日`);
     expect(await card.getByTestId('document-card-description').innerText()).toBe(description);
-    await expect(card.getByTestId('document-file-hint')).toHaveText('PDF・JPEG・PNG。1つ 10 MB まで、5 つまで。写真は送る前に縮めます');
-    await expect(card.getByTestId('document-submit')).toBeDisabled();
-    await expect(card.getByTestId('document-submit-hint')).toHaveText('ファイルを1つ以上足してください');
+    await expect(card).toContainText('ドライブやフォームで出してから、「提出した」を押してください（出せる人・見られる人は、提出先の共有の設定で決まります）');
+    for (const id of ['document-file-input', 'document-file-add', 'document-file-hint', 'document-file', 'document-card-no-submit-url', 'document-submit-hint']) {
+      await expect(card.getByTestId(id)).toHaveCount(0);
+    }
+    await expect(card.getByTestId('document-submit')).toBeEnabled();
     expect(reads).toContain('GET v_document_status');
     expect(reads).toContain('GET v_document_files');
     expect(reads.filter((r) => r.endsWith('allocation_version')), '版だけの読み取り').toEqual([]);
+    await expectSubmitLink(rep, card.getByTestId('document-card-submit-url'), DRIVE_URL);
+    await expectNoOverflow(rep);
 
-    // テストの中で作った小さな PDF を上げる（元のファイル名は送らない・残さない。Q16）
-    const pdf1 = makePdf('E2E T19 first');
-    await card.getByTestId('document-file-input').setInputFiles({ name: 'e2e-original-scan.pdf', mimeType: 'application/pdf', buffer: pdf1 });
-    await confirmNotLatest(rep, '変更');
-    await expect(card.getByTestId('document-file')).toHaveCount(1);
-    await expect(card.getByTestId('document-file')).toHaveAttribute('data-state', 'uploaded', { timeout: 20_000 });
-    const [f1] = await filesOf(docId, ga);
-    expect(f1!.object_path).toBe(`${s.yearId}/${ga}/${docId}/${f1!.id}.pdf`);
-    expect([f1!.content_type, f1!.size, f1!.uploaded, f1!.created_by]).toEqual(['application/pdf', pdf1.length, true, SEED_USER_IDS.rep]);
-    expect(f1!.metadata?.mimetype).toBe('application/pdf');
-    expect(JSON.stringify([f1!.metadata, f1!.user_metadata])).not.toContain('e2e-original-scan');
-    await expect(card.getByTestId('document-file-label')).toHaveText(`ファイル 1（PDF・1 KB・${await fileTimeLabel(f1!.id)}）`);
-    await expect(card.getByTestId('document-submit')).toBeEnabled();
-
-    // 「提出した」：最新でない年度の確かめ → 提出の確かめ（ファイルの数）→ 提出済み（取り消しだけ）
+    // 「提出した」：最新でない年度の確かめ → 提出の確かめ（提出先に出してから。ファイルの数の文はない）→ 提出済み（取り消しだけ）
     await card.getByTestId('document-submit').click();
     await confirmNotLatest(rep, '提出');
     const submitDialog = rep.getByRole('alertdialog').filter({ hasText: `「${title}」を提出しますか` });
-    await expect(submitDialog).toContainText('提出すると、総務が確かめるまでファイルを変えられません（確かめる前なら「提出を取り消す」で戻せます）。');
-    await expect(submitDialog.getByTestId('document-submit-confirm')).toHaveText('ファイル 1 つを提出します。');
+    await expect(submitDialog).toContainText('提出先（ドライブやフォーム）に出してから押してください。総務が確かめる前なら「提出を取り消す」で戻せます。');
+    await expect(submitDialog.getByTestId('document-submit-confirm')).toHaveText('');
     await submitDialog.getByRole('button', { name: '提出する' }).click();
     await expect(rep.getByText(`「${title}」を提出しました`)).toBeVisible();
     await expect(card).toHaveAttribute('data-status', 'submitted');
     await expect(card.getByTestId('document-card-status')).toHaveText('提出済み（総務の確認待ち）');
     const sub1 = await submissionOf(docId, ga);
     expect([sub1?.status, sub1?.proxy, sub1?.submitted_by]).toEqual(['submitted', false, SEED_USER_IDS.rep]);
+    expect(await filesOf(docId, ga)).toEqual([]);
     await expect(card.getByTestId('document-submitted-at')).toHaveText(`提出しました（${await shortTimeOf(sub1!.submitted_at!)}）`);
     await expect(card.getByTestId('document-withdraw')).toBeVisible();
     await expect(card.getByTestId('document-submit')).toHaveCount(0);
-    await expect(card.getByTestId('document-file-add')).toHaveCount(0);
-    await expect(card.getByTestId('document-file-remove')).toHaveCount(0);
+    // 提出済みでも提出先は開ける（出した物を確かめる）。「出してから押して」の文は出さない
+    await expect(card.getByTestId('document-card-submit-url')).toBeVisible();
+    await expect(card).not.toContainText('ドライブやフォームで出してから');
     await expectNoOverflow(rep);
 
-    // 3. 部門長：提出状況の表（承認待ち・ファイル 1）→ セルのシートで開く（新しいタブ）・保存（名前と中身）
+    // 3. 部門長：提出状況の表（承認待ち。ファイルの数は出ない）→ セルのシートで提出先を開く（ファイルの欄は出ない）
     await openDocuments(head);
     const cellA = documentsCell(head, docId, ga);
     await expect(cellA).toHaveAttribute('data-status', 'submitted');
-    await expect(cellA.getByTestId('documents-cell-files')).toHaveText('ファイル 1');
-    // 読み上げの名前は、見えている印とファイルの数も含む（レビューの UX-3）
-    await expect(cellA).toHaveAccessibleName(`${A}・${title}：承認待ち、ファイル 1`);
+    await expect(cellA.getByTestId('documents-cell-files')).toHaveCount(0);
+    await expect(cellA).toHaveAccessibleName(`${A}・${title}：承認待ち`);
     await expect(documentsCell(head, docId, gb)).toHaveAttribute('data-status', 'not_submitted');
     await expect(head.locator('[data-testid="documents-filter-item"][data-status="submitted"]')).toHaveAttribute('data-count', '1');
     await expect(head.locator('[data-testid="documents-col"]')).toContainText(['承認 0／2']);
@@ -213,33 +250,11 @@ test('T19 通しの流れ：部門長が提出物を登録し、店長（スマ�
     await expect(sheet.getByTestId('documents-sheet-status')).toHaveAttribute('data-status', 'submitted');
     await expect(sheet.getByTestId('documents-sheet-history')).toContainText(`提出 `);
     await expect(sheet.getByTestId('documents-sheet-history')).toContainText('（テスト団体代表）');
-    const sheetFile = sheet.getByTestId('documents-sheet-file');
-    await expect(sheetFile).toHaveCount(1);
-    await expect(sheetFile).toHaveAttribute('data-state', 'uploaded');
-
-    // 開く：押したときに先に空のタブを開き、60 秒の署名つき URL を入れる（その URL で同じ中身が読める）
-    const signedNav = head.context().waitForEvent('request', (r) => r.method() === 'GET' && r.url().includes('/storage/v1/object/sign/documents/') && r.url().includes('token='));
-    const popupPromise = head.waitForEvent('popup');
-    await sheetFile.getByTestId('documents-sheet-file-open').click();
-    const popup = await popupPromise;
-    const signed = await signedNav;
-    expect(decodeURIComponent(new URL(signed.url()).pathname)).toBe(`/storage/v1/object/sign/documents/${f1!.object_path}`);
-    const opened = await head.request.get(signed.url());
-    expect(opened.status()).toBe(200);
-    expect(Buffer.from(await opened.body()).equals(pdf1)).toBe(true);
-    await popup.close();
+    for (const id of ['documents-sheet-files', 'documents-sheet-file', 'documents-sheet-file-add', 'documents-sheet-file-input', 'documents-sheet-no-submit-url']) {
+      await expect(sheet.getByTestId(id)).toHaveCount(0);
+    }
+    await expectSubmitLink(head, sheet.getByTestId('documents-sheet-submit-url'), DRIVE_URL);
     await expect(head).toHaveURL(/\/documents\/?\?/);
-
-    // 保存：「{提出物}_{団体}_{n}.pdf」の名前で、同じ中身（Storage が Content-Disposition: attachment で返す。画面は離れない）
-    const downloadPromise = head.waitForEvent('download');
-    await sheetFile.getByTestId('documents-sheet-file-save').click();
-    const download = await downloadPromise;
-    expect(download.suggestedFilename()).toBe(`${title}_${A}_1.pdf`);
-    expect((await readFile((await download.path())!)).equals(pdf1)).toBe(true);
-    await expect(sheet).toBeVisible();
-    // 署名つき URL は残さない（キャッシュ・下書き・ログ・画面の URL に入れない）
-    await expectNoSignedUrlStored(head);
-    expect(head.url()).not.toContain('token=');
 
     // 4. 差し戻す（理由は必須。団体のホームと履歴に残る）
     await sheet.getByTestId('documents-sheet-return').click();
@@ -282,50 +297,20 @@ test('T19 通しの流れ：部門長が提出物を登録し、店長（スマ�
     expect(await card.getByTestId('document-returned-reason').innerText()).toBe(`理由：${reason}`);
     await expect(card.getByTestId('document-returned')).toContainText('直してから、もう一度「提出した」を押してください');
 
-    // 6. 差し替え：届いたファイルを外す（確かめる。Storage からもすぐ消える）→ PDF と写真（3200×2000。長い辺 2500px に縮める）を足す
-    await card.getByTestId('document-file-remove').click();
-    await confirmNotLatest(rep, '変更');
-    const removeDialog = rep.getByRole('alertdialog').filter({ hasText: 'ファイル 1 を外しますか' });
-    await expect(removeDialog).toContainText('外したファイルは消えます。元に戻せません。');
-    await removeDialog.getByRole('button', { name: '外す' }).click();
-    await expect(rep.getByText('ファイル 1 を外しました')).toBeVisible();
-    await expect(card.getByTestId('document-file')).toHaveCount(0);
-    expect(await filesOf(docId, ga)).toEqual([]);
-    await expect.poll(() => objectExists(f1!.object_path)).toBe(false);
-
-    const pdf2 = makePdf('E2E T19 second');
-    const photo = await makeJpeg(rep, 3200, 2000);
-    await card.getByTestId('document-file-input').setInputFiles([
-      { name: 'e2e-scan-2.pdf', mimeType: 'application/pdf', buffer: pdf2 },
-      { name: 'e2e-photo.jpg', mimeType: 'image/jpeg', buffer: photo },
-    ]);
-    await confirmNotLatest(rep, '変更');
-    await expect(card.getByTestId('document-file')).toHaveCount(2, { timeout: 20_000 });
-    for (const k of [0, 1]) await expect(card.getByTestId('document-file').nth(k)).toHaveAttribute('data-state', 'uploaded', { timeout: 20_000 });
-    const files2 = await filesOf(docId, ga);
-    expect(files2.map((f) => [f.content_type, f.uploaded])).toEqual([
-      ['application/pdf', true],
-      ['image/jpeg', true],
-    ]);
-    expect(files2[1]!.object_path).toMatch(/\.jpg$/);
-    const repToken = await apiToken('rep');
-    const storedPhoto = await storageDownload(repToken, files2[1]!.object_path);
-    expect(storedPhoto.bytes?.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).toBe(true);
-    const dims = jpegSize(storedPhoto.bytes!);
-    expect(dims && Math.max(dims.width, dims.height)).toBe(2500);
-    expect(dims && Math.min(dims.width, dims.height)).toBe(1563);
-    expect(files2[1]!.size).toBe(storedPhoto.bytes!.length);
-    expect(JSON.stringify(files2.map((f) => [f.metadata, f.user_metadata]))).not.toMatch(/e2e-scan-2|e2e-photo/);
-    await expect(card.getByTestId('document-file-label').nth(1)).toHaveText(new RegExp(`^ファイル 2（JPEG・(\\d+ KB|\\d\\.\\d MB)・${await fileTimeLabel(files2[1]!.id)}）$`));
-
+    // 6. 出し直し：提出先（ドライブ）で直してから、もう一度「提出した」（ファイルの欄は出ない）
+    await expectSubmitLink(rep, card.getByTestId('document-card-submit-url'), DRIVE_URL);
+    await expect(card.getByTestId('document-file-add')).toHaveCount(0);
     await card.getByTestId('document-submit').click();
     await confirmNotLatest(rep, '提出');
-    await expect(submitDialog.getByTestId('document-submit-confirm')).toHaveText('ファイル 2 つを提出します。');
+    await expect(submitDialog.getByTestId('document-submit-confirm')).toHaveText('');
     await submitDialog.getByRole('button', { name: '提出する' }).click();
     await expect(rep.getByText(`「${title}」を提出しました`)).toBeVisible();
     await expect(card).toHaveAttribute('data-status', 'submitted');
     expect(await card.getByTestId('document-previous-reason').innerText()).toBe(`前回の差し戻しの理由：${reason}`);
     await expectNoOverflow(rep);
+    // 新しいファイルの予約は一度も呼ばない（T24。D-62）
+    expect(rpcs).not.toContain('reserve_document_file');
+    expect(rpcs).toContain('submit_document');
 
     // 7. 部門長のダッシュボード（承認の前）：要対応「承認待ち 1 件」、締切と予定、カード
     await openPortal(head, 'ダッシュボード');
@@ -349,14 +334,13 @@ test('T19 通しの流れ：部門長が提出物を登録し、店長（スマ�
     await expect(sheet.getByTestId('documents-sheet-status')).toHaveAttribute('data-status', 'submitted');
     await expect(sheetNote.locator('p').first()).toHaveText('前回の差し戻しの理由');
     expect(await sheetNote.locator('p').nth(1).innerText()).toBe(reason);
-    await expect(sheet.getByTestId('documents-sheet-file')).toHaveCount(2);
+    await expect(sheet.getByTestId('documents-sheet-file')).toHaveCount(0);
     await sheet.getByTestId('documents-sheet-approve').click();
     const approveDialog = head.getByTestId('documents-approve-dialog');
     await expect(approveDialog).toContainText('メモは団体にも見えます。個人の名前は書かないでください。');
     await approveDialog.getByTestId('documents-approve-submit').click();
     await expect(head.getByText('承認しました')).toBeVisible();
     await expect(sheet.getByTestId('documents-sheet-status')).toHaveAttribute('data-status', 'approved');
-    await expect(sheet.getByTestId('documents-sheet-file-remove')).toHaveCount(0);
     const sub3 = await submissionOf(docId, ga);
     expect([sub3?.status, sub3?.review_note, sub3?.reviewed_by]).toEqual(['approved', null, H]);
 
@@ -386,11 +370,94 @@ test('T19 通しの流れ：部門長が提出物を登録し、店長（スマ�
     await expect(card.getByTestId('document-approved')).toContainText(`承認されました（${await shortTimeOf(sub3!.reviewed_at!)}）`);
     await expect(card.getByTestId('document-withdraw')).toHaveCount(0);
     await expect(card.getByTestId('document-submit')).toHaveCount(0);
-    await expect(card.getByTestId('document-file-remove')).toHaveCount(0);
-    await expect(card.getByTestId('document-file-open')).toHaveCount(2);
+    await expect(card.getByTestId('document-card-submit-url')).toHaveAttribute('href', DRIVE_URL);
     await openPortal(rep, 'ホーム');
     await expect(rep.locator('[data-testid="portal-todo"][data-module="documents"]')).toHaveCount(0);
     await expect(portalDated(rep, `documents:deadline:${docId}`)).toContainText(`提出物「${title}」の締切`);
+  } finally {
+    await head.context().close();
+    await rep.context().close();
+    await cleanupDocumentsScenario(s);
+  }
+});
+
+test('T24 提出先がない・T24 の前のファイル：提出先の URL がなければ店長には「提出先は総務から知らされます」、部門長のシートには「提出先の URL はまだありません（「提出物の設定」で入れられます）」。T24 の前に上がったファイルは、店長が開く（新しいタブ・60 秒の署名つき URL）・保存（名前と中身）・確かめてから外せ（Storage からも消える）、部門長もシートで開く・保存できる。新しいファイルの予約は API でも uploads_disabled', async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { head: true }, repGroup: A });
+  const head = await openAs(browser, 'head', s);
+  const rep = await openAs(browser, 'rep', s, MOBILE);
+  try {
+    const ga = s.ids.groups[A]!;
+    const title = 'E2E 前からの届け';
+    const [docId] = await insertDocuments(s.yearId, [{ title, deadline: tokyoDeadline(5), categories: ['stall'], createdBy: H }]);
+    const repToken = await apiToken('rep');
+    const pdf = makePdf('E2E T24 legacy');
+    const file = await uploadFileAs(repToken, { documentId: docId, groupId: ga, body: pdf });
+
+    // 新しいファイルの予約は止めた（店長も部門長も invalid_state の uploads_disabled。行は増えない）
+    const headToken = await apiToken('head');
+    for (const token of [repToken, headToken]) {
+      const r = await reserveFile(token, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: pdf.length });
+      expect([r.error?.message, JSON.parse(r.error?.details ?? '{}').reason]).toEqual(['invalid_state', 'uploads_disabled']);
+    }
+    expect((await filesOf(docId, ga)).map((f) => f.id)).toEqual([file.id]);
+
+    // 部門長のシート：提出先がない文と、T24 の前のファイル（開く・保存。上げる欄はない）
+    await openDocuments(head);
+    const cell = documentsCell(head, docId, ga);
+    await expect(cell.getByTestId('documents-cell-files')).toHaveText('ファイル 1');
+    await cell.click();
+    const sheet = head.getByTestId('documents-sheet');
+    await expect(sheet.getByTestId('documents-sheet-no-submit-url')).toHaveText('提出先の URL はまだありません（「提出物の設定」で入れられます）');
+    await expect(sheet.getByTestId('documents-sheet-submit-url')).toHaveCount(0);
+    await expect(sheet.getByTestId('documents-sheet-file-add')).toHaveCount(0);
+    const sheetFile = sheet.getByTestId('documents-sheet-file');
+    await expect(sheetFile).toHaveCount(1);
+    await expect(sheetFile).toHaveAttribute('data-state', 'uploaded');
+    // 開く：押したときに先に空のタブを開き、60 秒の署名つき URL を入れる（その URL で同じ中身が読める）
+    const signedNav = head.context().waitForEvent('request', (r) => r.method() === 'GET' && r.url().includes('/storage/v1/object/sign/documents/') && r.url().includes('token='));
+    const popupPromise = head.waitForEvent('popup');
+    await sheetFile.getByTestId('documents-sheet-file-open').click();
+    const popup = await popupPromise;
+    const signed = await signedNav;
+    expect(decodeURIComponent(new URL(signed.url()).pathname)).toBe(`/storage/v1/object/sign/documents/${file.object_path}`);
+    const opened = await head.request.get(signed.url());
+    expect(opened.status()).toBe(200);
+    expect(Buffer.from(await opened.body()).equals(pdf)).toBe(true);
+    await popup.close();
+    // 保存：「{提出物}_{団体}_{n}.pdf」の名前で、同じ中身
+    const downloadPromise = head.waitForEvent('download');
+    await sheetFile.getByTestId('documents-sheet-file-save').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe(`${title}_${A}_1.pdf`);
+    expect((await readFile((await download.path())!)).equals(pdf)).toBe(true);
+    await expectNoSignedUrlStored(head);
+    expect(head.url()).not.toContain('token=');
+
+    // 店長：提出先がない文。T24 の前のファイルは開く・保存・外す（確かめる）。「ファイルを追加」は出ない
+    await openDocument(rep);
+    const card = documentCard(rep, docId);
+    await expect(card.getByTestId('document-card-no-submit-url')).toHaveText('提出先は総務から知らされます（決まると、ここに「提出先を開く」が出ます）');
+    await expect(card.getByTestId('document-card-submit-url')).toHaveCount(0);
+    for (const id of ['document-file-input', 'document-file-add', 'document-file-retry']) await expect(card.getByTestId(id)).toHaveCount(0);
+    await expect(card.getByTestId('document-file')).toHaveCount(1);
+    await expect(card.getByTestId('document-file-label')).toHaveText(`ファイル 1（PDF・1 KB・${await fileTimeLabel(file.id)}）`);
+    const repDownload = rep.waitForEvent('download');
+    await card.getByTestId('document-file-save').click();
+    expect((await readFile((await (await repDownload).path())!)).equals(pdf)).toBe(true);
+    await card.getByTestId('document-file-remove').click();
+    await confirmNotLatest(rep, '変更');
+    const removeDialog = rep.getByRole('alertdialog').filter({ hasText: 'ファイル 1 を外しますか' });
+    await expect(removeDialog).toContainText('外したファイルは消えます。元に戻せません。');
+    await removeDialog.getByRole('button', { name: '外す' }).click();
+    await expect(rep.getByText('ファイル 1 を外しました')).toBeVisible();
+    await expect(card.getByTestId('document-file')).toHaveCount(0);
+    expect(await filesOf(docId, ga)).toEqual([]);
+    await expect.poll(() => objectExists(file.object_path)).toBe(false);
+    await expectNoSignedUrlStored(rep);
+    await expectNoOverflow(rep);
   } finally {
     await head.context().close();
     await rep.context().close();
@@ -468,7 +535,7 @@ test('T19 守り：総務部門員は提出状況だけ（ファイルの数・�
   }
 });
 
-test('T19 守り（Storage を REST で直接）：ほかの団体の予約・予約していない path には上げられない。10 MB を超える物・許さない形・申告より大きい物は止まり、物は残らない。予約した path へは上げられ、2回目は 409（上書きしない）', async () => {
+test('T19 T24 守り（Storage を REST で直接）：新しいファイルの予約は uploads_disabled（申告の形・大きさを見る前に止まり、何も書かない）。T24 の前の予約（SQL）でも、ほかの団体の予約・予約していない path には上げられない。10 MB を超える物・許さない形・申告より大きい物は止まり、物は残らない。予約した path へは上げられ、2回目は 409（上書きしない）', async () => {
   const s = await createScenario({ status: 'requesting', dataset: 'small', roles: { head: true }, repGroup: A });
   try {
     const ga = s.ids.groups[A]!;
@@ -477,40 +544,46 @@ test('T19 守り（Storage を REST で直接）：ほかの団体の予約・�
     const [repToken, headToken] = await Promise.all([apiToken('rep'), apiToken('head')]);
     const body = makePdf('E2E T19 guard');
 
+    // 予約の RPC は止めた（T24。D-62）：店長・部門長とも、正しい申告でも誤った申告でも invalid_state の uploads_disabled。行は増えない
+    for (const [token, r] of [
+      [repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: body.length }],
+      [headToken, { documentId: docId, groupId: gb, contentType: 'application/pdf', size: body.length }],
+      [repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: 10 * 1024 * 1024 + 1 }],
+      [repToken, { documentId: docId, groupId: ga, contentType: 'text/plain' as 'application/pdf', size: 9 }],
+    ] as const) {
+      const res = await reserveFile(token, r);
+      expect([res.error?.message, JSON.parse(res.error?.details ?? '{}').reason]).toEqual(['invalid_state', 'uploads_disabled']);
+    }
+    expect(await sql('select id from public.document_files where year_id = $1', [s.yearId])).toEqual([]);
+
+    // ここからは T24 の前の予約（legacyReserve。0016 の予約と同じ行）で、Storage の守り（0016 のポリシーとトリガー。T24 で変えない）を確かめる
     // ほかの団体（B）の予約（部門長の代理）の path に、A の店長は上げられない（insert のポリシー。403）
-    const forB = await reserveFile(headToken, { documentId: docId, groupId: gb, contentType: 'application/pdf', size: body.length });
-    expect(forB.error).toBeNull();
-    expect(forB.data!.object_path.startsWith(`${s.yearId}/${gb}/`)).toBe(true);
-    expect((await storageUpload(repToken, forB.data!.object_path, body, 'application/pdf')).statusCode).toBe('403');
+    const forB = await legacyReserve(headToken, { documentId: docId, groupId: gb, contentType: 'application/pdf', size: body.length });
+    expect(forB.object_path.startsWith(`${s.yearId}/${gb}/`)).toBe(true);
+    expect((await storageUpload(repToken, forB.object_path, body, 'application/pdf')).statusCode).toBe('403');
     // 自団体のフォルダでも、予約していない path には上げられない（403）
     expect((await storageUpload(repToken, `${s.yearId}/${ga}/${docId}/${randomUUID()}.pdf`, body, 'application/pdf')).statusCode).toBe('403');
-    // 10 MiB（10,485,760 バイト）を超える物は bucket が止める（413）。予約の申告は上限まで
-    const big = await reserveFile(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: 10 * 1024 * 1024 });
-    expect(big.error).toBeNull();
+    // 10 MiB（10,485,760 バイト）を超える物は bucket が止める（413）
+    const big = await legacyReserve(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: 10 * 1024 * 1024 });
     const tooBig = Buffer.alloc(10 * 1024 * 1024 + 1, 0x20);
     tooBig.write('%PDF-1.4\n', 0, 'latin1');
-    expect((await storageUpload(repToken, big.data!.object_path, tooBig, 'application/pdf')).statusCode).toBe('413');
+    expect((await storageUpload(repToken, big.object_path, tooBig, 'application/pdf')).statusCode).toBe('413');
     // 3つの形（PDF・JPEG・PNG）のほかは bucket が止める（415）
-    const plain = await reserveFile(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: 9 });
-    expect((await storageUpload(repToken, plain.data!.object_path, Buffer.from('not a pdf'), 'text/plain')).statusCode).toBe('415');
-    // 申告より大きい物はトリガーが止める（403。申告で数える容量を実際より小さく見せない）
-    const small = await reserveFile(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: 10 });
-    expect((await storageUpload(repToken, small.data!.object_path, body, 'application/pdf')).statusCode).toBe('403');
-    // 予約もそもそも 10 MiB を超える申告と3つのほかの形を止める（invalid_input）
-    const over = await reserveFile(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: 10 * 1024 * 1024 + 1 });
-    expect([over.error?.message, JSON.parse(over.error?.details ?? '{}').field]).toEqual(['invalid_input', 'size']);
-    const wrongType = await reserveFile(repToken, { documentId: docId, groupId: ga, contentType: 'text/plain' as 'application/pdf', size: 9 });
-    expect([wrongType.error?.message, JSON.parse(wrongType.error?.details ?? '{}').field]).toEqual(['invalid_input', 'content_type']);
+    const plain = await legacyReserve(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: 9 });
+    expect((await storageUpload(repToken, plain.object_path, Buffer.from('not a pdf'), 'text/plain')).statusCode).toBe('415');
+    // 申告より大きい物はトリガーが止める（403）
+    const small = await legacyReserve(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: 10 });
+    expect((await storageUpload(repToken, small.object_path, body, 'application/pdf')).statusCode).toBe('403');
     // 止まった物は1つも残らない
     expect(await objectsOfYears([s.yearId])).toEqual([]);
 
     // 予約した path へは上げられる。同じ path の2回目は 409（もう届いていた。上書きしない）で、中身は最初のまま
-    const ok = await reserveFile(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: body.length });
-    expect((await storageUpload(repToken, ok.data!.object_path, body, 'application/pdf')).ok).toBe(true);
-    const again = await storageUpload(repToken, ok.data!.object_path, makePdf('E2E T19 again'), 'application/pdf');
+    const ok = await legacyReserve(repToken, { documentId: docId, groupId: ga, contentType: 'application/pdf', size: body.length });
+    expect((await storageUpload(repToken, ok.object_path, body, 'application/pdf')).ok).toBe(true);
+    const again = await storageUpload(repToken, ok.object_path, makePdf('E2E T19 again'), 'application/pdf');
     expect(again.statusCode).toBe('409');
-    expect((await storageDownload(repToken, ok.data!.object_path)).bytes?.equals(body)).toBe(true);
-    expect(await objectsOfYears([s.yearId])).toEqual([ok.data!.object_path]);
+    expect((await storageDownload(repToken, ok.object_path)).bytes?.equals(body)).toBe(true);
+    expect(await objectsOfYears([s.yearId])).toEqual([ok.object_path]);
   } finally {
     await cleanupDocumentsScenario(s);
   }
@@ -518,7 +591,7 @@ test('T19 守り（Storage を REST で直接）：ほかの団体の予約・�
 
 // ---------------------------------------------------------------- 同時の操作と通信の失敗
 
-test('T19 同時の操作：店長と副店長が同時に「提出した」を押すと、片方は提出でき、もう片方は「すでに提出されています。読み直しました」。ファイルが足された後に古い版で押すと conflict の文言と読み直し、もう一度で提出できる', async ({
+test('T19 同時の操作：店長と副店長が同時に「提出した」を押すと、片方は提出でき、もう片方は「すでに提出されています。読み直しました」。読んだ後にほかの人が提出して取り消すと（版が進む）、古い版で押すと conflict の文言と読み直し、もう一度で提出できる', async ({
   browser,
 }) => {
   test.setTimeout(180_000);
@@ -538,8 +611,6 @@ test('T19 同時の操作：店長と副店長が同時に「提出した」を�
       { title: 'E2E 古い版の提出', deadline: tokyoDeadline(4), categories: ['stall'], createdBy: H },
     ]);
     const repToken = await apiToken('rep');
-    await uploadFileAs(repToken, { documentId: same, groupId: ga, body: makePdf('E2E T19 same') });
-    await uploadFileAs(repToken, { documentId: stale, groupId: ga, body: makePdf('E2E T19 stale') });
 
     const deputyPage = await loginAsUser(browser, deputy);
     dep = deputyPage;
@@ -575,24 +646,25 @@ test('T19 同時の操作：店長と副店長が同時に「提出した」を�
     await expect(depDialog).toHaveCount(0);
     expect((await submissionOf(same, ga))?.status).toBe('submitted');
 
-    // 2. 古い版：副店長が読んだ後に、店長がファイルを足す（提出の版が進む）。副店長の「提出した」は conflict → 読み直して 2 つ → もう一度で提出
+    // 2. 古い版：副店長が読んだ後に、店長が API で提出して取り消す（状態は未提出のまま、提出の版が進む。T24 からファイルを足して版を
+    //    進める道はない）。副店長の「提出した」は conflict → 読み直し → もう一度で提出
     const depStale = documentCard(deputyPage, stale);
-    await expect(depStale.getByTestId('document-file')).toHaveCount(1);
-    await uploadFileAs(repToken, { documentId: stale, groupId: ga, body: makePdf('E2E T19 stale 2') });
+    await expect(depStale).toHaveAttribute('data-status', 'not_submitted');
+    await submitAs(repToken, stale, ga);
+    await withdrawAs(repToken, stale, ga);
+    expect((await submissionOf(stale, ga))?.status).toBe('not_submitted');
     await depStale.getByTestId('document-submit').click();
     const staleDialog = deputyPage.getByRole('alertdialog').filter({ hasText: '「E2E 古い版の提出」を提出しますか' });
-    await expect(staleDialog.getByTestId('document-submit-confirm')).toHaveText('ファイル 1 つを提出します。');
+    await expect(staleDialog.getByTestId('document-submit-confirm')).toHaveText('');
     await staleDialog.getByRole('button', { name: '提出する' }).click();
     await expect(depStale.getByTestId('document-error')).toHaveText(
-      'ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください',
+      'ほかの人がこの提出を先に変えました（提出・取り消し・ファイルを外すなど）。読み直しました。確かめてから、もう一度押してください',
     );
-    await expect(depStale.getByTestId('document-file')).toHaveCount(2);
     await expect(depStale).toHaveAttribute('data-status', 'not_submitted');
     expect((await submissionOf(stale, ga))?.status).toBe('not_submitted');
     // すぐに押し直す（前の確かめのダイアログが閉じる途中でもよい。CI では、この押し直しが覆いだけが消えて中身が残る間に当たり、付け直した
     // 覆いが中身の上に来て次の「提出する」が押せなかった。共有の部品で直した。notes/T19.md の「CI の E2E の失敗の直し（2026-11-03）」）
     await depStale.getByTestId('document-submit').click();
-    await expect(staleDialog.getByTestId('document-submit-confirm')).toHaveText('ファイル 2 つを提出します。');
     await staleDialog.getByRole('button', { name: '提出する' }).click();
     await expect(deputyPage.getByText('「E2E 古い版の提出」を提出しました')).toBeVisible();
     await expect(depStale).toHaveAttribute('data-status', 'submitted');
@@ -622,7 +694,6 @@ test('T19 確かめのダイアログの開き直し：閉じる動きの途中�
   try {
     const ga = s.ids.groups[A]!;
     const [docId] = await insertDocuments(s.yearId, [{ title: 'E2E 開き直しの提出', deadline: tokyoDeadline(3), categories: ['stall'], createdBy: H }]);
-    await uploadFileAs(await apiToken('rep'), { documentId: docId, groupId: ga, body: makePdf('E2E T19 reopen') });
     // 副店長の年度はシナリオの年度だけ（最新の年度）なので、「提出した」の前に最新でない年度の確かめは出ない
     page = await loginAsUser(browser, deputy);
     await openDocument(page);
@@ -671,110 +742,22 @@ test('T19 確かめのダイアログの開き直し：閉じる動きの途中�
   }
 });
 
-test('T19 通信の失敗：オフラインで足したファイルは「アップロードできませんでした」になり（読み直しはつながるまで待つ）、つながってから「もう一度」で送れる。上げた応答も読み直しも届かなくても、もう一度で「もう届いていた」（409）として済む。「提出した」の応答が届かなくても「提出されていました」', async ({
+test('T19 T24 通信の失敗：「提出した」の応答が届かなくても（DB には届いた）、読み直して「提出されていました」（成功と同じ）。新しいファイルを上げる道はないので、上げる失敗・もう一度はない', async ({
   browser,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(120_000);
   const s = await createScenario({ status: 'requesting', dataset: 'small', repGroup: A });
   const rep = await openAs(browser, 'rep', s, MOBILE);
   try {
     const ga = s.ids.groups[A]!;
-    const [docId] = await insertDocuments(s.yearId, [{ title: 'E2E 通信の確かめ', deadline: tokyoDeadline(6), categories: ['stall'], createdBy: H }]);
+    const [docId] = await insertDocuments(s.yearId, [
+      { title: 'E2E 通信の確かめ', deadline: tokyoDeadline(6), categories: ['stall'], submitUrl: 'https://forms.gle/e2e-t24', createdBy: H },
+    ]);
     await openDocument(rep);
     const card = documentCard(rep, docId);
-    const pdf1 = makePdf('E2E T19 offline');
+    await expect(card.getByTestId('document-card-submit-url')).toHaveAttribute('href', 'https://forms.gle/e2e-t24');
+    for (const id of ['document-file-input', 'document-file-add', 'document-file-retry', 'document-uploading']) await expect(card.getByTestId(id)).toHaveCount(0);
 
-    // 1. オフライン：予約が届かない → そのタブの失敗（予約の日時なし）と「もう一度」「外す」。DB には何も残らない。終わった後の読み直しは、
-    //    つながるまで待つ（オフラインの間は TanStack Query が止める）ので、その間は「アップロード中…」のまま（古い版で提出しない。04）
-    await rep.context().setOffline(true);
-    await card.getByTestId('document-file-input').setInputFiles({ name: 'e2e-offline.pdf', mimeType: 'application/pdf', buffer: pdf1 });
-    await confirmNotLatest(rep, '変更');
-    const failed = card.getByTestId('document-file');
-    await expect(failed).toHaveAttribute('data-state', 'failed', { timeout: 20_000 });
-    await expect(failed).toContainText('アップロードできませんでした');
-    await expect(card.getByTestId('document-file-label')).toHaveText('ファイル 1（PDF・1 KB）');
-    await expect(card.getByTestId('document-file-error')).toHaveText('通信できませんでした。電波の良い所でもう一度');
-    await expect(card.getByTestId('document-uploading')).toBeVisible();
-    await expect(card.getByTestId('document-submit-hint')).toHaveText('アップロードが終わるまでお待ちください');
-    await expect(card.getByTestId('document-file-retry')).toBeDisabled();
-    expect(await filesOf(docId, ga)).toEqual([]);
-    // つながると読み直しが届き、「もう一度」を押せる（同じ file_id で予約し、上げる）
-    await rep.context().setOffline(false);
-    await expect(card.getByTestId('document-uploading')).toHaveCount(0, { timeout: 20_000 });
-    await expect(card.getByTestId('document-submit-hint')).toHaveText('届いていないファイルがあります。外すか、もう一度送ってください');
-    await expect(failed).toHaveAttribute('data-state', 'failed');
-    await card.getByTestId('document-file-retry').click();
-    await confirmNotLatest(rep, '変更');
-    await expect(failed).toHaveAttribute('data-state', 'uploaded', { timeout: 20_000 });
-    const [f1] = await filesOf(docId, ga);
-    expect([f1?.uploaded, f1?.size]).toEqual([true, pdf1.length]);
-
-    // 2. 上げた応答が届かず（物は届いた）、続けて読み直しも通信で落ちる（電波が途切れた。navigator.onLine は真のまま）→ 失敗のまま
-    //    「もう一度」。通信が戻ってから「もう一度」は、同じ予約（同じ行）と同じ path への2回目の upload で 409（もう届いていた）になり、
-    //    成功と同じに扱う
-    const pdf2 = makePdf('E2E T19 lost response');
-    const uploadRoute = '**/storage/v1/object/documents/**';
-    const readRoutes = ['**/rest/v1/v_document_status*', '**/rest/v1/v_document_files*'];
-    let uploads = 0;
-    const statuses: number[] = [];
-    // 上げている間を確かめるため、upload を止めておく（下の確かめの後に放す）
-    let releaseUpload: () => void = () => {};
-    const uploadHeld = new Promise<void>((resolve) => {
-      releaseUpload = resolve;
-    });
-    await rep.route(uploadRoute, async (route) => {
-      if (route.request().method() !== 'POST') return route.fallback();
-      uploads++;
-      await uploadHeld;
-      const res = await route.fetch();
-      statuses.push(res.status());
-      await route.abort('failed');
-    });
-    for (const r of readRoutes) await rep.route(r, (route) => route.abort('failed'));
-    await card.getByTestId('document-file-input').setInputFiles({ name: 'e2e-lost.pdf', mimeType: 'application/pdf', buffer: pdf2 });
-    await confirmNotLatest(rep, '変更');
-    const second = card.getByTestId('document-file').nth(1);
-    // 上げている間（レビューの UX-1・UX-2・F2）：上げているファイルは届く前から行として出し、読み上げの欄（role="status"）の中身が変わる。
-    // 「保存」は押せず理由を出す（ページを離れる確かめを出さない）。年度を切り替える前は「アップロード中です。離れると、残りのファイルは
-    // 送られません」で確かめ（下書きの文は出さない）、やめれば切り替えない
-    await expect(second).toHaveAttribute('data-state', 'uploading');
-    await expect(second.getByTestId('document-file-label')).toHaveText('ファイル 2（PDF・1 KB）');
-    await expect(card.getByRole('status')).toContainText('アップロード中…（1/1）');
-    await expect(card.getByTestId('document-file-save').first()).toBeDisabled();
-    await expect(card).toContainText('アップロード中は「保存」を押せません（終わってから押してください）');
-    const yearSelect = rep.getByTestId('year-select');
-    const otherYear = await yearSelect.locator('option').evaluateAll((os, cur) => os.map((o) => o.getAttribute('value')).find((v) => v && v !== cur), s.yearId);
-    await yearSelect.selectOption(otherYear!);
-    const leave = rep.getByRole('alertdialog').filter({ hasText: 'アップロード中です' });
-    await expect(leave).toContainText('離れると、残りのファイルは送られません。');
-    await expect(leave).not.toContainText('下書き');
-    await expect(leave.getByRole('button', { name: '切り替える' })).toBeVisible();
-    await leave.getByRole('button', { name: 'やめる（アップロードを続ける）' }).click();
-    await expect(leave).toHaveCount(0);
-    await expect(yearSelect).toHaveValue(s.yearId);
-    releaseUpload();
-    await expect(second).toHaveAttribute('data-state', 'failed', { timeout: 20_000 });
-    await expect(card.getByTestId('document-file-retry')).toBeEnabled({ timeout: 20_000 });
-    expect([uploads, statuses]).toEqual([1, [200]]);
-    const lost = (await filesOf(docId, ga))[1]!;
-    expect(lost.uploaded).toBe(true);
-    await rep.unroute(uploadRoute);
-    for (const r of readRoutes) await rep.unroute(r);
-    const resend = rep.waitForResponse((r) => r.url().includes('/storage/v1/object/documents/') && r.request().method() === 'POST');
-    await card.getByTestId('document-file-retry').click();
-    await confirmNotLatest(rep, '変更');
-    const resent = await resend;
-    expect(((await resent.json()) as { statusCode?: string }).statusCode).toBe('409');
-    await expect(second).toHaveAttribute('data-state', 'uploaded', { timeout: 20_000 });
-    await expect(card.getByTestId('document-file-error')).toHaveCount(0);
-    const files = await filesOf(docId, ga);
-    expect(files.map((f) => [f.id, f.uploaded])).toEqual([
-      [f1!.id, true],
-      [lost.id, true],
-    ]);
-    expect(await objectsOfYears([s.yearId])).toHaveLength(2);
-
-    // 3. 「提出した」の応答が届かない（DB には届いた）→ 読み直して「提出されていました」（成功と同じ）
     const submitRoute = '**/rest/v1/rpc/submit_document*';
     await rep.route(submitRoute, async (route) => {
       await route.fetch();
@@ -788,6 +771,7 @@ test('T19 通信の失敗：オフラインで足したファイルは「アッ�
     await expect(card.getByTestId('document-error')).toHaveCount(0);
     await rep.unroute(submitRoute);
     expect((await submissionOf(docId, ga))?.status).toBe('submitted');
+    expect(await filesOf(docId, ga)).toEqual([]);
   } finally {
     await rep.context().close();
     await cleanupDocumentsScenario(s);

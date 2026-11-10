@@ -63,12 +63,12 @@ describe('T19 総務の要対応・締切と予定・カード', () => {
     for (const t of s.todos) expect(t).not.toHaveProperty('detail');
   });
 
-  it('管理者のカード：提出物の数と次の締切、承認／対象・承認待ち・差し戻し・未提出、ファイルの使った量（上限 900 MB）。リンクは「提出状況へ」', () => {
+  it('管理者のカード：提出物の数と次の締切、承認／対象・承認待ち・差し戻し・未提出、前に上げたファイルの使った量（T24 から上限は出さない）。リンクは「提出状況へ」', () => {
     const s = documentsPortal(soumuRaw(), ctxOf(member('admin'), 'soumu'));
     expect(s.card).toEqual({
       moduleId: 'documents',
       title: '提出物',
-      lines: ['提出物 4 件（次の締切 10/6 17:00）', '承認 3／8・承認待ち 2・差し戻し 1・未提出 2', 'ファイル 180 MB（上限 900 MB）'],
+      lines: ['提出物 4 件（次の締切 10/6 17:00）', '承認 3／8・承認待ち 2・差し戻し 1・未提出 2', '前に上げたファイル 180 MB（新しくは上げません）'],
       href: '/documents',
       linkLabel: '提出状況へ',
     });
@@ -104,7 +104,7 @@ describe('T19 総務の要対応・締切と予定・カード', () => {
     expect(documentsPortal(soumuRaw({ docs: [], statuses: [], usage: null }), ctxOf(member('head'), 'soumu')).card!.lines).toEqual(['提出物はまだありません']);
     expect(documentsPortal(soumuRaw({ docs: [], statuses: [] }), ctxOf(member('admin'), 'soumu')).card!.lines).toEqual([
       '提出物はまだありません',
-      'ファイル 180 MB（上限 900 MB）',
+      '前に上げたファイル 180 MB（新しくは上げません）',
     ]);
     const past = soumuRaw({ docs: [DOCS[0]!, DOCS[3]!], statuses: [], usage: null });
     expect(documentsPortal(past, ctxOf(member('staff'), 'soumu')).card!.lines).toEqual(['提出物 2 件（締切はすべて過ぎました）', '対象の団体がありません']);

@@ -1,4 +1,7 @@
 -- 026_rpc_documents：提出物の RPC（T19。D-55。0016_documents.sql）
+-- T24（0023。D-62）で reserve_document_file を止めた（uploads_disabled）。① の予約の行は uploads_disabled（IS）にし、② の予約の細部
+-- （入力の順・path・送り直し・上限）は消した（止めたことは 033 で確かめる）。後の節が使うファイルの行（T24 の前のファイル）は、予約の代わりに
+-- tests.add_file で postgres が直接入れる。requires_file は 0023 のトリガーでいつも false なので、no_file の確かめも消した。
 -- 期待値は 02 の「提出物の権限」と notes/T19.md の「SQL の約束」（RPC ごとのエラーの順番：1. forbidden 2. invalid_state〔終了〕
 -- 3. invalid_input 4. not_found 5.〔段の forbidden は使わない〕6. invalid_state〔状態〕7. conflict）から先に書いてから流した。
 -- ① 段の表：RPC を admin・head・deputy・staff・viewer・rep・rep2・outsider・admin2 で1回ずつ試して取り消す（tests.try_rpc。024・025 と同じ形）。
@@ -117,38 +120,53 @@ create function tests.audit_since(p_mark bigint) returns text language sql stabl
   where a.id > p_mark and a.table_name in ('documents', 'document_submissions', 'document_files')
 $$;
 
+-- T24 の前のファイルの行を入れる（予約の代わり。postgres で直接。提出の行がなければ作り、提出の版を進める。0016 の予約と同じ形の path）
+create function tests.add_file(p_persona text, p_doc text, p_group text, p_file text, p_type text, p_size integer) returns text language plpgsql as $$
+declare v_year uuid := (select g.year_id from public.groups g where g.id = tests.id(p_group));
+begin
+  insert into public.document_submissions (document_id, group_id, year_id) values (tests.id(p_doc), tests.id(p_group), v_year)
+  on conflict (document_id, group_id) do nothing;
+  insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size, created_by)
+  values (tests.id(p_file), v_year, tests.id(p_doc), tests.id(p_group),
+          v_year || '/' || tests.id(p_group) || '/' || tests.id(p_doc) || '/' || tests.id(p_file) || '.'
+          || case p_type when 'application/pdf' then 'pdf' when 'image/jpeg' then 'jpg' else 'png' end,
+          p_type, p_size, tests.id(p_persona));
+  update public.document_submissions s set updated_at = now() where s.document_id = tests.id(p_doc) and s.group_id = tests.id(p_group);
+  return p_file;
+end $$;
+
 -- ================================================================ ① 段の表
 create table tests.rpc_case (n int primary key, label text not null, scenario text not null, template text not null, yn text not null);
 insert into tests.rpc_case values
- -- 予約：部門長以上は承認でない提出に（代理）、店長・副店長は自団体の未提出・差し戻しに。終了の年度は読むだけ（呼べない人は forbidden が先）
+ -- 予約：T24 から止めた。呼べる人は uploads_disabled（IS）、終了の年度も IS（status closed が先）、呼べない人は forbidden が先
  ( 1, 'G1 の DOC_NOFILE（行なし＝未提出）にファイルを足す', 'requesting',
-  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'ok ok F F ok F F F'),
+  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  ( 2, 'G1 の DOC_NOFILE にファイルを足す（準備中）', 'preparing',
-  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'ok ok F F ok F F F'),
+  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  ( 3, 'G1 の DOC_NOFILE にファイルを足す（締切後）', 'requesting:after',
-  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'ok ok F F ok F F F'),
+  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  ( 4, 'G1 の DOC_NOFILE にファイルを足す（振り分け中）', 'allocating',
-  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'ok ok F F ok F F F'),
+  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  ( 5, 'G1 の DOC_NOFILE にファイルを足す（確定中）', 'confirmed',
-  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'ok ok F F ok F F F'),
+  $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  ( 6, 'G1 の DOC_NOFILE にファイルを足す（終了）', 'closed',
   $t$ select public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  ( 7, '提出済みの G1 の DOC_STALL にファイルを足す（部門長以上は代理）', 'requesting',
-  $t$ select public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'ok ok F F IS F F F'),
+  $t$ select public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  ( 8, '差し戻しの G2 の DOC_STALL にファイルを足す', 'requesting',
-  $t$ select public.reserve_document_file(:DOC_STALL, :G2, gen_random_uuid(), 'application/pdf', 100) $t$, 'ok ok F F F ok F F'),
+  $t$ select public.reserve_document_file(:DOC_STALL, :G2, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F F IS F F'),
  ( 9, 'G4（viewer が副店長）の DOC_STALL にファイルを足す', 'requesting',
-  $t$ select public.reserve_document_file(:DOC_STALL, :G4, gen_random_uuid(), 'image/jpeg', 100) $t$, 'ok ok F ok F F F F'),
+  $t$ select public.reserve_document_file(:DOC_STALL, :G4, gen_random_uuid(), 'image/jpeg', 100) $t$, 'IS IS F IS F F F F'),
  (10, '承認の G4 の DOC_NOFILE にファイルを足す', 'requesting',
   $t$ select public.reserve_document_file(:DOC_NOFILE, :G4, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F IS F F F F'),
  (11, '対象でない提出物（企業。G1 の DOC_COMPANY）にファイルを足す', 'requesting',
-  $t$ select public.reserve_document_file(:DOC_COMPANY, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'NF NF F F NF F F F'),
+  $t$ select public.reserve_document_file(:DOC_COMPANY, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  (12, '飲食だけの提出物（G1 は飲食でない）にファイルを足す', 'requesting',
-  $t$ select public.reserve_document_file(:DOC_FOOD, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'NF NF F F NF F F F'),
+  $t$ select public.reserve_document_file(:DOC_FOOD, :G1, gen_random_uuid(), 'application/pdf', 100) $t$, 'IS IS F F IS F F F'),
  (13, 'Y2 の G3 の DOC_Y2 にファイルを足す', 'requesting',
-  $t$ select public.reserve_document_file(:DOC_Y2, :G3, gen_random_uuid(), 'application/pdf', 100) $t$, 'F F ok F F F F ok'),
+  $t$ select public.reserve_document_file(:DOC_Y2, :G3, gen_random_uuid(), 'application/pdf', 100) $t$, 'F F IS F F F F IS'),
  (14, 'Y1 の提出物を Y2 の団体（G3）として足す', 'requesting',
-  $t$ select public.reserve_document_file(:DOC_STALL, :G3, gen_random_uuid(), 'application/pdf', 100) $t$, 'F F NF F F F F NF'),
+  $t$ select public.reserve_document_file(:DOC_STALL, :G3, gen_random_uuid(), 'application/pdf', 100) $t$, 'F F IS F F F F IS'),
  -- 外す：ファイルの行がない・呼べない人は forbidden（有無を漏らさない）。届いた物は書ける状態のときだけ、届いていない予約は状態によらない
  (15, '届いた F_G1（提出済みの G1）を外す', 'requesting', $t$ select public.discard_document_file(:F_G1) $t$, 'ok ok F F IS F F F'),
  (16, '届いた F_G1 を外す（終了）', 'closed', $t$ select public.discard_document_file(:F_G1) $t$, 'IS IS F F IS F F F'),
@@ -159,8 +177,8 @@ insert into tests.rpc_case values
  (20, 'G1 の DOC_NOFILE（行なし。版 null）を出す', 'requesting', $t$ select public.submit_document(:DOC_NOFILE, :G1, null) $t$, 'ok ok F F ok F F F'),
  (21, 'G1 の DOC_NOFILE を出す（確定中）', 'confirmed', $t$ select public.submit_document(:DOC_NOFILE, :G1, null) $t$, 'ok ok F F ok F F F'),
  (22, 'G1 の DOC_NOFILE を出す（終了）', 'closed', $t$ select public.submit_document(:DOC_NOFILE, :G1, null) $t$, 'IS IS F F IS F F F'),
- (23, 'G2 の DOC_STALL（差し戻し。ファイルなし）を出す', 'requesting',
-  $t$ select public.submit_document(:DOC_STALL, :G2, tests.sub_ts('DOC_STALL', 'G2')) $t$, 'IS IS F F F IS F F'),
+ (23, 'G2 の DOC_STALL（差し戻し。ファイルなし。T24 からファイルなしで出せる）を出す', 'requesting',
+  $t$ select public.submit_document(:DOC_STALL, :G2, tests.sub_ts('DOC_STALL', 'G2')) $t$, 'ok ok F F F ok F F'),
  (24, 'G1 の DOC_STALL（提出済み）をもう一度出す', 'requesting',
   $t$ select public.submit_document(:DOC_STALL, :G1, tests.sub_ts('DOC_STALL', 'G1')) $t$, 'IS IS F F IS F F F'),
  (25, 'G1 の DOC_NOFILE（行なし）に版を渡して出す', 'requesting',
@@ -168,7 +186,7 @@ insert into tests.rpc_case values
  (26, 'G3 の DOC_Y2（届いていない予約がある）を出す', 'requesting',
   $t$ select public.submit_document(:DOC_Y2, :G3, tests.sub_ts('DOC_Y2', 'G3')) $t$, 'F F IS F F F F IS'),
  (27, 'G1 の DOC_COMPANY（対象でない）を出す', 'requesting', $t$ select public.submit_document(:DOC_COMPANY, :G1, null) $t$, 'NF NF F F NF F F F'),
- (28, 'G4 の DOC_STALL（行なし。ファイルが要る）を出す', 'requesting', $t$ select public.submit_document(:DOC_STALL, :G4, null) $t$, 'IS IS F IS F F F F'),
+ (28, 'G4 の DOC_STALL（行なし。T24 の前はファイルが要った）を出す', 'requesting', $t$ select public.submit_document(:DOC_STALL, :G4, null) $t$, 'ok ok F ok F F F F'),
  -- 取り消す：提出済みだけ（Q13）。版は要る
  (29, 'G1 の DOC_STALL（提出済み）を取り消す', 'requesting',
   $t$ select public.withdraw_document(:DOC_STALL, :G1, tests.sub_ts('DOC_STALL', 'G1')) $t$, 'ok ok F F ok F F F'),
@@ -247,7 +265,7 @@ select c.n, c.label, c.scenario, p.persona, p.ord,
        tests.sql(c.template) as sql
 from tests.rpc_case c cross join tests.rpc_persona p;
 
-select plan((select count(*)::int from tests.rpc_cells) + 3 + 226);
+select plan((select count(*)::int from tests.rpc_cells) + 3 + 158);
 
 select is_empty($$ select n, yn from tests.rpc_case
                    where array_length(string_to_array(yn, ' '), 1) <> 8
@@ -269,198 +287,10 @@ select is_empty($$ select h.n, h.label, h.got as head, d.got as deputy
   'deputy（総務副部門長）は全部の行で head（総務部門長）と同じ結果');
 
 -- ================================================================ ② reserve_document_file
--- 1. forbidden：団体がない・呼べない人（入力が誤っていても先に）。終了 → invalid_state（入力より先）。呼べない人は終了でも forbidden
-select is(tests.q('outsider', $q$ select (public.reserve_document_file(null, :G1, null, 'image/gif', 0)).id $q$), 'forbidden',
-  '予約：呼べない人は、入力が誤っていても forbidden（detail なし）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, null, gen_random_uuid(), 'application/pdf', 10)).id $q$), 'forbidden',
-  '予約：団体が null なら forbidden');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, gen_random_uuid(), gen_random_uuid(), 'application/pdf', 10)).id $q$), 'forbidden',
-  '予約：ない団体なら forbidden');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G2, gen_random_uuid(), 'application/pdf', 10)).id $q$), 'forbidden',
-  '予約：店長はほかの団体（G2）に足せない');
-select is(tests.q('staff', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select tests.set_scenario('closed') $q$), 'forbidden', '予約：呼べない人（部門員）は、終了の年度でも forbidden（終了より先）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(null, :G1, null, 'image/gif', 0)).id $q$, $q$ select tests.set_scenario('closed') $q$),
-  tests.e('invalid_state', '{"status": "closed"}'), '予約：終了の年度は、入力が誤っていても invalid_state（detail は状態）');
--- 3. 入力：document_id → file_id → content_type → size → file_id（in_use）の順
-select is(tests.q('rep', $q$ select (public.reserve_document_file(null, :G1, null, 'image/gif', 0)).id $q$),
-  tests.e('invalid_input', '{"field": "document_id"}'), '予約：提出物が null → document_id（ほかの誤りより先）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, null, 'image/gif', 0)).id $q$),
-  tests.e('invalid_input', '{"field": "file_id"}'), '予約：ファイルの id が null → file_id（形・大きさより先）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'image/gif', 0)).id $q$),
-  tests.e('invalid_input', '{"field": "content_type"}'), '予約：GIF → content_type（大きさより先）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), null, 10)).id $q$),
-  tests.e('invalid_input', '{"field": "content_type"}'), '予約：形が null → content_type');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/PDF', 10)).id $q$),
-  tests.e('invalid_input', '{"field": "content_type"}'), '予約：形は小文字の名前だけ（application/PDF は通らない）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'image/jpg', 10)).id $q$),
-  tests.e('invalid_input', '{"field": "content_type"}'), '予約：image/jpg は通らない（image/jpeg だけ）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 0)).id $q$),
-  tests.e('invalid_input', '{"field": "size"}'), '予約：大きさ 0 → size');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', -1)).id $q$),
-  tests.e('invalid_input', '{"field": "size"}'), '予約：大きさが負 → size');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10485761)).id $q$),
-  tests.e('invalid_input', '{"field": "size"}'), '予約：10 MiB を 1 B 超える → size');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', null)).id $q$),
-  tests.e('invalid_input', '{"field": "size"}'), '予約：大きさが null → size');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10485760)).size $q$),
-  '10485760', '予約：10 MiB ちょうどは通る');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, :F_G1, 'application/pdf', 1000)).id $q$),
-  tests.e('invalid_input', '{"field": "file_id", "reason": "in_use"}'), '予約：同じ id のファイルがほかの提出物にある → in_use');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 999)).id $q$),
-  tests.e('invalid_input', '{"field": "file_id", "reason": "in_use"}'), '予約：同じ id で大きさが違う → in_use');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'image/png', 1000)).id $q$),
-  tests.e('invalid_input', '{"field": "file_id", "reason": "in_use"}'), '予約：同じ id で形が違う → in_use');
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_STALL, :G2, :F_G1, 'application/pdf', 1000)).id $q$),
-  tests.e('invalid_input', '{"field": "file_id", "reason": "in_use"}'), '予約：同じ id のファイルがほかの団体にある → in_use');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_COMPANY, :G1, :F_G1, 'application/pdf', 1000)).id $q$),
-  tests.e('invalid_input', '{"field": "file_id", "reason": "in_use"}'), '予約：in_use は not_found より先（入力の確かめの最後）');
--- 4. not_found：その年度にない提出物・団体が対象でない提出物（detail なし）
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_COMPANY, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$),
-  'not_found', '予約：対象の区分でない提出物 → not_found');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_FOOD, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$),
-  'not_found', '予約：飲食だけの提出物で、団体が飲食でない → not_found（Q8）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_FOOD, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ update public.groups set is_food = true where id = :G1 $q$), '10', '予約：団体が飲食なら、飲食だけの提出物に足せる');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_Y2, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$),
-  'not_found', '予約：ほかの年度の提出物 → not_found');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(gen_random_uuid(), :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$),
-  'not_found', '予約：ない提出物 → not_found');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ update public.documents set target_categories = '{company}' where id = :DOC_STALL $q$),
-  'not_found', '予約：対象を変えて外れた団体 → not_found（今の対象で決める）');
--- 5. 冪等：同じ id・同じ中身なら、状態・数・容量を見ずにその行を返す（送り直し。(B1)）
-select is(tests.q('rep', $q$ select tests.name_of((public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 1000)).id) $q$),
-  'F_G1', '予約の送り直し：提出済みでも、同じ id・同じ中身なら同じ行を返す');
-select is(tests.q('rep', $q$ select tests.name_of((public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 1000)).id) $q$,
-                  $q$ select tests.put_object('documents', 'pgtap/full.pdf', jsonb_build_object('size', 943718400)) $q$),
-  'F_G1', '予約の送り直し：bucket がいっぱいでも、同じ id・同じ中身なら同じ行を返す（容量を見ない）');
-select is(tests.q('rep', $q$ select count(*) || ' ' || tests.name_of(min(f.id::text)::uuid) from public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 1000) f $q$),
-  '1 F_G1', '予約の送り直しは行を増やさない');
--- 6. 書ける状態：店長・副店長は未提出・差し戻し、部門長以上は承認でないとき（部門長以上で店長・副店長も務める人は部門長以上の決まり）
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$),
-  tests.e('invalid_state', '{"status": "submitted", "reason": "not_editable"}'), '予約：店長は提出済みの提出に足せない');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ update public.document_submissions set status = 'approved', reviewed_at = now() where document_id = :DOC_STALL and group_id = :G1 $q$),
-  tests.e('invalid_state', '{"status": "approved", "reason": "not_editable"}'), '予約：店長は承認の提出に足せない');
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ update public.document_submissions set status = 'approved', reviewed_at = now() where document_id = :DOC_STALL and group_id = :G1 $q$),
-  tests.e('invalid_state', '{"status": "approved", "reason": "not_editable"}'), '予約：部門長も承認の提出には足せない');
-select is(tests.q('admin', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ insert into public.group_members (group_id, user_id, role) values (:G1, :admin, 'deputy_manager');
-                      update public.document_submissions set status = 'approved', reviewed_at = now() where document_id = :DOC_STALL and group_id = :G1 $q$),
-  tests.e('invalid_state', '{"status": "approved", "reason": "not_editable"}'), '予約：店長・副店長も務める管理者も、承認の提出には足せない');
-select is(tests.q('admin', $q$ select tests.name_of((public.reserve_document_file(:DOC_STALL, :G1, :F_G1B, 'image/png', 300)).created_by) $q$,
-                  $q$ delete from public.document_files where id = :F_G1B;
-                      insert into public.group_members (group_id, user_id, role) values (:G1, :admin, 'deputy_manager') $q$),
-  'admin', '予約：店長・副店長も務める管理者は、提出済みの自分の団体にも足せる（部門長以上の決まり）');
--- 返り値：path は DB が列から作る（拡張子は形から。予約した人は created_by）
-select is(tests.q('head', $q$ select format('%s %s %s', ((f).object_path = tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1B', 'png'))::text, tests.name_of((f).created_by), (f).size)
-                                from (select public.reserve_document_file(:DOC_STALL, :G1, :F_G1B, 'image/png', 300) as f) x $q$,
-                  $q$ delete from public.document_files where id = :F_G1B $q$),
-  'true head 300', '予約の返り値：path は {year}/{group}/{document}/{file}.png、予約した人と大きさ');
-select is(tests.q('viewer', $q$ select (public.reserve_document_file(:DOC_STALL, :G4, :F_G1B, 'image/jpeg', 300)).object_path $q$,
-                  $q$ delete from public.document_files where id = :F_G1B $q$),
-  tests.doc_path('Y1', 'G4', 'DOC_STALL', 'F_G1B', 'jpg'), '予約の返り値：JPEG の拡張子は jpg（G4 の副店長の viewer）');
--- 5 つまで（Q2）：その提出のファイルの行（届いていない予約を含む）が 5 つなら too_many_files
-select is(tests.q('rep2', $q$ select (public.reserve_document_file(:DOC_STALL, :G2, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
-                      select x.id, :Y1, :DOC_STALL, :G2, :Y1::text || '/' || :G2::text || '/' || :DOC_STALL::text || '/' || x.id::text || '.pdf', 'application/pdf', 1
-                      from (select gen_random_uuid() as id from generate_series(1, 5)) x $q$),
-  tests.e('invalid_state', '{"status": "returned", "reason": "too_many_files"}'), '予約：その提出のファイルが 5 つなら too_many_files');
-select is(tests.q('rep2', $q$ select (public.reserve_document_file(:DOC_STALL, :G2, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
-                      select x.id, :Y1, :DOC_STALL, :G2, :Y1::text || '/' || :G2::text || '/' || :DOC_STALL::text || '/' || x.id::text || '.pdf', 'application/pdf', 1
-                      from (select gen_random_uuid() as id from generate_series(1, 4)) x $q$),
-  '10', '予約：4 つなら 5 つ目を足せる');
--- どの提出にも属さない物（T19 のレビューの T19-SEC-2）：その団体のフォルダ（path の2つ目のフォルダがその団体）に 5 つ以上あれば
--- too_many_orphans（届いた物を外して予約し直す繰り返しで、1つの団体が bucket を埋められないようにする。画面は document_orphan_paths の
--- path を消してから足し直す）。fixture の O_G1 が G1 のフォルダに1つある。状態・5 つの確かめの後、容量の確かめの前
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
-                      from generate_series(1, 4) $q$),
-  tests.e('invalid_state', '{"status": "not_submitted", "reason": "too_many_orphans"}'),
-  '予約：団体のフォルダにどの提出にも属さない物が 5 つあれば too_many_orphans');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
-                      from generate_series(1, 3) $q$),
-  '10', '予約：4 つなら足せる');
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_NOFILE::text || '/' || gen_random_uuid()::text || '.pdf')
-                      from generate_series(1, 4) $q$),
-  tests.e('invalid_state', '{"status": "submitted", "reason": "too_many_orphans"}'),
-  '予約：部門長の代理の予約も、その団体のフォルダの物で数える（ほかの提出物の分も）');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ select tests.put_object(b, :Y1::text || '/' || g::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
-                      from (values ('documents', :G2), ('pgtap-other', :G1)) v(b, g), generate_series(1, 4);
-                      select tests.put_object('documents', 'pgtap/' || gen_random_uuid()::text || '.pdf') from generate_series(1, 4) $q$),
-  '10', '予約：ほかの団体のフォルダ・ほかの bucket・形の違う名前の物は数えない');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ insert into public.document_submissions (document_id, group_id, year_id) values (:DOC_NOFILE, :G1, :Y1);
-                      insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size, created_by)
-                      select x.id, :Y1, :DOC_NOFILE, :G1, :Y1::text || '/' || :G1::text || '/' || :DOC_NOFILE::text || '/' || x.id::text || '.pdf', 'application/pdf', 1, :rep
-                      from (select gen_random_uuid() as id from generate_series(1, 4)) x;
-                      select tests.put_object('documents', f.object_path) from public.document_files f where f.document_id = :DOC_NOFILE and f.group_id = :G1 $q$),
-  '10', '予約：DB の行がある物（届いたファイル）は数えない');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_STALL, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
-                      from generate_series(1, 4) $q$),
-  tests.e('invalid_state', '{"status": "submitted", "reason": "not_editable"}'), '予約：書けない状態（not_editable）は too_many_orphans より先');
-select is(tests.q('rep2', $q$ select (public.reserve_document_file(:DOC_STALL, :G2, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
-                      select x.id, :Y1, :DOC_STALL, :G2, :Y1::text || '/' || :G2::text || '/' || :DOC_STALL::text || '/' || x.id::text || '.pdf', 'application/pdf', 1
-                      from (select gen_random_uuid() as id from generate_series(1, 5)) x;
-                      select tests.put_object('documents', :Y1::text || '/' || :G2::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
-                      from generate_series(1, 5) $q$),
-  tests.e('invalid_state', '{"status": "returned", "reason": "too_many_files"}'), '予約：5 つ（too_many_files）は too_many_orphans より先');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
-                      from generate_series(1, 4);
-                      select tests.put_object('documents', 'pgtap/full.pdf', jsonb_build_object('size', 943718400)) $q$),
-  tests.e('invalid_state', '{"status": "not_submitted", "reason": "too_many_orphans"}'), '予約：too_many_orphans は容量（storage_full）より先');
-select is(tests.q('rep', $q$ select tests.name_of((public.reserve_document_file(:DOC_STALL, :G1, :F_G1, 'application/pdf', 1000)).id) $q$,
-                  $q$ select tests.put_object('documents', :Y1::text || '/' || :G1::text || '/' || :DOC_STALL::text || '/' || gen_random_uuid()::text || '.pdf')
-                      from generate_series(1, 4) $q$),
-  'F_G1', '予約の送り直し（同じ id・同じ中身）は、どの提出にも属さない物の数を見ずに同じ行を返す');
--- bucket の合計 900 MiB（943718400 B）：届いた物（metadata の size）＋届いていない予約（申告）＋今回。fixture と F_G1B では、届いた物が
--- F_G1 の 1000 と O_G1 の 500（ほかの bucket の 7 は数えない）、届いていない予約が F_Y2 の 2000 と F_G1B の 300 で、合計 3800
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 11)).id $q$,
-                  $q$ select tests.put_object('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 3800 - 10)) $q$),
-  tests.e('invalid_state', '{"status": "not_submitted", "reason": "storage_full"}'), '予約：bucket の合計が 900 MiB を 1 B でも超えるなら storage_full');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ select tests.put_object('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 3800 - 10)) $q$),
-  '10', '予約：ちょうど 900 MiB までは足せる');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ set local session_replication_role = replica;
-                      update storage.objects set metadata = '{"size": 1}' where bucket_id = 'documents' and name = tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1');
-                      set local session_replication_role = origin;
-                      select tests.put_object('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 2801 - 10)) $q$),
-  '10', '予約：届いた物は申告（1000）でなく実際の大きさ（1）で数える');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 11)).id $q$,
-                  $q$ set local session_replication_role = replica;
-                      update storage.objects set metadata = '{"size": 1}' where bucket_id = 'documents' and name = tests.doc_path('Y1', 'G1', 'DOC_STALL', 'F_G1');
-                      set local session_replication_role = origin;
-                      select tests.put_object('documents', 'pgtap/big.pdf', jsonb_build_object('size', 943718400 - 2801 - 10)) $q$),
-  tests.e('invalid_state', '{"status": "not_submitted", "reason": "storage_full"}'), '予約：実際の大きさで数えても、超えれば storage_full');
-select is(tests.q('rep', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).size $q$,
-                  $q$ insert into storage.objects (bucket_id, name, metadata) values ('pgtap-other', 'pgtap/big.pdf', jsonb_build_object('size', 943718400)) $q$),
-  '10', '予約：ほかの bucket の物は数えない');
--- 予約の中身：提出の行がなければ作り（未提出）、ファイルの行を入れ、提出の版を進める（ファイルの組も提出の版で守る）。理由は置かない
-select coalesce(max(id), 0) as m0 from public.audit_logs \gset
-select set_config('app.reason', '前の理由', true);
+-- T24 で止めた（033）。後の節が使う T24 の前のファイルの行は tests.add_file で入れる
 insert into tests.ids values ('F1', gen_random_uuid()), ('F2', gen_random_uuid()), ('F3', gen_random_uuid()), ('F4', gen_random_uuid()),
   ('F5', gen_random_uuid()), ('F6', gen_random_uuid());
-select is(tests.run('rep', $q$ select tests.name_of((public.reserve_document_file(:DOC_NOFILE, :G1, :F1, 'application/pdf', 100)).id) $q$), 'F1',
-  'rep：G1 の DOC_NOFILE に F1 を予約する');
-select is((select format('%s %s %s %s', status, (submitted_at is null)::text, proxy::text, (updated_at = now())::text) from public.document_submissions
-           where document_id = tests.id('DOC_NOFILE') and group_id = tests.id('G1')),
-  'not_submitted true false true', '予約で提出の行ができる（未提出・提出の日時なし・代理でない。版は今）');
-select is((select format('%s %s %s %s', tests.name_of(created_by), content_type, size, (object_path = tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F1'))::text)
-           from public.document_files where id = tests.id('F1')),
-  'rep application/pdf 100 true', '予約したファイルの行：予約した人・形・申告の大きさ・path');
-select is(tests.audit_since(:m0), 'document_submissions insert null, document_files insert null',
-  '予約は理由を置かない（同じトランザクションの前の理由を引き継がない）');
-select set_config('app.reason', '', true);
+select is(tests.add_file('rep', 'DOC_NOFILE', 'G1', 'F1', 'application/pdf', 100), 'F1', '（準備）rep が G1 の DOC_NOFILE に上げていた F1（T24 の前のファイル）');
 
 -- ================================================================ ③ discard_document_file
 -- 1. forbidden：ファイルの行がない・呼べない人（ほかの団体・部門員・閲覧のみ・ほかの年度の部門長以上）。どれも同じ forbidden（有無を漏らさない）
@@ -534,8 +364,8 @@ select is(tests.q('rep', $q$ select (public.withdraw_document(:DOC_STALL, :G1, '
   tests.e('conflict', format('{"document_id": "%s", "group_id": "%s"}', tests.id('DOC_STALL'), tests.id('G1'))),
   '楽観ロック：1 マイクロ秒でも前のミリ秒なら conflict');
 -- ファイルの確かめ：付けたファイルは届いていること（ファイルが要らない提出物でも）
-select is(tests.run('rep2', $q$ select tests.name_of((public.reserve_document_file(:DOC_NOFILE, :G2, :F2, 'image/jpeg', 100)).id) $q$), 'F2',
-  'rep2：G2 の DOC_NOFILE（行なし）に F2 を予約する（行ができる）');
+select is(tests.add_file('rep2', 'DOC_NOFILE', 'G2', 'F2', 'image/jpeg', 100), 'F2',
+  '（準備）rep2 が G2 の DOC_NOFILE（行なし）に予約していた F2（T24 の前のファイル。行ができる）');
 select is(tests.run('rep2', $q$ select (public.submit_document(:DOC_NOFILE, :G2, tests.sub_ts('DOC_NOFILE', 'G2'))).status $q$),
   tests.e('invalid_state', '{"status": "not_submitted", "reason": "not_uploaded"}'), '提出：届いていない予約があれば not_uploaded（ファイルが要らない提出物でも。版より先）');
 insert into storage.objects (bucket_id, name, metadata) values ('documents', tests.doc_path('Y1', 'G2', 'DOC_NOFILE', 'F2', 'jpg'), '{"size": 80}');
@@ -551,7 +381,7 @@ select is(tests.run('rep2', $q$ select format('%s %s %s %s %s', (s).status, (s).
 select is(tests.run('rep2', $q$ select (public.submit_document(:DOC_NOFILE, :G2, tests.sub_ts('DOC_NOFILE', 'G2'))).status $q$),
   tests.e('invalid_state', '{"status": "submitted", "reason": "not_editable"}'), '提出：提出済みをもう一度出すと not_editable');
 select is(tests.run('rep2', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G2, :F3, 'application/pdf', 10)).id $q$),
-  tests.e('invalid_state', '{"status": "submitted", "reason": "not_editable"}'), '提出の後は、店長はファイルを足せない');
+  tests.e('invalid_state', '{"reason": "uploads_disabled"}'), '提出の後も、店長はファイルを足せない（T24 から予約はいつも uploads_disabled）');
 select is(tests.run('rep2', $q$ select public.discard_document_file(:F2) $q$),
   tests.e('invalid_state', '{"status": "submitted", "reason": "not_editable"}'), '提出の後は、店長は届いた物を外せない');
 select is(tests.q('admin', $q$ select late from public.v_document_status where document_id = :DOC_NOFILE and group_id = :G2 $q$), 'false',
@@ -580,13 +410,10 @@ select is(tests.q('viewer', $q$ select format('%s %s', (s).status, (s).proxy::te
   'forbidden', 'G4 の副店長はほかの団体（G2）の代理の提出を取り消せない');
 select is(tests.run('rep2', $q$ select format('%s %s', (s).status, (s).proxy::text) from (select public.withdraw_document(:DOC_NOFILE, :G2, tests.sub_ts('DOC_NOFILE', 'G2')) as s) x $q$),
   'not_submitted false', '代理の提出も、その団体の店長が取り消せる（代理の印も消える）');
--- ファイルが要る提出物（G4 の DOC_STALL）：ファイルがなければ no_file。副店長（viewer）が足して上げて出す
-select is(tests.run('viewer', $q$ select (public.submit_document(:DOC_STALL, :G4, null)).status $q$),
-  tests.e('invalid_state', '{"status": "not_submitted", "reason": "no_file"}'), '提出：ファイルが要る提出物で、ファイルがなければ no_file');
-select is((select count(*)::int from public.document_submissions where document_id = tests.id('DOC_STALL') and group_id = tests.id('G4')), 0,
-  '失敗した提出は、作りかけた提出の行も残さない');
-select is(tests.run('viewer', $q$ select tests.name_of((public.reserve_document_file(:DOC_STALL, :G4, :F4, 'application/pdf', 200)).id) $q$), 'F4',
-  'viewer（G4 の副店長）：G4 の DOC_STALL に F4 を予約する');
+-- 前はファイルが要った提出物（G4 の DOC_STALL。T24 から requires_file はいつも false。ファイルなしでも出せることは 033）。副店長（viewer）が
+-- T24 の前に上げていた F4 を付けて出す
+select is(tests.add_file('viewer', 'DOC_STALL', 'G4', 'F4', 'application/pdf', 200), 'F4',
+  '（準備）viewer（G4 の副店長）が G4 の DOC_STALL に予約していた F4');
 insert into storage.objects (bucket_id, name, metadata) values ('documents', tests.doc_path('Y1', 'G4', 'DOC_STALL', 'F4'), '{"size": 200}');
 select is(tests.run('viewer', $q$ select format('%s %s %s', (s).status, (s).proxy::text, tests.name_of((s).submitted_by))
                                   from (select public.submit_document(:DOC_STALL, :G4, tests.sub_ts('DOC_STALL', 'G4')) as s) x $q$),
@@ -710,7 +537,7 @@ select is(tests.q('head', $q$ select string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s'
                                                      target_categories, food_only::text, requires_file::text, exists_in_year::text, coalesce(description, 'null')), ' / ' order by deadline)
                                from public.previous_year_documents(:Y1) $q$),
   'DOC_Y2_EARLY|2026-09-15 09:00:00|2027-09-15 09:00:00|{department,company}|true|false|true|説明 / '
-  || 'DOC_Y2|2026-10-01 12:00:00|2027-10-01 12:00:00|{stall}|false|true|false|null',
+  || 'DOC_Y2|2026-10-01 12:00:00|2027-10-01 12:00:00|{stall}|false|false|false|null',   -- requires_file は T24 から false
   '前年度の提出物：締切の順に、1日目の差（365 日）だけずらした締切（Asia/Tokyo の時刻は同じ）と、同じ題名がこの年度にあるか');
 select is(tests.q('admin2', $q$ select count(*) from public.previous_year_documents(:Y2) $q$), '0', '複製元のない年度の前年度の提出物は空');
 select is(tests.q('head', $q$ select count(*) from public.previous_year_documents(null) $q$), 'forbidden', '年度が null → forbidden');
@@ -743,7 +570,7 @@ select coalesce(max(id), 0) as m6 from public.audit_logs \gset
 select is(tests.run('head', $q$ select string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s', title, deadline at time zone 'Asia/Tokyo', target_categories, food_only::text, requires_file::text,
                                                        coalesce(files_deleted_at::text, 'null'), tests.name_of(created_by), tests.name_of(updated_by), coalesce(description, 'null')), ' / ')
                                from public.copy_previous_documents(:Y1, array[:DOC_Y2_EARLY, :DOC_Y2]) $q$),
-  'T-DOC_Y2|2027-10-01 12:00:00|{stall}|false|true|null|head|head|null',
+  'T-DOC_Y2|2027-10-01 12:00:00|{stall}|false|false|null|head|head|null',   -- requires_file は T24 から false
   '写す：同じ題名（T-DOC_Y2_EARLY）は飛ばし、DOC_Y2 だけを、ずらした締切で写す（files_deleted_at は写さない。書いた人は写した人）');
 select is(tests.audit_since(:m6), 'documents insert 提出物の前年度からの写し', '写すの監査の理由は「提出物の前年度からの写し」');
 select is(tests.run('head', $q$ select count(*) from public.copy_previous_documents(:Y1, array[:DOC_Y2_EARLY, :DOC_Y2]) $q$), '0',
@@ -814,8 +641,8 @@ select tests.set_scenario('requesting');
 -- ================================================================ ⑨ not_found と forbidden、例外の直し（D-19）
 -- 読めない提出物の有無を漏らさない：その年度の部門長以上にとって、ほかの年度の提出物とない提出物は同じ not_found。呼べない人は、ある提出物でも
 -- ない提出物でも同じ forbidden
-select is(tests.q('admin', $q$ select (public.reserve_document_file(:DOC_Y2, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$)
-          || ' ' || tests.q('admin', $q$ select (public.reserve_document_file(gen_random_uuid(), :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$),
+select is(tests.q('admin', $q$ select (public.submit_document(:DOC_Y2, :G1, null)).status $q$)
+          || ' ' || tests.q('admin', $q$ select (public.submit_document(gen_random_uuid(), :G1, null)).status $q$),
   'not_found not_found', 'ほかの年度の提出物とない提出物は、どちらも not_found（detail なし）');
 select is(tests.q('rep2', $q$ select (public.submit_document(:DOC_NOFILE, :G1, null)).status $q$)
           || ' ' || tests.q('rep2', $q$ select (public.submit_document(gen_random_uuid(), :G1, null)).status $q$),
@@ -838,24 +665,7 @@ end $$;
 create trigger zz_tests_raise before insert on public.document_files for each row execute function tests.tg_raise();
 create trigger zz_tests_raise before update on public.document_submissions for each row execute function tests.tg_raise();
 create trigger zz_tests_raise before insert on public.documents for each row execute function tests.tg_raise();
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select set_config('tests.raise', 'document_files:23503', true) $q$), 'not_found',
-  '予約：ファイルの insert の外部キーの違反（確かめた後に提出物・団体が消えた）→ not_found');
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select set_config('tests.raise', 'document_files:23505', true) $q$),
-  tests.e('invalid_input', '{"field": "file_id", "reason": "in_use"}'), '予約：一意の違反（同じ id がほかの提出に同時に入った）→ file_id・in_use');
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select set_config('tests.raise', 'document_files:23514:document_files_size_check', true) $q$),
-  tests.e('invalid_input', '{"field": "size"}'), '予約：大きさの CHECK の違反 → size');
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select set_config('tests.raise', 'document_files:23514:document_files_content_type_check', true) $q$),
-  tests.e('invalid_input', '{"field": "content_type"}'), '予約：形の CHECK の違反 → content_type');
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select set_config('tests.raise', 'document_files:23514:document_files_object_path_check', true) $q$),
-  tests.e('invalid_input', '{"field": "file_id"}'), '予約：ほかの CHECK の違反 → file_id');
-select is(tests.q('head', $q$ select (public.reserve_document_file(:DOC_NOFILE, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$,
-                  $q$ select set_config('tests.raise', 'document_files:22001', true) $q$),
-  tests.e('invalid_input', '{"field": "file_id"}'), '予約：クラス 22 の誤り → file_id');
+-- 予約の例外の直し（外部キー・一意・CHECK・クラス 22）は、T24 で予約を止めたので消した
 select is(tests.q('rep2', $q$ select (public.submit_document(:DOC_STALL, :G2, tests.sub_ts('DOC_STALL', 'G2'))).status $q$,
                   $q$ select set_config('tests.raise', 'document_submissions:23514', true);
                       insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size)
@@ -907,17 +717,6 @@ select is(tests.q('head', $q$ select count(*) from public.copy_previous_document
                   $q$ delete from public.documents where year_id = :Y1 and title = 'T-DOC_Y2';
                       select set_config('tests.raise', 'documents:22008', true) $q$),
   tests.e('invalid_input', '{"field": "document_ids", "reason": "invalid"}'), '写す：クラス 22 の誤り → invalid');
--- 途中で失敗すると何も変わらない（予約の失敗で、作りかけた提出の行も残さない）
-select coalesce(max(id), 0) as m9 from public.audit_logs \gset
-select set_config('tests.raise', 'document_files:23503', true);
-select is(tests.run('rep', $q$ select (public.reserve_document_file(:DOC_FOOD, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$), 'not_found',
-  '（準備）飲食だけの提出物は G1 が対象でない');
-update public.groups set is_food = true where id = tests.id('G1');
-select is(tests.run('rep', $q$ select (public.reserve_document_file(:DOC_FOOD, :G1, gen_random_uuid(), 'application/pdf', 10)).id $q$), 'not_found',
-  '予約：ファイルの insert で失敗すると not_found');
-select set_config('tests.raise', '', true);
-select is((select count(*)::int from public.document_submissions where document_id = tests.id('DOC_FOOD')) || ' ' || tests.audit_since(:m9), '0 ',
-  '失敗した予約は、作りかけた提出の行も監査も残さない');
 -- anon は RPC を呼べない
 select tests.login_anon();
 select throws_ok($q$ select public.reserve_document_file(gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'application/pdf', 1) $q$, '42501', null,

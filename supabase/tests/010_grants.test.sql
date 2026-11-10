@@ -123,6 +123,10 @@ insert into tests.expected_fn values
   ('image_internal', 'private.assert_item_image_tier(text)'),
   ('image_internal', 'private.tg_check_image_path()'),
   ('image_internal', 'private.tg_item_images_objects_guard()');
+-- 提出物をドライブへ（0023。T24）：requires_file をいつも false にするトリガー関数（提出物の補助と同じく誰も実行できない）。RPC は
+-- 置き換えるだけで数・引数・返り値は変えない
+insert into tests.expected_fn values
+  ('document_helper', 'private.tg_documents_keep_requires_file_off()');
 
 -- ---------------------------------------------------------------- 関数
 select is_empty($$ select sig from tests.expected_fn where to_regprocedure(sig) is null $$,
@@ -212,7 +216,7 @@ select is_empty($$ select f.sig from tests.expected_fn f
   '提出物のトリガー関数（set_actor・区分の並べ直し・storage.objects の書き込みの守り）と RPC の補助（lock_document_year・target_document）は、authenticated・anon・supabase_auth_admin・PUBLIC のどれも実行できない（T19）');
 select is((select string_agg(p.proname || '=' || case when p.prosecdef then 'definer' else 'invoker' end || ':' || p.provolatile::text, ' ' order by p.proname)
            from tests.expected_fn f join pg_proc p on p.oid = to_regprocedure(f.sig) where f.kind = 'document_helper'),
-  'lock_document_year=definer:v target_document=definer:v tg_documents_normalize_categories=invoker:v tg_documents_objects_guard=definer:v tg_documents_set_actor=invoker:v',
+  'lock_document_year=definer:v target_document=definer:v tg_documents_keep_requires_file_off=invoker:v tg_documents_normalize_categories=invoker:v tg_documents_objects_guard=definer:v tg_documents_set_actor=invoker:v',
   '提出物の RPC の補助は DEFINER・VOLATILE（ロックの後を新しいスナップショットで読む）、トリガー関数は INVOKER（storage.objects の書き込みの守りは、書いたロールによらず予約と提出を読み、ロックの後に読み直すので DEFINER・VOLATILE）');
 -- 提出物の RPC（T19。04 の DB 関数）：引数名・既定値・返り値。どれも名前つきで呼ぶ。既定値は delete_year_document_files の理由（null）だけ
 -- （base_updated_at は既定値なし：行がなければ null を名前つきで渡す）

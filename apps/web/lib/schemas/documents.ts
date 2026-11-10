@@ -5,12 +5,15 @@
 // - 説明は前後の空白を除き、空なら null、2000 字まで（D-33）。
 // - 締切は日付（2000-01-01〜2200-12-31）と時刻（HH:mm。既定 17:00）を Asia/Tokyo として読み、`YYYY-MM-DDTHH:mm:00+09:00` で送る。
 // - 出す団体の区分は1つ以上（DB が重なりを除いて並べる）。
+// - 提出先の URL（T24。D-62）は前後の空白を除き、空なら null。`https://` で始まり、空白・制御文字を含まない 500 字まで（DB の
+//   documents_submit_url_check と同じ形。lib/modules/documents/submit-url.ts）。「ファイルが要る」は T24 でやめた（送らない。DB がいつも false）。
 // - 差し戻しの理由は必須で 1〜1000 字、承認のメモは任意（空なら null）、紙での承認のメモは必須（どれも前後の空白を除く）。
 // - 字数は文字（Unicode のコードポイント。lib/schemas/notice-fields.ts の charCount）で数え、DB の length と同じにする。
 import { Constants, type GroupCategory } from '@gaapp/shared';
 import { z } from 'zod';
 import type { DocumentRow, DocumentWrite } from '@/lib/data/documents';
 import { formatTime, tokyoDate } from '@/lib/datetime';
+import { isSubmitUrl, SUBMIT_URL_MAX } from '@/lib/modules/documents/submit-url';
 import { REVIEW_NOTE_MAX, REVIEW_NOTE_MESSAGES, reviewNoteSchema } from './document-fields';
 import { charCount } from './notice-fields';
 
@@ -26,6 +29,8 @@ export const DOCUMENT_DATE_MIN = '2000-01-01';
 export const DOCUMENT_DATE_MAX = '2200-12-31';
 /** 締切の時刻の既定 */
 export const DEFAULT_DEADLINE_TIME = '17:00';
+/** 提出先の URL の上限（documents_submit_url_check。T24） */
+export const DOCUMENT_SUBMIT_URL_MAX = SUBMIT_URL_MAX;
 
 /** 欄の誤りの文言（04「提出状況」の提出物の設定の送る前の確かめ） */
 export const DOCUMENT_FORM_MESSAGES = {
@@ -36,6 +41,8 @@ export const DOCUMENT_FORM_MESSAGES = {
   timeRequired: '締切の時刻を入れてください',
   outOfRange: '2000年1月1日〜2200年12月31日の日付にしてください',
   categoryRequired: '出す団体の区分を1つ以上選んでください',
+  submitUrlInvalid: '提出先の URL は https:// で始まる形で入れてください（空白は入れられません）',
+  submitUrlTooLong: `提出先の URL は ${SUBMIT_URL_MAX} 字までです`,
 } as const;
 
 /** 登録・編集のダイアログの入力の値 */
@@ -50,14 +57,14 @@ export interface DocumentFormValues {
   categories: GroupCategory[];
   /** 飲食の団体だけ（Q8） */
   foodOnly: boolean;
-  /** ファイルが要る（Q7。既定は入れる） */
-  requiresFile: boolean;
+  /** 提出先の URL（T24。共有ドライブのフォルダ・Google フォームなど。空なら提出先なし） */
+  submitUrl: string;
 }
 
 /** 欄ごとの誤り */
-export type DocumentFormErrors = Partial<Record<'title' | 'description' | 'deadlineDate' | 'deadlineTime' | 'categories', string>>;
+export type DocumentFormErrors = Partial<Record<'title' | 'description' | 'deadlineDate' | 'deadlineTime' | 'categories' | 'submitUrl', string>>;
 
-/** 新しく登録するときの入力（時刻は 17:00、ファイルが要る、飲食の団体だけは外す。区分は選ばない） */
+/** 新しく登録するときの入力（時刻は 17:00、飲食の団体だけは外す。区分は選ばない。提出先の URL は空） */
 export const EMPTY_DOCUMENT_FORM: Readonly<DocumentFormValues> = Object.freeze({
   title: '',
   description: '',
@@ -65,12 +72,12 @@ export const EMPTY_DOCUMENT_FORM: Readonly<DocumentFormValues> = Object.freeze({
   deadlineTime: DEFAULT_DEADLINE_TIME,
   categories: [],
   foodOnly: false,
-  requiresFile: true,
+  submitUrl: '',
 });
 
-/** 編集で開くときの値（その提出物の今の値。締切は Asia/Tokyo の日付と時刻、説明が null なら空） */
+/** 編集で開くときの値（その提出物の今の値。締切は Asia/Tokyo の日付と時刻、説明・提出先の URL が null なら空） */
 export function documentFormValuesOf(
-  row: Pick<DocumentRow, 'title' | 'description' | 'deadline' | 'target_categories' | 'food_only' | 'requires_file'>,
+  row: Pick<DocumentRow, 'title' | 'description' | 'deadline' | 'target_categories' | 'food_only' | 'submit_url'>,
 ): DocumentFormValues {
   return {
     title: row.title,
@@ -79,7 +86,7 @@ export function documentFormValuesOf(
     deadlineTime: formatTime(row.deadline),
     categories: [...row.target_categories],
     foodOnly: row.food_only,
-    requiresFile: row.requires_file,
+    submitUrl: row.submit_url ?? '',
   };
 }
 
@@ -115,6 +122,14 @@ export const documentCategoriesSchema = z
   .transform((cs) => CATEGORIES.filter((c) => cs.includes(c)))
   .refine((cs) => cs.length > 0, { message: DOCUMENT_FORM_MESSAGES.categoryRequired });
 
+/** 提出先の URL（T24。前後の空白を除き、空なら null。https・空白と制御文字なし・500 字まで） */
+export const documentSubmitUrlSchema = z
+  .string()
+  .trim()
+  .transform((s) => (s === '' ? null : s))
+  .refine((s) => s === null || [...s].length <= SUBMIT_URL_MAX, { message: DOCUMENT_FORM_MESSAGES.submitUrlTooLong })
+  .refine((s) => s === null || [...s].length > SUBMIT_URL_MAX || isSubmitUrl(s), { message: DOCUMENT_FORM_MESSAGES.submitUrlInvalid });
+
 /** 締切（`YYYY-MM-DDTHH:mm:00+09:00`）。日付・時刻が合わなければ欄ごとの誤り */
 function checkDeadline(date: string, time: string): { ok: true; deadline: string } | { ok: false; errors: DocumentFormErrors } {
   const d = date.trim();
@@ -144,7 +159,9 @@ export function checkDocumentForm(v: DocumentFormValues): { ok: true; write: Doc
   if (!categories.success) errors.categories = DOCUMENT_FORM_MESSAGES.categoryRequired;
   const deadline = checkDeadline(v.deadlineDate, v.deadlineTime);
   if (!deadline.ok) Object.assign(errors, deadline.errors);
-  if (!title.success || !description.success || !categories.success || !deadline.ok) return { ok: false, errors };
+  const submitUrl = documentSubmitUrlSchema.safeParse(v.submitUrl);
+  if (!submitUrl.success) errors.submitUrl = submitUrl.error.issues[0]?.message ?? DOCUMENT_FORM_MESSAGES.submitUrlInvalid;
+  if (!title.success || !description.success || !categories.success || !deadline.ok || !submitUrl.success) return { ok: false, errors };
   return {
     ok: true,
     write: {
@@ -153,7 +170,7 @@ export function checkDocumentForm(v: DocumentFormValues): { ok: true; write: Doc
       deadline: deadline.deadline,
       target_categories: categories.data,
       food_only: v.foodOnly,
-      requires_file: v.requiresFile,
+      submit_url: submitUrl.data,
     },
   };
 }
@@ -176,7 +193,7 @@ export const documentFormSchema = z
     deadlineTime: z.string(),
     categories: z.array(z.string()),
     foodOnly: z.boolean(),
-    requiresFile: z.boolean(),
+    submitUrl: z.string(),
   })
   .transform((v, ctx): DocumentWrite => {
     const r = checkDocumentForm({ ...v, categories: v.categories as GroupCategory[] });

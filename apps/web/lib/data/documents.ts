@@ -53,12 +53,12 @@ export {
 // ---------------------------------------------------------------- 読む（提出状況）
 
 /** 提出物の列（設定と提出状況の列の見出し。書いた人・直した人は読まない） */
-export const DOCUMENT_COLUMNS = 'id, title, description, deadline, target_categories, food_only, requires_file, files_deleted_at, updated_at';
+export const DOCUMENT_COLUMNS = 'id, title, description, deadline, target_categories, food_only, submit_url, files_deleted_at, updated_at';
 
 /** 提出物の1行 */
 export type DocumentRow = Pick<
   Tables<'documents'>,
-  'id' | 'title' | 'description' | 'deadline' | 'target_categories' | 'food_only' | 'requires_file' | 'files_deleted_at' | 'updated_at'
+  'id' | 'title' | 'description' | 'deadline' | 'target_categories' | 'food_only' | 'submit_url' | 'files_deleted_at' | 'updated_at'
 >;
 
 /** 提出状況の提出の列（v_document_status。団体 × 提出物。題名・締切は提出物の行から引く） */
@@ -458,7 +458,8 @@ export interface DocumentWrite {
   /** 出す団体の区分（1つ以上。DB が重なりを除いて並べる） */
   target_categories: GroupCategory[];
   food_only: boolean;
-  requires_file: boolean;
+  /** 提出先の URL（T24。https・500 字まで。なければ null）。requires_file は送らない（DB がいつも false にする） */
+  submit_url: string | null;
 }
 
 /** 同じ年度に同じ題名がある（23505・documents_year_id_title_key）ときの AppError の reason */
@@ -487,7 +488,7 @@ export function toDocumentRow(row: DocumentRow): DocumentRow {
     deadline: row.deadline,
     target_categories: row.target_categories,
     food_only: row.food_only,
-    requires_file: row.requires_file,
+    submit_url: row.submit_url,
     files_deleted_at: row.files_deleted_at,
     updated_at: row.updated_at,
   };
@@ -561,7 +562,7 @@ function sameInstant(a: string, b: string): boolean {
 }
 
 /**
- * 読み直した提出物が送った値と同じか（題名・説明〔null と空をそろえる〕・飲食の団体だけ・ファイルが要るは同じ値、締切は同じ時刻、区分は
+ * 読み直した提出物が送った値と同じか（題名・説明〔null と空をそろえる〕・飲食の団体だけ・提出先の URL〔null と空をそろえる〕は同じ値、締切は同じ時刻、区分は
  * 重なりを除いた同じ組）。(B1) の「保存されていました」「登録されていました」と、編集で何も変えていないかの判定に使う。
  */
 export function sameDocumentWrite(row: Pick<DocumentRow, keyof DocumentWrite>, w: DocumentWrite): boolean {
@@ -571,7 +572,7 @@ export function sameDocumentWrite(row: Pick<DocumentRow, keyof DocumentWrite>, w
     row.title === w.title &&
     (row.description || null) === (w.description || null) &&
     row.food_only === w.food_only &&
-    row.requires_file === w.requires_file &&
+    (row.submit_url || null) === (w.submit_url || null) &&
     sameInstant(row.deadline, w.deadline) &&
     a.length === b.length &&
     a.every((c, k) => c === b[k])

@@ -125,7 +125,7 @@ const WRITE: DocumentWrite = {
   deadline: '2026-10-05T17:00:00+09:00',
   target_categories: ['stall', 'department'],
   food_only: false,
-  requires_file: true,
+  submit_url: null,
 };
 const DOC_ROW = { id: D, ...WRITE, deadline: '2026-10-05T08:00:00+00:00', files_deleted_at: null, updated_at: V };
 
@@ -436,7 +436,8 @@ describe('T19 提出物の登録・変更・削除（直接。RLS の can_lead�
     expect(sameDocumentWrite({ ...DOC_ROW, target_categories: ['department', 'stall'] }, WRITE)).toBe(true);
     expect(sameDocumentWrite({ ...DOC_ROW, target_categories: ['stall'] }, WRITE)).toBe(false);
     expect(sameDocumentWrite({ ...DOC_ROW, deadline: '2026-10-05T08:01:00Z' }, WRITE)).toBe(false);
-    expect(sameDocumentWrite({ ...DOC_ROW, requires_file: false }, WRITE)).toBe(false);
+    expect(sameDocumentWrite({ ...DOC_ROW, submit_url: 'https://forms.gle/x' }, WRITE)).toBe(false);
+    expect(sameDocumentWrite({ ...DOC_ROW, submit_url: '' }, { ...WRITE, submit_url: null })).toBe(true);
     expect(normalizeCategories(['rest_area', 'stall', 'rest_area'])).toEqual(['stall', 'rest_area']);
   });
 });
@@ -585,7 +586,7 @@ describe('T19 提出・取り消し・承認・差し戻し（RPC の引数）',
     expect(messageFor(await caught(approveDocument(D, G, null, V, state('approved').client)), { rpc: 'approve_document' })).toBe('すでに承認されています。読み直しました');
     const conflict = fake(() => ({ error: { code: 'P0001', message: 'conflict', details: JSON.stringify({ document_id: D, group_id: G }) }, status: 400 }));
     expect(messageFor(await caught(submitDocument(D, G, V, conflict.client)), { rpc: 'submit_document' })).toBe(
-      'ほかの人がこの提出を先に変えました（ファイルを足す・外すなど）。読み直しました。確かめてから、もう一度押してください',
+      'ほかの人がこの提出を先に変えました（提出・取り消し・ファイルを外すなど）。読み直しました。確かめてから、もう一度押してください',
     );
     const notFound = fake(() => ({ error: { code: 'P0001', message: 'not_found' }, status: 400 }));
     expect(messageFor(await caught(withdrawDocument(D, G, V, notFound.client)), { rpc: 'withdraw_document' })).toBe(

@@ -491,8 +491,8 @@ async function seedDocuments(s: Scenario): Promise<void> {
     { title: '食品の取り扱い届', deadline: tokyoDeadline(3), categories: ['stall'], foodOnly: true, createdBy: H },
     { title: '出店計画書', deadline: tokyoDeadline(6), categories: ['stall', 'department'], createdBy: H },
     { title: '火気の使用届', deadline: tokyoDeadline(9), categories: ['stall'], createdBy: H },
-    { title: '企業ブースの配置図', deadline: tokyoDeadline(12, '12:00'), categories: ['company', 'rest_area'], requiresFile: false, createdBy: H },
-    { title: '片付けの報告', deadline: tokyoDeadline(20), categories: ['stall', 'department', 'company', 'rest_area'], requiresFile: false, createdBy: H },
+    { title: '企業ブースの配置図', deadline: tokyoDeadline(12, '12:00'), categories: ['company', 'rest_area'], createdBy: H },
+    { title: '片付けの報告', deadline: tokyoDeadline(20), categories: ['stall', 'department', 'company', 'rest_area'], createdBy: H },
   ]);
   const plan = docs[2];
   const names = Object.keys(s.ids.groups).sort().filter((n) => n !== REP_GROUP && (n.startsWith('模擬店') || n.startsWith('部門')));
