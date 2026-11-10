@@ -827,20 +827,27 @@ export function StockInput({
     const value = counts?.[line.id] ?? 0;
     // 備品（数えるだけ）は数の行がなければ前年も 0（04「在庫入力」。在庫一覧の表の前年との差と同じ）。品目は行がなければ「—」
     const prevCount = prev?.get(`${roomId}:${line.id}`) ?? (kind === 'count' && prev ? 0 : undefined);
+    // 行のメニュー（写真を足す・替える）のある行は2段にする（390px で名前が1字ずつ折り返さないように。1段目に名前とメニュー、
+    // 2段目の右に数。画像は2段の左。T23）
+    const withMenu = kind === 'count' && access.writable;
     return (
       <li
         key={line.id}
         data-testid={kind === 'item' ? 'stock-item-row' : 'count-item-row'}
         {...(kind === 'item' ? { 'data-item-id': line.id } : { 'data-count-item-id': countItemIdOf(line.id) ?? '' })}
-        className="flex items-center gap-3 px-3 py-3"
+        className={cn(
+          'px-3 py-3',
+          withMenu ? 'grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2' : 'flex items-center gap-3',
+        )}
       >
         <ItemImage
           name={line.name}
           path={kind === 'item' ? itemPaths.get(line.id) : countPaths.get(countItemIdOf(line.id) ?? '')}
           images={images}
           zoomable
+          className={withMenu ? 'row-span-2' : undefined}
         />
-        <div className="min-w-0 flex-1">
+        <div className={cn('min-w-0', withMenu ? 'col-start-2 row-start-1' : 'flex-1')}>
           <p className="font-medium break-words">{line.name}</p>
           <p className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
             {hasPrev && !prevFailed ? (
@@ -859,12 +866,12 @@ export function StockInput({
           value={value}
           onChange={(v) => change(line.id, v)}
           disabled={!access.writable || busy}
-          className="shrink-0"
+          className={cn('shrink-0', withMenu && 'col-span-2 col-start-2 row-start-2 justify-self-end')}
         />
-        {kind === 'count' && access.writable ? (
+        {withMenu ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button type="button" variant="ghost" size="icon" className="-mr-2 size-11 shrink-0" aria-label={`${line.name}のメニュー`} data-testid="count-item-menu">
+              <Button type="button" variant="ghost" size="icon" className="col-start-3 row-start-1 -mr-2 size-11 shrink-0" aria-label={`${line.name}のメニュー`} data-testid="count-item-menu">
                 <EllipsisVertical aria-hidden />
               </Button>
             </DropdownMenuTrigger>
