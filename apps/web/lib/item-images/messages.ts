@@ -7,6 +7,7 @@ import { labelOf } from '@/lib/labels';
 /** 品目の画像の RPC の invalid_state の reason */
 export const ITEM_IMAGE_STATE_MESSAGES: Readonly<Record<string, string>> = {
   too_many_reservations: '送っている途中の写真が多すぎます（1人 10 枚まで）。1 時間ほど待ってから、もう一度送ってください',
+  too_many_orphans: '前の写真の残りが片付きません。少し待ってから、もう一度送ってください',
   storage_full: '画像の置き場がいっぱいです（上限 100 MB）。管理者に知らせてください',
   not_uploaded: '写真が届いていませんでした。もう一度送ってください',
   used: 'ほかの人が先に画像を変えました。読み直しました',

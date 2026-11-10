@@ -200,6 +200,91 @@ describe('T23 レビューで直したこと（送り直しの id・上限の片
     expect(s.log).toEqual(['rpc:reserve_item_image', 'item_image_uploads', 'rpc:reserve_item_image']);
   });
 
+  it('R1：set の応答が切れた後の送り直し（予約が使用済み）は、上げずに set を呼び、返った前の物を消す', async () => {
+    const s = setup({
+      rpc: (c) =>
+        c.table === 'rpc:reserve_item_image' ? { data: { id: IMAGE, object_path: PATH, used_at: '2026-11-10T01:00:00Z', expires_at: '2026-11-10T02:00:00Z' } } : undefined,
+    });
+    const r = await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env, imageId: IMAGE });
+    expect(s.log).toEqual(['rpc:reserve_item_image', 'rpc:set_item_image', 'remove']);
+    expect(s.removes).toEqual([[OLD]]);
+    expect(r).toMatchObject({ path: PATH, previous: OLD, previousRemoved: true });
+  });
+
+  it('R1：使用済みの予約で行の画像がもう別の物なら set が used で失敗し、その物は消さない', async () => {
+    const s = setup({
+      rpc: (c) => {
+        if (c.table === 'rpc:reserve_item_image') return { data: { id: IMAGE, object_path: PATH, used_at: '2026-11-10T01:00:00Z' } };
+        if (c.table === 'rpc:set_item_image') return { error: { code: 'P0001', message: 'invalid_state', details: JSON.stringify({ reason: 'used' }) } };
+        return undefined;
+      },
+    });
+    const e = (await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env, imageId: IMAGE }).catch((x: unknown) => x)) as ItemImageError;
+    expect(e.step).toBe('set');
+    expect(s.uploads).toHaveLength(0);
+    expect(s.removes).toHaveLength(0);
+  });
+
+  it('S2：too_many_orphans なら、そのフォルダの行の画像以外を消してから1回だけ予約し直す', async () => {
+    let reserves = 0;
+    const CURRENT = `count-items/${TARGET}/00000000-0000-4000-8000-0000000000dd.webp`;
+    const A = '00000000-0000-4000-8000-0000000000e1.webp';
+    const B = '00000000-0000-4000-8000-0000000000e2.webp';
+    const s = setup({
+      rpc: (c) => {
+        if (c.table === 'rpc:reserve_item_image') {
+          reserves += 1;
+          if (reserves === 1) return { error: { code: 'P0001', message: 'invalid_state', details: JSON.stringify({ reason: 'too_many_orphans' }) } };
+          return undefined;
+        }
+        if (c.table === 'count_items') return { data: { image_path: CURRENT } };
+        if (c.table === 'item_image_uploads') return { data: [] };
+        return undefined;
+      },
+      list: () => ({ data: [{ name: CURRENT.split('/')[2]! }, { name: A }, { name: B }], error: null }),
+    });
+    await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env, newId: () => IMAGE });
+    expect(s.lists).toEqual([`count-items/${TARGET}`]);
+    expect(s.removes[0]).toEqual([`count-items/${TARGET}/${A}`, `count-items/${TARGET}/${B}`]);
+    expect(reserves).toBe(2);
+  });
+
+  it('R2：期限が切れていて物は届いている予約は、upload が 403 でも set を試して成功する', async () => {
+    const s = setup({
+      rpc: (c) =>
+        c.table === 'rpc:reserve_item_image' ? { data: { id: IMAGE, object_path: PATH, used_at: null, expires_at: '2000-01-01T00:00:00Z' } } : undefined,
+      upload: () => ({ data: null, error: storageError('403', 'AccessDenied') }),
+    });
+    const r = await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env, imageId: IMAGE });
+    expect(s.log).toEqual(['rpc:reserve_item_image', 'upload', 'rpc:set_item_image', 'remove']);
+    expect(r.path).toBe(PATH);
+  });
+
+  it('R2：期限切れで upload が 403、set も失敗したら、upload の拒否の文言を出す（自分の物を消さない）', async () => {
+    const s = setup({
+      rpc: (c) => {
+        if (c.table === 'rpc:reserve_item_image') return { data: { id: IMAGE, object_path: PATH, used_at: null, expires_at: '2000-01-01T00:00:00Z' } };
+        if (c.table === 'rpc:set_item_image') return { error: { code: 'P0001', message: 'invalid_state', details: JSON.stringify({ reason: 'not_uploaded' }) } };
+        return undefined;
+      },
+      upload: () => ({ data: null, error: storageError('403', 'AccessDenied') }),
+    });
+    const e = (await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env, imageId: IMAGE }).catch((x: unknown) => x)) as ItemImageError;
+    expect(e.step).toBe('upload');
+    expect(s.removes).toHaveLength(0);
+  });
+
+  it('R2：期限が切れていない予約の upload の 403 は、set を試さずそのまま失敗する', async () => {
+    const s = setup({
+      rpc: (c) =>
+        c.table === 'rpc:reserve_item_image' ? { data: { id: IMAGE, object_path: PATH, used_at: null, expires_at: '2999-01-01T00:00:00Z' } } : undefined,
+      upload: () => ({ data: null, error: storageError('403', 'AccessDenied') }),
+    });
+    const e = (await attachItemImage('count_item', TARGET, new Blob(['x']), { client: s.client, env, imageId: IMAGE }).catch((x: unknown) => x)) as ItemImageError;
+    expect(e.step).toBe('upload');
+    expect(s.log).toEqual(['rpc:reserve_item_image', 'upload']);
+  });
+
   it('removeItemImageFolder：消した行のフォルダの物を一覧して remove する（失敗しても投げない）', async () => {
     const s = setup({ list: () => ({ data: [{ name: 'a.webp' }, { name: 'b.jpg' }], error: null }) });
     expect(await removeItemImageFolder('count_item', TARGET, { client: s.client })).toBe(true);

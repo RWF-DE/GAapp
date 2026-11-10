@@ -245,12 +245,55 @@ begin
   end if;
 end $$;
 
+-- 予約の上限を確かめる（reserve_item_image の中から、勧告的ロックを取った後に、新しい予約と予約し直し〔期限の切れた予約を延ばす〕の両方で呼ぶ。
+-- p_exclude_id は予約し直しの予約の id で、その行は数えない〔今回の 1 MiB として足す〕）。invalid_state の reason：
+--   too_many_reservations：呼んだ人の、行の画像にしていない（used_at が null の）予約のうち、生きている物と、期限が切れても物が Storage に
+--     残っている物が 10 個以上（上げて set_item_image を呼ばない物を積み上げて bucket を埋めさせない。物を消せば数えない）
+--   too_many_orphans：その対象のフォルダ（items/{id}/・count-items/{id}/）に、行の画像（image_path）でも生きた予約の物でもない物が 3 個以上
+--     （画像を替えるたびに前の物を消さずに溜めて bucket を埋めさせない。画面はそのフォルダの、行の画像以外を remove してから1回だけやり直す）
+--   storage_full：bucket の合計（届いた物の size ＋ 届いていない生きた予約 × 1 MiB ＋ 今回の 1 MiB）が 100 MiB を超える
+create function private.assert_item_image_quota(p_kind text, p_target_id uuid, p_exclude_id uuid)
+returns void language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_current text;
+  v_prefix text := case when p_kind = 'item' then 'items/' else 'count-items/' end || p_target_id::text || '/';
+begin
+  if (select count(*) from public.item_image_uploads r
+      where r.created_by = auth.uid() and r.used_at is null and r.id is distinct from p_exclude_id
+        and (r.expires_at > now()
+             or exists (select 1 from storage.objects o where o.bucket_id = 'item-images' and o.name = r.object_path))) >= 10 then
+    perform private.fail('invalid_state', jsonb_build_object('reason', 'too_many_reservations'));
+  end if;
+
+  if p_kind = 'item' then
+    select i.image_path into v_current from public.items i where i.id = p_target_id;
+  else
+    select c.image_path into v_current from public.count_items c where c.id = p_target_id;
+  end if;
+  if (select count(*) from storage.objects o
+      where o.bucket_id = 'item-images' and left(o.name, length(v_prefix)) = v_prefix
+        and o.name is distinct from v_current
+        and not exists (select 1 from public.item_image_uploads r
+                        where r.object_path = o.name and r.used_at is null and r.expires_at > now())) >= 3 then
+    perform private.fail('invalid_state', jsonb_build_object('reason', 'too_many_orphans'));
+  end if;
+
+  if (select coalesce(sum((o.metadata ->> 'size')::bigint), 0) from storage.objects o where o.bucket_id = 'item-images')
+     + (select count(*) * 1048576 from public.item_image_uploads r
+        where r.expires_at > now() and r.used_at is null and r.id is distinct from p_exclude_id
+          and not exists (select 1 from storage.objects o where o.bucket_id = 'item-images' and o.name = r.object_path))
+     + 1048576 > 104857600 then
+    perform private.fail('invalid_state', jsonb_build_object('reason', 'storage_full'));
+  end if;
+end $$;
+
 -- reserve_item_image：画像の予約を作り、予約の行（DB が作った object_path を含む）を返す。画面はその path へ Storage API で upload する
 -- （upsert: false）。同じ id・同じ中身（kind・対象・形・予約した人）の送り直しは、その行を返す（期限が切れていて、まだ上げておらず、まだ
--- 使っていなければ、期限を延ばす〔予約し直し〕）。中身が違えば invalid_input（image_id・in_use）。新しい予約は、呼んだ人の行の画像にしていない
--- 予約（生きている物と、期限が切れても物が残っている物）が 10 個未満（invalid_state・too_many_reservations）で、bucket の合計（届いた物の metadata の size ＋ 届いていない生きた予約 × 1 MiB
--- ＋ 今回の 1 MiB）が 100 MiB（104857600 バイト）以下のとき（invalid_state・storage_full。bucket documents の 900 MiB と合わせて無料プランの
--- 1 GB を超えない）。容量と数は勧告的ロックで予約どうしを順にして数える
+-- 使っていなければ、新しい予約と同じ上限を確かめてから期限を延ばす〔予約し直し〕）。中身が違えば invalid_input（image_id・in_use）。
+-- 上限（private.assert_item_image_quota。新しい予約と予約し直しの両方）：invalid_state の too_many_reservations〔呼んだ人の行の画像にしていない
+-- 予約が、生きている物と期限が切れても物が残っている物で 10 個〕・too_many_orphans〔その対象のフォルダに、行の画像でも生きた予約でもない物が
+-- 3 個〕・storage_full〔bucket の合計＝届いた物の metadata の size ＋ 届いていない生きた予約 × 1 MiB ＋ 今回の 1 MiB が 100 MiB
+-- （104857600 バイト）を超える。bucket documents の 900 MiB と合わせて無料プランの 1 GB を超えない〕。数は勧告的ロックで予約どうしを順にして数える
 create function public.reserve_item_image(p_kind text, p_target_id uuid, p_image_id uuid, p_content_type text)
 returns public.item_image_uploads language plpgsql security definer set search_path = '' as $$
 declare
@@ -289,27 +332,14 @@ begin
     end if;
     if v_up.used_at is null and v_up.expires_at <= now()
        and not exists (select 1 from storage.objects o where o.bucket_id = 'item-images' and o.name = v_up.object_path) then
+      perform private.assert_item_image_quota(p_kind, p_target_id, p_image_id);   -- 予約し直しも新しい予約と同じ上限（2026-11-10 のセキュリティのレビュー）
       update public.item_image_uploads r set expires_at = now() + interval '1 hour' where r.id = p_image_id
       returning * into v_up;
     end if;
     return v_up;                                     -- 送り直し（同じ id・同じ中身）
   end if;
 
-  -- 人ごとの上限：行の画像にしていない予約のうち、生きている物と、物が Storage に残っている物（期限が切れても）を 10 個まで。上げて
-  -- set_item_image を呼ばない物を積み上げて bucket を埋めさせない（2026-11-10 のセキュリティのレビュー）。物を消せば数えない
-  if (select count(*) from public.item_image_uploads r
-      where r.created_by = auth.uid() and r.used_at is null
-        and (r.expires_at > now()
-             or exists (select 1 from storage.objects o where o.bucket_id = 'item-images' and o.name = r.object_path))) >= 10 then
-    perform private.fail('invalid_state', jsonb_build_object('reason', 'too_many_reservations'));
-  end if;
-  if (select coalesce(sum((o.metadata ->> 'size')::bigint), 0) from storage.objects o where o.bucket_id = 'item-images')
-     + (select count(*) * 1048576 from public.item_image_uploads r
-        where r.expires_at > now() and r.used_at is null
-          and not exists (select 1 from storage.objects o where o.bucket_id = 'item-images' and o.name = r.object_path))
-     + 1048576 > 104857600 then
-    perform private.fail('invalid_state', jsonb_build_object('reason', 'storage_full'));
-  end if;
+  perform private.assert_item_image_quota(p_kind, p_target_id, null);
 
   v_path := case when p_kind = 'item' then 'items/' else 'count-items/' end || p_target_id::text || '/' || p_image_id::text || '.'
             || case p_content_type when 'image/webp' then 'webp' else 'jpg' end;
@@ -404,7 +434,7 @@ grant select on table public.item_image_uploads to authenticated;
 revoke all on function private.my_item_image_upload_paths(), private.my_item_image_orphan_paths() from public, anon;
 grant execute on function private.my_item_image_upload_paths(), private.my_item_image_orphan_paths() to authenticated;
 revoke all on function private.can_write_stocks_any(), private.tg_check_image_path(), private.tg_item_images_objects_guard(),
-  private.assert_item_image_tier(text) from public, anon, authenticated;
+  private.assert_item_image_tier(text), private.assert_item_image_quota(text, uuid, uuid) from public, anon, authenticated;
 revoke all on all functions in schema private from public;
 
 -- RPC は 0005 と同じ繰り返しで、authenticated だけが実行できる

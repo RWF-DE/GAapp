@@ -144,7 +144,7 @@ begin
 end $$;
 grant execute on all functions in schema tests to authenticated, anon;
 
-select plan(126);
+select plan(134);
 
 -- ================================================================ ① 形
 select col_type_is('items', 'image_path', 'text');
@@ -318,6 +318,49 @@ select is(tests.rpc_error('head', $q$ select public.reserve_item_image('count_it
 select is(tests.rpc_error('head', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG20, 'image/webp') $q$,
                           $q$ select tests.put_object('item-images', 'count-items/' || :CI_SPARE::text || '/' || gen_random_uuid() || '.webp', '{"size": 83886080}') $q$) ->> 'code',
   'ok', '届いた物 80 MiB なら、まだ予約できる');
+
+-- 予約し直し（期限の切れた、物のない、使っていない予約を延ばす）も、新しい予約と同じ上限を通る（セキュリティのレビュー：10 個作って期限を待ち、
+-- また 10 個作って古い id を予約し直せば上限を超えられた）
+select is(tests.rpc_error('staff', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG11, 'image/webp') $q$,
+                          $q$ update public.item_image_uploads set expires_at = now() - interval '1 minute' where id = :IMG11;
+                              select tests.reserve_as('staff', 'count_item', 'CI_SPARE', 'IMG20') $q$),
+  '{"code": "invalid_state", "detail": {"reason": "too_many_reservations"}}'::jsonb,
+  '期限の切れた古い予約の予約し直しは、ほかに生きた予約が 10 個あれば too_many_reservations');
+select is(tests.rpc_error('staff', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG11, 'image/webp') $q$,
+                          $q$ update public.item_image_uploads set expires_at = now() - interval '1 minute' where id = :IMG11 $q$) ->> 'code',
+  'ok', '予約し直す予約自身は数えないので、ほかが 9 個なら予約し直せる');
+select is(tests.rpc_error('head', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG25, 'image/webp') $q$,
+                          $q$ select tests.reserve_as('head', 'count_item', 'CI_SPARE', 'IMG25');
+                              update public.item_image_uploads set expires_at = now() - interval '1 minute' where id = :IMG25;
+                              select tests.put_object('item-images', 'count-items/' || :CI_SPARE::text || '/' || gen_random_uuid() || '.webp', '{"size": 94371840}') $q$),
+  '{"code": "invalid_state", "detail": {"reason": "storage_full"}}'::jsonb,
+  '期限の切れた予約の予約し直しも、bucket の合計が 100 MiB を超えれば storage_full');
+select is(tests.rpc_error('head', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG25, 'image/webp') $q$,
+                          $q$ select tests.reserve_as('head', 'count_item', 'CI_SPARE', 'IMG25');
+                              update public.item_image_uploads set expires_at = now() - interval '1 minute' where id = :IMG25;
+                              select tests.put_object('item-images', 'count-items/' || :CI_SPARE::text || '/' || gen_random_uuid() || '.webp', '{"size": 83886080}') $q$) ->> 'code',
+  'ok', '期限の切れた予約の予約し直しは、合計が収まれば通る');
+
+-- 対象ごとの上げたまま残った物（行の画像でも生きた予約の物でもない物）：3 個で too_many_orphans
+select is(tests.rpc_error('head', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG24, 'image/webp') $q$,
+                          $q$ select tests.put_object('item-images', 'count-items/' || :CI_SPARE::text || '/' || gen_random_uuid() || '.webp', '{"size": 1024}')
+                              from generate_series(1, 3) $q$),
+  '{"code": "invalid_state", "detail": {"reason": "too_many_orphans"}}'::jsonb,
+  'その対象のフォルダに、行の画像でも生きた予約でもない物が 3 個あれば too_many_orphans');
+select is(tests.rpc_error('head', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG24, 'image/webp') $q$,
+                          $q$ select tests.put_object('item-images', 'count-items/' || :CI_SPARE::text || '/' || gen_random_uuid() || '.webp', '{"size": 1024}')
+                              from generate_series(1, 2) $q$) ->> 'code',
+  'ok', '残った物が 2 個なら予約できる');
+select is(tests.rpc_error('head', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG24, 'image/webp') $q$,
+                          $q$ select tests.put_object('item-images', 'count-items/' || :CI_SPARE::text || '/' || gen_random_uuid() || '.webp', '{"size": 1024}')
+                              from generate_series(1, 2);
+                              select tests.reserve_as('head', 'count_item', 'CI_SPARE', 'IMG26');
+                              select tests.put_object('item-images', 'count-items/' || :CI_SPARE::text || '/' || :IMG26::text || '.webp', '{"size": 1024}') $q$) ->> 'code',
+  'ok', '生きた予約の物（上げた直後で set の前）は残った物に数えない');
+select is(tests.rpc_error('head', $q$ select public.reserve_item_image('count_item', :CI_SPARE, :IMG24, 'image/webp') $q$,
+                          $q$ select tests.put_object('item-images', 'count-items/' || :CI_WHITE::text || '/' || gen_random_uuid() || '.webp', '{"size": 1024}')
+                              from generate_series(1, 5) $q$) ->> 'code',
+  'ok', '残った物は対象ごと（ほかの対象のフォルダの物は数えない）');
 
 -- ================================================================ ④ Storage の insert
 select is(tests.try_upload('admin', tests.img_path('item', 'desk', 'IMG2', 'jpg'), 'image/jpeg'), 'ok', 'admin：自分の予約の path に上げられる');
