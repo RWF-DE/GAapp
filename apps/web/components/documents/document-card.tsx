@@ -2,8 +2,9 @@
 
 // 自団体の提出物（/document）のカード1枚（04「自団体の提出物」のカードに出すもの、notes/T19.md「パート B・C の約束」6。T19・D-55）。
 // 上から：題名と状態の印（締切の後）、締切（「締切 10/5（月）17:00」と相対の言い方。未提出・差し戻しで過ぎていれば注意の色）、説明
-// （書いたとおりの文字）、ファイルが要らない提出物の文、差し戻し（目立つ枠に日時・理由・「直してから…」）、提出済み（日時と前回の差し戻しの
-// 理由）、承認（日時とメモ・紙などで受け取った）、代理の提出、ファイル（一覧と「ファイルを追加」）、知らせ、「提出した」（押せない理由）・
+// （書いたとおりの文字）、提出先（T24。「提出先を開く」のリンク〔新しいタブ〕か、まだないときの文）、差し戻し（目立つ枠に日時・理由・
+// 「直してから…」）、提出済み（日時と前回の差し戻しの理由）、承認（日時とメモ・紙などで受け取った）、代理の提出、ファイル（T24 の前に上がった
+// ものがあるときだけ一覧。「ファイルを追加」は T24 でやめた）、知らせ、「提出した」（押せない理由）・
 // 「提出を取り消す」。出す操作は店長・副店長の決まり（repDocumentActions。管理者が兼ねていても同じ）。色だけで表さず、文字を出す。
 import { useEffect, useRef } from 'react';
 import { TokyoTime } from '@/components/common/tokyo-time';
@@ -13,12 +14,15 @@ import { DOCUMENT_MARK_LABELS, REP_MARK_TEXTS, REP_STATUS_LABELS } from '@/lib/m
 import type { RepDocumentActions } from '@/lib/modules/documents/permissions';
 import { deadlineRelative, deadlineText, type RepDocumentCard } from '@/lib/modules/documents/rep';
 import { cn } from '@/lib/utils';
-import { DocumentFileAdder, DocumentFileList, REP_ADDER_TESTIDS, REP_FILE_TESTIDS, type FileEntry } from './document-file-list';
+import { submitUrlHref } from '@/lib/modules/documents/submit-url';
+import { DocumentFileList, REP_FILE_TESTIDS, type FileEntry } from './document-file-list';
 import { DOCUMENT_MARK_CLASS, DocumentStatusBadge } from './status-badge';
-import type { UploadProgress } from './use-document-uploader';
+import { SubmitLink } from './submit-link';
 
-/** ファイルが要らない提出物の文 */
-export const NO_FILE_TEXT = 'ファイルは要りません（「提出した」を押すだけで出せます。付けてもかまいません）';
+/** 提出先の URL があるときの文（T24。D-62） */
+export const SUBMIT_URL_HINT = 'ドライブやフォームで出してから、「提出した」を押してください（出せる人・見られる人は、提出先の共有の設定で決まります）';
+/** 提出先の URL がないときの文（T24） */
+export const NO_SUBMIT_URL_TEXT = '提出先は総務から知らされます（決まると、ここに「提出先を開く」が出ます）';
 /** 差し戻しの枠の最後の文 */
 export const RETURNED_HINT = '直してから、もう一度「提出した」を押してください';
 
@@ -39,24 +43,20 @@ export interface DocumentCardProps {
   now: number;
   actions: RepDocumentActions;
   highlighted: boolean;
+  /** T24 の前に上がったファイル（なければ空。ファイルの欄を出さない） */
   entries: readonly FileEntry[];
-  /** その提出のファイルの数（届いていないもの・そのタブの失敗を含む） */
-  fileCount: number;
-  /** 上げている・外している・送っている（足す・外す・提出・取り消しを押せない） */
+  /** 外している・送っている（外す・提出・取り消しを押せない） */
   busy: boolean;
-  /** その画面のどこかで上げている（「保存」を押せない。レビューの F2） */
+  /** その画面のどこかで外している（「保存」を押せない。レビューの F2） */
   saveBlocked: boolean;
-  progress: UploadProgress | null;
   fileError: string | null;
   note: CardNote | null;
   /** 「提出した」を押せない理由（押せるなら null） */
   submitBlocker: string | null;
   rereading: boolean;
-  onFiles: (files: File[]) => void;
   onOpen: (e: FileEntry) => void;
   onSave: (e: FileEntry) => void;
   onRemove: (e: FileEntry) => void;
-  onRetry: (e: FileEntry) => void;
   onSubmit: () => void;
   onWithdraw: () => void;
   onReread: () => void;
@@ -72,7 +72,9 @@ export function DocumentCard(props: DocumentCardProps) {
   }, [highlighted]);
   const relative = deadlineRelative(doc.deadline, now);
   const titleId = cardTitleId(doc.document_id);
-  const showFiles = props.entries.length > 0 || actions.addFile || props.progress !== null || props.fileError !== null;
+  // ファイルの欄は、T24 の前に上がったファイルがあるか、開く・外すの知らせがあるときだけ（ファイルを上げる欄は T24 でやめた）
+  const showFiles = props.entries.length > 0 || props.fileError !== null;
+  const hasSubmitUrl = submitUrlHref(doc.submit_url) !== null;
   return (
     <article
       ref={ref}
@@ -108,9 +110,14 @@ export function DocumentCard(props: DocumentCardProps) {
           {doc.description}
         </p>
       ) : null}
-      {!doc.requires_file ? (
-        <p data-testid="document-card-no-file" className="text-sm text-muted-foreground">
-          {NO_FILE_TEXT}
+      {hasSubmitUrl ? (
+        <div className="space-y-1 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <SubmitLink url={doc.submit_url} testId="document-card-submit-url" className="text-base" />
+          {actions.submit ? <p className="text-muted-foreground">{SUBMIT_URL_HINT}</p> : null}
+        </div>
+      ) : actions.submit ? (
+        <p data-testid="document-card-no-submit-url" className="text-sm text-muted-foreground">
+          {NO_SUBMIT_URL_TEXT}
         </p>
       ) : null}
 
@@ -169,23 +176,19 @@ export function DocumentCard(props: DocumentCardProps) {
             testIds={REP_FILE_TESTIDS}
             canRemoveUploaded={actions.removeFile}
             canRemovePending={actions.removePending}
-            canRetry={actions.addFile}
+            canRetry={false}
             disabled={busy}
             saveBlocked={props.saveBlocked}
             onOpen={props.onOpen}
             onSave={props.onSave}
             onRemove={props.onRemove}
-            onRetry={props.onRetry}
+            onRetry={() => undefined}
           />
-          <DocumentFileAdder
-            testIds={REP_ADDER_TESTIDS}
-            canAdd={actions.addFile}
-            count={props.fileCount}
-            disabled={busy}
-            progress={props.progress}
-            error={props.fileError}
-            onFiles={props.onFiles}
-          />
+          {props.fileError ? (
+            <p role="alert" data-testid="document-file-error" className="text-sm text-destructive">
+              {props.fileError}
+            </p>
+          ) : null}
         </section>
       ) : null}
 

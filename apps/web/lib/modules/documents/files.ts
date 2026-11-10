@@ -228,18 +228,16 @@ export function fileStateOf(f: { id: string; uploaded: boolean | null }, local: 
 
 /** 「提出した」を押せない理由（04「自団体の提出物」。押せるなら null） */
 export const SUBMIT_BLOCKERS = {
-  noFile: 'ファイルを1つ以上足してください',
-  notUploaded: '届いていないファイルがあります。外すか、もう一度送ってください',
+  notUploaded: '届いていないファイルがあります。外してから提出してください',
   uploading: 'アップロードが終わるまでお待ちください',
 } as const;
 
 /**
- * 「提出した」（代わりに提出するも同じ）を押せない理由：アップロード中 → 届いていないファイルがある → ファイルが要る提出物でファイルが
- * 0（DB の not_uploaded・no_file と同じ条件。アップロード中は終わった後の読み直しを待つ）。押せるなら null。
+ * 「提出した」（代わりに提出するも同じ）を押せない理由：送っている間 → T24 の前の届いていないファイルがある（DB の not_uploaded と同じ条件）。
+ * T24（D-62）から requires_file はいつも偽なので、ファイルがなくても出せる（no_file は返らない）。押せるなら null。
  */
-export function submitBlocker(requiresFile: boolean, files: readonly { uploaded: boolean | null }[], uploading: boolean): string | null {
+export function submitBlocker(files: readonly { uploaded: boolean | null }[], uploading: boolean): string | null {
   if (uploading) return SUBMIT_BLOCKERS.uploading;
   if (files.some((f) => !f.uploaded)) return SUBMIT_BLOCKERS.notUploaded;
-  if (requiresFile && files.length === 0) return SUBMIT_BLOCKERS.noFile;
   return null;
 }

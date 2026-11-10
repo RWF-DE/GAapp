@@ -518,7 +518,8 @@ describe('T19 提出物の RPC と Storage の文言（04「提出物」のエ�
   it('invalid_state のほかの reason', () => {
     const cases: [string, string, string][] = [
       ['submit_document', 'no_file', 'ファイルを1つ以上足してから提出してください'],
-      ['submit_document', 'not_uploaded', '届いていないファイルがあります。外すか、もう一度送ってから提出してください'],
+      ['submit_document', 'not_uploaded', '届いていないファイルがあります。外してから提出してください'],
+      ['reserve_document_file', 'uploads_disabled', 'ファイルはアプリに上げられなくなりました。提出先（ドライブやフォーム）に出してから「提出した」を押してください'],
       ['reserve_document_file', 'too_many_files', 'ファイルは1つの提出物に 5 つまでです'],
       ['reserve_document_file', 'too_many_orphans', '前に外したファイルを片付けられませんでした。通信を確かめてから、もう一度足してください'],
       [
@@ -606,7 +607,7 @@ describe('T19 提出物の RPC と Storage の文言（04「提出物」のエ�
     expect(DOCUMENT_FILE_MISSING_MESSAGE).toContain('このファイルはもうありません');
     expect(Object.keys(DOCUMENT_FILES_LOCKED_MESSAGES)).toEqual(['submitted', 'approved']);
     expect(Object.keys(DOCUMENT_NOT_EDITABLE_MESSAGES)).toEqual(['not_submitted', 'submitted', 'returned', 'approved']);
-    expect(Object.keys(DOCUMENT_STATE_MESSAGES)).toEqual(['no_file', 'not_uploaded', 'too_many_files', 'too_many_orphans', 'storage_full', 'not_closed']);
+    expect(Object.keys(DOCUMENT_STATE_MESSAGES)).toEqual(['no_file', 'not_uploaded', 'too_many_files', 'too_many_orphans', 'storage_full', 'not_closed', 'uploads_disabled']);
     expect(Object.keys(DOCUMENT_INPUT_MESSAGES)).toContain('file_id:in_use');
   });
 });

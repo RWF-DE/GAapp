@@ -7,7 +7,8 @@
 //   先読み〔planDocumentPrefetch〕と同じキャッシュ）。最後に読み込んだ日時と「読み直す」（締切を過ぎたかを決める時刻も押した時刻にする）。
 // - カード（document-card.tsx）を締切の早い順に。出す操作は店長・副店長の決まり（repDocumentActions。管理者が兼ねていても同じ。
 //   部門長以上の操作は提出状況で行う）。終了した年度は書くためのものを出さず、帯を出す（開く・保存はできる）。
-// - ファイル（use-document-uploader.ts）：確かめ → 写真の作り直し → 予約 → 上げる → 読み直す。届いたファイルを外すときは確かめる。
+// - 提出先（T24。D-62）：ファイルは提出先（ドライブ・フォーム）に出す。カードに「提出先を開く」（新しいタブ）を出し、ファイルを上げる欄は
+//   出さない。T24 の前に上がったファイル（use-document-uploader.ts の外す・状態）は一覧に出し、届いたファイルを外すときは確かめる。
 //   開く・保存は押したときに署名つき URL（60 秒）を作る（file-open.ts。URL は残さない）。上げている間は、どのカードの「保存」も押せない
 //   （保存はこのページを URL へ移すので、ページを離れる確かめが出るため。レビューの F2）。開く・保存の 403 は開く・保存の文言（UX-4）。
 // - 「提出した」・「提出を取り消す」は確かめてから送る（submission-write.ts の (B1)。版はカードの updated_at）。止められたら読み直して今の
@@ -60,15 +61,15 @@ export const EMPTY_DOCUMENT_REP = 'この団体が出す提出物はまだあり
 /** 代表する団体がない（RequireAudience を通った後に立場が変わったとき） */
 export const NO_GROUP_TITLE = '店長・副店長を務める団体がありません';
 /** 「提出した」の確かめの説明 */
-export const SUBMIT_CONFIRM_TEXT = '提出すると、総務が確かめるまでファイルを変えられません（確かめる前なら「提出を取り消す」で戻せます）。';
+export const SUBMIT_CONFIRM_TEXT = '提出先（ドライブやフォーム）に出してから押してください。総務が確かめる前なら「提出を取り消す」で戻せます。';
 /** 「提出を取り消す」の確かめの説明（2つの文） */
 export const WITHDRAW_CONFIRM_TEXTS = ['未提出に戻ります。', '直してから、もう一度「提出した」を押してください。'] as const;
 // 届いたファイルを外す確かめの説明（/documents のシートと同じ。document-file-list.tsx に置き、ここから同じ名前で出し直す）
 export { REMOVE_CONFIRM_TEXT } from './document-file-list';
 
-/** 提出するファイルの数の文 */
+/** T24 の前のファイルがあるときの文（なければ空。T24 からファイルは提出先〔ドライブ・フォーム〕に出す） */
 export function submitFilesText(n: number): string {
-  return n > 0 ? `ファイル ${n} つを提出します。` : 'ファイルなしで提出します。';
+  return n > 0 ? `ファイル ${n} つも一緒に提出します。` : '';
 }
 
 /** 「提出した」の成功の知らせ（締切の後なら「（締切の後）」を添える） */
@@ -390,11 +391,7 @@ function DocumentBoard({
                 const localOnly = uploader.localOnly(slot, rowIds);
                 const entries = fileEntriesOf(card.files, localOnly, uploader.uploading, uploader.failed, uploader.sent);
                 const uploadBusy = uploader.busy(slot);
-                const blocker = submitBlocker(
-                  card.doc.requires_file === true,
-                  [...card.files.map((f) => f.file), ...localOnly.map(() => ({ uploaded: false }))],
-                  uploadBusy,
-                );
+                const blocker = submitBlocker([...card.files.map((f) => f.file), ...localOnly.map(() => ({ uploaded: false }))], uploadBusy);
                 return (
                   <DocumentCard
                     key={documentId}
@@ -403,19 +400,15 @@ function DocumentBoard({
                     actions={repDocumentActions(card.status, status)}
                     highlighted={highlight?.doc.document_id === documentId}
                     entries={entries}
-                    fileCount={card.files.length + localOnly.length}
                     busy={uploadBusy || pendingDoc === documentId}
                     saveBlocked={uploader.active}
-                    progress={uploader.progress(slot)}
                     fileError={uploader.error(slot)}
                     note={notes.get(documentId)?.note ?? null}
                     submitBlocker={blocker}
                     rereading={rereading}
-                    onFiles={(files) => void uploader.add(target(card), files, card.files.length + localOnly.length)}
                     onOpen={(e) => void onOpen(card, e)}
                     onSave={(e) => void onSave(card, e)}
                     onRemove={(e) => void onRemove(card, e)}
-                    onRetry={(e) => void uploader.retry(e.id)}
                     onSubmit={() =>
                       void notLatestSubmit.confirmBeforeWrite().then((ok) => {
                         if (!ok) return;
@@ -452,7 +445,7 @@ function DocumentBoard({
         }}
       >
         <div data-testid="document-submit-confirm" className="text-sm">
-          <p>{submitTarget ? submitFilesText(submitTarget.files.length) : ''}</p>
+          {submitTarget && submitTarget.files.length > 0 ? <p>{submitFilesText(submitTarget.files.length)}</p> : null}
         </div>
       </ConfirmDialog>
       <ConfirmDialog

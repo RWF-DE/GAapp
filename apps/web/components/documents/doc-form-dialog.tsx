@@ -52,6 +52,7 @@ import {
   DOCUMENT_DATE_MAX,
   DOCUMENT_DATE_MIN,
   DOCUMENT_DESCRIPTION_MAX,
+  DOCUMENT_SUBMIT_URL_MAX,
   DOCUMENT_TITLE_MAX,
   documentFormValuesOf,
   EMPTY_DOCUMENT_FORM,
@@ -98,8 +99,9 @@ export const DOC_REREAD_AGAIN_FAILED_MESSAGE = 'まだ読み直せませんで�
 export const DESCRIPTION_HELP = '様式（ひな形）の置き場所もここに書けます';
 /** 日時の読み方の説明 */
 export const DEADLINE_TIME_ZONE_HELP = '日時は日本時間（Asia/Tokyo）として読みます';
-/** 「ファイルが要る」の添え書き（Q7） */
-export const REQUIRES_FILE_HELP = '外すと、団体は「提出した」を押すだけで出せます（ファイルを付けてもかまいません）';
+/** 「提出先の URL」の添え書き（T24。D-62。出せる人・見られる人はドライブの共有の設定で決まる） */
+export const SUBMIT_URL_HELP =
+  '共有ドライブのフォルダや Google フォームの URL（https:// で始まるもの）。出せる人・見られる人は、ドライブやフォームの共有の設定で決めてください';
 /** 「飲食の団体だけ」の添え書き（Q8） */
 export const FOOD_ONLY_HELP = '選んだ区分のうち、飲食の団体だけが出します';
 
@@ -136,9 +138,11 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 /** 下書きの形を確かめる（形が違えば戻さない。知らない区分は除く） */
 export function normalizeDocDraft(v: unknown): DocDraft | null {
   if (!isRecord(v) || !isRecord(v.values)) return null;
-  const { title, description, deadlineDate, deadlineTime, categories, foodOnly, requiresFile } = v.values;
+  const { title, description, deadlineDate, deadlineTime, categories, foodOnly, submitUrl } = v.values;
   for (const s of [title, description, deadlineDate, deadlineTime]) if (typeof s !== 'string') return null;
-  if (!Array.isArray(categories) || typeof foodOnly !== 'boolean' || typeof requiresFile !== 'boolean') return null;
+  if (!Array.isArray(categories) || typeof foodOnly !== 'boolean') return null;
+  // 提出先の URL は T24 で足した（T24 の前の下書き〔requiresFile を持ち submitUrl がない〕は空として戻す）
+  if (submitUrl !== undefined && typeof submitUrl !== 'string') return null;
   const id = v.id;
   const base = v.baseUpdatedAt;
   if (id !== null && typeof id !== 'string') return null;
@@ -151,7 +155,7 @@ export function normalizeDocDraft(v: unknown): DocDraft | null {
       deadlineTime: deadlineTime as string,
       categories: GROUP_CATEGORIES.filter((c) => categories.includes(c)),
       foodOnly,
-      requiresFile,
+      submitUrl: typeof submitUrl === 'string' ? submitUrl : '',
     },
     id,
     baseUpdatedAt: base,
@@ -212,7 +216,8 @@ function DocFormBody({
     tzHelp: `${baseId}-tz-help`,
     categories: `${baseId}-categories`,
     foodOnly: `${baseId}-food-only`,
-    requiresFile: `${baseId}-requires-file`,
+    submitUrl: `${baseId}-submit-url`,
+    submitUrlHelp: `${baseId}-submit-url-help`,
   };
 
   // 下書き（登録は 'doc:new'、編集は提出物ごと。開いたときの target で決める）
@@ -234,6 +239,7 @@ function DocFormBody({
   const mustSend = submit?.type === 'unknown' || submit?.type === 'unread';
   const titleCount = charCount(values.title.trim());
   const descriptionCount = charCount(values.description.trim());
+  const submitUrlCount = charCount(values.submitUrl.trim());
   const blocked = !writable || forbidden;
   const busy = pending || rereading;
   const next = { target_categories: values.categories, food_only: values.foodOnly };
@@ -572,25 +578,35 @@ function DocFormBody({
                 </p>
               </div>
             </div>
-            <div className="flex items-start gap-2">
-              <Checkbox
-                id={ids.requiresFile}
-                data-testid="doc-requires-file"
-                checked={values.requiresFile}
-                onCheckedChange={(v) => update({ requiresFile: v === true })}
-                disabled={busy}
-                aria-describedby={`${ids.requiresFile}-help`}
-                className="mt-0.5"
-              />
-              <div className="space-y-0.5">
-                <Label htmlFor={ids.requiresFile} className="font-normal">
-                  ファイルが要る
-                </Label>
-                <p id={`${ids.requiresFile}-help`} className="text-xs text-muted-foreground">
-                  {REQUIRES_FILE_HELP}
-                </p>
-              </div>
+          </div>
+
+          <div data-field="submitUrl" className="space-y-1.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <Label htmlFor={ids.submitUrl}>提出先の URL（任意）</Label>
+              <span
+                data-testid="doc-submit-url-count"
+                className={cn('text-xs tabular-nums text-muted-foreground', submitUrlCount > DOCUMENT_SUBMIT_URL_MAX && 'text-destructive')}
+              >
+                {submitUrlCount}/{DOCUMENT_SUBMIT_URL_MAX}
+              </span>
             </div>
+            <Input
+              id={ids.submitUrl}
+              data-testid="doc-submit-url"
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              placeholder="https://drive.google.com/…"
+              value={values.submitUrl}
+              onChange={(e) => update({ submitUrl: e.target.value })}
+              disabled={busy}
+              aria-invalid={errors.submitUrl ? true : undefined}
+              aria-describedby={ids.submitUrlHelp}
+            />
+            <p id={ids.submitUrlHelp} className="text-xs text-muted-foreground">
+              {SUBMIT_URL_HELP}
+            </p>
+            {fieldError('submitUrl')}
           </div>
 
           <div className="space-y-2 rounded-md bg-muted/50 px-3 py-2 text-sm">

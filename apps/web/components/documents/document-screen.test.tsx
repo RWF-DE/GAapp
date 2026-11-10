@@ -12,7 +12,7 @@
 // v_document_files の読み取りと RPC・Storage を DB と Storage API の動き（版・状態・予約した path・409・403）で小さくまねる。
 // 立場は useAuth の差し替え、時計は Date だけを止める（画面を開いた時刻）。写真の作り直し（image.ts）は動的 import を偽にする。
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppLink } from '@/components/common/app-link';
@@ -25,28 +25,15 @@ import {
   DOCUMENT_CONFLICT_MESSAGE,
   DOCUMENT_FILES_LOCKED_MESSAGES,
   DOCUMENT_NOT_EDITABLE_MESSAGES,
-  DOCUMENT_STATE_MESSAGES,
   STORAGE_ERROR_MESSAGES,
   STORAGE_SIGN_DENIED_MESSAGE,
 } from '@/lib/errors';
-import {
-  FILE_EMPTY_MESSAGE,
-  FILE_HINT,
-  FILE_SIZE_MESSAGE,
-  FILE_TYPE_MESSAGE,
-  FILES_FULL_MESSAGE,
-  IMAGE_DECODE_MESSAGE,
-  MAX_FILE_BYTES,
-  SUBMIT_BLOCKERS,
-  tooManyFilesMessage,
-} from '@/lib/modules/documents/files';
+import { SUBMIT_BLOCKERS } from '@/lib/modules/documents/files';
 import { queryKeys } from '@/lib/query';
 import type { AppSupabaseClient } from '@/lib/supabase/client';
 import { createFakeSupabase, type FakeCall, type FakeResult } from '@/lib/testing/fake-supabase';
 import { staticImportGraph } from '@/lib/testing/import-graph';
-import { LEAVE_MESSAGES } from '@/lib/unsaved-changes';
-import { NO_FILE_TEXT, RETURNED_HINT } from './document-card';
-import { SAVE_BLOCKED_TEXT } from './document-file-list';
+import { NO_SUBMIT_URL_TEXT, RETURNED_HINT, SUBMIT_URL_HINT } from './document-card';
 import {
   CLOSED_DOCUMENT_REP,
   DocumentScreen,
@@ -59,7 +46,7 @@ import {
 import { documentWritesImport, loadDocumentWrites, resetDocumentWritesForTest } from './document-writes';
 import { fileWindow, POPUP_BLOCKED_MESSAGE } from './file-open';
 import { REREAD_AGAIN_FAILED_MESSAGE, REREAD_FAILED_NOTICE, SUBMISSION_DONE_BEFORE, SUBMISSION_UNKNOWN } from './submission-write';
-import { DISCARD_UNKNOWN_MESSAGE, FILE_STATE_TEXTS, UPLOADING_LEAVE_MESSAGE, UPLOADING_LEAVE_MESSAGES } from './use-document-uploader';
+import { DISCARD_UNKNOWN_MESSAGE, FILE_STATE_TEXTS } from './use-document-uploader';
 
 const toast = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn(), success: vi.fn() }));
 vi.mock('sonner', () => ({ toast }));
@@ -153,7 +140,7 @@ interface DbStatus {
   title: string;
   description: string | null;
   deadline: string;
-  requires_file: boolean;
+  submit_url: string | null;
   status: 'not_submitted' | 'submitted' | 'returned' | 'approved';
   submitted_at: string | null;
   proxy: boolean;
@@ -179,7 +166,7 @@ const status = (document_id: string, over: Partial<DbStatus>): DbStatus => ({
   title: `書類${document_id.slice(-3)}`,
   description: null,
   deadline: '2026-10-10T08:00:00+00:00',
-  requires_file: true,
+  submit_url: null,
   status: 'not_submitted',
   submitted_at: null,
   proxy: false,
@@ -208,7 +195,7 @@ function seed() {
       review_note: '印鑑がありません\n押してから出し直してください',
       updated_at: V0,
     }),
-    status(D_REPORT, { title: '保健所への報告', deadline: '2026-10-20T08:00:00+00:00', requires_file: false }),
+    status(D_REPORT, { title: '保健所への報告', deadline: '2026-10-20T08:00:00+00:00', submit_url: 'https://forms.gle/report' }),
     status(D_DONE, {
       title: '誓約書',
       deadline: '2026-10-01T08:00:00+00:00',
@@ -301,7 +288,6 @@ function rpc(name: string, a: Record<string, unknown>): FakeResult {
       if (!s) return p0001('not_found');
       if (!isOpen(s.status)) return p0001('invalid_state', { status: s.status, reason: 'not_editable' });
       const mine = db.files.filter((f) => f.document_id === s.document_id && f.group_id === s.group_id);
-      if (s.requires_file && mine.length === 0) return p0001('invalid_state', { status: s.status, reason: 'no_file' });
       if (mine.some((f) => !db.objects.has(f.object_path))) return p0001('invalid_state', { status: s.status, reason: 'not_uploaded' });
       if (!sameVersion(s.updated_at, a.p_base_updated_at as string | null)) return p0001('conflict', { document_id: s.document_id, group_id: s.group_id });
       s.status = 'submitted';
@@ -469,23 +455,7 @@ const setUser = () => userEvent.setup({ advanceTimers: () => {} });
 const rpcCalls = (name: string) => issued.filter((c) => c.table === `rpc:${name}`);
 const rpcArgs = (c: FakeCall) => c.ops[0]!.args[0] as Record<string, unknown>;
 const storageOf = (op: StorageCall['op']) => storageCalls.filter((c) => c.op === op);
-const reads = () => issued.filter((c) => c.table === 'v_document_status').length;
 
-const PDF_HEAD = [0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37]; // %PDF-1.7
-const PNG_HEAD = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const JPEG_HEAD = [0xff, 0xd8, 0xff, 0xe0];
-const fileOf = (head: number[], size: number, type = 'application/pdf', name = 'scan.pdf') => {
-  const bytes = new Uint8Array(size);
-  bytes.set(head.slice(0, size));
-  return new File([bytes], name, { type });
-};
-const pdf = (size = 4000) => fileOf(PDF_HEAD, size);
-
-/** カードの「ファイルを追加」の input にファイルを選ぶ（hidden の input に直接 change を送る） */
-function choose(documentId: string, files: File[]) {
-  const input = within(cardOf(documentId)).getByTestId('document-file-input') as HTMLInputElement;
-  fireEvent.change(input, { target: { files } });
-}
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -534,7 +504,7 @@ describe('T19 自団体の提出物：カード', () => {
     expect(screen.queryByTestId('document-group-select')).toBeNull();
   });
 
-  it('未提出：題名・状態・締切（相対の言い方）・説明（改行を残す）・ファイルの追加と説明・押せない「提出した」と理由', async () => {
+  it('未提出：題名・状態・締切（相対の言い方）・説明（改行を残す）。ファイルを上げる欄は出さず（T24）、提出先がなければその文、ファイルなしで「提出した」を押せる', async () => {
     renderScreen();
     await loaded();
     const c = cardOf(D_PLAN);
@@ -549,15 +519,15 @@ describe('T19 自団体の提出物：カード', () => {
     expect(desc.textContent).toBe('様式は総務の共有フォルダ\n  2ページ目も忘れずに');
     expect(desc.className).toContain('whitespace-pre-wrap');
     expect(within(c).queryByTestId('document-card-no-file')).toBeNull();
-    expect(within(c).getByTestId('document-file-add').textContent).toBe('ファイルを追加');
-    expect(within(c).getByTestId('document-file-hint').textContent).toBe(FILE_HINT);
-    const input = within(c).getByTestId('document-file-input');
-    expect(input.getAttribute('accept')).toBe('application/pdf,image/jpeg,image/png');
-    expect(input.hasAttribute('multiple')).toBe(true);
+    expect(within(c).queryByTestId('document-file-add')).toBeNull();
+    expect(within(c).queryByTestId('document-file-input')).toBeNull();
+    expect(within(c).queryByTestId('document-files')).toBeNull();
+    expect(within(c).queryByTestId('document-card-submit-url')).toBeNull();
+    expect(within(c).getByTestId('document-card-no-submit-url').textContent).toBe(NO_SUBMIT_URL_TEXT);
     const submit = within(c).getByTestId('document-submit') as HTMLButtonElement;
     expect(submit.textContent).toBe('提出した');
-    expect(submit.disabled).toBe(true);
-    expect(within(c).getByTestId('document-submit-hint').textContent).toBe(SUBMIT_BLOCKERS.noFile);
+    expect(submit.disabled).toBe(false);
+    expect(within(c).queryByTestId('document-submit-hint')).toBeNull();
     expect(within(c).queryByTestId('document-withdraw')).toBeNull();
   });
 
@@ -603,7 +573,7 @@ describe('T19 自団体の提出物：カード', () => {
     expect(within(c).getByTestId('document-withdraw').textContent).toBe('提出を取り消す');
   });
 
-  it('承認（紙などで受け取った）：承認の日時とメモ・紙の文。操作は出さない。ファイルが要らない提出物の文', async () => {
+  it('承認（紙などで受け取った）：承認の日時とメモ・紙の文。操作は出さない。提出先の URL があれば「提出先を開く」（新しいタブ・noopener noreferrer）', async () => {
     renderScreen();
     await loaded();
     const c = cardOf(D_DONE);
@@ -613,8 +583,24 @@ describe('T19 自団体の提出物：カード', () => {
     expect(within(c).getByTestId('document-card-paper').textContent).toBe('紙などで受け取りました');
     expect(within(c).queryByRole('button')).toBeNull();
     const r = cardOf(D_REPORT);
-    expect(within(r).getByTestId('document-card-no-file').textContent).toBe(NO_FILE_TEXT);
+    const link = within(r).getByTestId('document-card-submit-url') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('https://forms.gle/report');
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(link.textContent).toBe('提出先を開く（新しいタブ）');
+    expect(r.textContent).toContain(SUBMIT_URL_HINT);
+    expect(within(r).queryByTestId('document-card-no-submit-url')).toBeNull();
     expect((within(r).getByTestId('document-submit') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('提出先の URL が https の形でなければリンクにしない（javascript: などを href に入れない。T24）', async () => {
+    db.statuses.find((s) => s.document_id === D_REPORT)!.submit_url = 'javascript:alert(1)';
+    renderScreen();
+    await loaded();
+    const r = cardOf(D_REPORT);
+    expect(within(r).queryByTestId('document-card-submit-url')).toBeNull();
+    expect(r.querySelector('a[href^="javascript"]')).toBeNull();
+    expect(within(r).getByTestId('document-card-no-submit-url').textContent).toBe(NO_SUBMIT_URL_TEXT);
   });
 
   it('未提出・差し戻しで締切を過ぎていれば注意の印（締切ちょうどは過ぎた側）。「読み直す」を押した時刻で決め直す', async () => {
@@ -677,270 +663,6 @@ describe('T19 自団体の提出物：カード', () => {
 });
 
 // ---------------------------------------------------------------- ファイル
-
-describe('T19 自団体の提出物：ファイルを足す', () => {
-  it('予約 → 上げる（upsert: false）→ 読み直し。予約の形・大きさは選んだ物、path は予約が返したもの。アップロード中は操作を止める', async () => {
-    let release: () => void = () => {};
-    storageOverride = (c) => {
-      if (c.op !== 'upload') return undefined;
-      return new Promise((resolve) => {
-        release = () => {
-          storageOverride = null;
-          resolve(storageOp('upload', c.args).then((r) => (storageCalls.pop(), r)));
-        };
-      });
-    };
-    renderScreen();
-    await loaded();
-    const before = reads();
-    choose(D_PLAN, [pdf(4000)]);
-    const c = () => cardOf(D_PLAN);
-    await waitFor(() => expect(within(c()).getByTestId('document-uploading').textContent).toContain('アップロード中…（1/1）'));
-    expect(within(c()).getByTestId('document-uploading').textContent).toContain(UPLOADING_LEAVE_MESSAGE);
-    expect((within(c()).getByTestId('document-file-add') as HTMLButtonElement).disabled).toBe(true);
-    expect(within(c()).getByTestId('document-submit-hint').textContent).toBe(SUBMIT_BLOCKERS.uploading);
-    // 「アップロード中…（1/1）」は送る前に出す。予約と上げるが送られるのを待ってから中身を見る（書き込みの JS の読み込みの速さに頼らない）
-    await waitFor(() => {
-      expect(rpcCalls('reserve_document_file')).toHaveLength(1);
-      expect(storageOf('upload')).toHaveLength(1);
-    });
-    const [reserve] = rpcCalls('reserve_document_file');
-    const args = rpcArgs(reserve!);
-    expect(args).toMatchObject({ p_document_id: D_PLAN, p_group_id: G1.id, p_content_type: 'application/pdf', p_size: 4000 });
-    expect(args.p_file_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-    const [up] = storageOf('upload');
-    expect(up!.args[0]).toBe(`${Y}/${G1.id}/${D_PLAN}/${args.p_file_id as string}.pdf`);
-    expect(up!.args[2]).toEqual({ contentType: 'application/pdf', upsert: false });
-    await act(async () => release());
-    await waitFor(() => expect(within(c()).queryByTestId('document-uploading')).toBeNull());
-    expect(reads()).toBeGreaterThan(before);
-    const [f] = filesOf(D_PLAN);
-    expect(f!.getAttribute('data-state')).toBe('uploaded');
-    expect(within(f!).getByTestId('document-file-label').textContent).toBe('ファイル 1（PDF・4 KB・10/6 12:00）');
-    expect((within(c()).getByTestId('document-submit') as HTMLButtonElement).disabled).toBe(false);
-  });
-
-  it('読み上げ：カードに1つの role="status" をいつも置き、中身だけを変える。上げているファイルは行として出し、終わったら「ファイル N つをアップロードしました」（レビューの UX-2）', async () => {
-    const gate: { release: (() => void) | null } = { release: null };
-    storageOverride = (c) => {
-      if (c.op !== 'upload') return undefined;
-      return new Promise((resolve) => {
-        gate.release = () => {
-          storageOverride = null;
-          resolve(storageOp('upload', c.args).then((r) => (storageCalls.pop(), r)));
-        };
-      });
-    };
-    renderScreen();
-    await loaded();
-    const region = within(cardOf(D_PLAN)).getByRole('status');
-    expect(region.textContent).toBe('');
-    choose(D_PLAN, [pdf(4000)]);
-    await waitFor(() => expect(within(cardOf(D_PLAN)).getByRole('status').textContent).toContain('アップロード中…（1/1）'));
-    // 差し込み直さない（同じ要素の中身だけが変わる）
-    expect(within(cardOf(D_PLAN)).getByRole('status')).toBe(region);
-    // 上げているファイルは、届く前から行として出す（番号・形・大きさと「アップロード中…」。開く・保存・外すは出さない）
-    await waitFor(() => expect(filesOf(D_PLAN)).toHaveLength(1));
-    const [pending] = filesOf(D_PLAN);
-    expect(pending!.getAttribute('data-state')).toBe('uploading');
-    expect(within(pending!).getByTestId('document-file-label').textContent).toBe('ファイル 1（PDF・4 KB）');
-    expect(pending!.textContent).toContain(FILE_STATE_TEXTS.uploading);
-    expect(within(pending!).queryByTestId('document-file-open')).toBeNull();
-    expect(within(pending!).queryByTestId('document-file-remove')).toBeNull();
-    await waitFor(() => expect(gate.release).not.toBeNull());
-    await act(async () => gate.release!());
-    await waitFor(() => expect(within(cardOf(D_PLAN)).queryByTestId('document-uploading')).toBeNull());
-    expect(within(cardOf(D_PLAN)).getByRole('status')).toBe(region);
-    expect(region.textContent).toBe('');
-    expect(toast.success).toHaveBeenCalledWith('ファイル 1 つをアップロードしました');
-    expect(filesOf(D_PLAN).map((f) => f.getAttribute('data-state'))).toEqual(['uploaded']);
-    expect(within(filesOf(D_PLAN)[0]!).getByTestId('document-file-label').textContent).toBe('ファイル 1（PDF・4 KB・10/6 12:00）');
-  });
-
-  it('上げている間は、どのカードの「保存」も押せず理由を出す（ページを離れる確かめを出さない）。「開く」は押せる。終われば押せる（レビューの F2）', async () => {
-    const gate: { release: (() => void) | null } = { release: null };
-    storageOverride = (c) => (c.op === 'upload' ? new Promise((r) => (gate.release = () => r({ data: {}, error: null }))) : undefined);
-    const assign = vi.spyOn(fileWindow, 'assign').mockImplementation(() => {});
-    renderScreen();
-    await loaded();
-    const saveOf = () => within(filesOf(D_FOOD)[0]!).getByTestId('document-file-save') as HTMLButtonElement;
-    expect(saveOf().disabled).toBe(false);
-    choose(D_PLAN, [pdf(100)]);
-    await waitFor(() => expect(saveOf().disabled).toBe(true));
-    expect(within(cardOf(D_FOOD)).getByText(SAVE_BLOCKED_TEXT)).toBeTruthy();
-    expect(saveOf().getAttribute('aria-describedby')).toBeTruthy();
-    expect((within(filesOf(D_FOOD)[0]!).getByTestId('document-file-open') as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(saveOf());
-    expect(assign).not.toHaveBeenCalled();
-    await waitFor(() => expect(gate.release).not.toBeNull());
-    await act(async () => gate.release!());
-    await waitFor(() => expect(saveOf().disabled).toBe(false));
-    expect(within(cardOf(D_FOOD)).queryByText(SAVE_BLOCKED_TEXT)).toBeNull();
-  });
-
-  it('複数を選んだ順に1つずつ（PDF・PNG はそのまま、JPEG は作り直した物を送り、予約の size は作り直した大きさ）', async () => {
-    renderScreen();
-    await loaded();
-    choose(D_PLAN, [pdf(3000), fileOf(PNG_HEAD, 2000, 'image/png', 'a.png'), fileOf(JPEG_HEAD, 900_000, 'image/jpeg', 'b.jpg')]);
-    await waitFor(() => expect(filesOf(D_PLAN)).toHaveLength(3));
-    expect(h.reencode).toHaveBeenCalledTimes(1);
-    expect(rpcCalls('reserve_document_file').map((c) => [rpcArgs(c).p_content_type, rpcArgs(c).p_size])).toEqual([
-      ['application/pdf', 3000],
-      ['image/png', 2000],
-      ['image/jpeg', 9],
-    ]);
-    expect(storageOf('upload').map((c) => (c.args[1] as Blob).size)).toEqual([3000, 2000, 9]);
-    await waitFor(() => expect(filesOf(D_PLAN).map((f) => f.getAttribute('data-state'))).toEqual(['uploaded', 'uploaded', 'uploaded']));
-    expect(toast.success).toHaveBeenCalledWith('ファイル 3 つをアップロードしました');
-  });
-
-  it('選んだファイルの確かめ：形（先頭のバイト）・中身・数・大きさ・写真が読めない。1つでも合わなければどれも送らない', async () => {
-    renderScreen();
-    await loaded();
-    const err = () => within(cardOf(D_PLAN)).getByTestId('document-file-error').textContent;
-    // 名前と形は PDF でも中身が PDF でない
-    choose(D_PLAN, [pdf(100), fileOf([0x50, 0x4b, 0x03, 0x04], 100, 'application/pdf', 'x.pdf')]);
-    await waitFor(() => expect(err()).toBe(FILE_TYPE_MESSAGE));
-    choose(D_PLAN, [new File([], 'empty.pdf', { type: 'application/pdf' })]);
-    await waitFor(() => expect(err()).toBe(FILE_EMPTY_MESSAGE));
-    choose(D_PLAN, Array.from({ length: 6 }, () => pdf(100)));
-    await waitFor(() => expect(err()).toBe(tooManyFilesMessage(5)));
-    choose(D_PLAN, [fileOf(PNG_HEAD, MAX_FILE_BYTES + 1, 'image/png', 'big.png')]);
-    await waitFor(() => expect(err()).toBe(FILE_SIZE_MESSAGE));
-    h.reencode.mockRejectedValueOnce(new Error('decode'));
-    choose(D_PLAN, [pdf(100), fileOf(JPEG_HEAD, 100, 'image/jpeg', 'p.jpg')]);
-    await waitFor(() => expect(err()).toBe(IMAGE_DECODE_MESSAGE));
-    expect(rpcCalls('reserve_document_file')).toHaveLength(0);
-    expect(storageOf('upload')).toHaveLength(0);
-    // ファイルの名前はどこにも出さない
-    expect(cardOf(D_PLAN).textContent).not.toContain('.pdf');
-  });
-
-  it('数はその提出のファイル（届いていないもの・失敗を含む）と合わせて 5 つまで。5 つあれば「ファイルを追加」を押せない', async () => {
-    db.files.push(...[1, 2, 3, 4].map((k) => dbFile(uuid(400 + k), D_FOOD)));
-    for (const f of db.files) db.objects.set(f.object_path, f.size);
-    renderScreen();
-    await loaded();
-    const c = cardOf(D_FOOD);
-    expect(filesOf(D_FOOD)).toHaveLength(5);
-    expect((within(c).getByTestId('document-file-add') as HTMLButtonElement).disabled).toBe(true);
-    expect(within(c).getByTestId('document-file-hint').textContent).toBe(FILES_FULL_MESSAGE);
-  });
-
-  it('通信が切れた：「アップロードできませんでした」と「もう一度」「外す」。もう一度は同じ file_id で予約し直し、409 はもう届いていた', async () => {
-    storageOverride = (c) => (c.op === 'upload' ? { data: null, error: { __isStorageError: true, name: 'StorageUnknownError', message: 'x', originalError: new TypeError('Failed to fetch') } } : undefined);
-    const user = setUser();
-    renderScreen();
-    await loaded();
-    choose(D_PLAN, [pdf(500)]);
-    await waitFor(() => expect(filesOf(D_PLAN)[0]?.getAttribute('data-state')).toBe('failed'));
-    const f = filesOf(D_PLAN)[0]!;
-    expect(f.textContent).toContain(FILE_STATE_TEXTS.failed);
-    expect(within(cardOf(D_PLAN)).getByTestId('document-file-error').textContent).toBe('通信できませんでした。電波の良い所でもう一度');
-    expect(within(cardOf(D_PLAN)).getByTestId('document-submit-hint').textContent).toBe(SUBMIT_BLOCKERS.notUploaded);
-    expect(within(f).getByTestId('document-file-remove')).toBeTruthy();
-    const fileId = rpcArgs(rpcCalls('reserve_document_file')[0]!).p_file_id;
-    // 実は届いていた（応答だけが切れた）。もう一度は同じ file_id・同じ path で、409 は成功と同じ
-    const path = storageOf('upload')[0]!.args[0] as string;
-    db.objects.set(path, 500);
-    storageOverride = null;
-    await user.click(within(f).getByTestId('document-file-retry'));
-    await waitFor(() => expect(filesOf(D_PLAN)[0]?.getAttribute('data-state')).toBe('uploaded'));
-    const again = rpcCalls('reserve_document_file');
-    expect(again).toHaveLength(2);
-    expect(rpcArgs(again[1]!).p_file_id).toBe(fileId);
-    expect(storageOf('upload').map((c) => c.args[0])).toEqual([path, path]);
-    expect(within(cardOf(D_PLAN)).queryByTestId('document-file-error')).toBeNull();
-    expect(db.files.filter((x) => x.document_id === D_PLAN)).toHaveLength(1);
-  });
-
-  it('Storage が拒んだ（403）：失敗の印と文言、年度の行と立場を読み直す。次のファイルは送る', async () => {
-    let n = 0;
-    storageOverride = (c) => (c.op === 'upload' && n++ === 0 ? { data: null, error: storageError('403', 'AccessDenied') } : undefined);
-    renderScreen();
-    await loaded();
-    choose(D_PLAN, [pdf(100), pdf(200)]);
-    await waitFor(() => expect(filesOf(D_PLAN).map((f) => f.getAttribute('data-state'))).toEqual(['failed', 'uploaded']));
-    expect(within(cardOf(D_PLAN)).getByTestId('document-file-error').textContent).toBe(STORAGE_ERROR_MESSAGES.storage_denied);
-    expect(h.reloadMembership).toHaveBeenCalled();
-    expect(toast.success).toHaveBeenCalledWith('ファイル 1 つをアップロードしました');
-  });
-
-  it('予約が invalid_state（ほかの人が提出した）：残りは送らずに止め、読み直して今の状態を出す', async () => {
-    db.statuses.find((s) => s.document_id === D_PLAN)!.status = 'submitted';
-    db.statuses.find((s) => s.document_id === D_PLAN)!.submitted_at = '2026-10-06T02:00:00Z';
-    // 画面は未提出のまま読んでいる
-    override = (call) => {
-      if (call.table !== 'v_document_status' || reads() > 1) return undefined;
-      return { data: db.statuses.filter((s) => s.group_id === G1.id).map((s) => (s.document_id === D_PLAN ? { ...s, status: 'not_submitted', submitted_at: null } : { ...s })) };
-    };
-    renderScreen();
-    await loaded();
-    choose(D_PLAN, [pdf(100), pdf(200)]);
-    await waitFor(() => expect(cardOf(D_PLAN).getAttribute('data-status')).toBe('submitted'));
-    expect(rpcCalls('reserve_document_file')).toHaveLength(1);
-    expect(storageOf('upload')).toHaveLength(0);
-    expect(within(cardOf(D_PLAN)).getByTestId('document-file-error').textContent).toBe(DOCUMENT_FILES_LOCKED_MESSAGES.submitted);
-    expect(filesOf(D_PLAN)).toHaveLength(0);
-    expect(toast.success).not.toHaveBeenCalled();
-  });
-
-  it('予約が too_many_orphans：document_orphan_paths の path を消してから、同じ file_id で予約し直す（GET で読む）', async () => {
-    const orphan = `${Y}/${G1.id}/${D_PLAN}/${uuid(999)}.pdf`;
-    db.objects.set(orphan, 10);
-    let first = true;
-    override = (call) => {
-      if (call.table === 'rpc:reserve_document_file' && first) {
-        first = false;
-        return p0001('invalid_state', { status: 'not_submitted', reason: 'too_many_orphans' });
-      }
-      return undefined;
-    };
-    renderScreen();
-    await loaded();
-    choose(D_PLAN, [pdf(100)]);
-    await waitFor(() => expect(filesOf(D_PLAN)[0]?.getAttribute('data-state')).toBe('uploaded'));
-    const reserves = rpcCalls('reserve_document_file');
-    expect(reserves).toHaveLength(2);
-    expect(rpcArgs(reserves[1]!).p_file_id).toBe(rpcArgs(reserves[0]!).p_file_id);
-    expect(rpcCalls('document_orphan_paths')).toHaveLength(1);
-    expect(storageOf('remove').map((c) => c.args[0])).toEqual([[orphan]]);
-    expect(db.objects.has(orphan)).toBe(false);
-  });
-
-  it('アップロード中に離れる・年度を切り替えるときは「アップロード中です。離れると、残りのファイルは送られません」で確かめる（下書きの文は出さない。やめれば移らない）', async () => {
-    let release: () => void = () => {};
-    storageOverride = (c) => (c.op === 'upload' ? new Promise((r) => (release = () => r({ data: {}, error: null }))) : undefined);
-    const user = setUser();
-    renderScreen();
-    await loaded();
-    choose(D_PLAN, [pdf(100)]);
-    await waitFor(() => expect(within(cardOf(D_PLAN)).getByTestId('document-uploading')).toBeTruthy());
-    fireEvent.click(screen.getByTestId('probe-nav'));
-    const leave = await screen.findByRole('alertdialog');
-    expect(within(leave).getByRole('heading').textContent).toBe(UPLOADING_LEAVE_MESSAGES.navigate.title);
-    expect(leave.textContent).toContain('離れると、残りのファイルは送られません。');
-    expect(leave.textContent).not.toContain('下書き');
-    expect(leave.textContent).not.toContain(LEAVE_MESSAGES.navigate.title);
-    expect(within(leave).getByRole('button', { name: '移る' })).toBeTruthy();
-    await user.click(within(leave).getByRole('button', { name: 'やめる（アップロードを続ける）' }));
-    expect(h.push).not.toHaveBeenCalled();
-    // 年度の切り替えも同じ文（ボタンは「切り替える」）。やめれば切り替えない
-    await user.click(screen.getByTestId('probe-year'));
-    const year = await screen.findByRole('alertdialog');
-    expect(within(year).getByRole('heading').textContent).toBe(UPLOADING_LEAVE_MESSAGES.year.title);
-    expect(year.textContent).toContain('離れると、残りのファイルは送られません。');
-    expect(year.textContent).not.toContain('下書き');
-    await user.click(within(year).getByRole('button', { name: 'やめる（アップロードを続ける）' }));
-    expect(h.setYear).not.toHaveBeenCalled();
-    // 上げるが送られてから解く（まだなら release は空の関数のまま）
-    await waitFor(() => expect(storageOf('upload')).toHaveLength(1));
-    await act(async () => release());
-    await waitFor(() => expect(within(cardOf(D_PLAN)).queryByTestId('document-uploading')).toBeNull());
-    fireEvent.click(screen.getByTestId('probe-nav'));
-    expect(h.push).toHaveBeenCalledWith('/notices');
-  });
-});
 
 describe('T19 自団体の提出物：外す・開く・保存', () => {
   it('届いたファイルは確かめてから外す（discard → すぐ remove → 読み直し）', async () => {
@@ -1090,7 +812,7 @@ describe('T19 自団体の提出物：提出した・取り消す', () => {
     const dialog = await submitCard(user, D_FOOD);
     expect(dialog.textContent).toContain('「食品の届け」を提出しますか');
     expect(dialog.textContent).toContain(SUBMIT_CONFIRM_TEXT);
-    expect(within(dialog).getByTestId('document-submit-confirm').textContent).toBe('ファイル 1 つを提出します。');
+    expect(within(dialog).getByTestId('document-submit-confirm').textContent).toBe('ファイル 1 つも一緒に提出します。');
     await user.click(within(dialog).getByRole('button', { name: '提出する' }));
     await waitFor(() => expect(cardOf(D_FOOD).getAttribute('data-status')).toBe('submitted'));
     expect(rpcArgs(rpcCalls('submit_document')[0]!)).toEqual({ p_document_id: D_FOOD, p_group_id: G1.id, p_base_updated_at: V0 });
@@ -1100,13 +822,13 @@ describe('T19 自団体の提出物：提出した・取り消す', () => {
     expect(within(cardOf(D_FOOD)).getByTestId('document-previous-reason').textContent).toContain('印鑑がありません');
   });
 
-  it('ファイルが要らない提出物は「ファイルなしで提出します。」。行のない提出は版 null で送る。締切の後なら「（締切の後）」', async () => {
+  it('ファイルのない提出物は、ファイルの数の文を出さない（T24）。行のない提出は版 null で送る。締切の後なら「（締切の後）」', async () => {
     vi.setSystemTime(new Date('2026-10-21T00:00:00Z'));
     const user = setUser();
     renderScreen();
     await loaded();
     const dialog = await submitCard(user, D_REPORT);
-    expect(within(dialog).getByTestId('document-submit-confirm').textContent).toBe('ファイルなしで提出します。');
+    expect(within(dialog).getByTestId('document-submit-confirm').textContent).toBe('');
     await user.click(within(dialog).getByRole('button', { name: '提出する' }));
     await waitFor(() => expect(cardOf(D_REPORT).getAttribute('data-status')).toBe('submitted'));
     expect(rpcArgs(rpcCalls('submit_document')[0]!).p_base_updated_at).toBeNull();
@@ -1141,26 +863,13 @@ describe('T19 自団体の提出物：提出した・取り消す', () => {
     await waitFor(() => expect(within(cardOf(D_FOOD)).getByTestId('document-error').textContent).toBe(DOCUMENT_CONFLICT_MESSAGE));
     await waitFor(() => expect(filesOf(D_FOOD)).toHaveLength(2));
     const dialog = await submitCard(user, D_FOOD);
-    expect(within(dialog).getByTestId('document-submit-confirm').textContent).toBe('ファイル 2 つを提出します。');
+    expect(within(dialog).getByTestId('document-submit-confirm').textContent).toBe('ファイル 2 つも一緒に提出します。');
     await user.click(within(dialog).getByRole('button', { name: '提出する' }));
     await waitFor(() => expect(cardOf(D_FOOD).getAttribute('data-status')).toBe('submitted'));
     const sent = rpcCalls('submit_document').map((c) => rpcArgs(c).p_base_updated_at);
     expect(sent).toEqual([V0, s.updated_at === null ? null : expect.any(String)]);
     expect(sent[1]).not.toBe(V0);
     expect(within(cardOf(D_FOOD)).queryByTestId('document-error')).toBeNull();
-  });
-
-  it('invalid_state の no_file（読んだ後にほかの人がファイルを外した）：文言と読み直し、年度の行と立場も読み直す', async () => {
-    const user = setUser();
-    renderScreen();
-    await loaded();
-    const path = db.files[0]!.object_path;
-    db.files = db.files.filter((f) => f.document_id !== D_FOOD);
-    db.objects.delete(path);
-    await user.click(within(await submitCard(user, D_FOOD)).getByRole('button', { name: '提出する' }));
-    await waitFor(() => expect(within(cardOf(D_FOOD)).getByTestId('document-error').textContent).toBe(DOCUMENT_STATE_MESSAGES.no_file));
-    await waitFor(() => expect(filesOf(D_FOOD)).toHaveLength(0));
-    expect(h.reloadMembership).toHaveBeenCalled();
   });
 
   it('応答が届かなかったが届いていた：読み直すと提出済みなので「提出されていました」', async () => {
@@ -1290,7 +999,7 @@ describe('T19 自団体の提出物：提出した・取り消す', () => {
 });
 
 describe('T19 自団体の提出物：最新でない年度', () => {
-  it('上に「最新の年度に切り替える」。提出・取り消し・ファイルの変更の前に確かめ、やめれば送らない', async () => {
+  it('上に「最新の年度に切り替える」。提出・取り消し・ファイルを外す前に確かめ、やめれば送らない', async () => {
     const user = setUser();
     renderScreen({ latest: false });
     await loaded();
@@ -1305,11 +1014,12 @@ describe('T19 自団体の提出物：最新でない年度', () => {
     expect(ask.textContent).toContain('に取り消しします。よろしいですか');
     await user.click(within(ask).getByRole('button', { name: 'やめる' }));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
-    choose(D_PLAN, [pdf(100)]);
+    await user.click(within(filesOf(D_FOOD)[0]!).getByTestId('document-file-remove'));
     ask = await screen.findByRole('alertdialog');
     expect(ask.textContent).toContain('に変更します。よろしいですか');
-    await user.click(within(ask).getByRole('button', { name: 'この年度に変更する' }));
-    await waitFor(() => expect(filesOf(D_PLAN)[0]?.getAttribute('data-state')).toBe('uploaded'));
+    await user.click(within(ask).getByRole('button', { name: 'やめる' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(rpcCalls('discard_document_file')).toHaveLength(0);
     expect(rpcCalls('submit_document')).toHaveLength(0);
     expect(rpcCalls('withdraw_document')).toHaveLength(0);
   });
@@ -1351,23 +1061,6 @@ describe('FU3 の案 5：書き込みの JS は初めて使うときに読む', 
     await user.click(within(dialog).getByRole('button', { name: '提出する' }));
     await waitFor(() => expect(cardOf(D_FOOD).getAttribute('data-status')).toBe('submitted'));
     expect(rpcCalls('submit_document')).toHaveLength(1);
-  });
-
-  it('ファイルを足す：読めなければ予約も上げることもせず、予約が通信で届かなかったときと同じ「アップロードできませんでした」にする。「もう一度」で読み直して送る', async () => {
-    const load = loadFails();
-    const user = setUser();
-    renderScreen();
-    await loaded();
-    choose(D_PLAN, [pdf(4000)]);
-    await waitFor(() => expect(filesOf(D_PLAN)[0]?.getAttribute('data-state')).toBe('failed'));
-    expect(within(cardOf(D_PLAN)).getByTestId('document-file-error').textContent).toContain(NETWORK);
-    expect(rpcCalls('reserve_document_file')).toHaveLength(0);
-    expect(storageOf('upload')).toHaveLength(0);
-    load.mockRestore();
-    await waitFor(() => expect((within(cardOf(D_PLAN)).getByTestId('document-file-retry') as HTMLButtonElement).disabled).toBe(false));
-    await user.click(within(cardOf(D_PLAN)).getByTestId('document-file-retry'));
-    await waitFor(() => expect(filesOf(D_PLAN)[0]?.getAttribute('data-state')).toBe('uploaded'));
-    expect(rpcCalls('reserve_document_file')).toHaveLength(1);
   });
 
   it('開く：読めなければ先に開いたタブを閉じ、署名つき URL を作らずに通信の失敗の文言を出す', async () => {

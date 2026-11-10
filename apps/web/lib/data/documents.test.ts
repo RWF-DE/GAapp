@@ -125,7 +125,7 @@ const WRITE: DocumentWrite = {
   deadline: '2026-10-05T17:00:00+09:00',
   target_categories: ['stall', 'department'],
   food_only: false,
-  requires_file: true,
+  submit_url: null,
 };
 const DOC_ROW = { id: D, ...WRITE, deadline: '2026-10-05T08:00:00+00:00', files_deleted_at: null, updated_at: V };
 
@@ -436,7 +436,8 @@ describe('T19 提出物の登録・変更・削除（直接。RLS の can_lead�
     expect(sameDocumentWrite({ ...DOC_ROW, target_categories: ['department', 'stall'] }, WRITE)).toBe(true);
     expect(sameDocumentWrite({ ...DOC_ROW, target_categories: ['stall'] }, WRITE)).toBe(false);
     expect(sameDocumentWrite({ ...DOC_ROW, deadline: '2026-10-05T08:01:00Z' }, WRITE)).toBe(false);
-    expect(sameDocumentWrite({ ...DOC_ROW, requires_file: false }, WRITE)).toBe(false);
+    expect(sameDocumentWrite({ ...DOC_ROW, submit_url: 'https://forms.gle/x' }, WRITE)).toBe(false);
+    expect(sameDocumentWrite({ ...DOC_ROW, submit_url: '' }, { ...WRITE, submit_url: null })).toBe(true);
     expect(normalizeCategories(['rest_area', 'stall', 'rest_area'])).toEqual(['stall', 'rest_area']);
   });
 });

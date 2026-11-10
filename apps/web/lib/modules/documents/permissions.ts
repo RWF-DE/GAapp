@@ -2,7 +2,8 @@
 // 純粋な関数。段は lib/auth/roles.ts の一覧（DB の段と同じ：部門長以上＝admin・head・deputy_head、総務＝それと staff）から作る。
 // 画面は DB より広く出さず、段ができることを隠さない（出し分けは見た目だけで、データは RLS・RPC・Storage のポリシーとトリガーが守る）：
 // - documents の書き込み（RLS の can_lead）：その年度の部門長以上で、年度が終了でない
-// - 提出とファイルの RPC：店長・副店長は未提出・差し戻しのときファイルを足す・外す・「提出した」、提出済みのとき取り消す。
+// - 提出とファイルの RPC：店長・副店長は未提出・差し戻しのときファイルを外す・「提出した」、提出済みのとき取り消す（ファイルを足すのは
+//   T24〔D-62〕で止めた。addFile はいつも偽）。
 //   部門長以上は承認でなければファイルを足す・外す（代理）、未提出・差し戻しのとき代わりに提出・紙での承認、提出済みのとき承認・取り消し、
 //   提出済み・承認・差し戻しのとき差し戻し（承認の取り消し・理由の書き直しを兼ねる）。届いていない予約は状態によらず外せる。
 // - ファイルを開ける（documents_objects_select・document_files_select）：部門長以上と、その団体の店長・副店長（総務部門員は開けない。Q4）
@@ -64,7 +65,7 @@ export interface RepDocumentActions {
 const isOpen = (s: DocumentStatus) => s === 'not_submitted' || s === 'returned';
 
 /**
- * 店長・副店長に出す操作（04「自団体の提出物」）：未提出・差し戻しの間はファイルを足す・外す・「提出した」、提出済みの間は取り消しだけ、
+ * 店長・副店長に出す操作（04「自団体の提出物」）：未提出・差し戻しの間は T24 の前のファイルを外す・「提出した」（足すのは T24 で止めた）、提出済みの間は取り消しだけ、
  * 承認には何も出さない。届いていないファイルはいつでも外せる。終了した年度（と年度の状態が分からないとき）は何も出さない。
  *
  * @example
@@ -73,7 +74,7 @@ const isOpen = (s: DocumentStatus) => s === 'not_submitted' || s === 'returned';
 export function repDocumentActions(status: DocumentStatus, yearStatus: MaybeStatus): RepDocumentActions {
   const w = writableYear(yearStatus);
   return {
-    addFile: w && isOpen(status),
+    addFile: false, // T24（D-62）：ファイルを足すのは止めた（提出物はドライブ・フォームに出す。reserve_document_file は uploads_disabled）
     removeFile: w && isOpen(status),
     removePending: w,
     submit: w && isOpen(status),
@@ -129,7 +130,7 @@ export function leadDocumentActions(status: DocumentStatus, yearStatus: MaybeSta
   const w = writableYear(yearStatus);
   const notApproved = status !== 'approved';
   return {
-    addFile: w && notApproved,
+    addFile: false, // T24（D-62）：代理でもファイルを足すのは止めた
     removeFile: w && notApproved,
     removePending: w,
     approve: w && status === 'submitted',

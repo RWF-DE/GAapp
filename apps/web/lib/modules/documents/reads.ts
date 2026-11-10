@@ -18,7 +18,7 @@ import { portalQueryKey } from '../query-key';
 
 /** 自団体の提出物の select（v_document_status。書いた人・確かめた人は読まない） */
 export const REP_DOCUMENT_STATUS_SELECT =
-  'document_id, group_id, title, description, deadline, requires_file, status, submitted_at, proxy, late, reviewed_at, review_note, updated_at';
+  'document_id, group_id, title, description, deadline, submit_url, status, submitted_at, proxy, late, reviewed_at, review_note, updated_at';
 /** ファイルの select（v_document_files。予約した人は読まない） */
 export const DOCUMENT_FILE_SELECT = 'id, document_id, group_id, object_path, content_type, size, created_at, uploaded, stored_size';
 /** ダッシュボード（総務）の提出物の select */
@@ -38,7 +38,7 @@ export type RepDocumentStatusRow = Pick<
   | 'title'
   | 'description'
   | 'deadline'
-  | 'requires_file'
+  | 'submit_url'
   | 'status'
   | 'submitted_at'
   | 'proxy'

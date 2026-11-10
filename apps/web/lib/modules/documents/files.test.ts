@@ -170,16 +170,14 @@ describe('T19 1件の状態と「提出した」を押せない理由', () => {
     expect(fileStateOf({ id: 'f', uploaded: false }, local)).toBe('failed');
   });
 
-  it('submitBlocker：アップロード中 → 届いていないファイル → ファイルが要るのに 0（DB の no_file・not_uploaded と同じ条件）', () => {
-    expect(submitBlocker(true, [], false)).toBe(SUBMIT_BLOCKERS.noFile);
-    expect(submitBlocker(false, [], false)).toBeNull();
-    expect(submitBlocker(false, [{ uploaded: false }], false)).toBe(SUBMIT_BLOCKERS.notUploaded);
-    expect(submitBlocker(true, [{ uploaded: true }, { uploaded: null }], false)).toBe(SUBMIT_BLOCKERS.notUploaded);
-    expect(submitBlocker(true, [{ uploaded: true }], true)).toBe(SUBMIT_BLOCKERS.uploading);
-    expect(submitBlocker(true, [{ uploaded: true }], false)).toBeNull();
+  it('submitBlocker：送っている間 → 届いていないファイル（DB の not_uploaded と同じ条件）。ファイルがなくても出せる（T24。no_file は返らない）', () => {
+    expect(submitBlocker([], false)).toBeNull();
+    expect(submitBlocker([{ uploaded: false }], false)).toBe(SUBMIT_BLOCKERS.notUploaded);
+    expect(submitBlocker([{ uploaded: true }, { uploaded: null }], false)).toBe(SUBMIT_BLOCKERS.notUploaded);
+    expect(submitBlocker([{ uploaded: true }], true)).toBe(SUBMIT_BLOCKERS.uploading);
+    expect(submitBlocker([{ uploaded: true }], false)).toBeNull();
     expect(SUBMIT_BLOCKERS).toEqual({
-      noFile: 'ファイルを1つ以上足してください',
-      notUploaded: '届いていないファイルがあります。外すか、もう一度送ってください',
+      notUploaded: '届いていないファイルがあります。外してから提出してください',
       uploading: 'アップロードが終わるまでお待ちください',
     });
   });

@@ -15,7 +15,7 @@ const row = (n: number, over: Partial<RepDocumentStatusRow>): RepDocumentStatusR
   title: `書類${n}`,
   description: null,
   deadline: '2026-10-20T08:00:00Z',
-  requires_file: true,
+  submit_url: null,
   status: 'not_submitted',
   submitted_at: null,
   proxy: false,

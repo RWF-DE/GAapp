@@ -52,7 +52,7 @@ describe('T19 自団体の提出物（loadRepDocuments・repDocumentsOptions）'
     const [s, f] = issued;
     expect(selectOf(s!)).toBe(REP_DOCUMENT_STATUS_SELECT);
     expect(REP_DOCUMENT_STATUS_SELECT).toBe(
-      'document_id, group_id, title, description, deadline, requires_file, status, submitted_at, proxy, late, reviewed_at, review_note, updated_at',
+      'document_id, group_id, title, description, deadline, submit_url, status, submitted_at, proxy, late, reviewed_at, review_note, updated_at',
     );
     expect(opArgs(s!, 'eq')).toEqual([
       ['year_id', Y],

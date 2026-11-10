@@ -37,7 +37,7 @@ const doc = (id: string, over: Partial<DocumentRow>): DocumentRow => ({
   deadline: '2026-10-20T08:00:00Z',
   target_categories: ['stall'],
   food_only: false,
-  requires_file: true,
+  submit_url: null,
   files_deleted_at: null,
   updated_at: 't',
   ...over,

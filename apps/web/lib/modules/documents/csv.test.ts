@@ -18,7 +18,7 @@ const doc = (id: string, title: string, deadline: string): DocumentRow => ({
   deadline,
   target_categories: ['stall'],
   food_only: false,
-  requires_file: true,
+  submit_url: null,
   files_deleted_at: null,
   updated_at: 't',
 });

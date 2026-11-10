@@ -469,11 +469,13 @@ export const DOCUMENT_NOT_EDITABLE_MESSAGES: Readonly<Record<string, string>> = 
 /** そのほかの invalid_state の reason */
 export const DOCUMENT_STATE_MESSAGES: Readonly<Record<string, string>> = {
   no_file: 'ファイルを1つ以上足してから提出してください',
-  not_uploaded: '届いていないファイルがあります。外すか、もう一度送ってから提出してください',
+  not_uploaded: '届いていないファイルがあります。外してから提出してください',
   too_many_files: 'ファイルは1つの提出物に 5 つまでです',
   too_many_orphans: '前に外したファイルを片付けられませんでした。通信を確かめてから、もう一度足してください',
   storage_full: 'ファイルの置き場がいっぱいです（上限 900 MB）。総務に知らせてください（管理者が終了した年度のファイルを削除すると空きます）',
   not_closed: '年度が終了していないので、ファイルを削除できません',
+  // T24（D-62）：reserve_document_file はいつもこれを返す（提出物はドライブ・フォームに出す）
+  uploads_disabled: 'ファイルはアプリに上げられなくなりました。提出先（ドライブやフォーム）に出してから「提出した」を押してください',
 };
 /** invalid_input（キーは `field`・`field:reason`・`field:reason:rpc`。細かいキーを先に見る。年度のファイルの削除の reason は今の文言） */
 export const DOCUMENT_INPUT_MESSAGES: Readonly<Record<string, string>> = {

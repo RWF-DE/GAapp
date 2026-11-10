@@ -29,10 +29,12 @@ import {
 } from '@/lib/data/documents';
 import { classifyError, effectOf, messageFor, unknownOutcomeMessage } from '@/lib/errors';
 import { buildDocumentsBoard } from '@/lib/modules/documents/board';
+import { submitUrlHref } from '@/lib/modules/documents/submit-url';
 import { DocCopyDialog, targetText } from './doc-copy-dialog';
 import { DocFormDialog, type DocFormTarget } from './doc-form-dialog';
 import { runDocDelete } from './doc-write';
 import { approvedCountText, columnDeadlineText } from './documents-board';
+import { SubmitLink } from './submit-link';
 
 /** 提出物がない（設定のタブ） */
 export const SETTINGS_EMPTY_TEXT = '提出物はまだありません';
@@ -165,7 +167,7 @@ export function DocumentsSettings({ data, yearId, userId, writable, hasPrevYear,
                   対象
                 </th>
                 <th scope="col" className="border-b px-3 py-2 font-medium whitespace-nowrap">
-                  ファイル
+                  提出先
                 </th>
                 <th scope="col" className="border-b px-3 py-2 font-medium whitespace-nowrap">
                   承認
@@ -187,7 +189,13 @@ export function DocumentsSettings({ data, yearId, userId, writable, hasPrevYear,
                     </th>
                     <td className="border-b px-3 py-2 whitespace-nowrap">{columnDeadlineText(doc.deadline, now)}</td>
                     <td className="border-b px-3 py-2">{targetText(doc)}</td>
-                    <td className="border-b px-3 py-2 whitespace-nowrap">{doc.requires_file ? '要る' : '要らない'}</td>
+                    <td className="border-b px-3 py-2 whitespace-nowrap">
+                      {submitUrlHref(doc.submit_url) ? (
+                        <SubmitLink url={doc.submit_url} testId="documents-settings-submit-url" className="text-sm" />
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
                     <td className="border-b px-3 py-2 whitespace-nowrap tabular-nums">{approvedCountText(column)}</td>
                     {canWrite ? (
                       <td className="border-b px-3 py-2">
