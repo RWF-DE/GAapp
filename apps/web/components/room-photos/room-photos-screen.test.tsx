@@ -143,7 +143,8 @@ function serve(extra: (call: FakeCall) => ReturnType<FakeHandler> | undefined = 
       const a = call.ops[0]!.args[0] as { p_year_id: string; p_room_id: string; p_photo_id: string };
       return { data: { id: a.p_photo_id, object_path: `${a.p_year_id}/${a.p_room_id}/${a.p_photo_id}.webp`, used_at: null, expires_at: '2999-01-01T00:00:00Z' } };
     }
-    if (call.table === 'rpc:add_room_photo') return { data: photo(9) };
+    // add は送ったメモの行を返す（新しい予約の add。0024）
+    if (call.table === 'rpc:add_room_photo') return { data: photo(9, { memo: (call.ops[0]!.args[0] as { p_memo: string }).p_memo }) };
     if (call.table === 'rpc:update_room_photo') return { data: photo(9) };
     if (call.table === 'rpc:delete_room_photo') return { data: world.photos[0]?.object_path ?? null };
     return { data: [] };

@@ -527,7 +527,13 @@ function InviteCard({
       else if (c.kind === 'conflict' && (isRoleOverlap(c) || field === 'role' || field === 'group_role')) {
         // 兼任の禁止・別のロールを持つ・同じ団体に別の立場でいる：立場の欄の下に出し、入力は残す（直す操作はメンバーの一覧か、
         // 別の立場。04・D-50）。一覧は、ほかの人が先に付けた立場も見せるために読み直す
-        setError('kind', { message: messageFor(c, { rpc: 'invite', canChangeRoles }) });
+        setError('kind', {
+          message: messageFor(c, {
+            rpc: 'invite',
+            canChangeRoles,
+            groupCategory: groups.find((g) => g.id === v.group_id)?.category ?? null,
+          }),
+        });
         await onRejected();
       } else {
         // forbidden は toast と立場の読み直し（部門長・副部門長には、管理者の未使用の招待があるメールかもしれないと添える。lib/errors.ts）

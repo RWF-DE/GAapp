@@ -546,5 +546,17 @@ describe('T25 区分「部門」の団体の呼び方（部門長・副部門長
     expect(optionLabels(kindSelect())).toEqual(['総務部門員', '部門長', '副部門長']);
     expect(rpcState.calls[0]!.args).toMatchObject({ p_group_id: G2, p_group_role: 'deputy_manager' });
   });
+
+  it('部門の団体で同じ団体に別の立場でいる（conflict の field: group_role）：部門長・副部門長で言う（04「団体の立場の呼び方」。T25 のレビュー）', async () => {
+    rpcState.handler = () => p0001('conflict', { field: 'group_role', current: 'manager' });
+    const user = userEvent.setup();
+    renderTab('head');
+    await screen.findByTestId('invite-form');
+    await invite(user, 'dept-head@example.test', 'deputy_manager', '部門B');
+    expect((await screen.findByTestId('invite-kind-error')).textContent).toBe(
+      'この人はすでにこの団体の部門長です。部門長・副部門長の切り替えはメンバーの一覧から',
+    );
+    expect(toasts.error).not.toHaveBeenCalled();
+  });
 });
 

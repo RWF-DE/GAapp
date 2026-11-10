@@ -9,7 +9,7 @@ import { navLabels } from './helpers';
 import { storageStateFor } from './support/auth';
 import { createScenario, createUser, sql, type Scenario, type TestUser } from './support/db';
 import { SMALL } from './support/datasets';
-import { apiRpc, apiToken, expectNoOverflow, expectNoSignedUrlStored } from './support/documents';
+import { apiGet, apiRpc, apiToken, expectNoOverflow, expectNoSignedUrlStored } from './support/documents';
 import { makePhoto } from './support/item-images';
 import { loginWith } from './support/roles';
 import {
@@ -220,6 +220,18 @@ test.describe('T25 見られない人', () => {
       const r = await apiRpc<unknown[]>(token, 'room_photos_with_previous', { p_year_id: s.yearId, p_room_id: roomA });
       expect(r.error).toBeNull();
       expect(r.data).toEqual([]);
+      // 表への直接の select（RLS）：総務には今年と前年の行が返り、模擬店の代表には 0 行（T25 のレビュー）
+      const q = (yearId: string) => `room_photos?select=id&year_id=eq.${yearId}&room_id=eq.${roomA}`;
+      const staffToken = await apiToken('staff');
+      expect(s.prevYearId).toBeTruthy();
+      for (const yearId of [s.yearId, s.prevYearId!]) {
+        const seen = await apiGet<unknown[]>(staffToken, q(yearId));
+        expect(seen.error).toBeNull();
+        expect(seen.data?.length ?? 0).toBeGreaterThan(0);
+        const hidden = await apiGet<unknown[]>(token, q(yearId));
+        expect(hidden.error).toBeNull();
+        expect(hidden.data).toEqual([]);
+      }
       expect(await storageListRoomPhotos(token, `${s.yearId}/${roomA}`)).toEqual([]);
       expect(await storageListRoomPhotos(token, `${s.prevYearId}/${roomA}`)).toEqual([]);
     } finally {

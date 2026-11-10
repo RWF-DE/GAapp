@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // 振り分けの部屋の見出しの「現状復帰の写真」へのリンク（04「振り分け」。T25・D-63）：総務（スナップショットの全部を読む人）だけ。
-// 閲覧のみ（行の一覧だけ）には出さない。リンクだけで、写真の部品・読み取りは振り分けの画面の JS に入れない。
+// 閲覧のみ（行の一覧だけ）には出さない（画面を通した出し分けは allocation-screen.test.tsx）。リンクだけで、写真の部品・読み取りは振り分けの画面の JS に入れない。
 import { fixturePath, readFixtureDir } from '@gaapp/shared/testing';
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -52,11 +52,11 @@ describe('T25 振り分けの部屋の見出しの「現状復帰の写真」', 
     expect(links[0]!.textContent).toBe('現状復帰の写真');
   });
 
-  it('閲覧のみ（行の一覧だけ。photoLinks なし）には出さない', () => {
-    auth.role = 'viewer';
+  // 立場による出し分け（閲覧のみには出さない。photoLinks={full}）は allocation-screen.test.tsx が画面を通して確かめる（T25 のレビュー）
+  it('photoLinks が偽（既定）なら出さない（リンクも文字も）', () => {
     render(<ItemTabView vm={vm} rows={rows} tab={tab} readOnlyList />);
     expect(screen.queryByTestId('room-photos-link')).toBeNull();
-    auth.role = 'staff';
+    expect(screen.queryByText('現状復帰の写真')).toBeNull();
   });
 
   it('振り分けと在庫入力の画面は写真の部品・読み取りを静的に読まない（リンクのパスだけ）', () => {

@@ -153,6 +153,11 @@ export async function addRoomPhoto(yearId: string, roomId: string, file: Blob, m
   const reserve = () =>
     callRpc('reserve_room_photo', { p_year_id: yearId, p_room_id: roomId, p_photo_id: photoId, p_content_type: prepared.contentType }, client);
   const add = async () => (await callRpc('add_room_photo', { p_photo_id: photoId, p_memo: memo }, client)) as RoomPhotoRow;
+  // 使用済みの予約の add は前の行を返し、メモは変えない（0024）。送り直しの間にメモを直していたら update_room_photo で今のメモにする
+  // （直したメモを黙って捨てない。T25 のレビュー）。失敗は RoomPhotoError('update')。写真は足してあるので物は消さない
+  const sentMemo = memo.trim();
+  const withMemo = async (row: RoomPhotoRow): Promise<RoomPhotoRow> =>
+    (row.memo ?? '') === sentMemo ? row : updateRoomPhoto(photoId, { memo: sentMemo }, { client });
   let objectPath: string;
   let alreadyUsed: boolean;
   let expired: boolean;
@@ -193,22 +198,26 @@ export async function addRoomPhoto(yearId: string, roomId: string, file: Blob, m
     } catch (e) {
       // 期限が切れた予約に物が先に届いていた（upload は expired で 403）：add は期限を見ないので試す。失敗したら upload の文言を出す
       if (expired && e instanceof AppError && e.info.reason === 'item_image_denied') {
+        let row: RoomPhotoRow | null = null;
         try {
-          return await add();
+          row = await add();
         } catch {
           // 下で upload の失敗を投げる
         }
+        if (row) return withMemo(row);
       }
       throw new RoomPhotoError('upload', e);
     }
   }
+  let added: RoomPhotoRow;
   try {
-    return await add();
+    added = await add();
   } catch (e) {
     // 写真にできなかった：上げた自分の物を片付ける（どの写真にも使われていない物なので消せる。消せなくても残るだけ）。使用済みの物は消さない
     if (!alreadyUsed) await removeQuietly(client, objectPath);
     throw new RoomPhotoError('add', e);
   }
+  return withMemo(added);
 }
 
 /** メモと並びを変える（null は変えない）。変えた行を返す。失敗は RoomPhotoError */

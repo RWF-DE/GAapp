@@ -43,7 +43,8 @@ function setup(
     const o = opts.rpc?.(call);
     if (o) return o;
     if (call.table === 'rpc:reserve_room_photo') return { data: { id: PHOTO, object_path: PATH, used_at: null, expires_at: FUTURE } };
-    if (call.table === 'rpc:add_room_photo') return { data: ROW };
+    // add は送ったメモの行を返す（新しい予約の add。0024。使用済みの予約で前の行が返る場合は、テストが rpc で差し替える）
+    if (call.table === 'rpc:add_room_photo') return { data: { ...ROW, memo: (call.ops[0]?.args[0] as { p_memo: string }).p_memo } };
     if (call.table === 'rpc:update_room_photo') return { data: ROW };
     if (call.table === 'rpc:delete_room_photo') return { data: PATH };
     if (call.table === 'room_photo_uploads') return { data: [] };
@@ -106,15 +107,42 @@ describe('T25 addRoomPhoto（作り直す → 予約 → 上げる → 写真の
     const used = setup({
       rpc: (c) => (c.table === 'rpc:reserve_room_photo' ? { data: { id: PHOTO, object_path: PATH, used_at: '2026-11-10T00:00:00Z', expires_at: FUTURE } } : undefined),
     });
-    await addRoomPhoto(YEAR, ROOM, new Blob(['x']), '', { client: used.client, env: envOf().env, photoId: PHOTO });
+    await addRoomPhoto(YEAR, ROOM, new Blob(['x']), '黒板', { client: used.client, env: envOf().env, photoId: PHOTO });
     expect(used.log).toEqual(['rpc:reserve_room_photo', 'rpc:add_room_photo']);
+  });
+
+  it('送り直しの間にメモを直した（使用済みの予約で add が前のメモの行を返す）：update_room_photo で今のメモにする（T25 のレビュー）', async () => {
+    // 使用済みの予約：add は前の送信の行（メモ「黒板」）を返し、メモは変えない（0024）
+    const usedReserve = (c: FakeCall): FakeResult | undefined =>
+      c.table === 'rpc:reserve_room_photo'
+        ? { data: { id: PHOTO, object_path: PATH, used_at: '2026-11-10T00:00:00Z', expires_at: FUTURE } }
+        : c.table === 'rpc:add_room_photo'
+          ? { data: ROW }
+          : undefined;
+    const s = setup({
+      rpc: (c) => usedReserve(c) ?? (c.table === 'rpc:update_room_photo' ? { data: { ...ROW, memo: '机は後ろ' } } : undefined),
+    });
+    const r = await addRoomPhoto(YEAR, ROOM, new Blob(['x']), ' 机は後ろ ', { client: s.client, env: envOf().env, photoId: PHOTO });
+    expect(s.log).toEqual(['rpc:reserve_room_photo', 'rpc:add_room_photo', 'rpc:update_room_photo']);
+    expect(s.args('update_room_photo')).toEqual([{ p_photo_id: PHOTO, p_memo: '机は後ろ', p_sort_order: null }]);
+    expect(r.memo).toBe('机は後ろ');
+    // メモを消した（空）ときも空にする
+    const cleared = setup({ rpc: (c) => usedReserve(c) ?? (c.table === 'rpc:update_room_photo' ? { data: { ...ROW, memo: '' } } : undefined) });
+    expect((await addRoomPhoto(YEAR, ROOM, new Blob(['x']), '', { client: cleared.client, env: envOf().env, photoId: PHOTO })).memo).toBe('');
+    expect(cleared.args('update_room_photo')).toEqual([{ p_photo_id: PHOTO, p_memo: '', p_sort_order: null }]);
+    // メモを直せなかった：写真は足してあるので、直せなかった文言（送り直せば同じ id でメモだけ直す）
+    const ng = setup({ rpc: (c) => usedReserve(c) ?? (c.table === 'rpc:update_room_photo' ? { error: { message: 'Failed to fetch' } } : undefined) });
+    const e = (await addRoomPhoto(YEAR, ROOM, new Blob(['x']), '机は後ろ', { client: ng.client, env: envOf().env, photoId: PHOTO }).catch((x: unknown) => x)) as RoomPhotoError;
+    expect(e).toBeInstanceOf(RoomPhotoError);
+    expect(e.step).toBe('update');
+    expect(ng.removes).toEqual([]);
   });
 
   it('期限の切れた予約に物が先に届いていた（upload が 403）：add を試す。add も失敗なら upload の文言', async () => {
     const reserveExpired = (c: FakeCall) =>
       c.table === 'rpc:reserve_room_photo' ? { data: { id: PHOTO, object_path: PATH, used_at: null, expires_at: PAST } } : undefined;
     const ok = setup({ rpc: reserveExpired, upload: () => ({ data: null, error: storageError('403', 'AccessDenied') }) });
-    expect(await addRoomPhoto(YEAR, ROOM, new Blob(['x']), '', { client: ok.client, env: envOf().env, photoId: PHOTO })).toEqual(ROW);
+    expect(await addRoomPhoto(YEAR, ROOM, new Blob(['x']), '', { client: ok.client, env: envOf().env, photoId: PHOTO })).toEqual({ ...ROW, memo: '' });
     expect(ok.log).toEqual(['rpc:reserve_room_photo', 'upload', 'rpc:add_room_photo']);
     const ng = setup({
       rpc: (c) => reserveExpired(c) ?? (c.table === 'rpc:add_room_photo' ? p0001('invalid_state', { reason: 'not_uploaded' }) : undefined),

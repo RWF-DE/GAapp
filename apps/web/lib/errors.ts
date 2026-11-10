@@ -6,7 +6,16 @@
 // - 文言にメールアドレス・CSV の中身を入れない。P0001 以外の details（23505 の「Key (email)=(…)」など、DB の値を含みうる）は持たない。
 // - details の団体・部屋・品目の id は、画面が渡す名前に置き換える（名前がなければ id は出さない）。
 // - 表にない field・reason は「入力の形が違います」「この操作はできません」にする（新しい RPC が増えても落ちない）。
-import { FIELD_LABELS, GROUP_ROLE_LABELS, labelOf, ROLE_LABELS, YEAR_STATUS_LABELS, type YearStatus } from './labels';
+import type { GroupCategory } from '@gaapp/shared';
+import {
+  DEPARTMENT_GROUP_ROLE_LABELS,
+  FIELD_LABELS,
+  GROUP_ROLE_LABELS,
+  labelOf,
+  ROLE_LABELS,
+  YEAR_STATUS_LABELS,
+  type YearStatus,
+} from './labels';
 
 export type ErrorKind =
   | 'forbidden'
@@ -277,6 +286,11 @@ export interface MessageContext {
    * names.item でテント等の備品の名前を引く（save_lending_assignments・set_lending_confirmed の details の lending_item_id）
    */
   table?: string;
+  /**
+   * 招待の conflict（field: group_role）で選んだ団体の区分（04「団体の立場の呼び方」。T25・D-63）：部門（department）なら
+   * 「部門長」「副部門長」、ほか・省略は「店長」「副店長」で言う
+   */
+  groupCategory?: GroupCategory | null;
 }
 
 const statusLabel = (s: unknown): string | undefined =>
@@ -569,9 +583,12 @@ function conflictMessage(e: ClassifiedError, ctx: MessageContext): string {
     return role ? `この人はすでに「${role}」です。${next}` : `この人にはすでに別のロールがあります。${next}`;
   }
   // 招待：同じ団体に別の立場（店長・副店長）でいる（invite の details は {field: 'group_role', current}。T15）
+  // 部門の団体は「部門長」「副部門長」で言う（04「団体の立場の呼び方」。T25 のレビュー）
   if (d.field === 'group_role') {
-    const position = typeof d.current === 'string' ? labelOf(GROUP_ROLE_LABELS, d.current) : '';
-    return `この人はすでにこの団体の${position || '店長・副店長'}です。店長・副店長の切り替えはメンバーの一覧から`;
+    const labels = ctx.groupCategory === 'department' ? DEPARTMENT_GROUP_ROLE_LABELS : GROUP_ROLE_LABELS;
+    const both = `${labels.manager}・${labels.deputy_manager}`;
+    const position = typeof d.current === 'string' ? labelOf(labels, d.current) : '';
+    return `この人はすでにこの団体の${position || both}です。${both}の切り替えはメンバーの一覧から`;
   }
   if ('asked' in d && 'current' in d) {
     const asked = num(d.asked);
