@@ -66,6 +66,8 @@ app_role の head（総務部門長）と deputy_head（総務副部門長）は
 
 0022_item_images.sql（品目の画像。items・count_items の列 image_path、予約の表 item_image_uploads とその RLS、Storage の非公開の bucket item-images と storage.objects のポリシー3つ・トリガー1つ、RPC reserve_item_image・set_item_image、image_path を RPC の外で変えさせないトリガー。版の増分の関数 private.tg_bump_allocation_version を `create or replace` で置き換え、set_item_image が items の画像だけを変えるときは版を上げない〔ほかの枝は変えない〕。0016 の bucket documents のポリシー・トリガーは変えない。D-61）は T23 で作る。
 
+0024_room_photos.sql（現状復帰の写真。表 room_photos と予約の表 room_photo_uploads とその RLS、判定と集合の関数 private.can_see_room_photos・private.room_photo_year_ids、Storage の非公開の bucket room-photos と storage.objects のポリシー3つ・トリガー1つ、1 部屋 6 枚の上限のトリガー、RPC reserve_room_photo・add_room_photo・update_room_photo・delete_room_photo・room_photos_with_previous。足すだけで、今の表・関数・ポリシー〔bucket documents・item-images の物を含む〕は変えない。振り分けの版の増分・確定中の守りは付けない。D-63）は T25 で作る。
+
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
 
 文字列と数には上限を付ける。自由記述（note・memo・problem_note）は 2000 字、名前・表示名・ラベルは 100 字（年度名は 50 字）、コードと建物は 50 字、aliases は 20 個・合計 1000 字、rules.params は 20000 字、数（count）は 10000 まで。団体代表と部員も書ける列があるので、大きな値で無料プランの容量（500MB）を使い切らせず、解けない申請を入れさせないため。
@@ -486,7 +488,7 @@ Storage の容量（無料プランの 1 GB。2026-11-10。D-62。T24 の前は�
 | --- | --- | --- | --- |
 | documents | 提出物のファイル（T19） | 0（T24 から新しく上げない。提出物はドライブに出す。T24 の前の物は残る） | reserve_document_file が uploads_disabled（0023） |
 | item-images | 品目の画像（T23） | 100 MiB | reserve_item_image の storage_full（0022） |
-| room-photos | 部屋の写真（T25。現状復帰の写真） | 800 MiB | T25 の予約の RPC（0024。T25 で作る） |
+| room-photos | 部屋の写真（T25。現状復帰の写真） | 800 MiB | reserve_room_photo の storage_full（0024） |
 
 **シフト・作業（T20。0017。D-56）**
 
@@ -710,13 +712,51 @@ create table item_image_uploads (
 - path に日本語・名前・個人の情報を入れない（DB が id から作る）。元のファイル名は持たない。
 - 画像を消す・替えると、前の物は「どの行にも使われていない物」になる。SQL では消せない（storage.protect_delete）ので、画面が Storage API の remove で消す（set_item_image が前の path を返す）。品目・備品の行を消したとき（管理者）も、その画像は使われていない物として残り（予約の行は cascade で消える）、画面が消す（マスタ設定の備品の削除は、削除に成功した後にその備品のフォルダ `count-items/{id}/` の物を一覧して remove する。失敗しても知らせない。04「マスタ設定」）。
 
+**現状復帰の写真（T25。0024。D-63）**
+
+教室の現状復帰（祭の後に部屋を元に戻すこと）のために、祭の前の部屋の様子を写真で残す。写真は「年度 × 場所」ごとに 6 枚まで持ち、1 枚ごとに一言のメモ（50 字まで。空でもよい）を付ける。前の年度（prev_year_id）の写真も参考に見られる。画像の中身は Supabase Storage の非公開の bucket `room-photos`（1 枚 1 MiB〔1048576 バイト〕まで、形は `image/webp` と `image/jpeg` だけ、合計 800 MiB まで。0024 が作る）。書き込みは品目の画像（T23）と同じ「DB が予約してから上げる」形にする。
+
+```sql
+-- 写真の予約（RPC だけで書く。行は予約した人だけが読む）
+create table room_photo_uploads (
+  id uuid primary key,                -- 画面が作る（reserve_room_photo の p_photo_id。送り直しの鍵。写真の行の id にもなる）
+  year_id uuid not null references years on delete cascade,
+  room_id uuid not null references rooms on delete cascade,
+  object_path text not null unique,   -- DB が作る。'{year_id}/{room_id}/{id}.webp'（JPEG は .jpg）。CHECK で形を固定する
+  content_type text not null check (content_type in ('image/webp', 'image/jpeg')),
+  created_by uuid references auth.users on delete set null, -- 予約した人（Storage に上げられるのはこの人だけ）
+  expires_at timestamptz not null,    -- 予約から 1 時間。過ぎたら上げられない（同じ id で予約し直せる）
+  used_at timestamptz,                -- add_room_photo が写真の行にした日時
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- 部屋の写真（RPC だけで書く。年度 × 場所で 6 枚まで〔トリガー〕）
+create table room_photos (
+  id uuid primary key,                -- 予約の id と同じ
+  year_id uuid not null references years on delete cascade,
+  room_id uuid not null references rooms on delete restrict, -- 写真のある場所は消せない（先に写真を消す）
+  object_path text not null unique,   -- 予約の object_path（'{year_id}/{room_id}/{id}.webp'。CHECK で形を固定する）
+  memo text not null default '' check (char_length(memo) <= 50 and memo !~ '[[:cntrl:]]'),
+  sort_order integer not null check (sort_order between 0 and 1000),
+  created_by uuid references auth.users on delete set null, -- 足した人（RPC が入れる）
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+```
+
+- path は bucket room-photos の中の `{year_id}/{room_id}/{photo_id}.webp`（JPEG は `.jpg`）。DB が id から作り、日本語・名前・個人の情報を入れない。元のファイル名は持たない。
+- 1 部屋 6 枚：BEFORE INSERT のトリガー `check_photo_limit` が、年度と場所ごとの勧告的ロック（`pg_advisory_xact_lock(hashtext('gaapp.room_photos'), hashtext(year_id::text || '/' || room_id::text))`）を取ってから数え、もう 6 枚あれば invalid_state（reason: too_many_photos）。他の表を参照する CHECK は使わない決まりなので、トリガーで確かめる。
+- year_id・room_id・object_path は作った後に変えられない（check_immutable）。監査は room_photos だけ（tg_audit。row_pk は id、year_id は行から、group_id は null）。予約の表は監査しない（手順の途中の記録。使った物は room_photos の追加として残る）。
+- 写真を消すと、その物は「どの写真にも使われていない物」になる。SQL では消せない（storage.protect_delete）ので、画面が Storage API の remove で消す（delete_room_photo が path を返す）。年度を消したとき（SQL Editor。ふつうはしない）も物は残る。
+
 **設計上の決めごと**
 
 - 余りは保存しない。v_remaining で毎回計算する
 - 残すは allocations の is_keep = true の行。is_keep は「運び元＝団体の使用場所」と一致させる（残す ⇔ 運び元が使用場所）。is_keep は、保存する RPC が「運び元＝団体の使用場所」かどうかで決める（クライアントの値は使わない）。「is_keep の行の運び元＝団体の使用場所」は CHECK ではなくトリガーで確かめる（他の表を参照する CHECK は PostgreSQL が対応しておらず、ダンプからの復元も失敗し得る）。逆向き（使用場所からの行が残すでない）はトリガーでは止めず、保存の RPC が決め直して直す（RPC で書いた行はいつもそろう）。振り分けの後に団体の使用場所を変えると、どちらの向きにもずれ得るので、確定では両方向の不一致（残すなのに運び元が使用場所でない／使用場所からの行が残すでない）を検証 E005 として確かめる（`private.confirm_issues`）。年度の一致（行の year_id と団体の year_id）は複合外部キーで保証する
 - 使用不可の部屋は allocations を作らず、Excel 出力で「残す／使用不可」の行として出す
 - 理由が要る書き込み（締切後の申請修正、手での振り分け変更、確定と確定解除）と、複数の表をまとめて変える書き込み（自動振り分けの保存、年度の複製、了承の記録、申請の提出）は、すべて DB 関数（RPC）で行う。関数の中で権限を確かめ、`set_config('app.reason', reason, true)` で理由を置いてから同じトランザクションで書き込む。PostgREST は1リクエストを1トランザクションで処理するので、別の呼び出しで置いた理由は届かない。理由は `private.set_reason` で置き、前後の空白を除く。除くのは画面の trim（JavaScript の String.prototype.trim）と同じ 25 文字（notices_title_check と同じ。タブ・改行・全角の空白など）で、除いて空の理由は理由とみなさない（理由が必須の RPC〔set_year_status の確定と確定の解除・save_allocation_rows・update_requests_after_deadline・set_lending_confirmed の解除〕は reason_required、任意なら監査の reason は null）。500 字の上限は除く前の長さで見る（invalid_input。field: reason）。0003 は半角の空白だけを除いていたので、RPC を直接呼ぶと空白に見える理由で通せた（0019 で直す。FU3）
-- audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles と、room_years・groups・group_members・rooms・items・distance_overrides と、お知らせの notices・notice_groups（T17。notice_groups の行の group_id は宛先の団体）と、予定と締切の events（T18）と、提出物の documents・document_submissions・document_files（T19）と、シフト・作業の shift_duties・shift_slots・shift_needs・shift_assignments・tasks（T20）と、テント等の貸し出しの lending_items・lending_requests・lending_assignments・lending_records・lending_years（T21）と、備品（数えるだけ）の count_items・count_stocks（T22。count_items の行は年度を持たない）の 32 表のトリガーで書く（行の中身と row_pk の細部は各機能の項）。invitations（メール）と profiles（氏名）は個人情報を写さないため記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''` にする（audit_logs には誰にも書き込みの権限を与えないので、部員の在庫入力などで失敗しないように）。トリガーは `current_setting('app.reason', true)` で理由を、`auth.uid()` で書いた人を読む。row_pk は主キーの列を JSON にしたもの、before・after は行全体。updated_at・版の列（allocation_version）・auto_allocated_at しか変わらない更新は記録しない（auto_allocated_at は自動振り分けの保存で allocations の行と一緒に変わり、その行が監査に残るため）。year_id・group_id は行から入れ（year_id を持たない表は団体から引く）、団体の連鎖削除で消えた行にも、消える前の団体の年度を入れる
+- audit_logs は stocks・requests・request_submissions・rules・allocations・substitution_consents・years・year_roles と、room_years・groups・group_members・rooms・items・distance_overrides と、お知らせの notices・notice_groups（T17。notice_groups の行の group_id は宛先の団体）と、予定と締切の events（T18）と、提出物の documents・document_submissions・document_files（T19）と、シフト・作業の shift_duties・shift_slots・shift_needs・shift_assignments・tasks（T20）と、テント等の貸し出しの lending_items・lending_requests・lending_assignments・lending_records・lending_years（T21）と、備品（数えるだけ）の count_items・count_stocks（T22。count_items の行は年度を持たない）と、現状復帰の写真の room_photos（T25）の 33 表のトリガーで書く（行の中身と row_pk の細部は各機能の項）。invitations（メール）と profiles（氏名）は個人情報を写さないため記録しない。トリガー関数は SECURITY DEFINER・`search_path = ''` にする（audit_logs には誰にも書き込みの権限を与えないので、部員の在庫入力などで失敗しないように）。トリガーは `current_setting('app.reason', true)` で理由を、`auth.uid()` で書いた人を読む。row_pk は主キーの列を JSON にしたもの、before・after は行全体。updated_at・版の列（allocation_version）・auto_allocated_at しか変わらない更新は記録しない（auto_allocated_at は自動振り分けの保存で allocations の行と一緒に変わり、その行が監査に残るため）。year_id・group_id は行から入れ（year_id を持たない表は団体から引く）、団体の連鎖削除で消えた行にも、消える前の団体の年度を入れる
 - 申請できる品目はトリガーで確かめる。数が1以上で、品目の「申請できる区分」に団体の区分がなければ E006 で拒否する。ただし企業以外の長机(3人掛)は通す（前処理で長机(2人掛)に読み替える。D-05）
 - stocks の counted_by・counted_at と、request_submissions の updated_by・submitted_at は、ログインしている人が書いたときにトリガーで入れる（クライアントが送った値は使わない）。例外は、部門長以上（admin・head・deputy_head）だけが呼べる RPC `update_requests_after_deadline` が CSV の取り込みでフォームのタイムスタンプ（submittedAt）を渡したときの submitted_at で、RPC がその書き込みの間だけ transaction-local の設定（`app.keep_submitted_at`）を立て、トリガーは値を置き換えない（団体代表は日時を偽れない。D-19）
 - distance_overrides の建物の組は向きを持たない。呼ぶ側が順序を気にしなくてよいよう、トリガーが C の照合順序（コードポイント順。DB の既定の照合順序や JavaScript の並べ替えに依存しない）で小さい方を building_a に入れ替える。同じ建物どうしは CHECK で拒否する
@@ -780,6 +820,16 @@ create table item_image_uploads (
   - 監査：image_path の変更は items・count_items の audit に残る（tg_audit。履歴の画面は path を出さず「画像を変えた」と出す。04）。予約の表は監査しない（行は手順の途中の記録で、使った物は行の画像の変更として残る）。
   - 机椅子との関係：items の画像だけを変える set_item_image は、振り分けの版（allocation_version）を上げない（0022 が `private.tg_bump_allocation_version` を置き換え、set_item_image が transaction-local の `app.item_image` を立てた items の書き込みでは何もしない。写真は振り分けの入力でないので、振り分け中に画像を替えても自動振り分けの conflict にしない）。ほかの items の変更（名前・区分など）は今までどおり版を上げる。count_items はもともと版を上げない。確定中・終了の守りも付けない（画像は振り分けに使わない）。年度の作成・年度データの JSON・スナップショットにも入れない（画像は年度をまたぐ）。
   - 読み取り：画像を読めるのは、どこかの年度のロールか団体代表がある人（`private.has_any_access()`。品目の一覧を読める人と同じ。閲覧のみと店長・副店長も読む。申請の画面に出すため）。画面は `createSignedUrls` で、一覧の画像の署名つき URL を1回にまとめて作る（有効は 10 分。URL はメモリーにだけ持ち、下書き・ログ・localStorage に残さない）。
+- 現状復帰の写真（T25。D-63）：
+  - 書き込みの道：写真の予約（room_photo_uploads）と写真の行（room_photos）は RPC だけで書く（どちらの表にも書き込みの権限を与えない）。Storage の物は Storage API（画面の upload・remove）。上げられるのは DB が予約した path だけ（storage.objects の insert のポリシーと、ロールによらず動くトリガー `room_photos_objects_guard`。署名つきアップロードなど RLS を通らない書き込みも同じ条件で止め、上書き・移動はいつでも止める）。
+  - 順番（画面）：`reserve_room_photo(year_id, room_id, photo_id, content_type)` で予約し、返った object_path へ upload（`upsert: false`）し、`add_room_photo(photo_id, memo)` で写真の行にする。メモの変更と並べ替えは `update_room_photo(photo_id, memo, sort_order)`（null の引数は変えない）、削除は `delete_room_photo(photo_id)`（行を消して path を返し、画面がそれを remove する）。
+  - 段：書けるのは、その年度の総務（admin・head・deputy_head・staff。`private.can_write_room_photos(year_id)`。在庫と違い、総務部門員も振り分け中・確定中に書ける）。年度が終了（closed）なら、ロールの確かめの後に invalid_state（detail は status。読むだけ）。年度の行は for share でロックしてから状態を見る（終了と同時でも、終わった後の状態で決まる）。どの RPC も、最初にロールを確かめる（段の外なら、入力の誤り・行の有無より先に forbidden）。
+  - 予約の決まり（品目の画像の決めと同じ。D-61）：予約は 1 時間で期限切れ。同じ id・同じ中身（年度・場所・形・予約した人）の送り直しはその行を返し、期限が切れていてまだ上げておらず、まだ使っていなければ、新しい予約と同じ上限を確かめてから期限を延ばす（予約し直し）。中身が違えば invalid_input（field: photo_id、reason: in_use）。上限（invalid_state の reason）：too_many_photos（その年度・場所の写真がもう 6 枚）、too_many_reservations（呼んだ人の、写真の行にしていない予約のうち、生きている物と、期限が切れても物が Storage に残っている物が 10 個以上）、too_many_orphans（その年度・場所のフォルダ `{year_id}/{room_id}/` に、写真の行でも生きた予約の物でもない物が 3 個以上）、storage_full（bucket の合計〔届いた物の metadata の size ＋ 届いていない生きた予約 × 1 MiB ＋ 今回の 1 MiB〕が 800 MiB〔838860800 バイト〕を超える）。数は勧告的ロックで予約どうしを順にして数える。画面の扱い（too_many_reservations・too_many_orphans のときに片付けて1回だけ予約し直す）は品目の画像と同じ（04「現状復帰の写真」）。
+  - add_room_photo の決まり：予約が呼んだ人の物でなければ invalid_input（field: photo_id、reason: not_reserved）。Storage に届いていなければ invalid_state（reason: not_uploaded）。もう使った予約で、写真の行がまだあれば、その行を返す（送り直し。メモは変えない）。行がもうなければ（消した）invalid_state（reason: used）。add は予約の期限を見ない（物が先に届いた期限切れの予約も写真にできる）。並び（sort_order）はその年度・場所の今の最大＋1（最初は 0）。6 枚の上限はトリガーで確かめる。
+  - 見る人（`private.can_see_room_photos(year_id)`）：その年度の総務（admin・head・deputy_head・staff）と、その年度の区分「部門」（department）の団体の代表（group_members。店長〔部門長〕・副店長〔副部門長〕のどちらも。執行部）。閲覧のみ（viewer）と、区分が模擬店・企業・休憩所の団体の代表は見られない（閲覧のみでも、同じ年度の部門の団体の代表を兼ねていれば見られる）。
+  - 前の年度：今の年度で見られる人は、その年度の prev_year_id の年度（1つ前だけ）の写真も見られる（前の年度にロールや代表の立場がなくてもよい）。select のポリシーと Storage の select のポリシーは、集合の関数 `private.room_photo_year_ids()`（見られる年度と、その prev_year_id の年度。D-47 の形で1回だけ作る）を使う。読み取りの RPC `room_photos_with_previous(year_id, room_id)` は、その年度で見られる人にだけ、その年度と前の年度の、その場所（room_id が null なら全部の場所）の写真の行を返す（見られなければ 0 行）。
+  - 机椅子との関係：振り分けの入力でないので、版（allocation_version）を上げず（bump_version を付けない）、確定中の守り（guard_confirmed）も付けない。年度の作成（create_year_from）は写真を写さない（前年の写真は前の年度の行のまま見る）。スナップショット（振り分けの画面の版の比べ）と年度データの JSON にも入れない（写真は Storage の物で、JSON に入れても戻せないため）。
+  - 読み取りの画面：`createSignedUrls` で一覧の写真の署名つき URL を1回にまとめて作る（有効 10 分。URL はメモリーにだけ持ち、下書き・ログ・localStorage に残さない。品目の画像と同じ）。
 
 ## 権限とRLS
 
@@ -806,6 +856,7 @@ create table item_image_uploads (
 - `private.my_group_document_ids()`・`private.my_document_upload_paths()`・`private.my_document_orphan_paths()`：提出物の select のポリシーと、Storage（storage.objects）の insert・delete のポリシーで使う集合（自分が代表の団体が対象の提出物、自分が予約した今書ける提出の path、自分の範囲のどの提出にも属さない物の path。T19。下の「提出物の権限」）
 - `private.can_record_lending(year_id)`：その年度の総務（admin・head・deputy_head・staff）で、年度が closed でない（テント等の受け渡し・返却の記録〔lending_records〕の書き込み。T21）
 - `private.lending_confirmed_year_ids()`：呼んだ人がロールか団体代表を持つ年度のうち、テント等の割り当てを確定したもの（lending_years の confirmed_at が null でない年度。テント等の割り当ての select のポリシーで使う集合。T21）。テント等の貸し出しの select のポリシーは、ほかに my_role_year_ids・my_group_ids・my_group_year_ids を使う
+- `private.room_photo_year_ids()`：呼んだ人が現状復帰の写真を見られる年度（`private.can_see_room_photos(year_id)` が真の年度）と、その prev_year_id の年度の集合（room_photos と bucket room-photos の select のポリシーで使う。T25。D-63）。判定の `private.can_see_room_photos(year_id)`（その年度の総務か、その年度の区分「部門」の団体の代表）と書き込みの段の `private.can_write_room_photos(year_id)`（その年度の総務）は、RPC の中からだけ呼ぶので、誰にも execute を与えない
 - `private.my_verified_email()`：本人のものと確かめられる今のメール（自分あての招待の読み取り）
 - ほかに、年度の状態と団体の年度を引く関数（`private.year_status`・`private.group_year_id`）
 
@@ -813,7 +864,7 @@ create table item_image_uploads (
 
 シフト・作業（T20）の「総務か」の補助（`private.year_member_is_soumu(year_id, user_id)`。year_roles の行を for share で読む）も任意の人について答えるので、同じく誰にも execute を与えない（トリガー `member_check` の中からだけ呼ぶ。VOLATILE）。判定関数は足さない（シフト・作業のポリシーは `private.my_role_year_ids` と `private.can_lead` を使う）。
 
-表の権限（grant）も権限表に合わせる。anon には何も与えない。authenticated には全表の select と、W の表の insert・update・delete だけを与え、RPC でだけ書く表（years・year_roles・group_members・invitations・substitution_consents・allocations・profiles・audit_logs・notices・notice_groups・document_submissions・document_files・lending_assignments・lending_years の 14 表）には書き込みの権限を与えない。テント等の申請と記録（lending_requests・lending_records。T21）は insert・update だけで、delete は与えない（0 にして残す）。RPC の execute は authenticated だけに与える。
+表の権限（grant）も権限表に合わせる。anon には何も与えない。authenticated には全表の select と、W の表の insert・update・delete だけを与え、RPC でだけ書く表（years・year_roles・group_members・invitations・substitution_consents・allocations・profiles・audit_logs・notices・notice_groups・document_submissions・document_files・lending_assignments・lending_years の 14 表。品目の画像の item_image_uploads〔T23〕と現状復帰の写真の room_photos・room_photo_uploads〔T25〕も同じ）には書き込みの権限を与えない。テント等の申請と記録（lending_requests・lending_records。T21）は insert・update だけで、delete は与えない（0 にして残す）。RPC の execute は authenticated だけに与える。
 
 提出物（T19）：documents は W の表、document_submissions・document_files は RPC でだけ書く表（上の 14 表に入る）、ビュー v_document_status・v_document_files は select だけ。Storage の表（storage.objects・storage.buckets）の権限は Supabase の既定（anon・authenticated に select・insert・update・delete）のまま変えず、storage.objects のポリシー（bucket documents の物だけに効く3つ。下の「提出物の権限」）で守る。
 
@@ -854,6 +905,8 @@ R＝読み取り、W＝追加・更新・削除、RPC＝DB 関数経由でだけ
 | count_items | RW（closed でない年度のどれかで admin）・RPC（名前を足す） | R・RPC（名前を足す） | R・RPC（名前を足す。status が preparing / requesting のとき） | R | R |
 | count_stocks | RW | RW | RW（status が preparing / requesting のとき） | — | — |
 | item_image_uploads | R（自分の予約）・RPC（9 品目と備品〔数えるだけ〕の画像） | R（自分の予約）・RPC（備品〔数えるだけ〕の画像） | R（自分の予約）・RPC（備品〔数えるだけ〕の画像。status が preparing / requesting の年度があるとき） | — | — |
+| room_photos | R（その年度と、その前の年度）・RPC（closed でない年度） | R・RPC（admin と同じ） | R・RPC（admin と同じ） | R（区分「部門」の団体の代表だけ。代表である年度と、その前の年度） | —（部門の団体の代表を兼ねていれば、代表として読む） |
+| room_photo_uploads | R（自分の予約）・RPC（closed でない年度） | R（自分の予約）・RPC | R（自分の予約）・RPC | — | — |
 
 admin・head・deputy_head・staff・viewer は、その行の年度でのロールを指す（R9 の admin でも、R8 でロールがなければ R8 の行は読めない。前年度の数は RPC で読む）。「その年度のメンバー」は、その年度にロールか団体代表の行がある人。自分のメールの招待は、どこかの年度のロールか団体代表がある間だけ読める（外された人は読めない）。「自分のメール」は、本人のものと確かめられる今のメール（`private.verified_email`。下の招待の受け入れと同じ判定。ポリシーは自分の分だけを返す `private.my_verified_email()` を呼ぶ）で、JWT の email とは比べない（email を他人のアドレスに変えた状態で、その人あての未使用の招待を読ませないため。D-17a）。head・deputy_head が読める招待は、その年度の staff のロールの招待と団体代表の招待（と自分のメールの行）で、admin・head・deputy_head・viewer のロールの招待は読めない。admin と viewer は、同じ年度の団体代表を兼ねられ、兼ねた人は両方の権限を持つ（例：admin が自団体の代表として申請を書く）。head・deputy_head・staff は、同じ年度の団体代表を兼ねられない（兼任の禁止。「設計上の決めごと」。違う年度なら兼ねてよい）。店長と副店長の権限は同じ。
 
@@ -980,6 +1033,25 @@ Storage（bucket item-images の物。storage.objects のポリシーとトリ�
 | insert（アップロード） | item_images_objects_insert | name が `private.my_item_image_upload_paths()` に入る：自分が予約した、期限の切れていない、まだ使っていない予約の path で、今もその段（item は管理者、count_item は在庫を書ける人）。届いた後の2回目は一意の索引で止まる（23505。Storage API は 409） |
 | RLS を通らない書き込み（署名つきアップロード・service_role の鍵・SQL Editor の postgres） | トリガー item_images_objects_guard（BEFORE INSERT OR UPDATE・行ごと。SECURITY DEFINER） | insert：予約の行があり、期限が切れておらず、まだ使っておらず、予約した人が今もその段で、metadata の mimetype があれば予約の形と同じ物だけ（違えば 42501。detail の reason は not_reserved・expired・used・not_editable・type）。update：bucket item-images の物の名前・bucket・版・metadata を変える update（上書き・移動）はいつでも 42501（immutable） |
 | delete（削除） | item_images_objects_delete | name が `private.my_item_image_orphan_paths()` に入る：どの行の image_path にも使われていない物で、1つ目のフォルダが items なら管理者、count-items なら在庫を書ける人。ほかの人の生きた（期限の切れていない、使っていない）予約の物は消せない |
+
+**現状復帰の写真の権限**（T25。D-63）：予約と写真の行は RPC（reserve_room_photo・add_room_photo・update_room_photo・delete_room_photo）だけで書く（2つの表の直接の insert・update・delete は 42501）。書き込みの行（○・—）は、年度の状態が準備中・受付中・振り分け中・確定のときのもの。終了の年度では、どのロールも読むだけ（RPC は invalid_state）。読み取りは年度の状態によらない。「その年度」は写真の年度、「部門の代表」はその年度の区分「部門」（department）の団体の店長（部門長）・副店長（副部門長）。
+
+| 操作 | admin | head・deputy_head | staff | 部門の代表（区分「部門」の団体の店長・副店長） | 模擬店・企業・休憩所の代表 | viewer |
+| --- | --- | --- | --- | --- | --- | --- |
+| 写真（room_photos）と Storage の物を見る | その年度と前の年度 | その年度と前の年度 | その年度と前の年度 | 代表である年度と、その前の年度 | — | —（部門の代表を兼ねていれば見る） |
+| 前の年度の写真を読む（RPC room_photos_with_previous） | ○ | ○ | ○ | ○（代表である年度で） | —（0 行） | —（0 行） |
+| 写真を足す（予約・上げる・add_room_photo）、メモを直す・並べ替える・消す | ○ | ○ | ○ | — | — | — |
+| 自分の予約を読む（room_photo_uploads） | ○ | ○ | ○ | — | — | — |
+| どの写真にも使われていない物を Storage から消す | ○（その年度） | ○（その年度） | ○（その年度） | — | — | — |
+
+Storage（bucket room-photos の物。storage.objects のポリシーとトリガー。anon 向けと update のポリシーは作らない。bucket documents・item-images のポリシー・トリガーは変えない）：
+
+| 操作（Storage API） | ポリシー | 許す条件 |
+| --- | --- | --- |
+| select（署名つき URL・ダウンロード。消すときの読み取りにも要る） | room_photos_objects_select | `bucket_id = 'room-photos' and split_part(name, '/', 1) in (select y::text from private.room_photo_year_ids() y)`（1つ目のフォルダの年度を、見られる年度とその前の年度の集合と比べる。集合を1回作る形） |
+| insert（アップロード） | room_photos_objects_insert | name が `private.my_room_photo_upload_paths()` に入る：自分が予約した、期限の切れていない、まだ使っていない予約の path で、今もその年度の総務で、年度が終了でない。届いた後の2回目は一意の索引で止まる（23505。Storage API は 409） |
+| RLS を通らない書き込み（署名つきアップロード・service_role の鍵・SQL Editor の postgres） | トリガー room_photos_objects_guard（BEFORE INSERT OR UPDATE・行ごと。SECURITY DEFINER） | insert：予約の行があり、期限が切れておらず、まだ使っておらず、予約した人が今もその年度の総務で、年度が終了でなく、metadata の mimetype があれば予約の形と同じ物だけ（違えば 42501。detail の reason は not_reserved・expired・used・not_editable・type）。update：bucket room-photos の物の名前・bucket・版・metadata を変える update（上書き・移動）はいつでも 42501（immutable） |
+| delete（削除） | room_photos_objects_delete | name が `private.my_room_photo_orphan_paths()` に入る：1つ目のフォルダが、自分が総務で終了でない年度で、どの写真の行にも使われていない物。ほかの人の生きた（期限の切れていない、使っていない）予約の物は消せない |
 
 ## 年度ステータスの状態遷移
 
