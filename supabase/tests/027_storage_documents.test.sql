@@ -280,9 +280,16 @@ select is(tests.remove_all('head'), 'O_G1 O_G2',
 select is(tests.remove_all('rep'), 'O_G1', 'rep がまとめて消すと、G1 のフォルダのどの提出にも属さない物（O_G1）だけが消える');
 
 -- ================================================================ ⑤ 流れ：予約 → 上げる → 届いたと分かる → 外す → どの提出にも属さない物 → 消す
+-- T24（0023。D-62）で reserve_document_file を止めたので、予約は T24 の前に rep がした予約の行として postgres が直接入れる（0016 の予約と同じ
+-- 行：提出の行がなければ作り、予約した人は rep）。上げる・届いたと分かる・外す・消すは今までどおり
+insert into public.document_submissions (document_id, group_id, year_id) values (tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('Y1'))
+on conflict (document_id, group_id) do nothing;
+insert into public.document_files (id, year_id, document_id, group_id, object_path, content_type, size, created_by)
+values (tests.id('F_FLOW'), tests.id('Y1'), tests.id('DOC_NOFILE'), tests.id('G1'), tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F_FLOW'),
+        'application/pdf', 100, tests.id('rep'));
 select tests.login_as('rep');
-select is((select tests.path_name(object_path) from public.reserve_document_file(tests.id('DOC_NOFILE'), tests.id('G1'), tests.id('F_FLOW'), 'application/pdf', 100)),
-  'F_FLOW', 'rep：G1 の DOC_NOFILE に F_FLOW を予約する');
+select is((select tests.path_name(object_path) from public.v_document_files where id = tests.id('F_FLOW')),
+  'F_FLOW', 'rep：G1 の DOC_NOFILE の F_FLOW（T24 の前の予約）が読める');
 select is((select format('%s %s', uploaded::text, coalesce(stored_size::text, 'null')) from public.v_document_files where id = tests.id('F_FLOW')), 'false null',
   '上げる前は、v_document_files で届いていない（実際の大きさなし）');
 insert into storage.objects (bucket_id, name, metadata) values ('documents', tests.doc_path('Y1', 'G1', 'DOC_NOFILE', 'F_FLOW'), '{"size": 90, "mimetype": "application/pdf"}');

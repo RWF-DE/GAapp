@@ -82,10 +82,10 @@ select columns_are('public', 'item_image_uploads', array['id','item_id','count_i
 select columns_are('public', 'count_stocks', array['year_id','room_id','count_item_id','count','counted_by','counted_at','created_at','updated_at']);
 select columns_are('public', 'v_remaining', array['year_id','room_id','item_id','stock','allocated','remaining']);
 -- 提出物（T19）
-select columns_are('public', 'documents', array['id','year_id','title','description','deadline','target_categories','food_only','requires_file','files_deleted_at','created_by','updated_by','created_at','updated_at']);
+select columns_are('public', 'documents', array['id','year_id','title','description','deadline','target_categories','food_only','requires_file','files_deleted_at','created_by','updated_by','created_at','updated_at','submit_url']);
 select columns_are('public', 'document_submissions', array['document_id','group_id','year_id','status','submitted_at','submitted_by','proxy','reviewed_at','reviewed_by','review_note','created_at','updated_at']);
 select columns_are('public', 'document_files', array['id','year_id','document_id','group_id','object_path','content_type','size','created_by','created_at','updated_at']);
-select columns_are('public', 'v_document_status', array['year_id','document_id','group_id','title','description','deadline','requires_file','status','submitted_at','submitted_by','proxy','late','reviewed_at','reviewed_by','review_note','updated_at']);
+select columns_are('public', 'v_document_status', array['year_id','document_id','group_id','title','description','deadline','requires_file','status','submitted_at','submitted_by','proxy','late','reviewed_at','reviewed_by','review_note','updated_at','submit_url']);
 select columns_are('public', 'v_document_files', array['id','year_id','document_id','group_id','object_path','content_type','size','created_by','created_at','uploaded','stored_size']);
 
 -- 主な列の型・既定値
@@ -165,7 +165,7 @@ select ok((select bool_and(is_nullable = 'NO' and column_default is null) from i
                where table_schema = 'public' and table_name = 'documents' and column_name in ('year_id', 'title', 'deadline', 'target_categories')),
   'documents の year_id・title・deadline・target_categories は not null・既定値なし');
 select col_default_is('documents', 'food_only', 'false');
-select col_default_is('documents', 'requires_file', 'true');
+select col_default_is('documents', 'requires_file', 'false');   -- T24（0023）で false にした（D-62）
 select ok((select bool_and(is_nullable = 'NO') from information_schema.columns
            where table_schema = 'public' and table_name = 'documents' and column_name in ('food_only', 'requires_file')),
   'documents の food_only・requires_file は not null');
@@ -657,8 +657,8 @@ select is((select string_agg(conname, ' ' order by conname collate "C") from pg_
              and contype = 'c'),
   'document_files_content_type_check document_files_object_path_check document_files_size_check '
   || 'document_submissions_review_note_check document_submissions_status_check documents_deadline_check documents_description_check '
-  || 'documents_target_categories_check documents_title_check',
-  '提出物の3表の CHECK は9つ');
+  || 'documents_submit_url_check documents_target_categories_check documents_title_check',
+  '提出物の3表の CHECK は10（T24 で documents_submit_url_check を足した）');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'documents_title_check'),
   (select pg_get_constraintdef(oid) from pg_constraint where conname = 'notices_title_check'),
   'documents_title_check は notices_title_check と同じ式（同じ 25 文字の空白・100 字まで）');
@@ -1194,11 +1194,11 @@ select is((select string_agg(c.relname || ':' || t.tgname, ' ' order by c.relnam
              and not t.tgisinternal),
   'document_files:audit document_files:check_immutable document_files:set_timestamps document_submissions:audit '
   || 'document_submissions:check_immutable document_submissions:set_timestamps documents:audit documents:check_immutable '
-  || 'documents:normalize_target_categories documents:set_actor documents:set_timestamps',
-  '提出物の3表のトリガー（版の増分・確定中の守りはない）');
+  || 'documents:keep_requires_file_off documents:normalize_target_categories documents:set_actor documents:set_timestamps',
+  '提出物の3表のトリガー（版の増分・確定中の守りはない。T24 で requires_file をいつも false にする keep_requires_file_off を足した）');
 select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
            where t.tgrelid = 'public.documents'::regclass and not t.tgisinternal and (t.tgtype & 3) = 3),
-  'check_immutable normalize_target_categories set_actor set_timestamps', 'documents の BEFORE ROW のトリガーの順（並べ直しの後に set_actor）');
+  'check_immutable keep_requires_file_off normalize_target_categories set_actor set_timestamps', 'documents の BEFORE ROW のトリガーの順（並べ直しの後に set_actor）');
 select is((select string_agg(c.relname || '=' || pg_get_triggerdef(t.oid), ' / ' order by c.relname collate "C") from pg_trigger t join pg_class c on c.oid = t.tgrelid
            where t.tgname = 'check_immutable'
              and t.tgrelid in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)),
