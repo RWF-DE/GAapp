@@ -16,12 +16,24 @@ const state = vi.hoisted(() => ({
   submission: null as null | { group_id: string; submitted_at: string | null; note: string | null; updated_at: string; updated_by: string | null },
   /** 申請と提出の記録の読み込みを通信の失敗にする */
   down: false,
+  /** 品目の画像の署名つき URL を作った path（T23） */
+  signed: [] as string[][],
 }));
 
 vi.mock('@/lib/supabase/client', async () => {
   const { createFakeSupabase: make } = await import('@/lib/testing/fake-supabase');
   return {
-    getSupabase: () => make((call) => (state.calls.push(call), state.handler!(call))).client,
+    getSupabase: () => ({
+      ...make((call) => (state.calls.push(call), state.handler!(call))).client,
+      storage: {
+        from: () => ({
+          createSignedUrls: async (paths: string[]) => {
+            state.signed.push(paths);
+            return { data: paths.map((p) => ({ path: p, signedUrl: `https://img.test/${p}`, error: null })), error: null };
+          },
+        }),
+      },
+    }),
   };
 });
 
@@ -177,6 +189,24 @@ afterEach(() => cleanup());
 const submitCalls = () => state.calls.filter((c) => c.table === 'rpc:submit_requests');
 
 describe('申請 /request', () => {
+  it('T23 品目の行の名前の左に画像（読むだけ。URL は1回でまとめる）。画像のない品目は頭文字のカード', async () => {
+    const withImage = itemId('long_desk_2');
+    const path = `items/${withImage}/00000000-0000-4000-8000-0000000000ee.webp`;
+    const base = makeHandler();
+    state.signed = [];
+    state.handler = (call) =>
+      call.table === 'items' && String(opArgs(call, 'select')[0]?.[0]) === 'id, image_path'
+        ? { data: ITEMS.map((i) => ({ id: i.id, image_path: i.id === withImage ? path : null })) }
+        : base(call);
+    renderScreen();
+    await screen.findByTestId('request-group-name');
+    const row = screen.getAllByTestId('request-field').find((li) => li.getAttribute('data-item-code') === 'long_desk_2')!;
+    await waitFor(() => expect(within(row).getByRole('img', { name: '長机(2人掛)' }).getAttribute('src')).toBe(`https://img.test/${path}`));
+    expect(state.signed).toEqual([[path]]);
+    const other = screen.getAllByTestId('request-field').find((li) => li.getAttribute('data-item-code') !== 'long_desk_2')!;
+    expect(within(other).getByTestId('item-image').dataset.state).toBe('none');
+  });
+
   it('企業以外には長机(3人掛)の欄がなく、DB に残っている長机(3人掛)は読み取り専用の行で出る', async () => {
     state.handler = makeHandler({ requests: [{ group_id: STALL, item_id: itemId('long_desk_3'), count: 2, updated_at: T0 }] });
     renderScreen();

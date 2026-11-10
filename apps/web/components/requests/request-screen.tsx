@@ -1,11 +1,12 @@
 'use client';
 
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { DraftNotice } from '@/components/common/draft-notice';
+import { ItemImage } from '@/components/common/item-image';
 import { LatestYearSwitch, useNotLatestYearConfirm } from '@/components/common/latest-year';
 import { PageHeader } from '@/components/common/page-header';
 import { TokyoTime } from '@/components/common/tokyo-time';
@@ -42,6 +43,7 @@ import {
   type RequestDraft,
   type RequestWindow,
 } from '@/lib/data/requests';
+import { itemImagePathsOptions, useItemImageUrls } from '@/lib/data/item-images';
 import { useYearRow, type YearRow } from '@/lib/data/year';
 import { formatDateTime, formatShortDateTime } from '@/lib/datetime';
 import { createDraftWriter, loadDraft, removeDraft, type DraftKey } from '@/lib/drafts';
@@ -138,6 +140,10 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
     [base, data],
   );
   const model = useMemo(() => (data && shown ? buildRequestForm(data.items, data.group.category, shown.requests) : null), [data, shown]);
+  // 品目の画像（T23・D-61。読むだけ）：入力欄の品目の画像の URL をまとめて作る（失敗しても入力は止めない）
+  const imagePathsQ = useQuery(itemImagePathsOptions('item'));
+  const imagePaths = imagePathsQ.data;
+  const images = useItemImageUrls(model ? model.fields.map((f) => imagePaths?.get(f.item.id)) : []);
   /** 編集した後に裏で届いた行にある、ほかの人の変更（入力は置き換えず、知らせだけを出す。R1） */
   const latest = useMemo<GroupRequestState | null>(() => (data ? { requests: data.requests, submission: data.submission } : null), [data]);
   const remote = useMemo<GroupChanges | null>(() => {
@@ -391,6 +397,7 @@ function RequestEditor({ yearId, group, groups, userId }: { yearId: string; grou
           writeDraft(edits, v, startEditing());
         }}
         disabled={!writable || submit.isPending}
+        imageFor={(item) => <ItemImage name={item.name} path={imagePaths?.get(item.id)} images={images} zoomable />}
       />
       {writable ? (
         <div className="sticky bottom-0 -mx-4 mt-4 border-t bg-background px-4 py-3 md:mx-0 md:rounded-b-lg">

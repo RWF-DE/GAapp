@@ -2,7 +2,7 @@
 begin;
 \ir _helpers/personas.psql
 \ir _helpers/fixture.psql
-select plan(538);
+select plan(539);
 
 -- 列挙型
 select enum_has_labels('public', 'year_status', array['preparing','requesting','allocating','confirmed','closed']);
@@ -36,14 +36,16 @@ select tables_are('public', array['years','rooms','room_years','items','stocks',
   'documents','document_submissions','document_files',
   'shift_duties','shift_slots','shift_needs','shift_assignments','tasks',
   'lending_items','lending_requests','lending_assignments','lending_records','lending_years',
-  'count_items','count_stocks'], 'public の表は 37 個');
+  'count_items','count_stocks',
+  'item_image_uploads'], 'public の表は 38 個（T23 で品目の画像の予約 item_image_uploads を足した）');
 select views_are('public', array['v_remaining','v_document_status','v_document_files'], 'public のビューは v_remaining・v_document_status・v_document_files');
 
 -- 列（表ごとに列の集合が一致する）
 select columns_are('public', 'years', array['id','label','festival_start','request_open_at','request_close_at','status','allocation_version','auto_allocated_at','prev_year_id','created_at','updated_at']);
 select columns_are('public', 'rooms', array['id','name','aliases','kind','building','floor','is_storage','extra_cost','sort_order','created_at','updated_at']);
 select columns_are('public', 'room_years', array['year_id','room_id','usable','note','created_at','updated_at']);
-select columns_are('public', 'items', array['id','code','name','aliases','requestable_categories','sort_order','created_at','updated_at']);
+-- T23 で品目の画像の列 image_path を足した（型・CHECK・トリガーの細部は 032 で見る）
+select columns_are('public', 'items', array['id','code','name','aliases','requestable_categories','sort_order','image_path','created_at','updated_at']);
 select columns_are('public', 'stocks', array['year_id','room_id','item_id','count','counted_by','counted_at','created_at','updated_at']);
 select columns_are('public', 'groups', array['id','year_id','name','display_name','aliases','category','is_food','location_room_id','sort_order','created_at','updated_at']);
 select columns_are('public', 'year_roles', array['year_id','user_id','role','created_at','updated_at']);
@@ -74,7 +76,9 @@ select columns_are('public', 'lending_assignments', array['group_id','lending_it
 select columns_are('public', 'lending_records', array['group_id','lending_item_id','year_id','lent_count','returned_count','damaged_count','note','updated_by','created_at','updated_at']);
 select columns_are('public', 'lending_years', array['year_id','confirmed_at','confirmed_by','created_at','updated_at']);
 -- 備品（数えるだけ。T22）：名前の一覧（年度をまたぐ）と数（年度×保管場所×物）。型・制約・トリガーの細部は 031 で見る
-select columns_are('public', 'count_items', array['id','name','always_shown','sort_order','created_by','created_at','updated_at']);
+select columns_are('public', 'count_items', array['id','name','always_shown','sort_order','created_by','image_path','created_at','updated_at']);
+-- 品目の画像の予約（T23）。細部は 032 で見る
+select columns_are('public', 'item_image_uploads', array['id','item_id','count_item_id','object_path','content_type','created_by','expires_at','used_at','replaced_path','created_at','updated_at']);
 select columns_are('public', 'count_stocks', array['year_id','room_id','count_item_id','count','counted_by','counted_at','created_at','updated_at']);
 select columns_are('public', 'v_remaining', array['year_id','room_id','item_id','stock','allocated','remaining']);
 -- 提出物（T19）
@@ -457,15 +461,15 @@ with fk as (
   from pg_constraint c where c.contype = 'f' and c.connamespace = 'public'::regnamespace
     and c.conrelid not in ('public.documents'::regclass, 'public.document_submissions'::regclass, 'public.document_files'::regclass)) -- 提出物（T19）は上で見る
 select is((select string_agg(tbl || '.' || cols, ' ' order by tbl, cols) from fk where del = 'n'),
-  'count_items.created_by count_stocks.counted_by deliveries.checked_by deliveries.year_id,slot_id events.created_by events.updated_by lending_assignments.updated_by lending_records.updated_by lending_requests.updated_by lending_years.confirmed_by '
+  'count_items.created_by count_stocks.counted_by deliveries.checked_by deliveries.year_id,slot_id events.created_by events.updated_by item_image_uploads.created_by lending_assignments.updated_by lending_records.updated_by lending_requests.updated_by lending_years.confirmed_by '
   || 'notices.created_by notices.updated_by request_submissions.updated_by stocks.counted_by tasks.created_by tasks.updated_by tasks.year_id,assignee_id years.prev_year_id',
-  '記録のためのユーザー参照（お知らせ・予定と締切・作業の書いた人・直した人、テント等の書いた人・確定した人、T22 の足した人・数えた人を含む）・時間枠・作業の担当者（T20）・複製元は set null');
+  '記録のためのユーザー参照（お知らせ・予定と締切・作業の書いた人・直した人、テント等の書いた人・確定した人、T22 の足した人・数えた人、T23 の画像を予約した人を含む）・時間枠・作業の担当者（T20）・複製元は set null');
 -- T17 で3本足した：notices.year_id と、notice_groups の2本の複合外部キー。T18 で events.year_id を足した。
 -- T20 で9本足した：5表の year_id と、ます・割り当ての複合外部キー3本、割り当ての year_roles への参照
 -- T21 で8本足した：テント等の5表の year_id と、申請・割り当て・記録の団体への複合外部キー。T22 で count_stocks.year_id を足した
 select is((select count(*)::int from pg_constraint c
-           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 45,
-  '年度・団体・ユーザー・お知らせ・提出物・提出・シフト（ます・時間枠・持ち場・ロール）への参照は cascade（45 本。T19 で documents.year_id と、提出の2本・ファイルの1本の複合外部キーを足した）');
+           where c.contype = 'f' and c.connamespace = 'public'::regnamespace and c.confdeltype = 'c'), 47,
+  '年度・団体・ユーザー・お知らせ・提出物・提出・シフト（ます・時間枠・持ち場・ロール）への参照は cascade（47 本。T23 で品目の画像の予約の item_id・count_item_id を足した。T19 で documents.year_id と、提出の2本・ファイルの1本の複合外部キーを足した）');
 select is((select pg_get_constraintdef(oid) from pg_constraint where conname = 'deliveries_slot_id_year_id_fkey'),
   'FOREIGN KEY (slot_id, year_id) REFERENCES slots(id, year_id) ON DELETE SET NULL (slot_id)',
   '時間枠を消しても受け渡しの year_id は残す（列を指定した set null）');
@@ -1355,8 +1359,8 @@ select is((select string_agg(t.tgname, ' ' order by t.tgname) from pg_trigger t
 -- 時刻のトリガーが audit_logs 以外の 34 表にある（T17 で notices・notice_groups を、T18 で events を、T19 で提出物の3表を、T20 でシフト・作業の5表を、
 -- T21 でテント等の5表を、T22 で備品〔数えるだけ〕の2表を足した）
 select is((select count(distinct c.relname)::int from pg_trigger t join pg_class c on c.oid = t.tgrelid
-           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 36,
-  'set_timestamps が 36 表にある');
+           where t.tgname = 'set_timestamps' and c.relnamespace = 'public'::regnamespace and not t.tgisinternal), 37,
+  'set_timestamps が 37 表にある（T23 で品目の画像の予約を足した）');
 
 -- トリガーの一覧（表ごとの名前の集合）
 -- 提出物の3表（T19）の audit は、T19 の確かめ（3表のトリガーの一覧と定義）で見る（並行の機能のチケットとぶつからないよう、ここの一覧は変えない）

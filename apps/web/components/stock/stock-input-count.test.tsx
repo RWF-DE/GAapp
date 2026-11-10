@@ -287,15 +287,15 @@ describe('StockInput の備品（数えるだけ）：「＋ その他を足す�
     expect(localStorage.getItem(KEY())).toBeNull();
   });
 
-  it('「新しい名前で足す」は前後の空白を除いて add_count_item を呼び、返った id の行を出す', async () => {
+  it('「新しく登録」は前後の空白を除いて add_count_item を呼び、返った id の行を出す', async () => {
     serve({ stocks: [stock(10)], counts: [] });
     const user = userEvent.setup();
     renderInput({ role: 'staff', status: 'requesting' });
     await waitFor(() => expect(countInput('ゴミ箱').value).toBe('0'));
     await user.click(screen.getByTestId('count-item-add'));
     const dialog = await screen.findByTestId('add-count-item-dialog');
-    await user.type(within(dialog).getByLabelText('新しい名前で足す'), '  台形机 ');
-    await user.click(within(dialog).getByRole('button', { name: '新しい名前で足す' }));
+    await user.type(within(dialog).getByLabelText('新しく登録する名前'), '  台形机 ');
+    await user.click(within(dialog).getByRole('button', { name: '新しく登録' }));
     await waitFor(() => expect(screen.queryByTestId('add-count-item-dialog')).toBeNull());
     const rpc = fake.issued.filter((c) => c.table === 'rpc:add_count_item');
     expect(rpc).toHaveLength(1);
@@ -313,22 +313,22 @@ describe('StockInput の備品（数えるだけ）：「＋ その他を足す�
     await waitFor(() => expect(countInput('ゴミ箱').value).toBe('0'));
     await user.click(screen.getByTestId('count-item-add'));
     let dialog = await screen.findByTestId('add-count-item-dialog');
-    await user.click(within(dialog).getByRole('button', { name: '新しい名前で足す' }));
+    await user.click(within(dialog).getByRole('button', { name: '新しく登録' }));
     expect(within(dialog).getByRole('alert').textContent).toBe('名前を入れてください');
-    await user.type(within(dialog).getByLabelText('新しい名前で足す'), 'あ'.repeat(51));
-    await user.click(within(dialog).getByRole('button', { name: '新しい名前で足す' }));
+    await user.type(within(dialog).getByLabelText('新しく登録する名前'), 'あ'.repeat(51));
+    await user.click(within(dialog).getByRole('button', { name: '新しく登録' }));
     expect(within(dialog).getByRole('alert').textContent).toBe('名前は 50 字までです');
-    await user.clear(within(dialog).getByLabelText('新しい名前で足す'));
-    await user.type(within(dialog).getByLabelText('新しい名前で足す'), '白椅子');
-    await user.click(within(dialog).getByRole('button', { name: '新しい名前で足す' }));
+    await user.clear(within(dialog).getByLabelText('新しく登録する名前'));
+    await user.type(within(dialog).getByLabelText('新しく登録する名前'), '白椅子');
+    await user.click(within(dialog).getByRole('button', { name: '新しく登録' }));
     await waitFor(() => expect(screen.queryByTestId('add-count-item-dialog')).toBeNull());
     expect(countInput('白椅子').value).toBe('0');
     expect(fake.issued.filter((c) => c.table === 'rpc:add_count_item')).toHaveLength(0);
     // 最初から出す物の名前を書いても、行が増えない（もう出ている）
     await user.click(screen.getByTestId('count-item-add'));
     dialog = await screen.findByTestId('add-count-item-dialog');
-    await user.type(within(dialog).getByLabelText('新しい名前で足す'), 'ｺﾞﾐ箱');
-    await user.click(within(dialog).getByRole('button', { name: '新しい名前で足す' }));
+    await user.type(within(dialog).getByLabelText('新しく登録する名前'), 'ｺﾞﾐ箱');
+    await user.click(within(dialog).getByRole('button', { name: '新しく登録' }));
     await waitFor(() => expect(screen.queryByTestId('add-count-item-dialog')).toBeNull());
     expect(screen.getAllByRole('textbox', { name: 'ゴミ箱の数' })).toHaveLength(1);
     expect(fake.issued.filter((c) => c.table === 'rpc:add_count_item')).toHaveLength(0);
@@ -341,8 +341,8 @@ describe('StockInput の備品（数えるだけ）：「＋ その他を足す�
     await waitFor(() => expect(countInput('ゴミ箱').value).toBe('0'));
     await user.click(screen.getByTestId('count-item-add'));
     const dialog = await screen.findByTestId('add-count-item-dialog');
-    await user.type(within(dialog).getByLabelText('新しい名前で足す'), '台形机');
-    await user.click(within(dialog).getByRole('button', { name: '新しい名前で足す' }));
+    await user.type(within(dialog).getByLabelText('新しく登録する名前'), '台形机');
+    await user.click(within(dialog).getByRole('button', { name: '新しく登録' }));
     expect((await within(dialog).findByRole('alert')).textContent).toBe('権限がありません。立場が変わった可能性があります');
     expect(screen.queryByRole('textbox', { name: '台形机の数', hidden: true })).toBeNull();
   });

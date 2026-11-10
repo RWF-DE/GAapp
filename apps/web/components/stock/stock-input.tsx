@@ -40,14 +40,19 @@
 // 「保存」は在庫の upsert の後に、出ている数の行を全部（0 を含む）upsert する（saveRoomLines）。在庫が通って数が失敗したときは、
 // 在庫の保存は決まった（入力の元を保存した在庫の行にする）として、数は保存していない入力のまま残し、失敗を知らせる。
 // 振り分けの合計の確かめ・確定中の守りは品目だけに効く。
-import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Ban, CheckCircle2, Info } from 'lucide-react';
+// 品目の画像（T23・D-61。04「在庫入力」の品目の画像）：行の左に画像（48px。押すと大きく出す。画像のない物は頭文字のカード）。
+// URL は 9 品目と備品（数えるだけ）の画像をまとめて1回で作る（useItemImageUrls）。書ける人は、備品（数えるだけ）の行のメニューから
+// 「写真を足す」「写真を替える」。「新しく登録」に写真があれば、名前を足した後に送り、画像の段で失敗しても名前の登録（行）は残す。
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle, Ban, CheckCircle2, EllipsisVertical, Info } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { AppLink } from '@/components/common/app-link';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
 import { CountStepper } from '@/components/common/count-stepper';
 import { DraftNotice } from '@/components/common/draft-notice';
+import { ItemImage } from '@/components/common/item-image';
+import { ItemPhotoDialog } from '@/components/common/item-photo-field';
 import { ErrorBanner } from '@/components/common/error-banner';
 import { LatestYearSwitch, useNotLatestYearConfirm } from '@/components/common/latest-year';
 import { PageHeader } from '@/components/common/page-header';
@@ -62,10 +67,12 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ErrorState, LoadingState, ReadOnlyNotice } from '@/components/states';
 import { useAuth } from '@/lib/auth/auth-provider';
 import { useAuthErrorHandler } from '@/lib/auth/guarded';
 import type { CountItemRow, ItemRow, StockDbRow, YearRow } from '@/lib/db/types';
+import { fetchItemImagePath, invalidateItemImagePaths, itemImagePathsOptions, sendItemImage, useItemImageUrls } from '@/lib/data/item-images';
 import {
   addCountItem,
   CountSaveError,
@@ -159,6 +166,7 @@ function withDraft(items: readonly StockLine[], counts: StockCounts, draftCounts
 }
 
 const NO_COUNT_ITEMS: CountItemRow[] = [];
+const NO_PATHS: ReadonlyMap<string, string> = new Map();
 
 /** 足したばかりで、まだ名前の一覧（場所・品目の読み込み）に入っていない物の並び（最後に出す） */
 const EXTRA_SORT_ORDER = Number.MAX_SAFE_INTEGER;
@@ -220,6 +228,15 @@ export function StockInput({
   const prevCountQ = usePreviousYearCountStocks(yearId, year.prev_year_id);
   const allocQ = useRoomAllocated(yearId, roomId, access.shortfall !== 'none');
   const yearStocksQ = useYearStocks(yearId);
+  // 品目の画像（T23）：9 品目と備品（数えるだけ）の画像の path と、まとめて作った署名つき URL（失敗しても数の入力は止めない）
+  const itemPathsQ = useQuery(itemImagePathsOptions('item'));
+  const countPathsQ = useQuery(itemImagePathsOptions('count_item'));
+  const itemPaths = itemPathsQ.data ?? NO_PATHS;
+  const countPaths = countPathsQ.data ?? NO_PATHS;
+  // 備品（数えるだけ）は「その他を足す」のカードにも出すので、画像のある物を全部まとめる
+  const images = useItemImageUrls([...items.map((i) => itemPaths.get(i.id)), ...countPaths.values()]);
+  /** 写真を足す・替える備品（数えるだけ） */
+  const [photoFor, setPhotoFor] = useState<StockLine | null>(null);
   const roomKey = roomStocksOptions(yearId, roomId).queryKey;
   const countRoomKey = roomCountStocksOptions(yearId, roomId).queryKey;
 
@@ -459,32 +476,56 @@ export function StockInput({
   };
 
   /**
-   * 「新しい名前で足す」（RPC add_count_item。同じ名前ならその id が返る）。足せたら行を出して null、足せなければ文言を返す。
+   * 「新しく登録」（RPC add_count_item。同じ名前ならその id が返る）。足せたら行を出して null、足せなければ文言を返す。
    * 同じ名前なら同じ id が返るので、応答が届かなかったときは確かめずにもう一度押してもらう（2.6。行は二重にならない）
    */
-  const createCountItem = async (name: string, retried = false): Promise<string | null> => {
+  const createCountItem = async (name: string, photo: File | null, retried = false): Promise<string | null> => {
+    let newId: string;
     try {
-      const newId = await addCountItem(yearId, name);
-      if (!allCountItems.some((c) => c.id === newId)) {
-        setExtraItems((xs) => [...xs, { id: newId, name, always_shown: false, sort_order: EXTRA_SORT_ORDER, updated_at: '' }]);
-      }
-      // 名前の一覧（場所・品目の読み込み）を読み直す（ほかの部屋・翌年の選択肢にも出る）
-      void queryClient.invalidateQueries({ queryKey: stockMasterOptions(yearId).queryKey });
-      addLine(newId);
-      return null;
+      newId = await addCountItem(yearId, name);
     } catch (e) {
       const c = classifyError(e);
       if (c.kind === 'auth') {
-        if (!retried && (await onAuthError(e)) === 'retry') return createCountItem(name, true);
+        if (!retried && (await onAuthError(e)) === 'retry') return createCountItem(name, photo, true);
         return messageFor(c);
       }
       if (effectOf(c).reload === 'year') {
         void queryClient.invalidateQueries({ queryKey: queryKeys.yearRow(yearId) });
         reloadMembership();
       }
-      if (isUnknownOutcome(e)) return '足せたか分かりません。もう一度「新しい名前で足す」を押してください（同じ名前は二重になりません）';
+      if (isUnknownOutcome(e)) return '足せたか分かりません。もう一度「新しく登録」を押してください（同じ名前は二重になりません）';
       return messageFor(c, { rpc: 'add_count_item' });
     }
+    const existed = allCountItems.some((c) => c.id === newId);
+    if (!existed) {
+      setExtraItems((xs) => [...xs, { id: newId, name, always_shown: false, sort_order: EXTRA_SORT_ORDER, updated_at: '' }]);
+    }
+    // 名前の一覧（場所・品目の読み込み）を読み直す（ほかの部屋・翌年の選択肢にも出る）
+    void queryClient.invalidateQueries({ queryKey: stockMasterOptions(yearId).queryKey });
+    addLine(newId);
+    // 写真（任意）：名前を足した後に送る。画像の段で失敗しても名前の登録（行）は残す（T23・D-61）。既にある物だったとき（手元の
+    // 一覧にあった、または add_count_item が既にある id を返した）は、今の画像を DB から読み直し、画像があれば黙って替えない（04）
+    if (photo) await sendNewItemPhoto(newId, name, photo, existed);
+    return null;
+  };
+
+  /** 「新しく登録」の写真を送る（今の画像を読み直し、画像のある物には送らない。04「在庫入力」の「新しく登録」） */
+  const sendNewItemPhoto = async (countItemId: string, name: string, photo: File, existed: boolean) => {
+    let current: string | null;
+    try {
+      current = await fetchItemImagePath('count_item', countItemId);
+    } catch (e) {
+      toast.error('名前は登録しました。画像は後から足せます', { description: messageFor(classifyError(e)) });
+      return;
+    }
+    if (current) {
+      void invalidateItemImagePaths(queryClient, 'count_item');
+      toast.info(`「${name}」は既にある物で、画像もあります。写真は送っていません。替えるときは行のメニューの「写真を替える」から`);
+      return;
+    }
+    const r = await sendItemImage(queryClient, 'count_item', countItemId, photo);
+    if (!r.ok) toast.error('名前は登録しました。画像は後から足せます', { description: r.message });
+    else if (existed) toast.success(`「${name}」は既にある物でした。写真を足しました`);
   };
 
   /**
@@ -804,14 +845,27 @@ export function StockInput({
     const value = counts?.[line.id] ?? 0;
     // 備品（数えるだけ）は数の行がなければ前年も 0（04「在庫入力」。在庫一覧の表の前年との差と同じ）。品目は行がなければ「—」
     const prevCount = prev?.get(`${roomId}:${line.id}`) ?? (kind === 'count' && prev ? 0 : undefined);
+    // 行のメニュー（写真を足す・替える）のある行は2段にする（390px で名前が1字ずつ折り返さないように。1段目に名前とメニュー、
+    // 2段目の右に数。画像は2段の左。T23）
+    const withMenu = kind === 'count' && access.writable;
     return (
       <li
         key={line.id}
         data-testid={kind === 'item' ? 'stock-item-row' : 'count-item-row'}
         {...(kind === 'item' ? { 'data-item-id': line.id } : { 'data-count-item-id': countItemIdOf(line.id) ?? '' })}
-        className="flex items-center gap-3 px-3 py-3"
+        className={cn(
+          'px-3 py-3',
+          withMenu ? 'grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2' : 'flex items-center gap-3',
+        )}
       >
-        <div className="min-w-0 flex-1">
+        <ItemImage
+          name={line.name}
+          path={kind === 'item' ? itemPaths.get(line.id) : countPaths.get(countItemIdOf(line.id) ?? '')}
+          images={images}
+          zoomable
+          className={withMenu ? 'row-span-2' : undefined}
+        />
+        <div className={cn('min-w-0', withMenu ? 'col-start-2 row-start-1' : 'flex-1')}>
           <p className="font-medium break-words">{line.name}</p>
           <p className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
             {hasPrev && !prevFailed ? (
@@ -830,8 +884,22 @@ export function StockInput({
           value={value}
           onChange={(v) => change(line.id, v)}
           disabled={!access.writable || busy}
-          className="shrink-0"
+          className={cn('shrink-0', withMenu && 'col-span-2 col-start-2 row-start-2 justify-self-end')}
         />
+        {withMenu ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="icon" className="col-start-3 row-start-1 -mr-2 size-11 shrink-0" aria-label={`${line.name}のメニュー`} data-testid="count-item-menu">
+                <EllipsisVertical aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setPhotoFor(line)} data-testid="count-item-photo">
+                {countPaths.has(countItemIdOf(line.id) ?? '') ? '写真を替える' : '写真を足す'}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </li>
     );
   };
@@ -1062,7 +1130,25 @@ export function StockInput({
           countItems={allCountItems}
           shownIds={shownIds}
           onPick={addLine}
-          onCreate={(name) => createCountItem(name)}
+          onCreate={(name, photo) => createCountItem(name, photo)}
+          imagePaths={countPaths}
+          images={images}
+        />
+      ) : null}
+
+      {access.writable ? (
+        <ItemPhotoDialog
+          open={photoFor !== null}
+          onOpenChange={(o) => !o && setPhotoFor(null)}
+          title={photoFor ? `「${photoFor.name}」の写真${countPaths.has(countItemIdOf(photoFor.id) ?? '') ? 'を替える' : 'を足す'}` : '写真を足す'}
+          onSubmit={async (file, imageId) => {
+            const ci = photoFor ? countItemIdOf(photoFor.id) : null;
+            if (!ci) return null;
+            const r = await sendItemImage(queryClient, 'count_item', ci, file, { imageId });
+            if (!r.ok) return r.message;
+            toast.success('写真を送りました');
+            return null;
+          }}
         />
       ) : null}
 

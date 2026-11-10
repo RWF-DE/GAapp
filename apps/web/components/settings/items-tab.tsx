@@ -2,6 +2,10 @@
 
 // 品目のタブ（画面の設計 3.2「品目」。T09）。items は年度をまたぐ表。コードは作った後に変えない（ルールがコードで参照するため）。
 // 削除は出さない（使われていれば消せず、フェーズ1で消す用途がない）。
+// 品目の画像（管理者。T23・D-61）：9 品目と備品（数えるだけ）の行に画像（共通の部品）と「画像を足す」「画像を替える」「画像を外す」。
+// 足す・替えるは写真の欄（「撮る」と「写真を選ぶ」。作り直し・注意の文・順番は在庫入力の「新しく登録」と同じ）、外すは確かめの後に
+// set_item_image(…, null)。替えた・外した前の画像は Storage から消す（lib/item-images/upload.ts）。送った・外した後は path と行の一覧
+// （updated_at が進む）を読み直す（invalidateItemImagePaths）。備品を削除したら、そのフォルダの物を Storage から片付ける。
 // 品目の表の下に「備品（数えるだけ）」の欄（管理者。T22・D-60）：count_items の名前・最初から出す・並びの編集と追加、数の行がない物の
 // 削除（23503 は「数が入力された物は削除できません」）。保存は1行ずつの楽観ロック（useLockedSave）。
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -10,6 +14,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ColumnDef } from '@tanstack/react-table';
 import { useMemo, useState } from 'react';
 import { ConfirmDialog } from '@/components/common/confirm-dialog';
+import { ItemImage } from '@/components/common/item-image';
+import { ItemPhotoDialog } from '@/components/common/item-photo-field';
 import { useForm, useWatch } from 'react-hook-form';
 import { toast } from 'sonner';
 import { DataTable } from '@/components/common/data-table';
@@ -34,6 +40,16 @@ import {
   updateItem,
 } from '@/lib/data/settings';
 import type { CountItemRow, ItemRow } from '@/lib/db/types';
+import {
+  itemImagePathsOptions,
+  removeDeletedItemImages,
+  removeItemImage,
+  sendItemImage,
+  useItemImageUrls,
+  type ItemImageKind,
+  type ItemImagePaths,
+  type ItemImageUrls,
+} from '@/lib/data/item-images';
 import { CATEGORY_LABELS } from '@/lib/labels';
 import { queryKeys } from '@/lib/query';
 import { NAME_MAX } from '@/lib/schemas/common';
@@ -65,9 +81,13 @@ export function ItemsTab() {
   const itemsQ = useQuery({ queryKey: settingsKeys.items(), queryFn: () => fetchItems() });
   const [editing, setEditing] = useState<ItemRow | 'new' | null>(null);
   const queryClient = useQueryClient();
+  const imagePaths = useQuery(itemImagePathsOptions('item')).data ?? NO_PATHS;
+  const images = useItemImageUrls((itemsQ.data ?? []).map((r) => imagePaths.get(r.id)));
+  const imageEdit = useImageEdit('item', imagePaths);
 
   const columns = useMemo<ColumnDef<ItemRow>[]>(
     () => [
+      imageColumn<ItemRow>(imagePaths, images),
       { accessorKey: 'code', header: 'コード', cell: ({ row }) => <span className="font-mono">{row.original.code}</span> },
       { accessorKey: 'name', header: '表示名' },
       { id: 'aliases', header: 'フォームでの表記', cell: ({ row }) => row.original.aliases.join('、') },
@@ -82,15 +102,16 @@ export function ItemsTab() {
         header: '',
         cell: ({ row }) =>
           globalWritable ? (
-            <div className="flex justify-end">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button size="sm" variant="outline" onClick={() => setEditing(row.original)}>
                 編集
               </Button>
+              <ImageButtons row={row.original} paths={imagePaths} onEdit={imageEdit.open} />
             </div>
           ) : null,
       },
     ],
-    [globalWritable],
+    [globalWritable, imagePaths, images, imageEdit.open],
   );
 
   return (
@@ -133,9 +154,103 @@ export function ItemsTab() {
           />
         ) : null}
       </FormSheet>
+      {imageEdit.dialogs}
       <CountItemsSection />
     </div>
   );
+}
+
+const NO_PATHS: ItemImagePaths = new Map();
+
+type ImageAction = { row: { id: string; name: string }; action: 'add' | 'replace' | 'remove' };
+
+/** 画像を足す・替える・外すボタン（管理者。画像があれば替える・外す、なければ足す） */
+function ImageButtons({
+  row,
+  paths,
+  onEdit,
+}: {
+  row: { id: string; name: string };
+  paths: ItemImagePaths;
+  onEdit: (a: ImageAction) => void;
+}) {
+  if (!paths.has(row.id)) {
+    return (
+      <Button size="sm" variant="outline" onClick={() => onEdit({ row, action: 'add' })} data-testid="item-image-add">
+        画像を足す
+      </Button>
+    );
+  }
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => onEdit({ row, action: 'replace' })} data-testid="item-image-replace">
+        画像を替える
+      </Button>
+      <Button size="sm" variant="ghost" className="text-destructive" onClick={() => onEdit({ row, action: 'remove' })} data-testid="item-image-remove">
+        画像を外す
+      </Button>
+    </>
+  );
+}
+
+/** 画像を足す・替える（写真のダイアログ）と外す（確かめのダイアログ）。成功したら toast、失敗はダイアログに出す */
+function useImageEdit(kind: ItemImageKind, paths: ItemImagePaths) {
+  const queryClient = useQueryClient();
+  const [target, setTarget] = useState<ImageAction | null>(null);
+  const open = useMemo(() => (a: ImageAction) => setTarget(a), []);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const close = () => {
+    setTarget(null);
+    setRemoveError(null);
+  };
+  const dialogs = (
+    <>
+      <ItemPhotoDialog
+        open={target !== null && target.action !== 'remove'}
+        onOpenChange={(o) => !o && close()}
+        title={target ? `「${target.row.name}」の${target.action === 'replace' ? '画像を替える' : '画像を足す'}` : '画像を足す'}
+        description={target?.action === 'replace' ? '送ると前の画像は消えます。写真は縮めてから送ります（位置情報などは残りません）。' : undefined}
+        onSubmit={async (file, imageId) => {
+          if (!target) return null;
+          const r = await sendItemImage(queryClient, kind, target.row.id, file, { imageId });
+          if (!r.ok) return r.message;
+          toast.success(`「${target.row.name}」の画像を${target.action === 'replace' ? '替えました' : '足しました'}`);
+          return null;
+        }}
+      />
+      <ConfirmDialog
+        open={target !== null && target.action === 'remove'}
+        onOpenChange={(o) => !o && close()}
+        title={target ? `「${target.row.name}」の画像を外しますか` : '画像を外しますか'}
+        description="画像を外します。名前はそのまま残ります。"
+        destructive
+        confirmLabel="外す"
+        pendingLabel="外しています…"
+        confirmDisabled={!!target && !paths.has(target.row.id)}
+        onConfirm={async () => {
+          if (!target) return;
+          const r = await removeItemImage(queryClient, kind, target.row.id);
+          if (!r.ok) {
+            setRemoveError(r.message);
+            throw new Error('remove failed');
+          }
+          toast.success(`「${target.row.name}」の画像を外しました`);
+        }}
+      >
+        {removeError ? (
+          <p role="alert" className="text-sm text-destructive">
+            {removeError}
+          </p>
+        ) : null}
+      </ConfirmDialog>
+    </>
+  );
+  return { open, dialogs };
+}
+
+/** 品目の画像の列（ItemImage。マスタ設定の2つの表で使う） */
+function imageColumn<T extends { id: string; name: string }>(paths: ItemImagePaths, images: ItemImageUrls): ColumnDef<T> {
+  return { id: 'image', header: '画像', cell: ({ row }) => <ItemImage name={row.original.name} path={paths.get(row.original.id)} images={images} zoomable /> };
 }
 
 /** 備品（数えるだけ）の書き込みのエラーの文言の文脈（23505・23503・名前の誤り） */
@@ -148,6 +263,9 @@ function CountItemsSection() {
   const [editing, setEditing] = useState<CountItemRow | 'new' | null>(null);
   const [deleting, setDeleting] = useState<CountItemRow | null>(null);
   const queryClient = useQueryClient();
+  const imagePaths = useQuery(itemImagePathsOptions('count_item')).data ?? NO_PATHS;
+  const images = useItemImageUrls((countItemsQ.data ?? []).map((r) => imagePaths.get(r.id)));
+  const imageEdit = useImageEdit('count_item', imagePaths);
   const onError = useWriteErrorHandler();
   const invalidate = () =>
     Promise.all([
@@ -158,6 +276,7 @@ function CountItemsSection() {
 
   const columns = useMemo<ColumnDef<CountItemRow>[]>(
     () => [
+      imageColumn<CountItemRow>(imagePaths, images),
       { accessorKey: 'name', header: '名前' },
       { id: 'always', header: '最初から出す', cell: ({ row }) => (row.original.always_shown ? '出す' : '—') },
       { accessorKey: 'sort_order', header: '並び順', meta: { align: 'right' } },
@@ -166,10 +285,11 @@ function CountItemsSection() {
         header: '',
         cell: ({ row }) =>
           globalWritable ? (
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button size="sm" variant="outline" onClick={() => setEditing(row.original)}>
                 編集
               </Button>
+              <ImageButtons row={row.original} paths={imagePaths} onEdit={imageEdit.open} />
               <Button size="sm" variant="ghost" className="text-destructive" onClick={() => setDeleting(row.original)}>
                 削除
               </Button>
@@ -177,7 +297,7 @@ function CountItemsSection() {
           ) : null,
       },
     ],
-    [globalWritable],
+    [globalWritable, imagePaths, images, imageEdit.open],
   );
 
   return (
@@ -218,6 +338,7 @@ function CountItemsSection() {
           />
         ) : null}
       </FormSheet>
+      {imageEdit.dialogs}
       {deleting ? (
         <ConfirmDialog
           open
@@ -230,6 +351,8 @@ function CountItemsSection() {
           onConfirm={async () => {
             try {
               await deleteCountItem(deleting);
+              // 消した備品の画像（とフォルダの残りの物）を Storage から片付ける（失敗しても知らせない。02「品目の画像」）
+              void removeDeletedItemImages('count_item', deleting.id);
               toast.success(`「${deleting.name}」を削除しました`);
               await invalidate();
             } catch (e) {

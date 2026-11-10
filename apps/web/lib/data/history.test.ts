@@ -583,3 +583,23 @@ describe('T20 シフト・作業の履歴（04「シフト表」の履歴、note
     expect(formatAuditValue('years', 'status', 'closed')).toBe('終了');
   });
 });
+
+describe('T23 品目の画像の変更（path を出さない）', () => {
+  const P = 'items/00000000-0000-4000-8000-000000000001/00000000-0000-4000-8000-0000000000aa.webp';
+  const Q = 'items/00000000-0000-4000-8000-000000000001/00000000-0000-4000-8000-0000000000bb.webp';
+  it('足した・外した・変えた。追加・削除の行は「画像：あり・なし」。ほかの表の image_path はそのまま', () => {
+    for (const table of ['items', 'count_items']) {
+      expect(formatDiffEntry(table, { key: 'image_path', before: null, after: P })).toBe('画像を足した');
+      expect(formatDiffEntry(table, { key: 'image_path', before: P, after: null })).toBe('画像を外した');
+      expect(formatDiffEntry(table, { key: 'image_path', before: P, after: Q })).toBe('画像を変えた');
+      expect(formatDiffEntry(table, { key: 'image_path', before: undefined, after: null })).toBe('画像：なし');
+      expect(formatDiffEntry(table, { key: 'image_path', before: P, after: undefined })).toBe('画像：あり（削除前）');
+      for (const v of [P, Q]) {
+        for (const d of [
+          { key: 'image_path', before: null, after: v },
+          { key: 'image_path', before: v, after: Q },
+        ]) expect(formatDiffEntry(table, d)).not.toContain(v);
+      }
+    }
+  });
+});

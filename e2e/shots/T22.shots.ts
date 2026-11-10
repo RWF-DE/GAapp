@@ -66,11 +66,11 @@ test.describe('T22 部員', () => {
       await expect(dialog.getByTestId('add-count-item-option').filter({ hasText: names[1]! })).toBeVisible();
       await shoot(page, 'T22', 'add-count-item-dialog-mobile');
       // 名前の誤り（51 字）
-      await dialog.getByLabel('新しい名前で足す').fill('あ'.repeat(51));
-      await dialog.getByRole('button', { name: '新しい名前で足す' }).click();
+      await dialog.getByLabel('新しく登録する名前').fill('あ'.repeat(51));
+      await dialog.getByRole('button', { name: '新しく登録' }).click();
       await expect(dialog.getByRole('alert')).toBeVisible();
       await shoot(page, 'T22', 'add-count-item-dialog-error-mobile');
-      await dialog.getByLabel('新しい名前で足す').fill('');
+      await dialog.getByLabel('新しく登録する名前').fill('');
       await dialog.getByLabel('名前で絞る').fill(names[1]!);
       await dialog.getByTestId('add-count-item-option').click();
       await expect(input(page, names[1]!)).toHaveValue('0');
