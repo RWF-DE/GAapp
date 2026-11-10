@@ -790,6 +790,26 @@
 - **反映先**：01 の用語集、02（列・表・Storage・権限・設計上の決めごと）、04（在庫入力・申請・マスタ設定の品目のタブ・履歴・共通の部品・DB関数・送り直しの分け方）、05 の T23 の行、README の 5（0022）。
 - **状態**：作業中（notes/T23.md）。
 
+## D-62 提出物のファイルは Google ドライブに置き、アプリは状態とリンクだけを持つ（2026-11-10、ユーザーの決定。T24。ブランチ feat/T24-documents-drive）
+
+- **きっかけ**：T25（現状復帰の写真）を足すと、Storage が足りない。無料プランの 1 GB を、提出物の 900 MiB（reserve_document_file の上限）と品目の画像の 100 MiB（D-61）で使い切っていた。
+- **決定**（ユーザーの決め。2026-11-10）：提出物のファイルは Google ドライブに置き、アプリは状態（未提出・提出済み・差し戻し・承認）とリンクだけを持つ。今の添付（Supabase Storage へのアップロード）はやめる。空いた容量を部屋の写真（T25）に当てる。
+- **形**（計画。notes/T24.md）：
+  - 提出物に「提出先の URL」（documents.submit_url。任意。`https://` で始まる 500 字まで）を足す。部門長以上が提出物の登録・編集で入れる（共有ドライブのフォルダ・Google フォームなど）。
+  - /document は「提出先を開く」（新しいタブ。`rel="noopener noreferrer"`）と「提出した」。ファイルを上げる欄は出さない。/documents の承認・差し戻し・代理の提出・紙での承認・取り消しは今のまま。
+  - 誰が出せるか・誰が見られるかは、ドライブのフォルダやフォームの共有の設定（学校の Workspace の中）で決まる。アプリはドライブに書き込まず、URL を開くだけ（サーバーを持たない約束のまま）。
+  - 新しいファイルの予約（reserve_document_file）は止める（invalid_state、reason: uploads_disabled。ロールと年度の確かめの後）。requires_file は今の行をすべて false にし、トリガーで true にさせない（列は年度データの互換のために残す）。画面から「ファイルが要る」を外す。
+  - 残すもの：T24 の前に上がったファイルは見る・保存する・外す・片付けることができ、年度の終わりの削除（delete_year_document_files）も残す（本番で使い始めたばかりなので、ほぼない見込み）。bucket documents とポリシー・トリガーは変えない。
+  - 容量（02「Storage の容量」）：提出物 0（ドライブ）・品目の画像 100 MiB・部屋の写真 800 MiB（T25。D-63）。
+- **作るときに決めたこと**（T24。notes/T24.md の「判断したこと」）：
+  - requires_file のトリガーは true を拒まず false に直す（古い画面・前年度から写す・SQL Editor のどれから来ても書き込みは通る）。
+  - submit_url は CHECK で形を守る（`https://` で始まり、空白・制御文字を含まない、500 字まで）。画面も同じ形を zod で確かめ、href にはその形の URL だけを入れる。
+  - v_document_status は `create or replace view` で最後に submit_url を足す（店長・副店長は documents の行でなくビューを読むため）。
+  - copy_previous_documents は submit_url も写す（前年度のフォルダをそのまま使うか、写した後に直す）。previous_year_documents の返り値は変えない（関数の型を変えると作り直しが要るため）。
+- **本番**：マージの後に Migrate production DB で 0023 を流す（README の 5。0021・0022 がまだならそれも続けて流れる）。提出物ごとの提出先の URL は総務が画面で入れる。ドライブの共有の設定は学校の Workspace でする。
+- **反映先**：00 の機能の一覧、01 の用語集、02（列・ビュー・Storage の容量・権限・設計上の決めごと）、04（提出物の節・/document・/documents・DB関数・エラーの文言・testid）、05 の T24 の行、README の 5（0023）。
+- **状態**：作業中（notes/T24.md）。
+
 ## 提案（未確定。各チケットの計画モードで確認し、反対がなければ採用）
 
 - **P-01**（K-06・K-07、T02・T03）：**採用**（T02・T03 で実装。02・03・04 に反映済み。年度の版は D-12）。RPC を足す（update_year、set_role・remove_role、revoke_invitation、remove_group_member）。set_consent で status を asked にしたとき、その時点の置き換え台数を RPC が count に入れる。save_auto_allocations は年度の一致・E002・E005 も確かめる。years に allocation_version（整数）を持たせ、振り分けを変える RPC ごとに1増やし、save_auto_allocations は入力を作ったときの版と違えば conflict にする。

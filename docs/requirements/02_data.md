@@ -62,6 +62,8 @@ app_role の head（総務部門長）と deputy_head（総務副部門長）は
 
 0021_count_items.sql（備品〔数えるだけ〕の表 count_items・count_stocks とそのトリガー・RLS、RPC add_count_item・previous_year_count_stocks、最初から出す4つの物〔ゴミ箱・延長コード・扇風機・オレンジ椅子〕の行。履歴の読み取りのポリシー audit_logs_select の「年度のない行」に count_items を足す〔作り直す。ほかの枝は変えない〕。ほかの表と関数は変えない。D-60）は T22 で作る。
 
+0023_documents_drive.sql（提出物をドライブへ。documents に列 submit_url〔提出先の URL。任意。CHECK で `https://` で始まり、空白・制御文字を含まない 500 字まで〕を足し、今の行の requires_file をすべて false にして既定値も false にし、トリガー `keep_requires_file_off` で true にさせない。ビュー v_document_status を `create or replace` で作り直して最後に submit_url を足す〔ほかの列と where は変えない〕。RPC reserve_document_file を `create or replace` で置き換え、ロールと年度の確かめの後にいつも invalid_state〔reason: uploads_disabled〕にする。copy_previous_documents を置き換え、submit_url も写す。引数・戻り値・権限は変えない。Storage の bucket documents と、そのポリシー・トリガー、今のファイルを読む・外す・片付ける・年度のファイルを削除する道は変えない。D-62）は T24 で作る。
+
 0022_item_images.sql（品目の画像。items・count_items の列 image_path、予約の表 item_image_uploads とその RLS、Storage の非公開の bucket item-images と storage.objects のポリシー3つ・トリガー1つ、RPC reserve_item_image・set_item_image、image_path を RPC の外で変えさせないトリガー。版の増分の関数 private.tg_bump_allocation_version を `create or replace` で置き換え、set_item_image が items の画像だけを変えるときは版を上げない〔ほかの枝は変えない〕。0016 の bucket documents のポリシー・トリガーは変えない。D-61）は T23 で作る。
 
 外部キーの on delete は次のとおりにする。年度・団体への参照は cascade（年度や団体を消すと、その下の行も消える）。場所・品目への参照は restrict（使われている場所・品目は消せない）。記録のためのユーザーへの参照（counted_by、updated_by、checked_by）は set null。年度と団体の両方を持つ表（allocations、deliveries、invitations）は、複合外部キー `(group_id, year_id) → groups (id, year_id)` で年度の一致を保証する。
@@ -392,7 +394,8 @@ create table documents (
   deadline timestamptz not null,              -- 締切（Asia/Tokyo の日付で 2000-01-01〜2200-12-31）
   target_categories group_category[] not null, -- 出す団体の区分（1〜4 個。トリガーが重なりを除き、列挙の順に並べる。null の要素は不可）
   food_only boolean not null default false,   -- 飲食の団体（groups.is_food）だけに出す（Q8）
-  requires_file boolean not null default true, -- 「提出した」にファイルが1つ以上要る（Q7。オフなら「提出した」を押すだけ。ファイルは付けてもよい）
+  requires_file boolean not null default true, -- 「提出した」にファイルが1つ以上要る（Q7）。T24（0023）から既定は false で、トリガー keep_requires_file_off がいつも false にする（列は年度データの互換のために残す。D-62）
+  submit_url text,                            -- 提出先の URL（T24。0023。任意。共有ドライブのフォルダ・Google フォームなど。`https://` で始まり、空白・制御文字を含まない 500 字まで〔CHECK documents_submit_url_check〕）
   files_deleted_at timestamptz,               -- 年度のファイルを削除した日時（delete_year_document_files だけが入れる。Q3）
   created_by uuid references auth.users on delete set null, -- 書いた人。DB が auth.uid() を入れる（変えない）
   updated_by uuid references auth.users on delete set null, -- 最後に直した人。DB が auth.uid() を入れる
@@ -456,7 +459,8 @@ create view v_document_status with (security_invoker = true) as
          s.submitted_at, s.submitted_by, coalesce(s.proxy, false) as proxy,
          coalesce(s.submitted_at > d.deadline, false) as late,  -- 締切の後の提出（Q6）
          s.reviewed_at, s.reviewed_by, s.review_note,
-         s.updated_at                                           -- 楽観ロックの版（行がなければ null）
+         s.updated_at,                                          -- 楽観ロックの版（行がなければ null）
+         d.submit_url                                           -- 提出先の URL（T24。0023 が最後に足した）
   from documents d
   join groups g on g.year_id = d.year_id and g.category = any (d.target_categories) and (not d.food_only or g.is_food)
   left join document_submissions s on s.document_id = d.id and s.group_id = g.id
@@ -474,7 +478,15 @@ create view v_document_files with (security_invoker = true) as
   left join storage.objects o on o.bucket_id = 'documents' and o.name = f.object_path;
 ```
 
-ファイルの置き場は Supabase Storage の非公開の bucket `documents`（0016 が `insert into storage.buckets … on conflict (id) do update` で作る。public は false、file_size_limit は 10485760〔10 MiB〕、allowed_mime_types は application/pdf・image/jpeg・image/png。config.toml の `[storage.buckets]` は使わない〔ローカル・CI・本番を同じマイグレーションでそろえる〕。版〔versioning〕は持たない）。path は `{year_id}/{group_id}/{document_id}/{file_id}.{pdf|jpg|png}` で、DB が予約の RPC で作り、document_files の CHECK で形を固定する（日本語や個人名を入れない。元のファイル名は持たない。Q16）。上げられるのは予約した人が、その path にだけ（storage.objects の insert のポリシー。下の「提出物の権限」）。ポリシー（RLS）は Storage API が呼んだ人の権限で書くときにしか効かない（署名つきアップロードは、URL を作るときだけ呼んだ人の RLS を確かめ、書くときは service_role〔BYPASSRLS〕で書く。トークンは有効期限〔既定 2 時間〕の間は使い回せる）ので、storage.objects のトリガー documents_objects_guard が、ロールによらず bucket documents の物の書き込みを確かめる：insert は、document_files に予約の行があり、年度が終了でなく、予約した人（created_by）がその段で今書ける提出（insert のポリシーと同じ条件を、呼んだ人でなく予約した人で見る）の物で、届いた物の大きさ（metadata の size）が申告の大きさを超えないときだけ。名前・bucket・版・metadata を変える update（上書き・移動）はいつでも止める。止めるのは 42501（Storage API は 403）。確かめを飛ばせるのは session_replication_role = replica の間だけ（postgres だけが設定できる。テストの準備と手での直し）。Storage の物（storage.objects の行）は SQL では消せない（Supabase の storage.protect_delete。`storage.allow_delete_query` を立てない delete は 42501）ので、DB の行を消した物（外したファイル、消した提出物・団体のファイル、年度の終了の後に消したファイル）は「どの提出にも属さないファイル」として Storage に残り、画面が Storage API で消す（04 の「提出物」）。容量は予約のときに守る：1つの提出に 5 つまで、1つ 10 MiB まで（bucket も止める）、その団体のフォルダのどの提出にも属さない物が 5 つ未満（外して予約し直す繰り返しで1つの団体が bucket を埋められないようにする。T19-SEC-2）、bucket の合計（届いた物の大きさ＋届いていない予約の申告）が 900 MiB（943718400 バイト。無料プランの 1 GB の手前）まで。届いた物は申告の大きさを超えられない（上のトリガー）ので、申告で数えた容量は実際を下回らない。
+ファイルの置き場は Supabase Storage の非公開の bucket `documents`（0016 が `insert into storage.buckets … on conflict (id) do update` で作る。public は false、file_size_limit は 10485760〔10 MiB〕、allowed_mime_types は application/pdf・image/jpeg・image/png。config.toml の `[storage.buckets]` は使わない〔ローカル・CI・本番を同じマイグレーションでそろえる〕。版〔versioning〕は持たない）。path は `{year_id}/{group_id}/{document_id}/{file_id}.{pdf|jpg|png}` で、DB が予約の RPC で作り、document_files の CHECK で形を固定する（日本語や個人名を入れない。元のファイル名は持たない。Q16）。上げられるのは予約した人が、その path にだけ（storage.objects の insert のポリシー。下の「提出物の権限」）。ポリシー（RLS）は Storage API が呼んだ人の権限で書くときにしか効かない（署名つきアップロードは、URL を作るときだけ呼んだ人の RLS を確かめ、書くときは service_role〔BYPASSRLS〕で書く。トークンは有効期限〔既定 2 時間〕の間は使い回せる）ので、storage.objects のトリガー documents_objects_guard が、ロールによらず bucket documents の物の書き込みを確かめる：insert は、document_files に予約の行があり、年度が終了でなく、予約した人（created_by）がその段で今書ける提出（insert のポリシーと同じ条件を、呼んだ人でなく予約した人で見る）の物で、届いた物の大きさ（metadata の size）が申告の大きさを超えないときだけ。名前・bucket・版・metadata を変える update（上書き・移動）はいつでも止める。止めるのは 42501（Storage API は 403）。確かめを飛ばせるのは session_replication_role = replica の間だけ（postgres だけが設定できる。テストの準備と手での直し）。Storage の物（storage.objects の行）は SQL では消せない（Supabase の storage.protect_delete。`storage.allow_delete_query` を立てない delete は 42501）ので、DB の行を消した物（外したファイル、消した提出物・団体のファイル、年度の終了の後に消したファイル）は「どの提出にも属さないファイル」として Storage に残り、画面が Storage API で消す（04 の「提出物」）。T24（0023。D-62）から、新しいファイルは上げない（提出物は学校の Google Workspace のドライブ・フォームに出し、アプリは状態と提出先の URL だけを持つ）。reserve_document_file はいつも invalid_state（reason: uploads_disabled）を返すので、新しい予約の行はできない。bucket documents・ポリシー・トリガーは残し、T24 の前に上がった物は今までどおり読める・外せる・片付けられる・年度の終わりに削除できる（T24 の前の、まだ届いていない予約の path には上げられるが、予約は 1 つの提出に 5 つまでで、増えない）。下の容量の守りは T19 の形の記録（予約が止まったので、900 MiB の上限は使わない）。容量は予約のときに守る：1つの提出に 5 つまで、1つ 10 MiB まで（bucket も止める）、その団体のフォルダのどの提出にも属さない物が 5 つ未満（外して予約し直す繰り返しで1つの団体が bucket を埋められないようにする。T19-SEC-2）、bucket の合計（届いた物の大きさ＋届いていない予約の申告）が 900 MiB（943718400 バイト。無料プランの 1 GB の手前）まで。届いた物は申告の大きさを超えられない（上のトリガー）ので、申告で数えた容量は実際を下回らない。
+
+Storage の容量（無料プランの 1 GB。2026-11-10。D-62。T24 の前は提出物 900 MiB・品目の画像 100 MiB で使い切っていた）：
+
+| bucket | 中身 | 上限 | 守る所 |
+| --- | --- | --- | --- |
+| documents | 提出物のファイル（T19） | 0（T24 から新しく上げない。提出物はドライブに出す。T24 の前の物は残る） | reserve_document_file が uploads_disabled（0023） |
+| item-images | 品目の画像（T23） | 100 MiB | reserve_item_image の storage_full（0022） |
+| room-photos | 部屋の写真（T25。現状復帰の写真） | 800 MiB | T25 の予約の RPC（0024。T25 で作る） |
 
 **シフト・作業（T20。0017。D-56）**
 
@@ -720,13 +732,14 @@ create table item_image_uploads (
 - 兼任の禁止（D-49）：同じ年度で、部門のロール（head・deputy_head・staff）を year_roles に持つ人は、その年度の団体の group_members に入れない（admin と viewer は入れる。違う年度ならよい）。他の表を参照する CHECK は使えないので、BEFORE ROW のトリガー `check_role_overlap` で止める（year_roles の insert と update of role, user_id、group_members の insert と update of user_id, group_id。名前の順で check_immutable の後に動く。店長⇄副店長の role だけの更新では動かない）。トリガーは最初に、年度と人ごとの勧告的ロック `pg_advisory_xact_lock(hashtext('gaapp.year_member'), hashtext(year_id::text || '/' || user_id::text))`（`private.lock_year_member`）を取り、その後の文で反対側を確かめる（READ COMMITTED なので、ロックを待つ間に確定した行も見える。確かめる関数は VOLATILE）。違反は `role_overlap`（detail は `{year_id, user_id}`。メールは入れない）。年度の行はロックしない（在庫の保存・提出の lock_year_guard の for share とぶつかり、GoTrue のログインのトランザクションを長い振り分けの保存の後ろで待たせ、年度をまたいでデッドロックし得るため）。RPC `invite` は早めに role_overlap を返し、招待の受け入れ（`private.apply_invitations`）は同じロックの下で先に確かめて、重なる招待を飛ばす（未使用のまま残す。例外を出さない。「権限とRLS」の招待の受け入れ）。0013 は、適用する時点で違反しているデータがあれば `role_overlap …` で止まる（何も残らない。README の 5 の問い合わせで探して直してから流し直す）
 - お知らせ（T17。D-53）：書き込みは RPC（save_notice・delete_notice）だけで、表には insert・update・delete の権限を与えない（理由を書き込みと同じトランザクションで置き、お知らせと宛先の団体を1回で入れ替えるため）。created_by・updated_by はトリガー `set_actor` が auth.uid() を入れ（created_by は最初に書いた人のまま。seed・SQL Editor〔auth.uid() が null〕では入れた値のまま。D-10 と同じ）、created_at・updated_at は set_timestamps が入れる。宛先の団体の行（notice_groups）は、宛先が groups のお知らせにだけ置ける。他の表を参照する CHECK は使わないので、notice_groups の insert（`check_audience`）と notices の audience の更新（`check_groups`）のトリガーで確かめ（invalid_input。field: group_ids）、RLS はこれを前提にする（閲覧のみと店長・副店長が読む notice_groups の行は、団体あてのお知らせのものだけ）。宛先の団体はお知らせと同じ年度の団体だけ（複合外部キー）。団体を消すと宛先の団体の行も消え、お知らせは残る（宛先の団体が 0 になった指定の団体あては、総務と閲覧のみだけが読める。団体を消せるのは管理者で、確定中・終了の年度では消せない）。終了の年度では書けない（読むだけ。RPC が invalid_state）。確定中も書ける（振り分けの入力でないので、確定中の守りも版〔allocation_version〕の増分もない）。題名（100 字）・本文（4000 字）・宛先の団体の数（1000）のほかに、件数の上限は持たない（書けるのは招待した総務だけ）
 - 予定と締切（T18。D-54）：書き込みは画面から直接（RLS。理由の要らない、1つの表だけの書き込みなので RPC にしない。監査の理由は null）。insert・update・delete は、その年度の部門長以上で、年度が終了でないとき（`private.can_lead`。終了の年度は読むだけ）。直すときは画面が updated_at を条件に入れて変わった行を返させ（`update … where id = … and updated_at = …`。受け取った文字列のまま）、消すときも変わった行を受け取り、0 行なら読み直して not_found・conflict・権限や状態の変化を分ける（04 の (B1)）。作るときに画面が id（uuid）を作って送れば、送り直しても主キーの重複（23505）で二重にならない。created_by・updated_by はトリガー `set_actor` が auth.uid() を入れ（created_by は最初に書いた人のまま。seed・SQL Editor〔auth.uid() が null〕では入れた値のまま。D-10。お知らせと同じ）、created_at・updated_at は set_timestamps が入れる。year_id は変えられない（check_immutable）。監査は tg_audit（D-11。group_id は null）。題名・メモ・日時の形は CHECK で止める（上の「予定と締切」。違反は 23514）。振り分けの入力でないので、版（allocation_version）を増やさず、確定中の守りもない（確定中も書ける）。件数の上限は持たない（書けるのは部門長以上だけ）。年度の複製（create_year_from）は予定と締切を写さない（日付が年ごとに違うため）
-- 提出物（T19。D-55）：
+- 提出物（T19。D-55。T24〔D-62〕で提出先の URL を足し、ファイルの予約を止めた）：
+  - 提出先（T24）：ファイルは学校の Google Workspace のドライブ・フォームに出す。誰が出せるか・見られるかはドライブの共有の設定で決まり、アプリは確かめない（アプリはドライブに書き込まない）。documents.submit_url は部門長以上が直接の書き込みで入れる（CHECK だけで形を守る。RLS は今の can_lead のまま）。requires_file はトリガー keep_requires_file_off（BEFORE INSERT OR UPDATE OF requires_file。どのロールでも）がいつも false にする（止めずに直すので、古い画面が true を送っても書き込みは通る）
   - 書き込みの道：提出物（documents）は画面から直接（RLS。insert・update・delete は `private.can_lead(year_id)`。予定と締切と同じく、画面が id を作って insert し、変更・削除は updated_at を条件に入れる。04 の (B1)。監査の理由は null）。提出（document_submissions）とファイル（document_files）は RPC だけで書き、表には書き込みの権限を与えない（状態の移り方・ファイルの数と容量・理由を RPC の中で確かめ、提出とファイルを1回で変えるため）。提出の行は最初の操作（予約・提出・承認など）で作る
   - トリガー：documents の created_by・updated_by は `set_actor`（予定と締切と同じ。D-10）。set_actor は files_deleted_at も元の値（insert では null）に戻し、delete_year_document_files が transaction-local の `app.document_files_deleted` を立てたときだけ入れさせる（部門長以上の直接の update で入れさせない。RLS は列を制限できないため。app.keep_submitted_at と同じ形。戻すのは created_by と同じく auth.uid() があるときだけで、seed・SQL Editor では入れた値のまま）。対象の区分（target_categories）は `normalize_target_categories` が重なりを除いて列挙の順に並べる。year_id は3表とも、提出の document_id・group_id と、ファイルの id・document_id・group_id・object_path・content_type・size は作った後に変えられない（check_immutable。invalid_input）。監査（tg_audit。D-11）は3表に付ける（提出とファイルの year_id・group_id は行から。元のファイル名は持たないので監査にも残らない）。created_at・updated_at は set_timestamps
   - 状態（document_status）の移り方：未提出・差し戻し →（「提出した」）→ 提出済み →（取り消し。Q13）→ 未提出、提出済み →（承認）→ 承認、提出済み・承認・差し戻し →（差し戻し。理由が必須。承認の取り消しと理由の書き直しを兼ねる）→ 差し戻し、未提出・差し戻し →（紙などで受け取った承認。メモが必須。Q9）→ 承認。ファイルを足す・外すのは、店長・副店長は未提出・差し戻しのとき、部門長以上（代理）は承認でないとき（Storage に届いていない予約は、状態によらず外せる）。締切の後も出せる（「締切の後」の印は v_document_status の late。Q6）
   - 楽観ロック：提出・取り消し・承認・差し戻しの RPC は base_updated_at（読んだときの提出の updated_at。行がなければ null）をミリ秒までで比べ、違えば conflict。ファイルを足す・外す RPC も提出の updated_at を進める（提出の版がファイルの組も守る）。提出物の直接の update・delete は、予定と締切と同じく受け取った文字列のまま（マイクロ秒まで）比べる
   - 終了（closed）の年度は読むだけ（提出物のポリシーの can_lead と、RPC の invalid_state）。例外は、管理者がその年度のファイルの行を全部消す RPC `delete_year_document_files`（終了の年度だけ。Q3。提出の状態・日時・理由は残し、提出物の files_deleted_at を入れる）。上の「closed の年度は読み取り専用にする」の例外の1つ。確定中も書ける（振り分けの入力でないので、版〔allocation_version〕を増やさず、確定中の守りもない）
-  - Storage（上の「提出物」の表の後の段落）：物は SQL では消せないので、DB の行を消した物は「どの提出にも属さないファイル」として残り、画面が消す（RPC `document_orphan_paths` が消せる path を返す）。年度・団体・提出物を SQL Editor で消さない（その物は誰の範囲からも消せなくなることがある。README）。容量の守り（5 つ・10 MiB・どの提出にも属さない物が団体のフォルダに 5 つ未満・900 MiB）は予約の RPC が行い、届いた物が申告を超えないことは storage.objects のトリガーが確かめる
+  - Storage（上の「提出物」の表の後の段落）：物は SQL では消せないので、DB の行を消した物は「どの提出にも属さないファイル」として残り、画面が消す（RPC `document_orphan_paths` が消せる path を返す）。年度・団体・提出物を SQL Editor で消さない（その物は誰の範囲からも消せなくなることがある。README）。容量の守り（5 つ・10 MiB・どの提出にも属さない物が団体のフォルダに 5 つ未満・900 MiB）は予約の RPC が行い（T24 から予約は止めた。上の「Storage の容量」）、届いた物が申告を超えないことは storage.objects のトリガーが確かめる
   - 年度の複製（create_year_from）は提出物・提出・ファイルを写さない（D-54 と同じ）。前年度の提出物は、部門長以上が選んで写す（RPC `copy_previous_documents`。締切は1日目の差の日数だけずらし、Asia/Tokyo の時刻は同じ。同じ題名は飛ばす。Q10）
   - 件数の上限：1つの提出のファイルは 5 つまで。どの提出にも属さない物は団体のフォルダに 5 つ未満（超えると予約できない。画面が片付けてから足し直す）。提出物の数は持たない（書けるのは部門長以上だけ）
 - シフト・作業（T20。D-56）：
@@ -875,7 +888,8 @@ admin・head・deputy_head・staff・viewer は、その行の年度でのロー
 | 提出物と提出の状況を読む | その年度の全部 | その年度の全部 | その年度の全部 | 自団体が対象の提出物と、自団体の提出 | —（Q5） |
 | ファイルを読む・開く・保存する（Storage の物を含む） | その年度の全部 | その年度の全部 | —（Q4） | 自団体の分 | — |
 | 提出物の登録・変更・削除、前年度から写す | ○ | ○ | — | — | — |
-| ファイルを足す・外す（RPC reserve_document_file・discard_document_file） | ○（承認でない提出。代理） | ○（同じ） | — | ○（自団体・対象の提出物で、未提出・差し戻しのとき） | — |
+| ファイルを足す（RPC reserve_document_file。T24 から止めた：どの段も invalid_state〔uploads_disabled〕） | — | — | — | — | — |
+| ファイルを外す（RPC discard_document_file。T24 の前のファイル） | ○（承認でない提出。代理） | ○（同じ） | — | ○（自団体・対象の提出物で、未提出・差し戻しのとき） | — |
 | Storage に届いていない予約を外す | ○ | ○ | — | ○（自団体。状態によらない） | — |
 | 「提出した」・提出を取り消す（submit_document・withdraw_document） | ○（代理） | ○（代理） | — | ○（自団体） | — |
 | 承認・差し戻し・紙などで受け取った承認（approve_document・return_document） | ○ | ○ | — | — | — |
