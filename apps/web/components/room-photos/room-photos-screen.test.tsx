@@ -253,7 +253,7 @@ describe('T25 部屋の写真', () => {
     renderScreen(DEPT_REP, `room=${R1}`);
     const current = await screen.findByTestId('room-photos-current');
     await waitFor(() => expect(within(current).getAllByRole('img')).toHaveLength(1));
-    expect(within(screen.getByTestId('room-photos-previous')).getByRole('heading').textContent).toBe('前年（前年）');
+    expect(within(screen.getByTestId('room-photos-previous')).getByRole('heading').textContent).toBe('前年');
     expect(screen.queryByTestId('room-photo-add')).toBeNull();
     expect(screen.queryByTestId('room-photo-menu')).toBeNull();
     expect(screen.queryByText('終了した年度のため、写真は見るだけです')).toBeNull();

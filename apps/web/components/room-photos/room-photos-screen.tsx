@@ -62,8 +62,8 @@ interface Ctx {
   yearId: string;
   yearLabel: string;
   prevYearId: string | null;
-  /** 前の年度の名前（読めなければ「前年」） */
-  prevLabel: string;
+  /** 前の年度の名前（読めなければ null。見出しは「前年」とだけ出す） */
+  prevLabel: string | null;
   soumu: boolean;
   writable: boolean;
 }
@@ -113,7 +113,7 @@ export function RoomPhotosScreen() {
     yearId,
     yearLabel: yearQ.data.label,
     prevYearId,
-    prevLabel: prevQ.data?.label ?? '前年',
+    prevLabel: prevQ.data?.label ?? null,
     soumu,
     writable: soumu && yearQ.data.status !== 'closed',
   };
@@ -303,7 +303,7 @@ function RoomDetail({ ctx, room }: { ctx: Ctx; room: PhotoRoom }) {
         ) : null}
         {section(`今年（${ctx.yearLabel}）`, current, 'まだ写真がありません', 'current', ctx.writable)}
         {ctx.prevYearId ? (
-          section(`前年（${ctx.prevLabel}）`, previous, '前の年度の写真はありません', 'previous', false)
+          section(ctx.prevLabel ? `前年（${ctx.prevLabel}）` : '前年', previous, '前の年度の写真はありません', 'previous', false)
         ) : (
           <section aria-label="前年" className="space-y-2" data-testid="room-photos-previous">
             <h3 className="text-base font-semibold">前年</h3>

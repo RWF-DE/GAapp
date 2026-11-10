@@ -672,7 +672,8 @@ test('T16 管理者で店長も務める人：ダッシュボードに代表す�
     await sql('delete from public.request_submissions where group_id = $1', [gid]);
     await loginWith(page, u);
     await openPortal(page, 'ダッシュボード');
-    await expect(page.getByTestId('home-roles')).toHaveText(`管理者${SMALL.groups.department} の店長`);
+    // 区分「部門」の団体の代表は「部門長」と呼ぶ（T25・D-63）
+    await expect(page.getByTestId('home-roles')).toHaveText(`管理者${SMALL.groups.department} の部門長`);
     // 要対応は1つの欄に（総務の未提出と、自団体の未提出。同じ期日なら総務 → 団体代表の順）
     expect(await todoIds(page)).toEqual(['furniture:soumu:unsubmitted', `furniture:rep:${gid}:unsubmitted`]);
     await expect(todo(page, `furniture:rep:${gid}:unsubmitted`)).toContainText(`${SMALL.groups.department}：申請が未提出です`);
