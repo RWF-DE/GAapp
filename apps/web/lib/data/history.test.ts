@@ -17,6 +17,7 @@ import {
   HISTORY_PAGE_SIZE,
   historyQueries,
   atMicros,
+  auditGroupId,
   compareHistoryRows,
   historyEmptyNote,
   historyHref,
@@ -214,10 +215,10 @@ describe('差の表示', () => {
 
   it('T21 テント等の貸し出し：5表を最後に足す。表の名前・対象（備品は名前、申請・割り当て・記録は団体と備品、確定の印は年度名）', () => {
     // T22 の備品（数えるだけ）の2表がその後ろに続く
-    expect(AUDIT_TABLES.slice(-7, -2)).toEqual(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years']);
+    expect(AUDIT_TABLES.slice(-8, -3)).toEqual(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years']);
     // T19〜T21 のマージの後の並び：T19 の提出物の3表、T20 のシフト・作業の5表の後
-    expect(AUDIT_TABLES.slice(-12, -7)).toEqual(['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']);
-    expect(AUDIT_TABLES.slice(-15, -12)).toEqual(['documents', 'document_submissions', 'document_files']);
+    expect(AUDIT_TABLES.slice(-13, -8)).toEqual(['shift_duties', 'shift_slots', 'shift_needs', 'shift_assignments', 'tasks']);
+    expect(AUDIT_TABLES.slice(-16, -13)).toEqual(['documents', 'document_submissions', 'document_files']);
     expect(['lending_items', 'lending_requests', 'lending_assignments', 'lending_records', 'lending_years'].map(tableLabel)).toEqual([
       'テント等の備品',
       'テント等の申請',
@@ -243,7 +244,7 @@ describe('差の表示', () => {
   });
 
   it('T22 備品（数えるだけ）：2表を最後に足す。名前の一覧は年度をまたぐ表。表の名前・対象・値・列の名前', () => {
-    expect(AUDIT_TABLES.slice(-2)).toEqual(['count_items', 'count_stocks']);
+    expect(AUDIT_TABLES.slice(AUDIT_TABLES.indexOf('count_items'), AUDIT_TABLES.indexOf('count_items') + 2)).toEqual(['count_items', 'count_stocks']);
     expect(CROSS_YEAR_TABLES).toContain('count_items');
     expect(CROSS_YEAR_TABLES).not.toContain('count_stocks');
     expect(['count_items', 'count_stocks'].map(tableLabel)).toEqual(['備品（数えるだけ）', '備品（数えるだけ）の数']);
@@ -603,3 +604,47 @@ describe('T23 品目の画像の変更（path を出さない）', () => {
     }
   });
 });
+
+describe('T25 現状復帰の写真と部門の団体の呼び方（04「履歴」。D-63）', () => {
+  const R = '00000000-0000-4000-8000-000000000401';
+  const G = '00000000-0000-4000-8000-000000000402';
+  const photo = { id: 'p1', year_id: 'y', room_id: R, object_path: 'y/r/p1.webp', memo: '黒板の前', sort_order: 0, created_by: 'u' };
+  const row = (after: Record<string, unknown> | null, before: Record<string, unknown> | null = null) => ({
+    table_name: 'room_photos',
+    row_pk: null,
+    group_id: null,
+    before,
+    after,
+  });
+
+  it('room_photos を表の一覧の最後に足す。表の名前は「現状復帰の写真」、対象は場所の名前（消えた場所は「（消えた場所）」）', () => {
+    expect(AUDIT_TABLES.at(-1)).toBe('room_photos');
+    expect(CROSS_YEAR_TABLES).not.toContain('room_photos');
+    expect(tableLabel('room_photos')).toBe('現状復帰の写真');
+    const lookups = { rooms: new Map([[R, '1年1組']]) };
+    expect(auditTarget(row(photo), lookups)).toBe('1年1組');
+    expect(auditTarget(row({ ...photo, room_id: 'gone' }), lookups)).toBe('（消えた場所）');
+  });
+
+  it('追加は「写真を足した」、削除は「写真を消した」だけ、メモ・並びの変更は日本語の列名で出す。path・id は出さない', () => {
+    const lines = (before: Record<string, unknown> | null, after: Record<string, unknown> | null) =>
+      diffAudit(before, after, 'room_photos').map((d) => formatDiffEntry('room_photos', d));
+    expect(lines(null, photo)).toEqual(['写真を足した']);
+    expect(lines(photo, null)).toEqual(['写真を消した']);
+    expect(lines(photo, { ...photo, memo: '机は後ろ', sort_order: 2 })).toEqual(['メモ：黒板の前 → 机は後ろ', '並び：0 → 2']);
+    for (const l of [...lines(null, photo), ...lines(photo, { ...photo, memo: 'x' })]) expect(l).not.toContain('y/r/p1');
+    // ほかの表は表を渡しても今のまま
+    expect(diffAudit(null, { a: 1 }, 'rooms')).toEqual([{ key: 'a', before: undefined, after: 1 }]);
+  });
+
+  it('団体代表の立場は、団体の区分が分かれば部門は「部門長」「副部門長」、分からなければ「店長」「副店長」', () => {
+    const lookups = { groupCategories: new Map([[G, 'department']]) };
+    expect(formatDiffEntry('group_members', { key: 'role', before: 'manager', after: 'deputy_manager' }, lookups, { groupId: G })).toBe('role：部門長 → 副部門長');
+    expect(formatDiffEntry('group_members', { key: 'role', before: 'manager', after: 'deputy_manager' }, lookups, { groupId: 'other' })).toBe('role：店長 → 副店長');
+    expect(formatDiffEntry('group_members', { key: 'role', before: undefined, after: 'manager' }, lookups)).toBe('role：店長');
+    expect(auditGroupId({ before: null, after: { group_id: G } })).toBe(G);
+    expect(auditGroupId({ before: { group_id: G }, after: null })).toBe(G);
+    expect(auditGroupId({ before: null, after: { x: 1 } })).toBeNull();
+  });
+});
+

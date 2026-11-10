@@ -8,7 +8,7 @@ import { buildMembership, type Membership, type MembershipSource } from './membe
  * 読み取りは RLS の範囲だけ：招待されていない人は自分の profiles 以外は何も返らない。
  *
  * accept_my_invitations と4つの読み取りは同時に送る（T14。4G で画面を開くまでの往復を1回減らす。notes/T14.md の 4G の速さ）。
- * group_members は団体と、その団体での立場（role。店長・副店長。T15b）を読む（T14 の先送りは URL ごとに覚えるので、
+ * group_members は団体（区分〔category〕を含む。部門の団体の呼び方と現状復帰の写真。T25）と、その団体での立場（role。店長・副店長。T15b）を読む（T14 の先送りは URL ごとに覚えるので、
  * select が変わっても前の記録は当たらず、使われないだけ）。
  * 受け入れた招待が1件以上あったとき（返り値 > 0。初回ログインなど）だけ、受け入れた後の立場をもう一度読む。
  * years は年度の行の列（COLUMNS.years）をすべて読み、yearRows に入れる（AuthProvider が年度の行のキャッシュに入れ、画面が
@@ -21,7 +21,7 @@ export async function loadMembershipSource(supabase: AppSupabaseClient, userId: 
     const rows = await Promise.all([
       supabase.from('profiles').select('display_name').eq('user_id', userId).maybeSingle(),
       supabase.from('year_roles').select('year_id, role').eq('user_id', userId),
-      supabase.from('group_members').select('group_id, role, groups (id, name, year_id)').eq('user_id', userId),
+      supabase.from('group_members').select('group_id, role, groups (id, name, year_id, category)').eq('user_id', userId),
       supabase.from('years').select(COLUMNS.years),
     ]);
     for (const r of rows) {

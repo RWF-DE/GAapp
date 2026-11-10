@@ -19,6 +19,7 @@ import {
   diffAudit,
   EMPTY_FILTER,
   formatDiffEntry,
+  auditGroupId,
   hasFilter,
   historyEmptyNote,
   historyHref,
@@ -80,6 +81,8 @@ function HistoryBody({ yearId, yearLabel, adminOfOpenYear }: { yearId: string; y
       lendingItems: o?.lendingItems ?? new Map(),
       // 備品（数えるだけ。T22）：物の名前
       countItems: o?.countItems ?? new Map(),
+      // 団体の区分（T25。部門の団体の立場は部門長・副部門長）
+      groupCategories: new Map(o?.groups.map((g) => [g.id, g.category]) ?? []),
     };
   }, [o, n, yearId, yearLabel]);
 
@@ -214,7 +217,8 @@ function HistoryTable({ rows, lookups }: { rows: readonly AuditLogRow[]; lookups
         </thead>
         <tbody>
           {rows.map((r) => {
-            const diff = diffAudit(r.before, r.after);
+            const diff = diffAudit(r.before, r.after, r.table_name);
+            const context = { groupId: auditGroupId(r) };
             return (
               <tr key={r.id} data-testid="history-row" data-row-id={r.id} data-table={r.table_name} className="border-b align-top">
                 <td className="px-3 py-2 tabular-nums">
@@ -234,7 +238,7 @@ function HistoryTable({ rows, lookups }: { rows: readonly AuditLogRow[]; lookups
                   ) : (
                     <ul className="space-y-0.5 wrap-anywhere">
                       {diff.map((d) => (
-                        <li key={d.key}>{formatDiffEntry(r.table_name, d, lookups)}</li>
+                        <li key={d.key}>{formatDiffEntry(r.table_name, d, lookups, context)}</li>
                       ))}
                     </ul>
                   )}

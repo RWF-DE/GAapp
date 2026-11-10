@@ -5,12 +5,15 @@ import { isAdmin, type AppRole, type GroupRole } from './roles';
 // ロールの一覧と段（管理者だけ・部門長以上・総務）は roles.ts。ここは開いている年度の立場と、その表示名
 export type { AppRole, GroupRole } from './roles';
 export type YearStatus = Database['public']['Enums']['year_status'];
+/** 団体の区分（group_category。模擬店・部門・企業・休憩所） */
+export type GroupCategory = Database['public']['Enums']['group_category'];
 
 /**
  * 画面の出し分けに使う立場。ロール（admin・head・deputy_head・staff・viewer）と団体代表（rep。店長・副店長のどちらでも。
- * 権限は同じなので立場は1つ）
+ * 権限は同じなので立場は1つ）。区分「部門」の団体の代表（部門長・副部門長。執行部）は rep に加えて dept_rep も持つ
+ * （現状復帰の写真を見る。T25・D-63。ほかの机椅子の画面の出し分けは rep のまま）
  */
-export type Audience = AppRole | 'rep';
+export type Audience = AppRole | 'rep' | 'dept_rep';
 
 export interface YearSummary {
   id: string;
@@ -25,6 +28,8 @@ export interface GroupSummary {
   year_id: string;
   /** その団体での立場（店長・副店長。group_members.role） */
   role: GroupRole;
+  /** 団体の区分（部門なら「部門長」「副部門長」と呼ぶ。T25・D-63。分からなければ店長・副店長と呼び、部門としない） */
+  category?: GroupCategory | null;
 }
 
 /** ログインしている人の、今の年度（開いている年度）での立場 */
@@ -115,6 +120,7 @@ export function audiencesOf(m: Membership): Audience[] {
   const a: Audience[] = [];
   if (m.role) a.push(m.role);
   if (m.groups.length > 0) a.push('rep');
+  if (m.groups.some((g) => g.category === 'department')) a.push('dept_rep');
   return a;
 }
 
@@ -137,14 +143,36 @@ export const GROUP_ROLE_LABELS: Record<GroupRole, string> = {
   deputy_manager: '副店長',
 };
 
+/** 区分「部門」の団体の代表の立場の表示名（T25・D-63。DB の値は manager・deputy_manager のまま） */
+export const DEPARTMENT_GROUP_ROLE_LABELS: Record<GroupRole, string> = {
+  manager: '部門長',
+  deputy_manager: '副部門長',
+};
+
 /**
- * 団体代表の立場の表示（「{団体名} の店長」「{団体名} の副店長」。04「共通レイアウト」。ヘッダー・ホームの立場・メンバーの一覧）
+ * 団体の区分に合わせた立場の表示名（04「団体の立場の呼び方」：部門なら「部門長」「副部門長」、ほか・分からなければ「店長」「副店長」）
+ *
+ * @example
+ * groupRoleLabel('manager', 'department') // '部門長'
+ */
+export function groupRoleLabel(role: GroupRole, category?: GroupCategory | null): string {
+  return (category === 'department' ? DEPARTMENT_GROUP_ROLE_LABELS : GROUP_ROLE_LABELS)[role];
+}
+
+/**
+ * 団体代表の立場の表示（「{団体名} の店長」「{団体名} の副店長」、部門の団体は「{団体名} の部門長」「{団体名} の副部門長」。
+ * 04「共通レイアウト」。ヘッダー・ホームの立場・メンバーの一覧）
  *
  * @example
  * groupPositionLabel({ name: '2年2組', role: 'deputy_manager' }) // '2年2組 の副店長'
  */
-export function groupPositionLabel(g: Pick<GroupSummary, 'name' | 'role'>): string {
-  return `${g.name} の${GROUP_ROLE_LABELS[g.role]}`;
+export function groupPositionLabel(g: Pick<GroupSummary, 'name' | 'role' | 'category'>): string {
+  return `${g.name} の${groupRoleLabel(g.role, g.category)}`;
+}
+
+/** 開いている年度で現状復帰の写真を見られるか（総務か、区分「部門」の団体の代表。T25・D-63。見た目だけで、データは RLS が守る） */
+export function seesRoomPhotos(m: Pick<Membership, 'role' | 'groups'>): boolean {
+  return (m.role !== null && m.role !== 'viewer') || m.groups.some((g) => g.category === 'department');
 }
 
 /** 今の年度の立場の表示（ロールの表示名と、代表する団体ごとの groupPositionLabel。ヘッダー。ホームの立場の一覧も同じ並びと言い方） */

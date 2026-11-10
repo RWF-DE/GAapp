@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   audiencesOf,
   buildMembership,
+  DEPARTMENT_GROUP_ROLE_LABELS,
   GROUP_ROLE_LABELS,
   groupPositionLabel,
+  groupRoleLabel,
+  seesRoomPhotos,
   hasAudience,
   isInvited,
   isLatestYear,
@@ -157,5 +160,64 @@ describe('表示名（02「列挙型」。T15b）', () => {
       '模擬店01 の店長',
     ]);
     expect(positionLabels({ role: null, groups: [] })).toEqual([]);
+  });
+});
+
+describe('T25 区分「部門」の団体の立場の呼び方（D-63）と立場 dept_rep', () => {
+  it('部門の団体は「部門長」「副部門長」、ほかの区分と区分が分からないときは「店長」「副店長」（DB の値は変えない）', () => {
+    expect(DEPARTMENT_GROUP_ROLE_LABELS).toEqual({ manager: '部門長', deputy_manager: '副部門長' });
+    expect(groupRoleLabel('manager', 'department')).toBe('部門長');
+    expect(groupRoleLabel('deputy_manager', 'department')).toBe('副部門長');
+    for (const c of ['stall', 'company', 'rest_area', null, undefined] as const) {
+      expect(groupRoleLabel('manager', c)).toBe('店長');
+      expect(groupRoleLabel('deputy_manager', c)).toBe('副店長');
+    }
+    expect(groupPositionLabel({ name: '生徒会執行部', role: 'deputy_manager', category: 'department' })).toBe('生徒会執行部 の副部門長');
+    expect(groupPositionLabel({ name: '模擬店01', role: 'manager', category: 'stall' })).toBe('模擬店01 の店長');
+  });
+
+  it('立場の表示とダッシュボードの一覧も区分で呼び分ける', () => {
+    expect(
+      positionLabels({
+        role: 'viewer',
+        groups: [
+          { id: 'g1', name: '執行部', year_id: 'y8', role: 'manager', category: 'department' },
+          { id: 'g2', name: '模擬店01', year_id: 'y8', role: 'deputy_manager', category: 'stall' },
+        ],
+      }),
+    ).toEqual(['閲覧のみ', '執行部 の部門長', '模擬店01 の副店長']);
+  });
+
+  it('部門の団体の代表には立場 dept_rep（rep も）。ほかの区分の代表は rep だけ。総務と dept_rep が現状復帰の写真を見る', () => {
+    const dept = buildMembership({
+      ...base,
+      groups: [{ id: 'g1', name: '執行部', year_id: 'y9', role: 'deputy_manager', category: 'department' }],
+    });
+    expect(audiencesOf(dept)).toEqual(['rep', 'dept_rep']);
+    expect(seesRoomPhotos(dept)).toBe(true);
+    const stall = buildMembership({ ...base, groups: [{ id: 'g2', name: '模擬店01', year_id: 'y9', role: 'manager', category: 'stall' }] });
+    expect(audiencesOf(stall)).toEqual(['rep']);
+    expect(seesRoomPhotos(stall)).toBe(false);
+    // 区分が分からない（古い形の立場）なら部門としない
+    const unknown = buildMembership({ ...base, groups: [{ id: 'g3', name: '団体', year_id: 'y9', role: 'manager' }] });
+    expect(audiencesOf(unknown)).toEqual(['rep']);
+    for (const role of ['admin', 'head', 'deputy_head', 'staff'] as const) {
+      expect(seesRoomPhotos(buildMembership({ ...base, roles: [{ year_id: 'y9', role }] }))).toBe(true);
+    }
+    expect(seesRoomPhotos(buildMembership({ ...base, roles: [{ year_id: 'y9', role: 'viewer' }] }))).toBe(false);
+    // 閲覧のみでも部門の団体の代表を兼ねていれば見る
+    const viewerDept = buildMembership({
+      ...base,
+      roles: [{ year_id: 'y9', role: 'viewer' }],
+      groups: [{ id: 'g1', name: '執行部', year_id: 'y9', role: 'manager', category: 'department' }],
+    });
+    expect(audiencesOf(viewerDept)).toEqual(['viewer', 'rep', 'dept_rep']);
+    expect(seesRoomPhotos(viewerDept)).toBe(true);
+    // 別の年度の部門の代表は、開いている年度の立場にならない
+    const otherYear = buildMembership(
+      { ...base, roles: [{ year_id: 'y9', role: 'viewer' }], groups: [{ id: 'g1', name: '執行部', year_id: 'y8', role: 'manager', category: 'department' }] },
+      'y9',
+    );
+    expect(seesRoomPhotos(otherYear)).toBe(false);
   });
 });

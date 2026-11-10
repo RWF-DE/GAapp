@@ -56,6 +56,8 @@ const LEAD: readonly Audience[] = LEAD_ROLES;
 const SOUMU: readonly Audience[] = SOUMU_ROLES;
 /** 団体代表（店長・副店長） */
 const REP: readonly Audience[] = ['rep'];
+/** 区分「部門」の団体の代表（部門長・副部門長。執行部。T25・D-63） */
+const DEPT_REP: readonly Audience[] = ['dept_rep'];
 
 /** 閲覧のみが確定前に振り分けを開いたときの説明（04「共通レイアウト」。T13-1） */
 export const ALLOCATION_BEFORE_FINAL_NOTE = '振り分けは確定後に表示されます。';
@@ -70,6 +72,8 @@ export const ROUTES: readonly RouteDef[] = [
   { href: '/stock', label: '在庫入力', section: 'furniture', audiences: SOUMU, nav: true, ticket: 'T10' },
   { href: '/stocks', label: '在庫一覧', section: 'furniture', audiences: SOUMU, nav: true, ticket: 'T10' },
   { href: '/stocks/qr', label: '部屋の QR の印刷', section: 'furniture', audiences: SOUMU, nav: false, ticket: 'T10' },
+  // 現状復帰の写真（T25・D-63）：総務と、区分「部門」の団体の代表（部門長・副部門長）だけ。閲覧のみ・模擬店などの代表には出さない
+  { href: '/room-photos', label: '現状復帰の写真', section: 'furniture', audiences: [...SOUMU, ...DEPT_REP], nav: true, ticket: 'T25' },
   { href: '/requests', label: '申請一覧', section: 'furniture', audiences: SOUMU, nav: true, ticket: 'T11' },
   { href: '/rules', label: 'ルール', section: 'furniture', audiences: LEAD, nav: true, ticket: 'T12' },
   // Q1（D-39）：総務部門員はいつでも読み取り専用、viewer は確定後だけ
@@ -192,7 +196,7 @@ export function canOpen(href: string, audiences: readonly Audience[], yearStatus
   if (!r) return true;
   if (!allowed(r, yearStatus).some((a) => audiences.includes(a))) return false;
   const tab = settingsTabParam(href);
-  return tab === null || audiences.some((a) => a !== 'rep' && (settingsTabsFor(a) as readonly string[]).includes(tab));
+  return tab === null || audiences.some((a) => a !== 'rep' && a !== 'dept_rep' && (settingsTabsFor(a) as readonly string[]).includes(tab));
 }
 
 /**

@@ -723,6 +723,7 @@ function AllocationLoaded({
                 highlightRowId={query.row ?? null}
                 highlightRoomId={highlightRoom}
                 readOnlyList={!full}
+                photoLinks={full}
               />
             </Tabs>
             </RowEditProvider>

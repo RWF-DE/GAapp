@@ -157,9 +157,9 @@ describe('fetchMembers（ユーザーのタブ）', () => {
       if (call.table === 'group_members') {
         return {
           data: [
-            { group_id: G2, user_id: U2, role: 'deputy_manager', groups: { year_id: 'y', name: '模擬店B' } },
-            { group_id: G1, user_id: U2, role: 'manager', groups: { year_id: 'y', name: '模擬店A' } },
-            { group_id: G1, user_id: U4, role: 'deputy_manager', groups: { year_id: 'y', name: '模擬店A' } },
+            { group_id: G2, user_id: U2, role: 'deputy_manager', groups: { year_id: 'y', name: '模擬店B', category: 'department' } },
+            { group_id: G1, user_id: U2, role: 'manager', groups: { year_id: 'y', name: '模擬店A', category: 'stall' } },
+            { group_id: G1, user_id: U4, role: 'deputy_manager', groups: { year_id: 'y', name: '模擬店A', category: 'stall' } },
           ],
         };
       }
@@ -190,13 +190,13 @@ describe('fetchMembers（ユーザーのタブ）', () => {
         '管理者',
         'admin',
         [
-          { id: G1, name: '模擬店A', role: 'manager' },
-          { id: G2, name: '模擬店B', role: 'deputy_manager' },
+          { id: G1, name: '模擬店A', role: 'manager', category: 'stall' },
+          { id: G2, name: '模擬店B', role: 'deputy_manager', category: 'department' },
         ],
       ],
       ['部門長', 'head', []],
       ['部門員', 'staff', []],
-      ['副店長', null, [{ id: G1, name: '模擬店A', role: 'deputy_manager' }]],
+      ['副店長', null, [{ id: G1, name: '模擬店A', role: 'deputy_manager', category: 'stall' }]],
     ]);
     expect(r.invitations).toEqual([
       { id: 'i1', email: 'staff@example.test', role: 'staff', groupId: null, groupRole: null, usedAt: null, createdAt: T0 },
@@ -207,7 +207,8 @@ describe('fetchMembers（ユーザーのタブ）', () => {
       [G1, 2],
     ]);
     const select = (table: string) => opArgs(issued.find((c) => c.table === table)!, 'select')[0]![0];
-    expect(select('group_members')).toBe('group_id, user_id, role, groups!inner(year_id, name)');
+    // 区分も読む（部門の団体の呼び方。T25・D-63）
+    expect(select('group_members')).toBe('group_id, user_id, role, groups!inner(year_id, name, category)');
     expect(select('invitations')).toBe('id, email, role, group_id, group_role, used_at, created_at');
     expect(opArgs(issued.find((c) => c.table === 'group_members')!, 'eq')).toEqual([['groups.year_id', 'y']]);
     expect(opArgs(issued.find((c) => c.table === 'profiles')!, 'in')).toEqual([['user_id', [U1, U2, U3, U4]]]);

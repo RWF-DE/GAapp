@@ -257,6 +257,22 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
     expect(document.getElementById('app-mobile-nav')?.textContent).toContain('代表（模擬店01 の店長・模擬店02 の副店長）');
   });
 
+  it('T25 区分「部門」の団体の代表は「{団体名} の部門長」「副部門長」、ナビの机椅子に「現状復帰の写真」（D-63）', async () => {
+    fakeAuth.session = { user: { id: 'u1' } };
+    fakeAuth.sources.u1 = sourceOf({
+      displayName: '代表',
+      roles: [],
+      groups: [
+        { id: 'g3', name: '執行部', year_id: 'y8', role: 'deputy_manager', category: 'department' },
+        { id: 'g1', name: '模擬店01', year_id: 'y8', role: 'manager', category: 'stall' },
+      ],
+    });
+    renderShell();
+    await screen.findByLabelText('メモ');
+    expect(screen.getByText('執行部 の副部門長・模擬店01 の店長')).toBeTruthy();
+    expect(navLabels()).toEqual(['ホーム', '現状復帰の写真', '申請', '自団体の振り分け', 'お知らせ一覧', '締切と予定の一覧', '自団体の提出物']);
+  });
+
   it('管理者で店長も務める人は、ロールと団体の両方', async () => {
     fakeAuth.session = { user: { id: 'u1' } };
     fakeAuth.sources.u1 = sourceOf({ groups: [{ id: 'g1', name: '模擬店01', year_id: 'y8', role: 'manager' }] });
@@ -281,6 +297,7 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       '机椅子の状況',
       '在庫入力',
       '在庫一覧',
+      '現状復帰の写真',
       '申請一覧',
       'ルール',
       '振り分け',
@@ -312,6 +329,7 @@ describe('AppShell：ヘッダーの立場とナビ（T15b。04「共通レイ�
       '机椅子の状況',
       '在庫入力',
       '在庫一覧',
+      '現状復帰の写真',
       '申請一覧',
       '振り分け',
       'お知らせ一覧',
@@ -353,6 +371,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       '机椅子の状況',
       '在庫入力',
       '在庫一覧',
+      '現状復帰の写真',
       '申請一覧',
       'ルール',
       '振り分け',
@@ -408,6 +427,7 @@ describe('T16 AppShell：見出しごとのナビ（04「共通レイアウト�
       '机椅子の状況',
       '在庫入力',
       '在庫一覧',
+      '現状復帰の写真',
       '申請一覧',
       'ルール',
       '振り分け',

@@ -44,7 +44,7 @@
 // URL は 9 品目と備品（数えるだけ）の画像をまとめて1回で作る（useItemImageUrls）。書ける人は、備品（数えるだけ）の行のメニューから
 // 「写真を足す」「写真を替える」。「新しく登録」に写真があれば、名前を足した後に送り、画像の段で失敗しても名前の登録（行）は残す。
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Ban, CheckCircle2, EllipsisVertical, Info } from 'lucide-react';
+import { AlertTriangle, Ban, Camera, CheckCircle2, EllipsisVertical, Info } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { AppLink } from '@/components/common/app-link';
@@ -126,6 +126,7 @@ import {
   type StockCounts,
   type StockDraft,
 } from '@/lib/schemas/stock';
+import { ROOM_PHOTOS_LINK_LABEL, roomPhotosPath } from '@/lib/room-photos/path';
 import { useUnsavedChanges } from '@/lib/unsaved-changes';
 import { cn } from '@/lib/utils';
 import { AddCountItemDialog } from './add-count-item-dialog';
@@ -919,7 +920,14 @@ export function StockInput({
         <h2 className="text-2xl font-bold" data-testid="stock-room-name">
           {target.room.name}
         </h2>
-        <p className="text-sm text-muted-foreground">{placeOf(target.room)}</p>
+        <p className="flex flex-wrap items-center gap-x-3 text-sm text-muted-foreground">
+          <span>{placeOf(target.room)}</span>
+          {/* 現状復帰の写真（T25・D-63）：リンクだけ（枚数を添えない。写真の部品と読み取りはこの画面の JS に入れない） */}
+          <AppLink href={roomPhotosPath(target.room.id)} className="inline-flex items-center gap-1 text-foreground underline underline-offset-4" data-testid="room-photos-link">
+            <Camera aria-hidden className="size-4" />
+            {ROOM_PHOTOS_LINK_LABEL}
+          </AppLink>
+        </p>
         {!target.usable ? (
           <div role="status" data-testid="unusable-notice" className="flex gap-2 rounded-md border border-zinc-400 bg-zinc-100 px-4 py-2 text-sm text-zinc-800">
             <Ban aria-hidden className="mt-0.5 size-4 shrink-0" />

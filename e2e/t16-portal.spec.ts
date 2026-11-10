@@ -713,7 +713,7 @@ test.describe('T16 ナビの見出し（管理者・PC）', () => {
     await expect(home.getByRole('link', { name: 'ホーム' })).toHaveAttribute('aria-current', 'page');
     const furniture = nav.getByRole('group', { name: '机椅子' });
     await expect(furniture.getByRole('heading', { level: 2, name: '机椅子' })).toBeVisible();
-    await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', 'ルール', '振り分け', 'キャスター机交換']);
+    await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '現状復帰の写真', '申請一覧', 'ルール', '振り分け', 'キャスター机交換']);
     // お知らせ（T17）：機能の登録の順で、机椅子の後・共通の前
     const notices = nav.getByRole('group', { name: 'お知らせ' });
     await expect(notices.getByRole('heading', { level: 2, name: 'お知らせ' })).toBeVisible();
@@ -766,7 +766,7 @@ test.describe('T16 ナビの見出し（総務部門員・スマホ）', () => {
     await expect(nav.getByRole('group')).toHaveCount(7);
     await expect(nav.getByRole('group', { name: 'ホーム' }).getByRole('link')).toHaveText(['ホーム']);
     const furniture = nav.getByRole('group', { name: '机椅子' });
-    await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '申請一覧', '振り分け']);
+    await expect(furniture.getByRole('link')).toHaveText(['机椅子の状況', '在庫入力', '在庫一覧', '現状復帰の写真', '申請一覧', '振り分け']);
     await expect(nav.getByRole('group', { name: 'お知らせ' }).getByRole('link')).toHaveText(['お知らせ一覧']);
     await expect(nav.getByRole('group', { name: '締切と予定' }).getByRole('link')).toHaveText(['締切と予定の一覧']);
     await expect(nav.getByRole('group', { name: '提出物' }).getByRole('link')).toHaveText(['提出状況']);

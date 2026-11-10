@@ -74,8 +74,8 @@ const MEMBERS: MemberRow[] = [
   { userId: U.admin, displayName: 'テスト管理者', role: 'admin', roleUpdatedAt: T0, groups: [] },
   { userId: U.head, displayName: 'テスト部門長', role: 'head', roleUpdatedAt: T0, groups: [] },
   { userId: U.staff, displayName: 'テスト部門員', role: 'staff', roleUpdatedAt: T0, groups: [] },
-  { userId: U.viewer, displayName: 'テスト閲覧', role: 'viewer', roleUpdatedAt: T0, groups: [{ id: G1, name: '模擬店A', role: 'manager' }] },
-  { userId: U.rep, displayName: 'テスト副店長', role: null, roleUpdatedAt: null, groups: [{ id: G1, name: '模擬店A', role: 'deputy_manager' }] },
+  { userId: U.viewer, displayName: 'テスト閲覧', role: 'viewer', roleUpdatedAt: T0, groups: [{ id: G1, name: '模擬店A', role: 'manager', category: 'stall' }] },
+  { userId: U.rep, displayName: 'テスト副店長', role: null, roleUpdatedAt: null, groups: [{ id: G1, name: '模擬店A', role: 'deputy_manager', category: 'stall' }] },
 ];
 const invitation = (id: string, over: Partial<InvitationRow>): InvitationRow => ({
   id,
@@ -456,11 +456,12 @@ describe('メンバーの一覧（段ごとの操作）', () => {
 });
 
 describe('招待の一覧', () => {
-  it('「立場」はロールの表示名か「{団体} の副店長」。管理者はすべての未使用の招待を取り消せる', async () => {
+  it('「立場」はロールの表示名か「{団体} の副店長」（部門の団体は副部門長）。管理者はすべての未使用の招待を取り消せる', async () => {
     renderTab('admin');
     expect(within(await screen.findByRole('table', { name: '招待' })).getByRole('columnheader', { name: '立場' })).toBeTruthy();
     expect(within(await invitationRow(INV.staff)).getByText('総務部門員')).toBeTruthy();
-    expect(within(await invitationRow(INV.group)).getByText('部門B の副店長')).toBeTruthy();
+    // 部門の団体の招待は「部門長」「副部門長」（T25・D-63）
+    expect(within(await invitationRow(INV.group)).getByText('部門B の副部門長')).toBeTruthy();
     for (const id of [INV.staff, INV.group, INV.admin]) {
       expect(within(await invitationRow(id)).getByRole('button', { name: '取り消す' })).toBeTruthy();
     }
@@ -498,3 +499,52 @@ describe('終了した年度', () => {
     expect(screen.getAllByRole('button', { name: 'ロールを外す' })).toHaveLength(4);
   });
 });
+
+describe('T25 区分「部門」の団体の呼び方（部門長・副部門長。D-63）', () => {
+  const DEPT_MEMBER = { userId: U.rep, displayName: 'テスト副部門長', role: null, roleUpdatedAt: null, groups: [{ id: G2, name: '部門B', role: 'deputy_manager' as const, category: 'department' as const }] };
+  beforeEach(() => {
+    data.fetchMembers.mockResolvedValue({ members: [...MEMBERS.filter((m) => m.userId !== U.rep), DEPT_MEMBER], invitations: INVITATIONS, repCount: new Map() });
+  });
+
+  it('メンバーの一覧は「部門B の副部門長」、切り替えのボタンは「部門長にする」。確かめのダイアログと知らせも部門長', async () => {
+    rpcState.handler = () => ({ data: null });
+    const user = userEvent.setup();
+    renderTab('head');
+    const row = await memberRow(U.rep);
+    expect(within(row).getByTestId('member-position').textContent).toContain('部門B の副部門長');
+    await user.click(within(row).getByRole('button', { name: '部門長にする' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading').textContent).toBe('テスト副部門長を「部門B」の部門長にしますか');
+    expect(dialog.textContent).toContain('部門長と副部門長は、できることが同じです（表示だけが変わります）。');
+    await user.click(within(dialog).getByRole('button', { name: '部門長にする' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(rpcState.calls[0]!.args).toEqual({ p_group_id: G2, p_user_id: U.rep, p_group_role: 'manager' });
+    expect(toasts.success).toHaveBeenCalledWith('テスト副部門長を「部門B」の部門長にしました');
+    // 模擬店の代表は店長・副店長のまま
+    expect(within(await memberRow(U.viewer)).getByTestId('member-position').textContent).toContain('模擬店A の店長');
+  });
+
+  it('「代表を外す」の題と知らせも副部門長', async () => {
+    rpcState.handler = () => ({ data: null });
+    const user = userEvent.setup();
+    renderTab('head');
+    await user.click(within(await memberRow(U.rep)).getByRole('button', { name: '代表を外す' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading').textContent).toBe('テスト副部門長を「部門B」の副部門長から外しますか');
+    await user.click(within(dialog).getByRole('button', { name: '外す' }));
+    await waitFor(() => expect(toasts.success).toHaveBeenCalledWith('「部門B」の副部門長から外しました'));
+  });
+
+  it('招待：団体を選ぶまでは店長・副店長、部門の団体を選ぶと立場の選択肢が部門長・副部門長になり、その場で付いた知らせも副部門長', async () => {
+    rpcState.handler = () => ({ data: { invitation_ids: [INV.group], applied: true } });
+    const user = userEvent.setup();
+    renderTab('head');
+    await screen.findByTestId('invite-form');
+    expect(optionLabels(kindSelect())).toEqual(['総務部門員', '店長', '副店長']);
+    await invite(user, 'dept-now@example.test', 'deputy_manager', '部門B');
+    expect((await screen.findByTestId('invite-result')).textContent).toBe('この人はすでにアカウントがあるので、その場で「部門B の副部門長」にしました');
+    expect(optionLabels(kindSelect())).toEqual(['総務部門員', '部門長', '副部門長']);
+    expect(rpcState.calls[0]!.args).toMatchObject({ p_group_id: G2, p_group_role: 'deputy_manager' });
+  });
+});
+

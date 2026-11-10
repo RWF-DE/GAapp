@@ -3,7 +3,7 @@
 import type { AllocOrigin, ConsentStatus, Enums, GroupCategory, RoomKind, RuleKind } from '@gaapp/shared';
 
 // ロール・団体代表の立場（店長・副店長）・年度の状態は T04 の membership.ts にある（ヘッダー・ホームと同じ言い方にするため、ここから出し直す）
-export { GROUP_ROLE_LABELS, ROLE_LABELS, YEAR_STATUS_LABELS } from './auth/membership';
+export { DEPARTMENT_GROUP_ROLE_LABELS, GROUP_ROLE_LABELS, ROLE_LABELS, YEAR_STATUS_LABELS } from './auth/membership';
 export type { AppRole, GroupRole, YearStatus } from './auth/membership';
 
 /** 団体の区分（exporter の CATEGORY_LABELS と同じ。exporter は動的 import だけなのでここに持つ） */
@@ -88,6 +88,8 @@ export const AUDIT_TABLE_LABELS: Readonly<Record<string, string>> = {
   // 備品（数えるだけ。T22。D-60）
   count_items: '備品（数えるだけ）',
   count_stocks: '備品（数えるだけ）の数',
+  // 現状復帰の写真（T25）
+  room_photos: '現状復帰の写真',
 };
 
 /** 監査ログの操作（audit_logs.action） */

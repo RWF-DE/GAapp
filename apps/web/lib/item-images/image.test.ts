@@ -8,6 +8,7 @@ import {
   ITEM_IMAGE_MAX_SIDE,
   ITEM_IMAGE_QUALITY,
   ITEM_IMAGE_TOO_LARGE_MESSAGE,
+  ROOM_PHOTO_MAX_SIDE,
   ItemImageDecodeError,
   ItemImageTooLargeError,
   itemImageSize,
@@ -113,3 +114,20 @@ describe('T23 prepareItemImage', () => {
     expect(g.files).toEqual(['lib/item-images/image.ts']);
   });
 });
+
+describe('T25 現状復帰の写真は長い辺 1600px（maxSide。品目の画像は 1024px のまま）', () => {
+  it('maxSide を渡せばその大きさに縮め、渡さなければ 1024px', async () => {
+    expect(ROOM_PHOTO_MAX_SIDE).toBe(1600);
+    const room = fakeEnv(4032, 3024);
+    await prepareItemImage(new Blob(['x']), room.env, { maxSide: ROOM_PHOTO_MAX_SIDE });
+    expect(room.encoded[0]).toMatchObject({ width: 1600, height: 1200, type: 'image/webp', quality: 0.8 });
+    const item = fakeEnv(4032, 3024);
+    await prepareItemImage(new Blob(['x']), item.env);
+    expect(item.encoded[0]).toMatchObject({ width: 1024, height: 768 });
+    // 1600px より小さい写真はそのまま
+    const small = fakeEnv(1280, 960);
+    await prepareItemImage(new Blob(['x']), small.env, { maxSide: ROOM_PHOTO_MAX_SIDE });
+    expect(small.encoded[0]).toMatchObject({ width: 1280, height: 960 });
+  });
+});
+
