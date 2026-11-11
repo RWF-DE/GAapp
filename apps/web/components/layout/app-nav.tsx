@@ -26,15 +26,22 @@ export function AppNav({
   const pathname = usePathname();
   const baseId = useId();
   return (
-    <nav aria-label="メインメニュー" className={cn('flex flex-col gap-3', className)}>
-      {sections.map((section) => {
+    <nav aria-label="メインメニュー" className={cn('flex flex-col gap-2', className)}>
+      {sections.map((section, index) => {
         const headingId = `${baseId}-${section.id}`;
         return (
-          <div key={section.id} role="group" aria-labelledby={headingId} data-nav-section={section.id}>
+          <div
+            key={section.id}
+            role="group"
+            aria-labelledby={headingId}
+            data-nav-section={section.id}
+            // 2つ目からの見出しは区切り線の下に出す（先頭は見た目では出さない「ホーム」）
+            className={cn(index > 0 && 'mt-1 border-t border-sidebar-border pt-3')}
+          >
             <h2
               id={headingId}
               className={cn(
-                'px-3 pb-1 text-xs font-medium text-muted-foreground',
+                'px-3 pb-1.5 pt-1 text-xs font-semibold tracking-wide text-sidebar-foreground',
                 // 「ホーム」の見出しは見た目では出さない（項目が「ホーム」1つだけなので）
                 section.id === 'home' && 'sr-only',
               )}
@@ -54,7 +61,7 @@ export function AppNav({
 }
 
 function NavLink({ item, active, onNavigate }: { item: NavItem; active: boolean; onNavigate: (() => void) | undefined }) {
-  const base = 'flex items-center justify-between gap-2 rounded-md px-3 py-2 text-sm';
+  const base = 'flex items-center justify-between gap-2 rounded-md py-2 pl-5 pr-3 text-sm';
   return (
     <li>
       {item.ready ? (
